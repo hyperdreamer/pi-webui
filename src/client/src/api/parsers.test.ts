@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMessagePage, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMessagePage, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("preserves additive interactive API-key flow hints and defaults legacy options", () => {
@@ -211,6 +211,13 @@ describe("API parsers", () => {
     });
     expect(parseSessionStreamSnapshot({ seq: 0, partial: null })).toEqual({ seq: 0, partial: null });
     expect(parseSessionStreamSnapshot({ seq: 3 })).toEqual({ seq: 3, partial: null });
+  });
+
+  it("parses available, empty, and not-yet-loaded system prompts", () => {
+    expect(parseSessionSystemPrompt({ systemPrompt: "Follow AGENTS.md" })).toEqual({ systemPrompt: "Follow AGENTS.md" });
+    expect(parseSessionSystemPrompt({ systemPrompt: "" })).toEqual({ systemPrompt: "" });
+    expect(parseSessionSystemPrompt({})).toEqual({});
+    expect(() => parseSessionSystemPrompt({ systemPrompt: 7 })).toThrow("Expected optional string field: systemPrompt");
   });
 
   it("rejects a session stream snapshot without a numeric seq", () => {

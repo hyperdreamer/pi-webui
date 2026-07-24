@@ -345,6 +345,25 @@ describe("session routes", () => {
     expect(sessionManager.calls).toEqual({ create: 0, list: 0, listAll: 0, open: 0 });
   });
 
+  it("returns a cwd-scoped system prompt without mutating the session", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const response = await routeApp.inject({ method: "GET", url: "/sessions/session-1/system-prompt?cwd=%2Frepo%2F.%2F" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ systemPrompt: "Use the project conventions." });
+      expect(routeService.systemPromptCalls).toEqual([{ id: "session-1", cwd: resolve("/repo") }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("keeps legacy per-session routes usable without cwd", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
@@ -701,6 +720,7 @@ class CapturingRouteSessionService implements SessionRouteService {
   messagesResponse: unknown[] | MessagePage = [];
   streamSnapshotResponse: SessionStreamSnapshot = { seq: 0, partial: null };
   readonly streamSnapshotCalls: SessionRouteLookup[] = [];
+  readonly systemPromptCalls: SessionRouteLookup[] = [];
   readonly cleanupPreviewCalls: NormalizedSessionCleanupRequest[] = [];
   readonly cleanupCalls: NormalizedSessionCleanupRequest[] = [];
   readonly bulkArchiveCalls: SessionBulkMutationRef[][] = [];
@@ -825,6 +845,11 @@ class CapturingRouteSessionService implements SessionRouteService {
   streamSnapshot(lookup: SessionRouteLookup): Promise<SessionStreamSnapshot> {
     this.streamSnapshotCalls.push(lookup);
     return Promise.resolve(this.streamSnapshotResponse);
+  }
+
+  systemPrompt(lookup: SessionRouteLookup): Promise<{ systemPrompt?: string }> {
+    this.systemPromptCalls.push(lookup);
+    return Promise.resolve({ systemPrompt: "Use the project conventions." });
   }
 
   availableModels(): Promise<[]> { return Promise.resolve([]); }

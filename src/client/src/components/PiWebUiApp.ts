@@ -70,6 +70,7 @@ import "./ProjectDialog";
 import "./MachineDialog";
 import type { MachineDialogSubmit } from "./MachineDialog";
 import "./SettingsDialog";
+import "./SystemPromptDialog";
 import "./WorkspacePanel";
 import type { WorkspacePanelEmptyState } from "./WorkspacePanel";
 import "./TerminalPanel";
@@ -275,6 +276,7 @@ export class PiWebUiApp extends LitElement {
   @state() private modelsConfigDialogOpen = false;
   @state() private skillsConfigDialogOpen = false;
   @state() private pluginsConfigDialogOpen = false;
+  @state() private systemPromptDialogOpen = false;
   @state() private terminalModalOpen = false;
   @state() private terminalModalBounds: TerminalModalBounds | undefined;
   private terminalModalPointerInteraction: TerminalModalPointerInteraction | undefined;
@@ -390,6 +392,7 @@ export class PiWebUiApp extends LitElement {
       || this.modelsConfigDialogOpen
       || (this.skillsConfigDialogOpen && this.state.selectedWorkspace !== undefined)
       || (this.pluginsConfigDialogOpen && this.state.selectedWorkspace !== undefined)
+      || (this.systemPromptDialogOpen && this.state.selectedSession !== undefined)
       || this.state.actionPaletteOpen
       || this.state.projectDialogOpen
       || this.state.machineDialogOpen
@@ -1299,6 +1302,11 @@ export class PiWebUiApp extends LitElement {
   private canClearServerQueue(): boolean {
     const runtime = this.selectedMachineRuntime();
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsClearQueue);
+  }
+
+  private canViewSystemPrompt(): boolean {
+    const runtime = this.selectedMachineRuntime();
+    return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsSystemPrompt);
   }
 
   private canCleanupSessions(): boolean {
@@ -2579,7 +2587,14 @@ export class PiWebUiApp extends LitElement {
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <aside id="navigation-panel">
-          <activity-rail .onOpenTerminal=${this.handleOpenTerminalFromRail} .terminalCount=${this.state.activeTerminalCount}></activity-rail>
+          <activity-rail
+            .onOpenTerminal=${this.handleOpenTerminalFromRail}
+            .terminalCount=${this.state.activeTerminalCount}
+            .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
+            .onOpenSystemPrompt=${() => {
+              if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
+            }}
+          ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
         ${this.renderNavigationPanelEdgeControl()}
@@ -2608,6 +2623,7 @@ export class PiWebUiApp extends LitElement {
         ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }}></models-config-dialog>` : null}
         ${this.skillsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<skills-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .onClose=${() => { this.skillsConfigDialogOpen = false; }}></skills-config-dialog>` : null}
         ${this.pluginsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<plugins-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .session=${state.selectedSession} .onClose=${() => { this.pluginsConfigDialogOpen = false; }} .onReloaded=${() => this.sessions.refreshSelectedSession(state.selectedSession?.id)}></plugins-config-dialog>` : null}
+        ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}

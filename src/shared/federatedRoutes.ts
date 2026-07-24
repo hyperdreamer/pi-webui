@@ -74,6 +74,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "POST", path: "/sessions/:sessionId/notifications/dismiss-all" },
   { method: "POST", path: "/sessions/:sessionId/unread/acknowledge" },
   { method: "GET", path: "/sessions/:sessionId/status" },
+  { method: "GET", path: "/sessions/:sessionId/system-prompt" },
   { method: "GET", path: "/sessions/:sessionId/stream-snapshot" },
   { method: "GET", path: "/sessions/:sessionId/models" },
   { method: "POST", path: "/sessions/:sessionId/model" },

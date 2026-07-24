@@ -426,6 +426,17 @@ describe("session API compatibility", () => {
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/sessions/session%20%2F%3F/tree/navigate");
   });
 
+  it("reads a selected session's system prompt through an encoded machine route with cwd context", async () => {
+    const fetchMock = stubJsonFetch({ systemPrompt: "Follow project instructions." });
+
+    await expect(sessionsApi.systemPrompt({ id: "s /?", cwd: "/repo with spaces" }, "remote /?")).resolves.toEqual({ systemPrompt: "Follow project instructions." });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/sessions/s%20%2F%3F/system-prompt?cwd=%2Frepo+with+spaces");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
   it("reads a session stream snapshot through an encoded machine route with cwd context", async () => {
     const fetchMock = stubJsonFetch({ seq: 12, partial: { role: "assistant", content: [{ type: "text", text: "streaming" }] } });
 

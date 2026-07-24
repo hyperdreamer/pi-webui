@@ -50,6 +50,26 @@ describe("PI WEBUI capabilities", () => {
     })).toContain(clearQueue);
   });
 
+  it("requires both web and session daemon support for viewing system prompts", () => {
+    const systemPrompt = PI_WEBUI_CAPABILITIES.sessionsSystemPrompt;
+    expect(systemPrompt).toBe("sessions.systemPrompt");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(systemPrompt);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(systemPrompt);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [systemPrompt] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(systemPrompt);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [] },
+      sessiond: { available: true, capabilities: [systemPrompt] },
+    })).not.toContain(systemPrompt);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [systemPrompt] },
+      sessiond: { available: true, capabilities: [systemPrompt] },
+    })).toContain(systemPrompt);
+  });
+
   it("requires both web and session daemon support for notification inboxes", () => {
     const notifications = PI_WEBUI_CAPABILITIES.sessionsNotifications;
     expect(WEB_RUNTIME_CAPABILITIES).toContain(notifications);

@@ -86,6 +86,31 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     expect(fake.calls.dispose).toBe(1);
   });
 
+  it("returns the live system prompt while preserving empty and unavailable states", async () => {
+    const hub = new CapturingSessionEventHub();
+    const state: { systemPrompt?: string } = { systemPrompt: "Follow the repository instructions." };
+    const fake = fakeRuntime("system-prompt-session", { state });
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("system-prompt-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    try {
+      await expect(service.systemPrompt(sessionRef("system-prompt-session"))).resolves.toEqual({ systemPrompt: "Follow the repository instructions." });
+
+      state.systemPrompt = "";
+      await expect(service.systemPrompt(sessionRef("system-prompt-session"))).resolves.toEqual({ systemPrompt: "" });
+
+      delete state.systemPrompt;
+      await expect(service.systemPrompt(sessionRef("system-prompt-session"))).resolves.toEqual({});
+    } finally {
+      await service.dispose();
+    }
+  });
+
   it("publishes provider-reported generation metrics only while an assistant response is active", async () => {
     let now = new Date("2026-07-22T00:00:00.000Z");
     const hub = new CapturingSessionEventHub();

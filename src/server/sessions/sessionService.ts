@@ -21,6 +21,7 @@ import type {
   ClientSessionModel,
   ClientSessionRef,
   ClientSessionStatus,
+  ClientSessionSystemPrompt,
   ClientSessionTreeNavigateRequest,
   ClientSessionTreeNavigateResult,
   ClientThinkingLevel,
@@ -43,6 +44,7 @@ export interface SessionRouteService {
   start(cwd: string): Promise<ClientSession>;
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;
+  systemPrompt(ref: SessionRouteLookup): Promise<ClientSessionSystemPrompt>;
   streamSnapshot(ref: SessionRouteLookup): Promise<SessionStreamSnapshot>;
   notificationCatalog(): SessionNotificationCatalogSnapshot | Promise<SessionNotificationCatalogSnapshot>;
   unreadCatalog(): Promise<SessionUnreadCatalogSnapshot>;

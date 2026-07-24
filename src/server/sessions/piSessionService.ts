@@ -19,7 +19,7 @@ import {
   type ModelRuntime,
   type ResourceDiagnostic,
 } from "@earendil-works/pi-coding-agent";
-import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionStatus, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
+import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionStatus, ClientSessionSystemPrompt, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
 import { projectBrowserMessage } from "../browserMessageProjection.js";
 import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
@@ -311,13 +311,14 @@ export interface PiAgentSession {
   sessionName: string | undefined;
   messages: readonly unknown[];
   /**
-   * Narrow read of the SDK `AgentState`. Only the in-flight partial is consumed
-   * here: `state.streamingMessage` is the current streamed assistant message
-   * (an `AssistantMessage`) while a turn is mid-stream, and `undefined`
-   * otherwise (idle, or during post-message tool execution). Used by
-   * {@link PiSessionService.streamSnapshot} to seed a joining client.
+   * Narrow read of the SDK `AgentState`. `state.streamingMessage` is the
+   * current streamed assistant message (an `AssistantMessage`) while a turn is
+   * mid-stream, and `undefined` otherwise. `state.systemPrompt` is the
+   * resolved prompt when the runtime has loaded one; its absence remains
+   * distinct from an intentionally empty prompt. These values are exposed by
+   * the stream-snapshot and system-prompt read-only routes respectively.
    */
-  readonly state: { readonly streamingMessage?: unknown };
+  readonly state: { readonly streamingMessage?: unknown; readonly systemPrompt?: string };
   model: AgentModel | undefined;
   thinkingLevel: ClientThinkingLevel;
   isStreaming: boolean;
@@ -1387,6 +1388,11 @@ export class PiSessionService implements SessionRouteService {
 
   async status(ref: PiSessionLookup): Promise<ClientSessionStatus> {
     return this.statusFromSession(await this.getOrOpen(ref));
+  }
+
+  async systemPrompt(ref: PiSessionLookup): Promise<ClientSessionSystemPrompt> {
+    const systemPrompt = (await this.getOrOpen(ref)).state.systemPrompt;
+    return systemPrompt === undefined ? {} : { systemPrompt };
   }
 
   /**

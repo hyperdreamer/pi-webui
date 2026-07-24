@@ -7,6 +7,7 @@ export const PI_WEBUI_CAPABILITIES = {
   sessionsCleanup: "sessions.cleanup",
   sessionsReload: "sessions.reload",
   sessionsClearQueue: "sessions.clearQueue",
+  sessionsSystemPrompt: "sessions.systemPrompt",
   sessionsPersistedState: "sessions.persistedState",
   sessionsNotifications: "sessions.notifications",
   sessionsUnread: "sessions.unread",
@@ -1168,6 +1169,15 @@ export interface SessionStreamSnapshot {
   seq: number;
   /** Browser-projected in-flight `AssistantMessage`, or `null` when idle. */
   partial: unknown;
+}
+
+/**
+ * Current resolved system prompt for one session. It is omitted when the
+ * runtime has not loaded a prompt yet, preserving the distinction between an
+ * unavailable prompt and an intentionally empty one.
+ */
+export interface SessionSystemPrompt {
+  systemPrompt?: string;
 }
 
 export type CommandResult =

@@ -1,9 +1,10 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { initialAppState, type AppState } from "../appState";
 // Template inspection is proportionate here: this test targets the callback
 // boundary between the navigation custom element and the application shell.
-import { templateValueAfterMarker } from "../templateInspection.testSupport";
+import { templateStrings, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 afterEach(() => {
@@ -64,6 +65,61 @@ describe("PiWebUiApp navigation actions", () => {
     expect(isChatObscured(app)).toBe(true);
     // This property boundary proves the active workspace is handed to the dialog.
     expect(templateValueAfterMarker(renderApp(app), ".cwd=")).toBe("/work/project-a");
+  });
+
+  it("opens the selected session's System prompt from the left activity rail", () => {
+    const app = createApp();
+    setAppState(app, {
+      ...initialAppState(),
+      selectedMachine: {
+        id: "remote-a",
+        name: "Remote build host",
+        kind: "remote",
+        baseUrl: "https://remote.example.test/",
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+      machineRuntimes: {
+        "remote-a": { machineId: "remote-a", ok: true, checkedAt: "2026-06-04T00:00:00.000Z", capabilities: [PI_WEBUI_CAPABILITIES.sessionsSystemPrompt] },
+      },
+      selectedSession: {
+        id: "session-a",
+        cwd: "/work/project-a",
+        path: "/sessions/session-a.jsonl",
+        created: "2026-06-04T00:00:00.000Z",
+        modified: "2026-06-04T00:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "Show the system prompt",
+      },
+    });
+
+    const rendered = renderApp(app);
+    expect(templateStrings(rendered).join("")).toMatch(/<activity-rail[\s\S]*?\.onOpenSystemPrompt=/);
+    const openSystemPrompt = templateCallbackAfterMarker(rendered, ".onOpenSystemPrompt=");
+
+    expect(templateValueAfterMarker(rendered, ".systemPromptEnabled=")).toBe(true);
+    openSystemPrompt();
+
+    expect(Reflect.get(app, "systemPromptDialogOpen")).toBe(true);
+    expect(isChatObscured(app)).toBe(true);
+  });
+
+  it("disables the left-rail System prompt control when the selected machine does not support it", () => {
+    const app = createApp();
+    setAppState(app, {
+      ...initialAppState(),
+      selectedSession: {
+        id: "session-a",
+        cwd: "/work/project-a",
+        path: "/sessions/session-a.jsonl",
+        created: "2026-06-04T00:00:00.000Z",
+        modified: "2026-06-04T00:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "Show the system prompt",
+      },
+    });
+
+    expect(templateValueAfterMarker(renderApp(app), ".systemPromptEnabled=")).toBe(false);
   });
 
   it("opens Plugins configuration for the selected workspace, session, and machine", () => {

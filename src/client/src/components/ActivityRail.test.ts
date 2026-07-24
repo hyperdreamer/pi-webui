@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { ActivityRail } from "./ActivityRail";
-import { templateText, templateClickHandlerForText } from "../templateInspection.testSupport";
+import { templateEventHandlerAfterMarker, templateText, templateClickHandlerForText } from "../templateInspection.testSupport";
 
 describe("ActivityRail", () => {
-  function createRail(terminalCount = 0) {
+  function createRail(terminalCount = 0, systemPromptEnabled = false) {
     const rail = new ActivityRail();
     const desktopStub = {
       matches: true,
@@ -12,6 +12,7 @@ describe("ActivityRail", () => {
     };
     Object.defineProperty(rail, "desktopMedia", { get: () => desktopStub });
     rail.terminalCount = terminalCount;
+    rail.systemPromptEnabled = systemPromptEnabled;
     return rail;
   }
 
@@ -20,9 +21,10 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal icon button on desktop", () => {
+    it("renders the rail with terminal and System prompt icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
+      expect(railText(rail)).toContain("Open system prompt");
     });
 
     it("does not render rail content when viewport is below 1181px", () => {
@@ -53,6 +55,19 @@ describe("ActivityRail", () => {
       expect(onOpenTerminal).not.toHaveBeenCalled();
       handler(new Event("click"));
       expect(onOpenTerminal).toHaveBeenCalledOnce();
+    });
+
+    it("opens the System prompt when its left-rail icon is clicked", () => {
+      const rail = createRail(0, true);
+      const onOpenSystemPrompt = vi.fn();
+      rail.onOpenSystemPrompt = onOpenSystemPrompt;
+
+      // The rail has two icon buttons; anchor to the System button's stable
+      // semantic class rather than relying on handler order.
+      const handler = templateEventHandlerAfterMarker(rail.render(), "system-prompt-button");
+      handler(new Event("click"));
+
+      expect(onOpenSystemPrompt).toHaveBeenCalledOnce();
     });
 
     it("is safe to click when no callback is provided", () => {

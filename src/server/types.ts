@@ -10,6 +10,7 @@ export type {
   SessionCleanupExecuteResponse as ClientSessionCleanupExecuteResponse,
   MessagePage as ClientMessagePage,
   SessionStreamSnapshot,
+  SessionSystemPrompt as ClientSessionSystemPrompt,
   SessionStatus as ClientSessionStatus,
   SessionModel as ClientSessionModel,
   ThinkingLevel as ClientThinkingLevel,
