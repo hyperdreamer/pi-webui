@@ -55,7 +55,7 @@ Defaults:
 - install directory: `~/.local/share/pi-webui-docker` (or `$XDG_DATA_HOME/pi-webui-docker`);
 - persistent data: `<install-dir>/data`, mounted at `/data`;
 - browser URL: <http://127.0.0.1:8808>;
-- npm packages: `@hyperdreamer/pi-webui@1.0.0`; Pi Coding Agent is resolved as PI WEBUI's npm peer dependency and the peer-provided `pi` binary is linked into the image.
+- npm packages: `@hyperdreamer/pi-webui@1.1.0`; Pi Coding Agent is resolved as PI WEBUI's npm peer dependency and the peer-provided `pi` binary is linked into the image.
 
 Updating recreates the Docker `sessiond` container. Active Pi agent runtimes in this Docker install may stop, so update while sessions are idle. Persisted PI WEBUI state, Pi config, and session history under the data directory are kept.
 
@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperdreamer/pi-webui/main/docker/i
       --data-dir ~/.local/share/pi-webui-docker/data \
       --bind-address 127.0.0.1 \
       --port 8808 \
-      --pi-webui-version 1.0.0
+      --pi-webui-version 1.1.0
 ```
 
 Common environment variables written to `.env`:
@@ -108,7 +108,7 @@ Common environment variables written to `.env`:
 | `PI_WEBUI_DOCKER_HOST_PROFILE`, `HOSTEXEC_MODE` | detected host profile and host-command capability toggle |
 | `PI_WEBUI_DOCKER_EXTRA_HOST_PATHS` | optional whitespace-separated existing absolute paths to bind-mount read/write at the same path |
 | `PI_WEBUI_BIND_ADDR`, `PI_WEBUI_PORT` | host bind address and port |
-| `PI_WEBUI_VERSION` | npm version/range for `@hyperdreamer/pi-webui`, defaulting to `1.0.0`; Pi Coding Agent resolves from PI WEBUI's npm peer dependency |
+| `PI_WEBUI_VERSION` | npm version/range for `@hyperdreamer/pi-webui`, defaulting to `1.1.0`; Pi Coding Agent resolves from PI WEBUI's npm peer dependency |
 | `PI_WEBUI_OPENSUSE_IMAGE` | openSUSE base image used for the runtime build |
 | `PI_WEBUI_NODEJS_MAJOR` | Node.js major package to install, defaulting to `22` |
 | `PI_WEBUI_NODEJS_REPO` | Node.js zypper repository URL, `auto`, or `disabled` |
@@ -171,22 +171,22 @@ Files in that development hook directory are ignored by Git except for the place
 
 ### Version pinning
 
-Pi Coding Agent is resolved from PI WEBUI's npm peer dependency, and Docker links the peer-provided `pi` binary into `PATH`. The installer and Docker runtime default to PI WEBUI `1.0.0`.
+Pi Coding Agent is resolved from PI WEBUI's npm peer dependency, and Docker links the peer-provided `pi` binary into `PATH`. The installer and Docker runtime default to PI WEBUI `1.1.0`.
 
 To pin that release explicitly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperdreamer/pi-webui/main/docker/install.sh \
-  | sh -s -- --pi-webui-version 1.0.0
+  | sh -s -- --pi-webui-version 1.1.0
 ```
 
 You can also edit `.env` in the install directory:
 
 ```dotenv
-PI_WEBUI_VERSION=1.0.0
+PI_WEBUI_VERSION=1.1.0
 ```
 
-Then rerun the one-liner to rebuild/recreate with that pin. Set `PI_WEBUI_VERSION` to a different npm version or range only when you intentionally want to override the `1.0.0` default.
+Then rerun the one-liner to rebuild/recreate with that pin. Set `PI_WEBUI_VERSION` to a different npm version or range only when you intentionally want to override the `1.1.0` default.
 
 To pin the Docker asset templates themselves, fetch the installer from a specific Git branch, tag, or commit and pass the same ref as the asset source:
 

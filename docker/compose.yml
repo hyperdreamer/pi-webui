@@ -10,7 +10,7 @@ x-pi-webui-build: &pi-webui-build
     PI_WEBUI_EXTRA_ZYPPER_PACKAGES: ${PI_WEBUI_EXTRA_ZYPPER_PACKAGES:-}
     PI_WEBUI_UID: ${PI_WEBUI_UID:-1000}
     PI_WEBUI_GID: ${PI_WEBUI_GID:-1000}
-    PI_WEBUI_VERSION: ${PI_WEBUI_VERSION:-1.0.0}
+    PI_WEBUI_VERSION: ${PI_WEBUI_VERSION:-1.1.0}
     CACHE_BUST: ${CACHE_BUST:-local}
 
 x-pi-webui-environment: &pi-webui-environment

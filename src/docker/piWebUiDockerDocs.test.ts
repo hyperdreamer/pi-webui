@@ -15,11 +15,11 @@ describe("pi-webui-docker documentation", () => {
     expect(dockerReadme).toContain("does not require Node.js or npm on the host");
   });
 
-  it("pins Docker installation examples to PI WEBUI 1.0.0", async () => {
+  it("pins Docker installation examples to PI WEBUI 1.1.0", async () => {
     const dockerReadme = await readRepoFile("docker/README.md");
 
-    expect(dockerReadme).toContain("--pi-webui-version 1.0.0");
-    expect(dockerReadme).toContain("PI_WEBUI_VERSION=1.0.0");
+    expect(dockerReadme).toContain("--pi-webui-version 1.1.0");
+    expect(dockerReadme).toContain("PI_WEBUI_VERSION=1.1.0");
     expect(dockerReadme).not.toContain("--pi-webui-version latest");
     expect(dockerReadme).not.toContain("PI_WEBUI_VERSION=latest");
     expect(dockerReadme).not.toContain("1.202606.4");

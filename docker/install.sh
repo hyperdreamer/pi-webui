@@ -26,7 +26,7 @@ Options:
   --data-dir DIR          Persistent data directory (default: INSTALL_DIR/data)
   --bind-address ADDR     Host bind address (default: 127.0.0.1)
   --port PORT             Host port (default: 8808)
-  --pi-webui-version VER    npm @hyperdreamer/pi-webui version pin (default: 1.0.0)
+  --pi-webui-version VER    npm @hyperdreamer/pi-webui version pin (default: 1.1.0)
   --opensuse-image IMAGE  openSUSE base image (default: opensuse/tumbleweed)
   --nodejs-major MAJOR    Node.js major version package to install (default: 22)
   --nodejs-repo REPO      Node.js zypper repository URL, auto, or disabled
@@ -47,7 +47,7 @@ Progressive host setup:
 Environment variables with the same names used in .env may also be set before
 running the installer, for example:
 
-  PI_WEBUI_VERSION=1.0.0 docker/install.sh
+  PI_WEBUI_VERSION=1.1.0 docker/install.sh
 EOF
 }
 
@@ -364,7 +364,7 @@ data_dir=$(absolute_dir "$(path_from_base "$install_dir" "$raw_data_dir")") || d
 
 pi_webui_bind_addr=$(value_from_env_or_existing_or_default PI_WEBUI_BIND_ADDR 127.0.0.1)
 pi_webui_port=$(value_from_env_or_existing_or_default PI_WEBUI_PORT 8808)
-pi_webui_version=$(value_from_env_or_existing_or_default PI_WEBUI_VERSION 1.0.0)
+pi_webui_version=$(value_from_env_or_existing_or_default PI_WEBUI_VERSION 1.1.0)
 pi_webui_opensuse_image=$(value_from_env_or_existing_or_default PI_WEBUI_OPENSUSE_IMAGE opensuse/tumbleweed)
 pi_webui_nodejs_major=$(value_from_env_or_existing_or_default PI_WEBUI_NODEJS_MAJOR 22)
 pi_webui_nodejs_repo=$(value_from_env_or_existing_or_default PI_WEBUI_NODEJS_REPO auto)

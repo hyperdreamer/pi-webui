@@ -63,7 +63,7 @@ describe("Docker command assets", () => {
     expect(dockerfile).toContain("COPY internal/bin/hostexec /usr/local/bin/hostexec");
     expect(dockerfile).toContain("COPY internal/image/install-opensuse-base /usr/local/sbin/install-pi-webui-opensuse-base");
     expect(dockerfile).toContain("--include=peer");
-    expect(dockerfile).toContain("ARG PI_WEBUI_VERSION=1.0.0");
+    expect(dockerfile).toContain("ARG PI_WEBUI_VERSION=1.1.0");
     expect(dockerfile).toContain('"@hyperdreamer/pi-webui@${PI_WEBUI_VERSION}" --allow-scripts=node-pty');
     expect(dockerfile).toContain('peer_pi_bin="${global_root}/@hyperdreamer/pi-webui/node_modules/.bin/pi"');
     expect(dockerfile).not.toContain("@earendil-works/pi-coding-agent@");
@@ -79,8 +79,8 @@ describe("Docker command assets", () => {
     expect(dockerignore).toContain("!internal/bin/hostexec");
     expect(installer).toContain("write_asset pi-webui-docker 0755");
     expect(installer).toContain("write_asset internal/host-profile.sh 0644");
-    expect(installer).toContain("--pi-webui-version VER    npm @hyperdreamer/pi-webui version pin (default: 1.0.0)");
-    expect(installer).toContain("pi_webui_version=$(value_from_env_or_existing_or_default PI_WEBUI_VERSION 1.0.0)");
+    expect(installer).toContain("--pi-webui-version VER    npm @hyperdreamer/pi-webui version pin (default: 1.1.0)");
+    expect(installer).toContain("pi_webui_version=$(value_from_env_or_existing_or_default PI_WEBUI_VERSION 1.1.0)");
     expect(installer).toContain("compose_cmd --project-name \"$compose_project_name\"");
     expect(installer).toContain("PI_WEBUI_DOCKER_INSTALL_DIR=$install_dir");
     expect(installer).toContain("PI_WEBUI_DOCKER_REF=$asset_ref");
@@ -91,7 +91,7 @@ describe("Docker command assets", () => {
     expect(devWrapper).toContain("COMPOSE_PROJECT_NAME=$compose_project_name");
     expect(runtimeCompose).toContain("PI_WEBUI_DOCKER_RUNTIME: \"1\"");
     expect(runtimeCompose).toContain("PI_WEBUI_DOCKER_MODE: runtime");
-    expect(runtimeCompose).toContain("PI_WEBUI_VERSION: ${PI_WEBUI_VERSION:-1.0.0}");
+    expect(runtimeCompose).toContain("PI_WEBUI_VERSION: ${PI_WEBUI_VERSION:-1.1.0}");
     expect(runtimeCompose).toContain("PI_WEBUI_DOCKER_INSTALL_DIR: ${PI_WEBUI_DOCKER_INSTALL_DIR:?set by docker/install.sh}");
     expect(runtimeCompose).toContain("PI_WEBUI_DOCKER_HELPER_IMAGE: ${PI_WEBUI_IMAGE:-pi-webui:local}");
     expect(runtimeCompose).toContain("COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-pi-webui}");
@@ -132,7 +132,7 @@ describe("Docker command assets", () => {
     const env = await readFile(join(installDir, ".env"), "utf8");
     expect(env).toContain(`PI_WEBUI_DOCKER_INSTALL_DIR=${installDir}`);
     expect(env).toContain("PI_WEBUI_DOCKER_REF=test-assets");
-    expect(env).toContain("PI_WEBUI_VERSION=1.0.0");
+    expect(env).toContain("PI_WEBUI_VERSION=1.1.0");
   });
 
   dockerCommandIt("runs status through Docker Compose in the foreground", async () => {

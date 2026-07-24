@@ -25,7 +25,7 @@ RUN chmod 0755 /usr/local/sbin/install-pi-webui-opensuse-base \
 
 FROM base AS package
 
-ARG PI_WEBUI_VERSION=1.0.0
+ARG PI_WEBUI_VERSION=1.1.0
 ARG CACHE_BUST=local
 
 RUN set -eux; \
