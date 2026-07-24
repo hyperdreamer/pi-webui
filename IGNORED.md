@@ -1,8 +1,9 @@
 # Deferred audit findings
 
-This register records findings intentionally not force-fixed by the 2026-07-23
-`npm audit --include=dev` audit. Compatible lockfile updates were applied for
-all findings outside the upstream shrinkwrap described below.
+This register records findings intentionally not force-fixed by the 2026-07-24
+`npm audit --include=dev` audit. `npm audit fix --dry-run` proposed no package
+changes, and compatible lockfile updates were applied for all findings outside
+the upstream shrinkwrap described below.
 
 ## `@earendil-works/pi-coding-agent@0.80.10` shrinkwrap
 
