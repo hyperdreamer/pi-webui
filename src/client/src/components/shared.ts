@@ -192,6 +192,102 @@ export const appStyles = css`
   button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
   .empty { margin: auto; color: var(--pi-muted); }
   .error { padding: 10px 16px; border-bottom: 1px solid var(--pi-border); color: var(--pi-danger); }
+  /* Terminal modal */
+  .terminal-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.48);
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  .terminal-modal-frame {
+    --terminal-modal-opacity: 94%;
+    display: flex;
+    flex-direction: column;
+    width: min(calc(100vw - 32px), 1280px);
+    height: min(calc(100vh - 32px), 880px);
+    border: 1px solid var(--pi-border);
+    border-radius: 14px;
+    background: transparent;
+    box-shadow: 0 20px 64px var(--pi-shadow-strong);
+    overflow: hidden;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .terminal-modal-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--pi-border);
+    background: color-mix(in srgb, var(--pi-surface) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .terminal-modal-font-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .terminal-modal-font-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--pi-border);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--pi-bg) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .terminal-modal-font-btn:hover {
+    background: color-mix(in srgb, var(--pi-surface-hover) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+  }
+  .terminal-modal-font-size {
+    min-width: 36px;
+    text-align: center;
+    color: var(--pi-muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .terminal-modal-close {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--pi-border);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--pi-bg) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-muted);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .terminal-modal-close:hover {
+    background: color-mix(in srgb, var(--pi-surface-hover) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+  }
+  .terminal-modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .terminal-modal-body terminal-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
 `;
 
 export const workspacePanelStyles = css`

@@ -46,6 +46,7 @@ import { readRoute, writeRoute, type AppRoute } from "../route";
 import { readSettingsSection, writeSettingsSection, type SettingsSection } from "../settingsRoute";
 import { applyActiveShortcutPreferences } from "../shortcutPreferences";
 import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
+import { clampTerminalModalFontSize, clampTerminalModalOpacity, readTerminalModalPreferences, writeTerminalModalPreferences } from "../terminalModalPreferences";
 import { isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, pendingWorkspaceDeletionIds, targetWorkspaceIdForRun, workspaceDeletionRunFilter } from "../workspaceDeletion";
 import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
 import "./MachineList";
@@ -70,6 +71,7 @@ import type { MachineDialogSubmit } from "./MachineDialog";
 import "./SettingsDialog";
 import "./WorkspacePanel";
 import type { WorkspacePanelEmptyState } from "./WorkspacePanel";
+import "./TerminalPanel";
 import "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
 import type { AppMobileMainTab, AppMobileMainTabIcon } from "./appShell/AppMobileMainTabs";
@@ -253,6 +255,11 @@ export class PiWebUiApp extends LitElement {
   @state() private modelsConfigDialogOpen = false;
   @state() private skillsConfigDialogOpen = false;
   @state() private pluginsConfigDialogOpen = false;
+  @state() private terminalModalOpen = false;
+  private readonly initialTerminalModalPreferences = readTerminalModalPreferences();
+  @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
+  @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
+  @state() private terminalTabHidden = readTerminalTabHidden();
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -365,7 +372,8 @@ export class PiWebUiApp extends LitElement {
       || this.state.modelDialog !== undefined
       || this.state.thinkingDialog !== undefined
       || this.state.themeDialog !== undefined
-      || this.state.authDialog !== undefined;
+      || this.state.authDialog !== undefined
+      || this.terminalModalOpen;
   }
 
   override connectedCallback(): void {
@@ -1518,7 +1526,10 @@ export class PiWebUiApp extends LitElement {
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
-    return this.plugins.getWorkspacePanels().filter((panel) => panel.visible?.(context) ?? true);
+    return this.plugins.getWorkspacePanels().filter((panel) => {
+      if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
+      return panel.visible?.(context) ?? true;
+    });
   }
 
   private workspacePanelEmptyState(): WorkspacePanelEmptyState {
@@ -1723,6 +1734,15 @@ export class PiWebUiApp extends LitElement {
 
   private panelLayoutActions(): AppAction[] {
     return [
+      {
+        id: "app.layout.toggle-terminal-tab",
+        title: this.terminalTabHidden ? "Show Terminal Tab" : "Hide Terminal Tab",
+        description: this.terminalTabHidden
+          ? "Show the terminal tab in the workspace panel"
+          : "Hide the terminal tab from the workspace panel",
+        group: "View",
+        run: () => { this.toggleTerminalTab(); },
+      },
       {
         id: "app.layout.reset-navigation-panel-size",
         title: "Reset Navigation Panel Size",
@@ -2256,6 +2276,41 @@ export class PiWebUiApp extends LitElement {
     this.openStarterThinkingDialog();
   };
 
+  private readonly handleOpenTerminalFromRail = (): void => {
+    if (this.state.selectedWorkspace === undefined) return;
+    this.terminalModalOpen = true;
+  };
+
+  private readonly handleCloseTerminalModal = (): void => {
+    this.terminalModalOpen = false;
+  };
+
+  private readonly adjustTerminalFontSize = (delta: number): void => {
+    const fontSize = clampTerminalModalFontSize(this.terminalModalFontSize + delta);
+    if (fontSize === this.terminalModalFontSize) return;
+    this.terminalModalFontSize = fontSize;
+    this.persistTerminalModalPreferences();
+  };
+
+  private readonly adjustTerminalOpacity = (delta: number): void => {
+    const opacity = clampTerminalModalOpacity(this.terminalModalOpacity + delta);
+    if (opacity === this.terminalModalOpacity) return;
+    this.terminalModalOpacity = opacity;
+    this.persistTerminalModalPreferences();
+  };
+
+  private persistTerminalModalPreferences(): void {
+    writeTerminalModalPreferences({
+      fontSize: this.terminalModalFontSize,
+      opacity: this.terminalModalOpacity,
+    });
+  }
+
+  private toggleTerminalTab(): void {
+    this.terminalTabHidden = !this.terminalTabHidden;
+    writeTerminalTabHidden(this.terminalTabHidden);
+  }
+
   private readonly handleStopActiveWork = (): void => {
     void this.sessions.stopActiveWork();
   };
@@ -2354,12 +2409,53 @@ export class PiWebUiApp extends LitElement {
     return html`<app-refresh-control .onReload=${() => { this.hardReloadApp(); }}></app-refresh-control>`;
   }
 
+  private renderTerminalModal() {
+    const state = this.state;
+    const machineId = selectedMachineId(state);
+    return html`
+      <div
+        class="terminal-modal-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Terminal"
+        @click=${(event: MouseEvent) => { if (event.target === event.currentTarget) this.handleCloseTerminalModal(); }}
+        @keydown=${(event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); this.handleCloseTerminalModal(); } }}
+      >
+        <div class="terminal-modal-frame" style=${`--terminal-modal-opacity: ${String(this.terminalModalOpacity)}%;`}>
+          <header class="terminal-modal-header">
+            <span>Terminal</span>
+            <span class="terminal-modal-font-controls">
+              <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalFontSize(-1); }} aria-label="Decrease font size">−</button>
+              <span class="terminal-modal-font-size">${this.terminalModalFontSize}px</span>
+              <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalFontSize(1); }} aria-label="Increase font size">+</button>
+            </span>
+            <span class="terminal-modal-font-controls">
+              <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalOpacity(-5); }} aria-label="Increase transparency">◐</button>
+              <span class="terminal-modal-font-size">${this.terminalModalOpacity}%</span>
+              <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalOpacity(5); }} aria-label="Decrease transparency">●</button>
+            </span>
+            <button type="button" class="terminal-modal-close" @click=${this.handleCloseTerminalModal} aria-label="Close terminal">×</button>
+          </header>
+          <div class="terminal-modal-body">
+            <terminal-panel
+              .workspace=${state.selectedWorkspace}
+              .machineId=${machineId}
+              .autoStart=${true}
+              .fontSize=${this.terminalModalFontSize}
+              .bgOpacity=${this.terminalModalOpacity}
+            ></terminal-panel>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   override render() {
     const state = this.state;
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <aside id="navigation-panel">
-          <activity-rail></activity-rail>
+          <activity-rail .onOpenTerminal=${this.handleOpenTerminalFromRail} .terminalCount=${this.state.activeTerminalCount}></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
         ${this.renderNavigationPanelEdgeControl()}
@@ -2390,6 +2486,7 @@ export class PiWebUiApp extends LitElement {
         ${this.pluginsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<plugins-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .session=${state.selectedSession} .onClose=${() => { this.pluginsConfigDialogOpen = false; }} .onReloaded=${() => this.sessions.refreshSelectedSession(state.selectedSession?.id)}></plugins-config-dialog>` : null}
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
+        ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
     `;
@@ -2479,6 +2576,29 @@ function omitWorkspaceDeletionRun(runs: Record<string, TerminalCommandRun>, work
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => { resolve(); }));
+}
+
+const TERMINAL_TAB_HIDDEN_KEY = "pi-webui:terminal-tab-hidden";
+
+function readTerminalTabHidden(): boolean {
+  try {
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    if (storage === undefined) return false;
+    return storage.getItem(TERMINAL_TAB_HIDDEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeTerminalTabHidden(hidden: boolean): void {
+  try {
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    if (storage === undefined) return;
+    if (hidden) storage.setItem(TERMINAL_TAB_HIDDEN_KEY, "true");
+    else storage.removeItem(TERMINAL_TAB_HIDDEN_KEY);
+  } catch {
+    // Ignore localStorage quota/privacy errors.
+  }
 }
 
 function thinkingDescription(level: string): string | undefined {

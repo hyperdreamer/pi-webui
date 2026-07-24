@@ -1,12 +1,12 @@
 import { LitElement, css, html } from "lit";
-import { customElement, query, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 
 const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
 
 @customElement("activity-rail")
 export class ActivityRail extends LitElement {
-  @state() private popupOpen = false;
-  @query("#placeholder-icon") private iconButton?: HTMLButtonElement;
+  @property({ attribute: false }) onOpenTerminal?: () => void;
+  @property({ type: Number }) terminalCount = 0;
   private desktopMedia: MediaQueryList | undefined;
 
   constructor() {
@@ -26,85 +26,38 @@ export class ActivityRail extends LitElement {
     this.desktopMedia?.removeEventListener("change", this.onDesktopMediaChange);
   }
 
-  private onDesktopMediaChange = (event: MediaQueryListEvent) => {
-    if (!event.matches && this.popupOpen) {
-      this.closePopup();
-    }
+  private onDesktopMediaChange = () => {
+    // Media change triggers a re-render; no popup state to clean up.
   };
 
-  private readonly openPopup = (): void => {
-    this.popupOpen = true;
-    // Focus the close button after render
-    void this.updateComplete.then(() => {
-      const closeButton = this.shadowRoot?.querySelector<HTMLButtonElement>(".popup-close-button");
-      closeButton?.focus();
-    });
-  };
-
-  private readonly closePopup = (): void => {
-    this.popupOpen = false;
-    // Return focus to the icon button after render
-    void this.updateComplete.then(() => {
-      this.iconButton?.focus();
-    });
-  };
-
-  private readonly onBackdropClick = (event: MouseEvent): void => {
-    // Only close when clicking the backdrop, not the popup content
-    if (event.target === event.currentTarget) {
-      this.closePopup();
-    }
-  };
-
-  private readonly onPopupKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      this.closePopup();
-    }
+  private readonly openTerminal = (): void => {
+    this.onOpenTerminal?.();
   };
 
   override render() {
     const isDesktop = this.desktopMedia?.matches ?? true;
     if (!isDesktop) return html``;
 
+    const badge = this.terminalCount > 0 ? this.terminalCount : undefined;
+    const badgeLabel = badge === undefined ? "" : `${String(badge)} active terminal${badge === 1 ? "" : "s"}`;
     return html`
       <nav class="rail" aria-label="Activity rail">
         <button
-          id="placeholder-icon"
           type="button"
           class="icon-button"
-          aria-label="Open mystery tool"
-          @click=${this.openPopup}
+          aria-label=${`Open terminal${badgeLabel === "" ? "" : `, ${badgeLabel}`}` }
+          @click=${this.openTerminal}
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                aria-hidden="true" focusable="false">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M8 12h8"/>
-            <path d="M12 8v8"/>
+            <rect x="3" y="5" width="18" height="14" rx="2"/>
+            <path d="m7 10 3 3-3 3"/>
+            <path d="M12 16h5"/>
           </svg>
+          ${badge === undefined ? null : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
         </button>
       </nav>
-      ${this.popupOpen ? html`
-        <div
-          class="backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="popup-title"
-          @click=${this.onBackdropClick}
-          @keydown=${this.onPopupKeyDown}
-        >
-          <div class="popup">
-            <h2 id="popup-title">Achievement unlocked</h2>
-            <p>You clicked the placeholder. The placeholder is very proud of you.</p>
-            <button
-              type="button"
-              class="popup-close-button"
-              @click=${this.closePopup}
-            >Return to productivity</button>
-          </div>
-        </div>
-      ` : null}
     `;
   }
 
@@ -126,6 +79,7 @@ export class ActivityRail extends LitElement {
       box-sizing: border-box;
     }
     .icon-button {
+      position: relative;
       display: grid;
       place-items: center;
       width: 34px;
@@ -137,64 +91,27 @@ export class ActivityRail extends LitElement {
       color: var(--pi-muted);
       cursor: pointer;
     }
+    .rail-badge {
+      position: absolute;
+      top: -3px;
+      right: -3px;
+      display: inline-block;
+      min-width: 14px;
+      border: 1px solid var(--pi-success-border);
+      border-radius: 999px;
+      background: var(--pi-success-surface);
+      color: var(--pi-success);
+      padding: 0 5px;
+      font-size: 11px;
+      line-height: 16px;
+      text-align: center;
+      pointer-events: none;
+    }
     .icon-button:hover {
       background: var(--pi-surface-hover);
       color: var(--pi-text);
     }
     .icon-button:focus-visible {
-      outline: 2px solid var(--pi-accent);
-      outline-offset: 2px;
-    }
-    /* Popup overlay */
-    .backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 100;
-      display: grid;
-      place-items: center;
-      background: rgba(0, 0, 0, 0.45);
-      padding: 20px;
-      box-sizing: border-box;
-    }
-    .popup {
-      box-sizing: border-box;
-      width: min(calc(100vw - 32px), 360px);
-      padding: 24px;
-      border: 1px solid var(--pi-border);
-      border-radius: 12px;
-      background: var(--pi-bg);
-      box-shadow: 0 12px 40px var(--pi-shadow-strong);
-      color: var(--pi-text);
-      font: 14px system-ui, sans-serif;
-      text-align: center;
-    }
-    .popup h2 {
-      margin: 0 0 12px;
-      color: var(--pi-text-bright);
-      font-size: 18px;
-      line-height: 1.3;
-    }
-    .popup p {
-      margin: 0 0 20px;
-      color: var(--pi-muted);
-      line-height: 1.45;
-    }
-    .popup-close-button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid var(--pi-border);
-      border-radius: 8px;
-      background: var(--pi-surface);
-      color: var(--pi-text);
-      padding: 8px 18px;
-      font: inherit;
-      cursor: pointer;
-    }
-    .popup-close-button:hover {
-      background: var(--pi-surface-hover);
-    }
-    .popup-close-button:focus-visible {
       outline: 2px solid var(--pi-accent);
       outline-offset: 2px;
     }
