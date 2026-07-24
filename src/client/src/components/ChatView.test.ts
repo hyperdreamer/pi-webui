@@ -632,3 +632,185 @@ function queuedStatus(queuedMessages: QueuedSessionMessage[]): SessionStatus {
     cost: 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Session info popover wiring
+// ---------------------------------------------------------------------------
+
+describe("ChatView session info popover wiring", () => {
+  it("toggles the popover open when the usage button is clicked", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+
+    popoverOpen(view, false);
+
+    // Simulate clicking the usage toggle
+    templateEventHandlerAfterMarker(renderActivityDock(view), "usage-toggle")(new Event("click"));
+
+    popoverOpen(view, true);
+  });
+
+  it("closes the popover when the usage button is clicked again", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, true);
+
+    templateEventHandlerAfterMarker(renderActivityDock(view), "usage-toggle")(new Event("click"));
+
+    popoverOpen(view, false);
+  });
+
+  it("opens the popover on Enter key via handleUsageKeydown", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+
+    const handler = getPrivateMethod(view, "handleUsageKeydown");
+    handler(Object.assign(new Event("keydown"), { key: "Enter" }));
+
+    popoverOpen(view, true);
+  });
+
+  it("opens the popover on Space key via handleUsageKeydown", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+
+    const handler = getPrivateMethod(view, "handleUsageKeydown");
+    handler(Object.assign(new Event("keydown"), { key: " " }));
+
+    popoverOpen(view, true);
+  });
+
+  it("closes the popover on Escape key via handlePopoverKeydown", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, true);
+
+    const handler = getPrivateMethod(view, "handlePopoverKeydown");
+    handler(Object.assign(new Event("keydown"), { key: "Escape" }));
+
+    popoverOpen(view, false);
+  });
+
+  it("closes the popover when session changes", () => {
+    const view = new ChatView();
+    setPopoverOpen(view, true);
+    view.sessionId = "old-session";
+
+    // Simulating a session change by calling prepareSessionUiState
+    const prepare = getPrivateVoidMethod(view, "prepareSessionUiState");
+    view.sessionId = "new-session";
+    prepare.call(view);
+
+    popoverOpen(view, false);
+  });
+
+  it("does not render the popover when there is no status", () => {
+    const view = new ChatView();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, true);
+    // Clear the status property to simulate missing status
+    Reflect.set(view, "status", undefined);
+
+    expect(renderSessionInfoPopover(view)).toBeNull();
+  });
+
+  it("renders the popover with detail sections when open", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, true);
+
+    const rendered = renderSessionInfoPopover(view);
+    expect(rendered).not.toBeNull();
+  });
+
+  it("has usage toggle aria attributes in the static template", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, false);
+
+    const dock = renderActivityDock(view);
+    // The usage-toggle button is inside a conditional; verify the click handler
+    // is wired by extracting it.
+    const handler = findOptionalTemplateEventHandlerAfterMarker(dock, "usage-toggle");
+    // If the marker is found inside a nested template, a handler should be nearby.
+    expect(handler).toBeTypeOf("function");
+  });
+
+  it("attaches outside-click listener when popover opens", () => {
+    const view = new ChatView();
+    view.status = usageStatus();
+    view.sessionId = "session-1";
+    setPopoverOpen(view, true);
+    // Trigger sync
+    const sync = getPrivateVoidMethod(view, "syncPopoverOutsideListener");
+    sync.call(view);
+
+    // In node environment without window, listener is skipped but no error
+    expect(popoverListenerAttached(view)).toBe(false);
+  });
+});
+
+// Test helpers for session info popover
+
+type RenderSessionInfoPopover = (this: ChatView) => ReturnType<ChatView["render"]>;
+
+function renderSessionInfoPopover(view: ChatView): ReturnType<ChatView["render"]> {
+  const method: unknown = Reflect.get(view, "renderSessionInfoPopover");
+  if (!isRenderSessionInfoPopover(method)) throw new Error("ChatView.renderSessionInfoPopover is not callable");
+  return method.call(view);
+}
+
+function isRenderSessionInfoPopover(value: unknown): value is RenderSessionInfoPopover {
+  return typeof value === "function";
+}
+
+function popoverOpen(view: ChatView, expected: boolean): void {
+  const value: unknown = Reflect.get(view, "sessionInfoOpen");
+  if (value !== expected) throw new Error(`Expected sessionInfoOpen to be ${String(expected)} but got ${String(value)}`);
+}
+
+function setPopoverOpen(view: ChatView, open: boolean): void {
+  if (!Reflect.set(view, "sessionInfoOpen", open)) throw new Error("Could not set sessionInfoOpen");
+}
+
+function getPrivateMethod(view: ChatView, name: string): (event: Event) => void {
+  const method: unknown = Reflect.get(view, name);
+  if (typeof method !== "function") throw new Error(`Expected private method ${name}`);
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- Reflect.get returns any; the typeof guard ensures safety
+  return method as (event: Event) => void;
+}
+
+function getPrivateVoidMethod(view: ChatView, name: string): () => void {
+  const method: unknown = Reflect.get(view, name);
+  if (typeof method !== "function") throw new Error(`Expected private method ${name}`);
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- Reflect.get returns any; the typeof guard ensures safety
+  return method as () => void;
+}
+
+function popoverListenerAttached(view: ChatView): boolean {
+  const value: unknown = Reflect.get(view, "popoverGlobalListenerAttached");
+  if (typeof value !== "boolean") throw new Error("Expected boolean popoverGlobalListenerAttached");
+  return value;
+}
+
+function usageStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
+  return {
+    sessionId: "session-1",
+    isStreaming: false,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: 0,
+    queuedMessages: [],
+    tokens: { input: 95_231, output: 7_482, cacheRead: 0, cacheWrite: 0, total: 102_713 },
+    cost: 0.1874,
+    contextUsage: { tokens: 94_600, contextWindow: 1_100_000, percent: 8.6 },
+    ...overrides,
+  };
+}

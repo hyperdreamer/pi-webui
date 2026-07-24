@@ -8,8 +8,9 @@ import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrepe
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
 import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
 import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, type MinimapMarker } from "../chatMinimapGeometry";
-import type { QueuedSessionMessage, SessionActivity, SessionStatus, SessionWarningSeverity } from "../api";
+import type { QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionWarningSeverity } from "../api";
 import { formatCost, formatTokenCount } from "../utils/format";
+import { computeMessageCounts, sessionUsageDetail, sessionUsageTooltip, type DetailRow, type SessionUsageDetail } from "./sessionUsageDisplay";
 import {
   notificationAnnouncementLabel,
   notificationDismissLabel,
@@ -262,6 +263,7 @@ export class ChatView extends LitElement {
   @property({ type: Boolean }) warningsExpanded = false;
   @property({ attribute: false }) onToggleWarnings?: () => void;
   @property({ attribute: false }) activity?: SessionActivity;
+  @property({ attribute: false }) sessionInfo?: SessionInfo;
   @property({ attribute: false }) notificationInbox?: SelectedSessionNotificationView;
   @property({ type: Boolean }) canClearServerQueue = false;
   @property({ attribute: false }) onClearServerQueue?: () => void;
@@ -300,6 +302,7 @@ export class ChatView extends LitElement {
   private restoreScrollFrame: number | undefined;
   private prependRestoreToken = 0;
   @state() private loadMoreRequested = false;
+  @state() private sessionInfoOpen = false;
   @state() private _minimapMarkers: MinimapMarker[] = [];
   @state() private _minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
   private _minimapLoadedPercent = 100;
@@ -331,6 +334,70 @@ export class ChatView extends LitElement {
     this.onToggleWarnings?.();
   };
 
+  private readonly handleUsageToggle = (): void => {
+    this.sessionInfoOpen = !this.sessionInfoOpen;
+  };
+
+  private readonly handleUsageKeydown = (event: KeyboardEvent): void => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      this.sessionInfoOpen = !this.sessionInfoOpen;
+    }
+  };
+
+  private readonly closeSessionInfoPopover = (): void => {
+    if (!this.sessionInfoOpen) return;
+    this.sessionInfoOpen = false;
+    this.removePopoverOutsideListener();
+    this.requestUpdate();
+  };
+
+  private readonly handlePopoverKeydown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeSessionInfoPopover();
+      this.focusUsageToggle();
+    }
+  };
+
+  private focusUsageToggle(): void {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- renderRoot may be unavailable in test environments without DOM
+    if (this.renderRoot === undefined) return;
+    const toggle = this.renderRoot.querySelector<HTMLElement>(".usage-toggle");
+    toggle?.focus();
+  }
+
+  private handlePopoverClickOutside(event: MouseEvent): void {
+    const popover = this.renderRoot.querySelector<HTMLElement>(".session-info-popover");
+    const toggle = this.renderRoot.querySelector<HTMLElement>(".usage-toggle");
+    if (popover === null || toggle === null) return;
+    const target = event.target;
+    if (target instanceof Node && !popover.contains(target) && !toggle.contains(target)) {
+      this.closeSessionInfoPopover();
+    }
+  }
+
+  private onPopoverGlobalClick = (event: MouseEvent): void => {
+    this.handlePopoverClickOutside(event);
+  };
+
+  private popoverGlobalListenerAttached = false;
+
+  private ensurePopoverOutsideListener(): void {
+    if (this.popoverGlobalListenerAttached) return;
+    if (typeof window === "undefined") return;
+    this.popoverGlobalListenerAttached = true;
+    window.addEventListener("click", this.onPopoverGlobalClick, true);
+  }
+
+  private removePopoverOutsideListener(): void {
+    if (!this.popoverGlobalListenerAttached) return;
+    this.popoverGlobalListenerAttached = false;
+    if (typeof window === "undefined") return;
+    window.removeEventListener("click", this.onPopoverGlobalClick, true);
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
     window.addEventListener("resize", this.onViewportResize);
@@ -354,6 +421,7 @@ export class ChatView extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.removePopoverOutsideListener();
     this.saveScrollPosition();
     this.scrollController.dispose();
     this.prependRestoreToken += 1;
@@ -384,6 +452,7 @@ export class ChatView extends LitElement {
     this.disclosures.syncSession(this.sessionId);
     this.pendingNotificationFocus = undefined;
     this.retainedEmptyNotificationTrayTargetKey = undefined;
+    this.sessionInfoOpen = false;
     this.scrollController.clearScheduledSave();
     this.suppressScrollSave = false;
     this.suppressLoadMoreRequests = false;
@@ -427,6 +496,12 @@ export class ChatView extends LitElement {
     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
     if (changed.has("notificationInbox") && this.pendingNotificationFocus !== undefined) this.focusPendingNotificationTarget();
     if (changed.has("zoomedImage")) this.syncImageZoomDialog();
+    this.syncPopoverOutsideListener();
+  }
+
+  private syncPopoverOutsideListener(): void {
+    if (this.sessionInfoOpen) this.ensurePopoverOutsideListener();
+    else this.removePopoverOutsideListener();
   }
 
   private syncImageZoomDialog(): void {
@@ -640,6 +715,78 @@ export class ChatView extends LitElement {
     `;
   }
 
+  private renderSessionInfoPopover() {
+    if (!this.sessionInfoOpen) return null;
+    const status = this.status;
+    if (status === undefined) return null;
+    const messageCounts = this.messages.length > 0 ? computeMessageCounts(this.messages) : undefined;
+    const detail: SessionUsageDetail = sessionUsageDetail(status, this.sessionInfo, messageCounts);
+    const popoverId = `session-info-popover-${this.sessionId}`;
+    return html`
+      <section
+        class="session-info-popover"
+        id=${popoverId}
+        role="dialog"
+        aria-label="Session Info"
+        aria-modal="false"
+        @keydown=${this.handlePopoverKeydown}
+      >
+        <header class="session-info-popover-header">
+          <h2 class="session-info-popover-heading">Session Info</h2>
+          <button
+            type="button"
+            class="session-info-popover-close"
+            aria-label="Close session info"
+            title="Close"
+            @click=${this.closeSessionInfoPopover}
+          >×</button>
+        </header>
+        <div class="session-info-popover-body">
+          ${this.renderDetailSection("Session", detail.sessionRows)}
+          ${detail.messageRows.length > 0 ? this.renderDetailSection("Messages", detail.messageRows) : null}
+          ${this.renderDetailSection("Tokens", detail.tokenRows)}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderDetailSection(title: string, rows: DetailRow[]) {
+    return html`
+      <div class="session-info-section">
+        <h3 class="session-info-section-title">${title}</h3>
+        <dl class="session-info-detail-list">
+          ${rows.map((row) => html`
+            <div class="session-info-detail-row">
+              <dt>${row.label}</dt>
+              <dd>${row.value}${row.copyValue !== undefined ? this.renderCopyButton(row.copyValue) : null}</dd>
+            </div>
+          `)}
+        </dl>
+      </div>
+    `;
+  }
+
+  private renderCopyButton(value: string) {
+    return html`
+      <button
+        type="button"
+        class="session-info-copy"
+        title="Copy"
+        aria-label="Copy ${value}"
+        @click=${(event: MouseEvent) => { event.stopPropagation(); void this.copySessionValue(value); }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      </button>
+    `;
+  }
+
+  private async copySessionValue(value: string): Promise<void> {
+    await writeClipboardText(value);
+  }
+
   private renderImageZoom() {
     return html`
       <dialog class="image-zoom" @click=${this.onImageZoomDialogClick} @close=${this.closeImageZoom} @cancel=${this.closeImageZoom}>
@@ -681,6 +828,9 @@ export class ChatView extends LitElement {
   private renderActivityDockContent(activityText: string, active: boolean) {
     const metrics = activityDockMetricGroups(this.status);
     const warningControl = activityDockWarningControlContent(this.warningCount, this.warningsExpanded);
+    const hasUsage = metrics.trailing.length > 0;
+    const tooltip = this.status ? sessionUsageTooltip(this.status) : "";
+    const popoverId = hasUsage ? `session-info-popover-${this.sessionId}` : undefined;
     return html`
       <div class=${active ? "activity-dock active" : "activity-dock"}>
         ${warningControl === undefined || this.onToggleWarnings === undefined ? null : html`
@@ -705,11 +855,24 @@ export class ChatView extends LitElement {
             </span>
           `}
         </span>
-        ${metrics.trailing.length === 0 ? null : html`
-          <span class="activity-metrics" role="group" aria-label="Session usage" aria-live="off">
-            ${this.renderActivityMetrics(metrics.trailing)}
-          </span>
+        ${!hasUsage ? null : html`
+          <button
+            type="button"
+            class="usage-toggle"
+            title=${tooltip}
+            aria-label=${`Session usage: ${tooltip}`}
+            aria-haspopup="dialog"
+            aria-expanded=${String(this.sessionInfoOpen)}
+            aria-controls=${popoverId}
+            @click=${this.handleUsageToggle}
+            @keydown=${this.handleUsageKeydown}
+          >
+            <span class="activity-metrics" role="group" aria-label="Session usage" aria-live="off">
+              ${this.renderActivityMetrics(metrics.trailing)}
+            </span>
+          </button>
         `}
+        ${this.renderSessionInfoPopover()}
       </div>
     `;
   }
