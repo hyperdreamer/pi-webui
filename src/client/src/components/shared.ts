@@ -205,6 +205,8 @@ export const appStyles = css`
   }
   .terminal-modal-frame {
     --terminal-modal-opacity: 94%;
+    position: relative;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     width: min(calc(100vw - 32px), 1280px);
@@ -217,6 +219,7 @@ export const appStyles = css`
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
   }
+  .terminal-modal-frame-positioned { position: fixed; }
   .terminal-modal-header {
     flex: 0 0 auto;
     display: flex;
@@ -229,6 +232,17 @@ export const appStyles = css`
     color: var(--pi-text);
     font-size: 14px;
     font-weight: 600;
+  }
+  .terminal-modal-drag-handle {
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    cursor: move;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
   .terminal-modal-font-controls {
     display: inline-flex;
@@ -288,6 +302,28 @@ export const appStyles = css`
     flex: 1 1 auto;
     min-height: 0;
   }
+  .terminal-modal-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: 1;
+    width: 20px;
+    height: 20px;
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+  .terminal-modal-resize-handle::after {
+    content: "";
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--pi-muted);
+    border-bottom: 2px solid var(--pi-muted);
+    opacity: .7;
+  }
+  .terminal-modal-resize-handle:hover::after { border-color: var(--pi-text); opacity: 1; }
 `;
 
 export const workspacePanelStyles = css`

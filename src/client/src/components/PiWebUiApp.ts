@@ -46,6 +46,7 @@ import { readRoute, writeRoute, type AppRoute } from "../route";
 import { readSettingsSection, writeSettingsSection, type SettingsSection } from "../settingsRoute";
 import { applyActiveShortcutPreferences } from "../shortcutPreferences";
 import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
+import { fitTerminalModalBounds, moveTerminalModal, resizeTerminalModal, type TerminalModalBounds, type TerminalModalViewport } from "../terminalModalGeometry";
 import { clampTerminalModalFontSize, clampTerminalModalOpacity, readTerminalModalPreferences, writeTerminalModalPreferences } from "../terminalModalPreferences";
 import { isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, pendingWorkspaceDeletionIds, targetWorkspaceIdForRun, workspaceDeletionRunFilter } from "../workspaceDeletion";
 import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
@@ -103,6 +104,25 @@ interface SessionCleanupDialogState {
   loading?: boolean | undefined;
   running?: boolean | undefined;
   error?: string | undefined;
+}
+
+interface TerminalModalPointerInteraction {
+  operation: "move" | "resize";
+  pointerId: number;
+  target: HTMLElement;
+  startClientX: number;
+  startClientY: number;
+  bounds: TerminalModalBounds;
+}
+
+interface TerminalModalPointerEvent {
+  button: number;
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  currentTarget: EventTarget | null;
+  preventDefault(): void;
+  stopPropagation(): void;
 }
 
 @customElement("pi-webui-app")
@@ -256,6 +276,8 @@ export class PiWebUiApp extends LitElement {
   @state() private skillsConfigDialogOpen = false;
   @state() private pluginsConfigDialogOpen = false;
   @state() private terminalModalOpen = false;
+  @state() private terminalModalBounds: TerminalModalBounds | undefined;
+  private terminalModalPointerInteraction: TerminalModalPointerInteraction | undefined;
   private readonly initialTerminalModalPreferences = readTerminalModalPreferences();
   @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
@@ -275,6 +297,10 @@ export class PiWebUiApp extends LitElement {
   };
   private readonly onSystemLightThemeChange = () => {
     if (this.themePreference.auto) this.applyPreferredTheme(false);
+  };
+  private readonly onTerminalModalViewportResize = () => {
+    if (this.terminalModalBounds === undefined) return;
+    this.terminalModalBounds = fitTerminalModalBounds(this.terminalModalBounds, this.terminalModalViewport());
   };
   private get routeRestoreInProgress(): boolean {
     return this.routeRestoreDepth > 0;
@@ -381,6 +407,7 @@ export class PiWebUiApp extends LitElement {
     this.unreadConnected = true;
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("pageshow", this.onPageShow);
+    window.addEventListener("resize", this.onTerminalModalViewportResize);
     this.browserResume.connect();
     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
@@ -396,6 +423,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.finishTerminalModalPointerInteraction();
     this.unreadConnected = false;
     this.committedChatIdentity = undefined;
     this.readyChatIdentity = undefined;
@@ -403,6 +431,7 @@ export class PiWebUiApp extends LitElement {
     this.sessionUnread.retainMachines(new Set<string>());
     window.removeEventListener("popstate", this.onPopState);
     window.removeEventListener("pageshow", this.onPageShow);
+    window.removeEventListener("resize", this.onTerminalModalViewportResize);
     this.browserResume.disconnect();
     window.removeEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
     this.systemLightThemeMedia?.removeEventListener("change", this.onSystemLightThemeChange);
@@ -2282,8 +2311,88 @@ export class PiWebUiApp extends LitElement {
   };
 
   private readonly handleCloseTerminalModal = (): void => {
+    this.finishTerminalModalPointerInteraction();
     this.terminalModalOpen = false;
   };
+
+  private readonly handleTerminalModalMovePointerDown = (event: TerminalModalPointerEvent): void => {
+    this.startTerminalModalPointerInteraction("move", event);
+  };
+
+  private readonly handleTerminalModalResizePointerDown = (event: TerminalModalPointerEvent): void => {
+    this.startTerminalModalPointerInteraction("resize", event);
+  };
+
+  private readonly handleTerminalModalPointerMove = (event: TerminalModalPointerEvent): void => {
+    const interaction = this.terminalModalPointerInteraction;
+    if (interaction?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const delta = { x: event.clientX - interaction.startClientX, y: event.clientY - interaction.startClientY };
+    const viewport = this.terminalModalViewport();
+    this.terminalModalBounds = interaction.operation === "move"
+      ? moveTerminalModal(interaction.bounds, delta, viewport)
+      : resizeTerminalModal(interaction.bounds, delta, viewport);
+  };
+
+  private readonly handleTerminalModalPointerUp = (event: TerminalModalPointerEvent): void => {
+    if (this.terminalModalPointerInteraction?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    this.finishTerminalModalPointerInteraction();
+  };
+
+  private readonly handleTerminalModalPointerCancel = (event: TerminalModalPointerEvent): void => {
+    if (this.terminalModalPointerInteraction?.pointerId !== event.pointerId) return;
+    this.finishTerminalModalPointerInteraction();
+  };
+
+  private startTerminalModalPointerInteraction(operation: TerminalModalPointerInteraction["operation"], event: TerminalModalPointerEvent): void {
+    if (event.button !== 0) return;
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLElement)) return;
+    const frame = target.closest(".terminal-modal-frame");
+    if (!(frame instanceof HTMLElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = fitTerminalModalBounds(this.terminalModalBoundsFromFrame(frame), this.terminalModalViewport());
+    target.setPointerCapture(event.pointerId);
+    this.terminalModalBounds = bounds;
+    this.terminalModalPointerInteraction = {
+      operation,
+      pointerId: event.pointerId,
+      target,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      bounds,
+    };
+  }
+
+  private terminalModalBoundsFromFrame(frame: HTMLElement): TerminalModalBounds {
+    const { left, top, width, height } = frame.getBoundingClientRect();
+    return { left, top, width, height };
+  }
+
+  private terminalModalViewport(): TerminalModalViewport {
+    if (typeof window === "undefined") return { width: 0, height: 0 };
+    return { width: window.innerWidth, height: window.innerHeight };
+  }
+
+  private terminalModalFrameStyle(): string {
+    const bounds = this.terminalModalBounds;
+    const geometry = bounds === undefined ? "" : `; left: ${String(bounds.left)}px; top: ${String(bounds.top)}px; width: ${String(bounds.width)}px; height: ${String(bounds.height)}px`;
+    return `--terminal-modal-opacity: ${String(this.terminalModalOpacity)}%${geometry};`;
+  }
+
+  private finishTerminalModalPointerInteraction(): void {
+    const interaction = this.terminalModalPointerInteraction;
+    if (interaction === undefined) return;
+    try {
+      interaction.target.releasePointerCapture(interaction.pointerId);
+    } catch {
+      // Pointer capture may already be gone after a browser cancellation.
+    }
+    this.terminalModalPointerInteraction = undefined;
+  }
 
   private readonly adjustTerminalFontSize = (delta: number): void => {
     const fontSize = clampTerminalModalFontSize(this.terminalModalFontSize + delta);
@@ -2421,9 +2530,15 @@ export class PiWebUiApp extends LitElement {
         @click=${(event: MouseEvent) => { if (event.target === event.currentTarget) this.handleCloseTerminalModal(); }}
         @keydown=${(event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); this.handleCloseTerminalModal(); } }}
       >
-        <div class="terminal-modal-frame" style=${`--terminal-modal-opacity: ${String(this.terminalModalOpacity)}%;`}>
+        <div class=${this.terminalModalBounds === undefined ? "terminal-modal-frame" : "terminal-modal-frame terminal-modal-frame-positioned"} style=${this.terminalModalFrameStyle()}>
           <header class="terminal-modal-header">
-            <span>Terminal</span>
+            <span
+              class="terminal-modal-drag-handle"
+              @pointerdown=${this.handleTerminalModalMovePointerDown}
+              @pointermove=${this.handleTerminalModalPointerMove}
+              @pointerup=${this.handleTerminalModalPointerUp}
+              @pointercancel=${this.handleTerminalModalPointerCancel}
+            >Terminal</span>
             <span class="terminal-modal-font-controls">
               <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalFontSize(-1); }} aria-label="Decrease font size">−</button>
               <span class="terminal-modal-font-size">${this.terminalModalFontSize}px</span>
@@ -2445,6 +2560,15 @@ export class PiWebUiApp extends LitElement {
               .bgOpacity=${this.terminalModalOpacity}
             ></terminal-panel>
           </div>
+          <div
+            class="terminal-modal-resize-handle"
+            title="Drag to resize terminal"
+            aria-hidden="true"
+            @pointerdown=${this.handleTerminalModalResizePointerDown}
+            @pointermove=${this.handleTerminalModalPointerMove}
+            @pointerup=${this.handleTerminalModalPointerUp}
+            @pointercancel=${this.handleTerminalModalPointerCancel}
+          ></div>
         </div>
       </div>
     `;
