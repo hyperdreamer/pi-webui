@@ -87,8 +87,9 @@ export const appStyles = css`
     :host { --pi-app-safe-area-bottom: env(safe-area-inset-bottom); }
   }
   .shell { --navigation-panel-size: 340px; --workspace-panel-size: minmax(360px, 42vw); --navigation-panel-width: var(--navigation-panel-size); --workspace-panel-width: var(--workspace-panel-size); display: grid; grid-template-columns: var(--navigation-panel-width) 1px minmax(320px, 1fr) 1px var(--workspace-panel-width); height: 100%; min-height: 0; }
-  aside { grid-column: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-  aside app-navigation-panel { flex: 1 1 auto; min-height: 0; }
+  aside { grid-column: 1; display: flex; flex-direction: row; min-height: 0; overflow: hidden; }
+  aside app-navigation-panel { flex: 1 1 auto; min-height: 0; min-width: 0; }
+  activity-rail { flex: 0 0 auto; min-height: 0; }
   header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-bottom: 1px solid var(--pi-border); }
   .header-actions { display: flex; align-items: center; gap: 8px; }
   project-list, workspace-list { flex: 0 0 auto; max-height: 26%; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--pi-border-muted); }
@@ -132,8 +133,9 @@ export const appStyles = css`
   .navigation-panel-edge-icon, .workspace-panel-edge-icon { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   workspace-panel { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; }
   @media (min-width: 1181px) {
-    .shell.navigation-panel-collapsed { --navigation-panel-width: 0px; }
-    .shell.navigation-panel-collapsed > aside { display: none; }
+    .shell.navigation-panel-collapsed { --navigation-panel-width: 44px; }
+    .shell.navigation-panel-collapsed > aside { display: flex; }
+    .shell.navigation-panel-collapsed > aside > app-navigation-panel { display: none; }
     .shell.workspace-panel-collapsed { --workspace-panel-width: 0px; }
     .shell.workspace-panel-collapsed > workspace-panel { display: none; }
   }
@@ -190,6 +192,138 @@ export const appStyles = css`
   button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
   .empty { margin: auto; color: var(--pi-muted); }
   .error { padding: 10px 16px; border-bottom: 1px solid var(--pi-border); color: var(--pi-danger); }
+  /* Terminal modal */
+  .terminal-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.48);
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  .terminal-modal-frame {
+    --terminal-modal-opacity: 94%;
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: min(calc(100vw - 32px), 1280px);
+    height: min(calc(100vh - 32px), 880px);
+    border: 1px solid var(--pi-border);
+    border-radius: 14px;
+    background: transparent;
+    box-shadow: 0 20px 64px var(--pi-shadow-strong);
+    overflow: hidden;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .terminal-modal-frame-positioned { position: fixed; }
+  .terminal-modal-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--pi-border);
+    background: color-mix(in srgb, var(--pi-surface) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .terminal-modal-drag-handle {
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    cursor: move;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .terminal-modal-font-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .terminal-modal-font-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--pi-border);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--pi-bg) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .terminal-modal-font-btn:hover {
+    background: color-mix(in srgb, var(--pi-surface-hover) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+  }
+  .terminal-modal-font-size {
+    min-width: 36px;
+    text-align: center;
+    color: var(--pi-muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .terminal-modal-close {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--pi-border);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--pi-bg) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-muted);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .terminal-modal-close:hover {
+    background: color-mix(in srgb, var(--pi-surface-hover) var(--terminal-modal-opacity), transparent);
+    color: var(--pi-text);
+  }
+  .terminal-modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .terminal-modal-body terminal-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .terminal-modal-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: 1;
+    width: 20px;
+    height: 20px;
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+  .terminal-modal-resize-handle::after {
+    content: "";
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--pi-muted);
+    border-bottom: 2px solid var(--pi-muted);
+    opacity: .7;
+  }
+  .terminal-modal-resize-handle:hover::after { border-color: var(--pi-text); opacity: 1; }
 `;
 
 export const workspacePanelStyles = css`

@@ -13,6 +13,7 @@ import "./TerminalSoftKeys";
 import type { TerminalSoftKeyInputOptions } from "./TerminalSoftKeys";
 
 const TERMINAL_OPTIONS_BASE: ITerminalOptions = {
+  allowTransparency: true,
   cursorBlink: true,
   convertEol: true,
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
@@ -21,6 +22,8 @@ const TERMINAL_OPTIONS_BASE: ITerminalOptions = {
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 100, rows: 30 };
 const COMMAND_RUN_POLL_INTERVAL_MS = 1000;
+const TERMINAL_EFFECTIVE_BACKGROUND_VARIABLE = "--pi-terminal-effective-bg";
+const TERMINAL_UI_OPACITY_VARIABLE = "--pi-terminal-ui-opacity";
 
 @customElement("terminal-panel")
 export class TerminalPanel extends LitElement {
@@ -28,6 +31,8 @@ export class TerminalPanel extends LitElement {
   @property() machineId = "local";
   @property({ attribute: false }) selectedTerminalId: string | undefined;
   @property({ type: Boolean }) autoStart = false;
+  @property({ type: Number }) fontSize = 13;
+  @property({ type: Number }) bgOpacity = 100;
   @property({ attribute: false }) onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => void = () => undefined;
   @query(".terminal-host") private terminalHost?: HTMLDivElement | null;
   @query(".terminal-copy-content") private terminalCopyContent?: HTMLPreElement | null;
@@ -64,6 +69,7 @@ export class TerminalPanel extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this.syncTerminalBackground();
     this.syncDefaultSoftKeysEnvironment();
     this.softKeysDefaultEnvironmentMedia?.addEventListener("change", this.onSoftKeysDefaultEnvironmentChange);
     this.themeObserver = new MutationObserver(() => { this.applyTerminalTheme(); });
@@ -101,6 +107,7 @@ export class TerminalPanel extends LitElement {
   }
 
   override willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has("bgOpacity")) this.syncTerminalBackground();
     const workspaceScope = this.workspace === undefined ? undefined : JSON.stringify([this.machineId, this.workspace.path]);
     if (workspaceScope !== this.observedWorkspaceScope) {
       this.observedWorkspaceScope = workspaceScope;
@@ -131,6 +138,11 @@ export class TerminalPanel extends LitElement {
     else if (this.hasPendingCommandRuns()) this.updateCommandRunPolling(true);
     this.loadVisibleWorkspaceTerminals();
     if (changed.has("selectedTerminalId") && this.shouldReloadForRequestedTerminal()) void this.loadTerminals();
+    if (changed.has("fontSize") && this.terminal !== undefined) {
+      this.terminal.options.fontSize = this.fontSize;
+      this.fitAndNotify();
+    }
+    if (changed.has("bgOpacity")) this.applyTerminalTheme();
     this.ensureTerminalView();
   }
 
@@ -404,7 +416,18 @@ export class TerminalPanel extends LitElement {
   }
 
   private applyTerminalTheme(): void {
+    this.syncTerminalBackground();
     if (this.terminal !== undefined) this.terminal.options.theme = terminalTheme(this);
+  }
+
+  private syncTerminalBackground(): void {
+    const opacity = terminalOpacityPercent(this.bgOpacity);
+    const background = terminalBackgroundWithOpacity(
+      themeColor(this, "--pi-terminal-bg", "#05070a"),
+      opacity,
+    );
+    this.style.setProperty(TERMINAL_EFFECTIVE_BACKGROUND_VARIABLE, background);
+    this.style.setProperty(TERMINAL_UI_OPACITY_VARIABLE, `${String(opacity)}%`);
   }
 
   private sendTerminalInput(data: string): void {
@@ -679,8 +702,8 @@ export class TerminalPanel extends LitElement {
 
   static override styles = css`
     :host { flex: 1 1 auto; min-height: 0; display: flex; }
-    .terminal-shell { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--pi-terminal-bg); }
-    .terminal-tabs { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); overflow: auto; }
+    .terminal-shell { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: transparent; }
+    .terminal-tabs { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--pi-border-muted); background: color-mix(in srgb, var(--pi-bg) var(--pi-terminal-ui-opacity, 100%), transparent); overflow: auto; }
     .terminal-tabs > button { box-sizing: border-box; height: 30px; line-height: 16px; }
     /* Desktop xterm already has mouse selection and hardware keys; keep touch controls to touch/narrow layouts. */
     .copy-mode-toggle, .soft-keys-toggle, terminal-soft-keys { display: none; }
@@ -689,8 +712,9 @@ export class TerminalPanel extends LitElement {
       .copy-mode-toggle, .soft-keys-toggle { display: inline-flex; }
       terminal-soft-keys { display: block; }
     }
-    button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 180px; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-text); padding: 5px 7px; cursor: pointer; }
-    button.selected { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
+    button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 180px; border: 1px solid var(--pi-border); border-radius: 7px; background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-text); padding: 5px 7px; cursor: pointer; }
+    button:hover { background: color-mix(in srgb, var(--pi-surface-hover) var(--pi-terminal-ui-opacity, 100%), transparent); }
+    button.selected { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-selection-bg) var(--pi-terminal-ui-opacity, 100%), transparent); }
     button.new { flex: 0 0 auto; color: var(--pi-muted); }
     .soft-keys-toggle { flex: 0 0 auto; }
     .soft-keys-toggle .keyboard-icon { display: block; flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
@@ -699,26 +723,26 @@ export class TerminalPanel extends LitElement {
     button small:hover { color: var(--pi-danger); }
     button.danger { color: var(--pi-danger); }
     button:disabled { opacity: .5; cursor: not-allowed; }
-    .command-run-notice { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-surface); color: var(--pi-text); }
+    .command-run-notice { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--pi-border-muted); background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-text); }
     .command-run-notice.running { border-color: var(--pi-warning-border); }
     .command-run-notice.succeeded { border-color: var(--pi-success-border); }
     .command-run-notice.failed { border-color: var(--pi-danger); }
     .command-run-notice p { margin: 3px 0; color: var(--pi-muted); }
     .command-run-notice code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-text-secondary); font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .command-run-notice kbd { border: 1px solid var(--pi-border); border-radius: 4px; background: var(--pi-bg); padding: 0 4px; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .command-run-notice kbd { border: 1px solid var(--pi-border); border-radius: 4px; background: color-mix(in srgb, var(--pi-bg) var(--pi-terminal-ui-opacity, 100%), transparent); padding: 0 4px; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .command-run-notice button { justify-self: end; max-width: none; }
-    .terminal-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--pi-terminal-bg); }
+    .terminal-stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: transparent; }
     .terminal-host { position: absolute; inset: 0; padding: 6px; box-sizing: border-box; overflow: hidden; }
     .terminal-host.copying { visibility: hidden; pointer-events: none; }
-    .terminal-copy-view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--pi-terminal-bg); color: var(--pi-terminal-text); }
-    .terminal-copy-toolbar { box-sizing: border-box; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 47px; padding: 6px; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); font: 12px system-ui, sans-serif; }
+    .terminal-copy-view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--pi-terminal-effective-bg, var(--pi-terminal-bg)); color: var(--pi-terminal-text); }
+    .terminal-copy-toolbar { box-sizing: border-box; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 47px; padding: 6px; border-bottom: 1px solid var(--pi-border-muted); background: color-mix(in srgb, var(--pi-bg) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-muted); font: 12px system-ui, sans-serif; }
     .terminal-copy-toolbar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .terminal-copy-toolbar small { margin-left: auto; white-space: nowrap; color: var(--pi-dim); }
     .terminal-copy-toolbar button { flex: 0 0 auto; width: auto; min-height: 34px; padding: 6px 9px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .terminal-copy-layers { flex: 1 1 auto; min-height: 0; display: grid; overflow: hidden; background: var(--pi-terminal-bg); }
+    .terminal-copy-layers { flex: 1 1 auto; min-height: 0; display: grid; overflow: hidden; background: transparent; }
     /* xterm renders the configured 13px terminal font in 17px-high cells. */
     .terminal-copy-content, .terminal-copy-selector { grid-area: 1 / 1; box-sizing: border-box; min-width: 0; min-height: 0; width: 100%; height: 100%; margin: 0; padding: 6px; border: 0; border-radius: 0; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 17px; letter-spacing: normal; font-variant-ligatures: none; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
-    .terminal-copy-content { overflow: auto; pointer-events: none; background: var(--pi-terminal-bg); color: var(--pi-terminal-text); -webkit-user-select: none; user-select: none; }
+    .terminal-copy-content { overflow: auto; pointer-events: none; background: transparent; color: var(--pi-terminal-text); -webkit-user-select: none; user-select: none; }
     .terminal-copy-selector { z-index: 1; overflow: auto; resize: none; outline: none; appearance: none; background: transparent; color: transparent; caret-color: var(--pi-accent); -webkit-text-fill-color: transparent; cursor: text; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; touch-action: auto; }
     .terminal-copy-selector::selection { background: var(--pi-terminal-selection); color: transparent; -webkit-text-fill-color: transparent; }
     .terminal-host .xterm { height: 100%; cursor: text; position: relative; user-select: none; }
@@ -727,9 +751,9 @@ export class TerminalPanel extends LitElement {
     /* Hide the helper textarea without using !important on the positional properties (left/top/width/height/z-index). xterm sets those inline during IME/dead-key composition (e.g. "~" on a Swedish layout) so the composition is positioned at the cursor and committed correctly; forcing them here would pin the textarea off-screen with zero size and break composition. */
     .terminal-host .xterm-helper-textarea { position: absolute; left: -9999em; top: 0; width: 0; height: 0; padding: 0 !important; border: 0 !important; margin: 0 !important; opacity: 0 !important; z-index: -5; white-space: nowrap !important; overflow: hidden !important; resize: none !important; outline: 0 !important; appearance: none !important; }
     /* The composition view shows pending dead-key/IME input. Without these rules it renders as a static block in the top-left corner instead of overlaying the cursor. */
-    .terminal-host .composition-view { position: absolute; display: none; white-space: nowrap; z-index: 1; background: var(--pi-terminal-bg, #000); color: var(--pi-terminal-text, #fff); }
+    .terminal-host .composition-view { position: absolute; display: none; white-space: nowrap; z-index: 1; background: var(--pi-terminal-effective-bg, var(--pi-terminal-bg, #000)); color: var(--pi-terminal-text, #fff); }
     .terminal-host .composition-view.active { display: block; }
-    .terminal-host .xterm-viewport { position: absolute; inset: 0; overflow-y: scroll; cursor: default; background-color: var(--pi-terminal-bg); }
+    .terminal-host .xterm-viewport { position: absolute; inset: 0; overflow-y: scroll; cursor: default; background-color: var(--pi-terminal-effective-bg, var(--pi-terminal-bg)); }
     .terminal-host .xterm-screen { position: relative; }
     .terminal-host .xterm-screen canvas { position: absolute; left: 0; top: 0; }
     .terminal-host .xterm-char-measure-element { display: inline-block; visibility: hidden; position: absolute; top: 0; left: -9999em; line-height: normal; }
@@ -738,7 +762,7 @@ export class TerminalPanel extends LitElement {
     .terminal-host .xterm-accessibility-tree { font-family: monospace; user-select: text; white-space: pre; }
     .terminal-host .xterm-accessibility-tree > div { transform-origin: left; width: fit-content; }
     .terminal-host .live-region { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
-    .error { flex: 0 0 auto; margin: 0; padding: 8px; color: var(--pi-danger); border-bottom: 1px solid var(--pi-border); background: var(--pi-surface); }
+    .error { flex: 0 0 auto; margin: 0; padding: 8px; color: var(--pi-danger); border-bottom: 1px solid var(--pi-border); background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); }
     .muted { margin: 10px; color: var(--pi-muted); }
     .xterm { height: 100%; }
   `;
@@ -812,13 +836,21 @@ async function socketDataToString(data: unknown): Promise<string> {
 }
 
 function terminalOptions(element: HTMLElement): ITerminalOptions {
-  return { ...TERMINAL_OPTIONS_BASE, theme: terminalTheme(element) };
+  const base = TERMINAL_OPTIONS_BASE;
+  if (element instanceof TerminalPanel) {
+    return { ...base, fontSize: element.fontSize, theme: terminalTheme(element) };
+  }
+  return { ...base, theme: terminalTheme(element) };
 }
 
 function terminalTheme(element: HTMLElement): ITheme {
+  const background = terminalBackgroundWithOpacity(
+    themeColor(element, "--pi-terminal-bg", "#05070a"),
+    element instanceof TerminalPanel ? element.bgOpacity : 100,
+  );
   return {
     ...DEFAULT_TERMINAL_ANSI_THEME,
-    background: themeColor(element, "--pi-terminal-bg", "#05070a"),
+    background,
     foreground: themeColor(element, "--pi-terminal-text", "#e6edf3"),
     cursor: themeColor(element, "--pi-accent", "#58a6ff"),
     selectionBackground: themeColor(element, "--pi-terminal-selection", "#264f78"),
@@ -828,6 +860,25 @@ function terminalTheme(element: HTMLElement): ITheme {
 function themeColor(element: HTMLElement, name: string, fallback: string): string {
   const value = getComputedStyle(element).getPropertyValue(name).trim();
   return value === "" ? fallback : value;
+}
+
+function terminalOpacityPercent(opacityPercent: number): number {
+  return Math.max(0, Math.min(100, opacityPercent));
+}
+
+export function terminalBackgroundWithOpacity(background: string, opacityPercent: number): string {
+  const opacity = terminalOpacityPercent(opacityPercent) / 100;
+  if (opacity >= 1 || background === "transparent") return background;
+
+  const hex = /^#([\da-f]{3}|[\da-f]{6})$/iu.exec(background);
+  if (hex === null) return background;
+
+  const value = hex[1] ?? "";
+  const channels = value.length === 3
+    ? [value.charAt(0).repeat(2), value.charAt(1).repeat(2), value.charAt(2).repeat(2)]
+    : [value.slice(0, 2), value.slice(2, 4), value.slice(4, 6)];
+  const [red = "00", green = "00", blue = "00"] = channels;
+  return `rgba(${String(parseInt(red, 16))}, ${String(parseInt(green, 16))}, ${String(parseInt(blue, 16))}, ${String(opacity)})`;
 }
 
 function terminalSizeFromDimensions(dimensions: ITerminalDimensions | undefined): TerminalSize | undefined {
