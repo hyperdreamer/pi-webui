@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PI WEBUI FAQ — Pi web UI troubleshooting</title>
+    <meta
+      name="description"
+      content="Troubleshoot PI WEBUI, the web UI for Pi Coding Agent, including install, PATH, services, remote access, and runtime issues."
+    />
+    <link rel="canonical" href="https://pi-webui.dev/faq" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PI WEBUI" />
+    <meta property="og:title" content="PI WEBUI FAQ — Pi web UI troubleshooting" />
+    <meta
+      property="og:description"
+      content="Fix common PI WEBUI install, service, PATH, remote access, and session issues."
+    />
+    <meta property="og:url" content="https://pi-webui.dev/faq" />
+    <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <meta property="og:image:alt" content="PI WEBUI browser UI for persistent Pi Coding Agent sessions" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="PI WEBUI FAQ — Pi web UI troubleshooting" />
+    <meta
+      name="twitter:description"
+      content="Fix common PI WEBUI install, service, PATH, remote access, and session issues."
+    />
+    <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script>
+      (() => {
+        const theme = window.localStorage.getItem("pi-webui-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="container nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="PI WEBUI home">PI WEBUI</a>
+        <div class="nav-links">
+          <div class="nav-pages">
+            <a href="remote-first">Remote-first</a>
+            <a href="machines">Fleet</a>
+            <a href="install">Install</a>
+            <a href="config">Config</a>
+            <a href="plugins">Plugins</a>
+            <a href="faq" aria-current="page">FAQ</a>
+          </div>
+          <div class="nav-actions">
+            <a class="github-link" href="https://github.com/hyperdreamer/pi-webui" aria-label="PI WEBUI on GitHub">
+              <svg class="github-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.55-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.2-.08-.2-.36-1.03.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.94c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.16.51.58.82 1.31.82 2.2 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.53 0 1.1-.01 1.99-.01 2.27 0 .22.15.49.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"
+                />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+              <span data-theme-icon aria-hidden="true">◐</span>
+              <span data-theme-label>Theme</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <div class="container">
+          <p class="eyebrow"><span class="pulse"></span> FAQ & troubleshooting</p>
+          <h1>Fix the things that usually go wrong first.</h1>
+          <p>
+            Most PI WEBUI install issues are environment issues: native service manager availability, PATH setup, Node
+            version managers, or remote access expectations.
+          </p>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container doc-layout">
+          <aside class="toc" aria-label="FAQ contents">
+            <strong>Questions</strong>
+            <a href="#is-this-linux-only">What platforms are supported?</a>
+            <a href="#is-pi-webui-a-web-ui">Is PI WEBUI a Pi web UI?</a>
+            <a href="#tools-are-not-found">Tools are failing / node not found</a>
+            <a href="#doctor-fails">What does doctor check?</a>
+            <a href="#nvm-fnm-asdf">nvm, fnm, or asdf issues</a>
+            <a href="#node-pty-native-module">node-pty native module is missing</a>
+            <a href="#systemd-not-found">User service manager is unavailable</a>
+            <a href="#cannot-open">I cannot open the web UI</a>
+            <a href="#public-internet">Can I expose this publicly?</a>
+            <a href="#remote-machines">How do remote machines work?</a>
+            <a href="#laptop-or-server">Laptop or server?</a>
+            <a href="#plugins">Can I use local plugins?</a>
+            <a href="#sessions-stop">Sessions stop unexpectedly</a>
+            <a href="#logs">Where are logs?</a>
+          </aside>
+
+          <div class="faq-list">
+            <article id="is-this-linux-only" class="faq-item">
+              <h2>What platforms are supported?</h2>
+              <p>
+                PI WEBUI can run anywhere its runtime dependencies work. The automatic <code>pi-webui install</code> command uses
+                a supported per-user service manager when one is available.
+              </p>
+              <ul>
+                <li><strong>User-service install:</strong> use <code>npm install -g @hyperdreamer/pi-webui --allow-scripts=node-pty</code> and <code>pi-webui install</code>.</li>
+                <li><strong>WSL:</strong> if your distro has systemd enabled, the installer may work; otherwise use the manual run path.</li>
+                <li><strong>Native Windows:</strong> outside WSL is not the recommended path today.</li>
+              </ul>
+            </article>
+
+            <article id="is-pi-webui-a-web-ui" class="faq-item">
+              <h2>Is PI WEBUI a Pi web UI?</h2>
+              <p>
+                Yes. PI WEBUI is a web UI for Pi Coding Agent that runs and supervises persistent sessions from a browser.
+                Unlike simple session viewers, PI WEBUI is built around real server-side workspaces, long-running session
+                daemons, git worktrees, remote machines, terminals, files, and multi-device supervision.
+              </p>
+            </article>
+
+            <article id="tools-are-not-found" class="faq-item">
+              <h2>Tools are failing, node is not found, or Pi cannot find commands</h2>
+              <p>
+                The shell environment needs to be set up so login shells have the required PATH entries for PI WEBUI, Pi,
+                and any tools your agents need. PI WEBUI services run commands through a non-interactive login shell owned
+                by systemd or launchd, so an interactive terminal—or even a caller-invoked login shell—can work while the
+                native service fails.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Run diagnostics</strong>
+                  <button class="copy-button" data-copy="#doctor-command">Copy</button>
+                </div>
+                <pre id="doctor-command"><code><span class="prompt">$</span> pi-webui doctor</code></pre>
+              </div>
+              <ul>
+                <li><strong>bash:</strong> put PATH setup in <code>~/.bash_profile</code> or <code>~/.profile</code>. If <code>~/.bash_profile</code> exists, source <code>~/.profile</code> from it if needed.</li>
+                <li><strong>zsh:</strong> put PATH setup in <code>~/.zprofile</code>, not only <code>~/.zshrc</code>.</li>
+                <li><strong>fish:</strong> prefer universal PATH setup, for example <code>fish_add_path -U ...</code>.</li>
+              </ul>
+              <p>
+                Avoid relying only on prompt hooks, shell integrations that rewrite PATH while rendering a prompt, or
+                interactive-only shell files for tools needed by services. Version-manager shims are usually the most
+                reliable option for service environments.
+              </p>
+            </article>
+
+            <article id="doctor-fails" class="faq-item">
+              <h2>What does <code>pi-webui doctor</code> check?</h2>
+              <p>
+                It keeps two kinds of checks separate. General login-shell readiness covers Node 22.19.0 or newer, npm, Pi, and optional
+                ripgrep. Native-service diagnostics validate only the exact prerequisites of the selected service plan in
+                the real systemd user-manager or launchd <code>gui/&lt;uid&gt;</code> context. Development installs follow their
+                installed checkout plan; production checks are clearly labelled prospective when the installed executable
+                strategy cannot be reconstructed safely.
+              </p>
+              <p>
+                Missing plan requirements fail doctor and include login-file guidance. Manager, timeout, malformed-output,
+                and cleanup failures are reported as probe infrastructure problems rather than being mislabeled as PATH
+                drift. On unsupported/manual-only platforms, native-service drift checks are skipped. Doctor also checks
+                that the <code>node-pty</code> native module can load, prints installed and running PI WEBUI versions, and reports
+                systemd lingering when relevant.
+              </p>
+            </article>
+
+            <article id="nvm-fnm-asdf" class="faq-item">
+              <h2>I installed Node with nvm, fnm, asdf, or another version manager</h2>
+              <p>
+                Version managers often initialize in interactive shells only. Some tools, including <code>fnm</code> and
+                <code>mise</code> when used through shell activation instead of shims, depend on shell hooks or prompt-time
+                PATH updates that are unreliable in non-interactive login shells.
+              </p>
+              <ul>
+                <li>Prefer version-manager shims when available; for <code>mise</code>, use shims or enable its shim setup rather than relying only on shell activation.</li>
+                <li>Move any required version-manager initialization to your login shell file.</li>
+                <li>Make sure <code>node --version</code> is at least <code>v22.19.0</code> from <code>bash -lc</code>, <code>zsh -lc</code>, or your detected shell.</li>
+                <li>Run <code>pi-webui doctor</code> again after changing shell files.</li>
+              </ul>
+            </article>
+
+            <article id="node-pty-native-module" class="faq-item">
+              <h2><code>pi-webui-sessiond</code> cannot load <code>pty.node</code></h2>
+              <p>
+                npm 12 blocks dependency installation scripts unless they are explicitly approved. If PI WEBUI was installed
+                without approving <code>node-pty</code>, its required native module can be missing even though npm reported a
+                successful installation.
+              </p>
+              <p>Reinstall PI WEBUI with approval limited to <code>node-pty</code>:</p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Allow the node-pty installation scripts</strong>
+                  <button class="copy-button" data-copy="#node-pty-install">Copy</button>
+                </div>
+                <pre id="node-pty-install"><code><span class="prompt">$</span> npm install -g @hyperdreamer/pi-webui --allow-scripts=node-pty</code></pre>
+              </div>
+              <p>
+                Then run <code>pi-webui install</code> again, or restart <code>pi-webui-sessiond</code> if you run PI WEBUI manually.
+                The flag does not enable installation scripts for other dependencies.
+              </p>
+            </article>
+
+            <article id="systemd-not-found" class="faq-item">
+              <h2>User service manager is unavailable</h2>
+              <p>
+                The automatic installer needs a supported per-user service manager. On WSL without systemd, containers
+                without a user service manager, or minimal environments, run the two processes manually:
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Manual run</strong>
+                  <button class="copy-button" data-copy="#manual-faq">Copy</button>
+                </div>
+                <pre id="manual-faq"><code><span class="prompt">$</span> pi-webui-sessiond
+<span class="comment"># in another terminal</span>
+<span class="prompt">$</span> PI_WEBUI_PORT=8808 pi-webui-server</code></pre>
+              </div>
+            </article>
+
+            <article id="cannot-open" class="faq-item">
+              <h2>I cannot open the web UI</h2>
+              <ul>
+                <li>Check <code>pi-webui status</code>.</li>
+                <li>Check logs with <code>pi-webui logs</code>.</li>
+                <li>Make sure port <code>8808</code> is not already in use.</li>
+                <li>On a remote server, use an SSH tunnel: <code>ssh -L 8808:127.0.0.1:8808 user@server</code>.</li>
+              </ul>
+            </article>
+
+            <article id="public-internet" class="faq-item">
+              <h2>Can I expose PI WEBUI to the public internet?</h2>
+              <p>
+                Do not expose it directly to the public internet. PI WEBUI assumes trusted users and trusted server paths.
+                For remote access, bind only to an interface that is already private and controlled: for example the
+                server's VPN IP, a private LAN IP, or localhost behind an SSH tunnel.
+              </p>
+              <p>
+                When you connect over a VPN, <code>127.0.0.1</code> usually means your own device, not the server, so the
+                server must listen on its VPN/private-network address or sit behind a tunnel/proxy.
+              </p>
+              <p>
+                Avoid <code>0.0.0.0</code> unless a firewall, VPN, or reverse proxy strictly limits who can reach the port.
+              </p>
+            </article>
+
+            <article id="remote-machines" class="faq-item">
+              <h2>How do I connect another PI WEBUI machine?</h2>
+              <p>
+                Install and run PI WEBUI on the target machine, make its PI WEBUI URL reachable from the gateway through a
+                trusted path, then open the gateway and choose <strong>Actions → Add Machine</strong>. The browser keeps
+                talking to the gateway while projects, sessions, files, and terminals run on the selected remote runtime.
+              </p>
+              <ul>
+                <li>Use NetBird, Tailscale, WireGuard, private LAN, SSH tunnel, or an authenticated reverse proxy.</li>
+                <li>Remote Pi auth, OAuth state, sessions, terminals, repositories, and plugins stay on the target machine.</li>
+                <li>API-key provider configuration can be proxied, but OAuth login should be completed by opening the remote PI WEBUI directly.</li>
+                <li>Remote plugins are trusted browser code and only appear while that machine is selected.</li>
+                <li>If the remote reports offline, check that the gateway server can reach the remote URL and try <strong>Actions → Refresh Selected Machine</strong>.</li>
+              </ul>
+              <p><a href="machines">Read the fleet guide →</a></p>
+            </article>
+
+            <article id="laptop-or-server" class="faq-item">
+              <h2>Should I run PI WEBUI on my laptop or a server?</h2>
+              <p>
+                You can run it locally, but PI WEBUI is most useful on a machine that stays on. A remote dev box, home
+                server, cloud VM, or workstation gives agents a stable place to keep working while your laptop becomes
+                just a client.
+              </p>
+              <p>
+                Local development can become a blocker when one device owns the tools, secrets, shells, editor, and
+                agent runtime. Remote AI-driven development unlocks persistent work: agents keep running, sessions remain
+                available, and you connect from whatever screen you have.
+              </p>
+            </article>
+
+            <article id="plugins" class="faq-item">
+              <h2>Can I use local plugins with production PI WEBUI?</h2>
+              <p>
+                Yes. Put trusted browser-side plugins in <code>~/.pi-webui/plugins/&lt;plugin-id&gt;/</code>, or symlink a
+                development folder there. Reload the browser tab after edits. If <code>PI_WEBUI_DATA_DIR</code> is set, use
+                <code>$PI_WEBUI_DATA_DIR/plugins</code> instead.
+              </p>
+              <p><a href="plugins">Read the plugin guide →</a></p>
+            </article>
+
+            <article id="sessions-stop" class="faq-item">
+              <h2>Sessions stop unexpectedly</h2>
+              <p>
+                Active agent runtimes are owned by the session daemon. Browser disconnects and web/API restarts should
+                not stop them. If they stop anyway, check whether the session daemon service restarted or crashed.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Session daemon logs</strong>
+                  <button class="copy-button" data-copy="#session-logs">Copy</button>
+                </div>
+                <pre id="session-logs"><code><span class="prompt">$</span> pi-webui status
+<span class="prompt">$</span> pi-webui logs</code></pre>
+              </div>
+            </article>
+
+            <article id="logs" class="faq-item">
+              <h2>Where are logs?</h2>
+              <p>Use the service log command:</p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Logs</strong>
+                  <button class="copy-button" data-copy="#logs-command">Copy</button>
+                </div>
+                <pre id="logs-command"><code><span class="prompt">$</span> pi-webui logs</code></pre>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>PI WEBUI FAQ</span>
+        <div class="footer-links">
+          <a href="./">Home</a>
+          <a href="remote-first">Remote-first</a>
+          <a href="machines">Fleet</a>
+          <a href="install">Install</a>
+          <a href="config">Config</a>
+          <a href="plugins">Plugins</a>
+          <a href="https://github.com/hyperdreamer/pi-webui/issues">Issues</a>
+        </div>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

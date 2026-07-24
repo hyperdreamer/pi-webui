@@ -1,0 +1,12 @@
+# Keep the local-build runtime context small and avoid sending persistent data.
+*
+!Dockerfile
+!pi-webui-docker
+!internal/
+!internal/bin/
+!internal/bin/hostexec
+!internal/image/
+!internal/image/install-opensuse-base
+!custom-image.d/
+!custom-image.d/.gitkeep
+!custom-image.d/*.sh

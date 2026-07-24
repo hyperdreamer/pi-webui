@@ -1,0 +1,45 @@
+import { describe, expect, it, vi } from "vitest";
+import type { Project } from "../api";
+import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+import { filterProjects, ProjectList } from "./ProjectList";
+
+const projects: Project[] = [
+  { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
+  { id: "client", name: "Client App", path: "/work/client-app", createdAt: "2026-07-24T00:00:00.000Z" },
+  { id: "docs", name: "Documentation", path: "/work/client-guides", createdAt: "2026-07-24T00:00:00.000Z" },
+];
+
+describe("project filtering", () => {
+  it("matches project names and paths regardless of query casing", () => {
+    expect(filterProjects(projects, "  CLIENT  ").map((project) => project.id)).toEqual(["client", "docs"]);
+  });
+});
+
+describe("project search interaction", () => {
+  // The Node test environment has no DOM harness, so this narrowly verifies
+  // the header control's Lit click wiring at its stable ARIA boundary.
+  it("reveals the project filter input when the header search control is activated", () => {
+    const list = new ProjectList();
+    const openSearch = findOptionalTemplateEventHandlerNearMarker(list.render(), 'aria-controls="project-search"');
+
+    expect(openSearch).toBeTypeOf("function");
+    if (openSearch === undefined) throw new Error("Expected project search control");
+    openSearch(new Event("click"));
+
+    expect(templateText(list.render())).toContain('id="project-search"');
+  });
+});
+
+describe("project creation interaction", () => {
+  // The Node test environment has no DOM harness, so inspect the stable
+  // accessible button marker to narrowly exercise Lit's click wiring.
+  it("opens project creation when the Projects section add button is activated", () => {
+    const list = new ProjectList();
+    const onAdd = vi.fn();
+    list.onAdd = onAdd;
+
+    templateEventHandlerNearMarker(list.render(), 'aria-label="Add project"')(new Event("click"));
+
+    expect(onAdd).toHaveBeenCalledOnce();
+  });
+});

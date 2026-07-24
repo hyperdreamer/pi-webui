@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PI WEBUI plugins — extend the Pi web UI</title>
+    <meta
+      name="description"
+      content="Use built-in PI WEBUI plugins and develop trusted local UI plugins for the Pi Coding Agent web UI."
+    />
+    <link rel="canonical" href="https://pi-webui.dev/plugins" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PI WEBUI" />
+    <meta property="og:title" content="PI WEBUI plugins — extend the Pi web UI" />
+    <meta
+      property="og:description"
+      content="Customize PI WEBUI with trusted browser-side plugins for actions, workspace panels, labels, terminals, and files."
+    />
+    <meta property="og:url" content="https://pi-webui.dev/plugins" />
+    <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <meta property="og:image:alt" content="PI WEBUI browser UI for persistent Pi Coding Agent sessions" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="PI WEBUI plugins — extend the Pi web UI" />
+    <meta
+      name="twitter:description"
+      content="Customize PI WEBUI with trusted browser-side plugins for actions, workspace panels, labels, terminals, and files."
+    />
+    <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script>
+      (() => {
+        const theme = window.localStorage.getItem("pi-webui-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="container nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="PI WEBUI home">PI WEBUI</a>
+        <div class="nav-links">
+          <div class="nav-pages">
+            <a href="remote-first">Remote-first</a>
+            <a href="machines">Fleet</a>
+            <a href="install">Install</a>
+            <a href="config">Config</a>
+            <a href="plugins" aria-current="page">Plugins</a>
+            <a href="faq">FAQ</a>
+          </div>
+          <div class="nav-actions">
+            <a class="github-link" href="https://github.com/hyperdreamer/pi-webui" aria-label="PI WEBUI on GitHub">
+              <svg class="github-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.55-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.2-.08-.2-.36-1.03.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.94c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.16.51.58.82 1.31.82 2.2 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.53 0 1.1-.01 1.99-.01 2.27 0 .22.15.49.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"
+                />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+              <span data-theme-icon aria-hidden="true">◐</span>
+              <span data-theme-label>Theme</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <div class="container">
+          <p class="eyebrow"><span class="pulse"></span> Plugin development</p>
+          <h1>Customize PI WEBUI with UI plugins.</h1>
+          <p>
+            Plugins are trusted browser-side ES modules. They can add actions, workspace panels, and compact workspace
+            labels to the PI WEBUI UI.
+          </p>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container doc-layout">
+          <aside class="toc" aria-label="Plugin page contents">
+            <strong>On this page</strong>
+            <a href="#extend">What can be extended</a>
+            <a href="#packages-vs-plugins">Pi packages vs PI WEBUI plugins</a>
+            <a href="#ask-ai">What to ask AI to build</a>
+            <a href="#example">Canonical example</a>
+            <a href="#built-in-plugins">Built-in plugins</a>
+            <a href="#manage-plugins">Manage PI WEBUI plugins</a>
+            <a href="#remote-machine-plugins">Remote machine plugins</a>
+            <a href="#production">Production usage</a>
+            <a href="#agent-docs">AI-friendly docs</a>
+            <a href="#develop">Develop and debug</a>
+            <a href="#trust">Trust model</a>
+          </aside>
+
+          <div class="doc-content">
+            <section id="extend">
+              <h2>What can be extended</h2>
+              <p>Plugins can add small, focused UI extensions to PI WEBUI:</p>
+              <ul>
+                <li><strong>Action palette commands</strong> for custom workflows.</li>
+                <li><strong>Workspace tools and panels</strong> next to Files, Git, and Terminal.</li>
+                <li><strong>Workspace labels</strong> in the workspace list, header, and status bar.</li>
+                <li><strong>Static assets</strong> served from the plugin folder.</li>
+                <li><strong>Browser-side integrations</strong> using documented PI WEBUI plugin context helpers.</li>
+              </ul>
+              <p>
+                Plugins cannot extend the session daemon or add server-side hooks. They run in the browser UI only.
+                Use documented context helpers for the stable API surface. Daring plugins can reach into PI WEBUI
+                internals, but those private surfaces are experimental: they may graduate into stable helpers, change
+                shape, or disappear.
+              </p>
+              <div class="callout">
+                The plugin API is intentionally limited and actively developed. Feedback is appreciated: if an extension
+                point is missing, unclear, or awkward, please
+                <a href="https://github.com/hyperdreamer/pi-webui/issues">open a GitHub issue</a>.
+              </div>
+            </section>
+
+            <section id="packages-vs-plugins">
+              <h2>Pi packages vs PI WEBUI plugins</h2>
+              <p>
+                <strong>Pi packages</strong> are packages managed by Pi (<code>pi install</code>, <code>pi remove</code>,
+                <code>pi update</code>). A Pi package can provide extensions, skills, prompt templates, themes,
+                context/system prompt files, and/or PI WEBUI browser plugins. Many Pi packages do not include a PI WEBUI plugin.
+              </p>
+              <p>
+                <strong>PI WEBUI plugins</strong> are browser-side UI modules discovered from bundled, local, dev, and
+                installed Pi-package sources. Enabling or disabling a PI WEBUI plugin is a PI WEBUI config task; installing,
+                removing, or updating a Pi package is a Pi package-manager task.
+              </p>
+              <p>
+                Use <strong>Settings → Pi packages</strong> to view configured Pi packages or install/remove/update a
+                package. Enter only the package source, such as <code>npm:@scope/package</code>, a git/URL source, or a
+                local path. PI WEBUI uses Pi's default package location, equivalent to <code>pi install &lt;source&gt;</code>,
+                and does not ask for an install location.
+              </p>
+              <p>
+                With a workspace selected, the navigation underbar's <strong>Plugins</strong> button opens the workspace-aware
+                package view. It shows global and project packages, their resolved extensions, skills, prompts, and themes,
+                plus package diagnostics. From there you can install into either scope, update or remove a package, or
+                disable and re-enable all of a package's resolved resources. Reload the current session from the dialog after
+                a package change to refresh its Pi runtime resources.
+              </p>
+              <p>
+                When machine federation is enabled, <strong>Settings → Pi packages</strong> targets the currently selected
+                machine. The panel labels whether changes will run on the local/gateway machine or on a selected remote
+                PI WEBUI machine. If an older or unavailable remote PI WEBUI server does not expose package-management routes,
+                PI WEBUI reports the package management operation as unsupported or unavailable instead of silently falling
+                back to the gateway.
+              </p>
+              <p>
+                Use <strong>Settings → PI WEBUI plugins</strong> to enable or disable discovered PI WEBUI browser plugins
+                before the browser imports them. In a federated setup, this plugin enablement surface targets the
+                currently selected machine and labels where changes are saved. If an older or unavailable remote PI WEBUI
+                server does not advertise selected-machine settings support, PI WEBUI reports the plugin settings as
+                unsupported or unavailable instead of silently falling back to the gateway. After installing, removing, or
+                updating a Pi package, type <code>/reload</code> in each idle PI WEBUI session on the target machine to
+                refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system
+                prompt files as supported by Pi. Reload the browser page separately for newly discovered or changed
+                PI WEBUI browser plugins. A routine session daemon restart is not required.
+              </p>
+            </section>
+
+            <section id="ask-ai">
+              <h2>What to ask AI to build</h2>
+              <p>
+                You do not need to hand-code plugins. Give an AI agent a clear goal, the workspace/project facts it
+                should use, and the PI WEBUI plugin rules.
+              </p>
+              <ul>
+                <li>Show a workspace badge from a repo file, environment file, branch name, container, or dev URL.</li>
+                <li>Add a workspace panel that summarizes project-specific health, commands, links, or runbooks.</li>
+                <li>Add action-palette commands for common project workflows or prompts.</li>
+                <li>Add links to local services, preview deployments, dashboards, CI, logs, or docs.</li>
+              </ul>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Prompt: create a plugin</strong>
+                  <button class="copy-button" data-copy="#plugin-create-prompt">Copy</button>
+                </div>
+                <pre id="plugin-create-prompt"><code>Build a PI WEBUI plugin for this project.
+Goal: &lt;describe the UI behavior&gt;.
+Before coding, read the PI WEBUI plugin docs:
+https://pi-webui.dev/plugins
+Full API reference:
+https://pi-webui.dev/plugins.md
+Create it as a local plugin under ~/.pi-webui/plugins/&lt;plugin-id&gt;.
+Use the appropriate extension points from the docs.
+Validate by checking /pi-webui-plugins/manifest.json and explain how to reload/debug it.
+Do not modify PI WEBUI itself.</code></pre>
+              </div>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Prompt: improve a plugin</strong>
+                  <button class="copy-button" data-copy="#plugin-improve-prompt">Copy</button>
+                </div>
+                <pre id="plugin-improve-prompt"><code>Improve the PI WEBUI plugin at &lt;path&gt;.
+Before coding, read the PI WEBUI plugin docs:
+https://pi-webui.dev/plugins
+Full API reference:
+https://pi-webui.dev/plugins.md
+Keep the plugin compatible with the documented v1 API.
+After editing, check the manifest endpoint and browser-console failure cases.</code></pre>
+              </div>
+            </section>
+
+            <section id="example">
+              <h2>Canonical example</h2>
+              <p>
+                PI WEBUI ships a real bundled <strong>Info</strong> plugin. It is intentionally small while still using all
+                core contribution types: one action, one workspace label, and one workspace panel.
+              </p>
+              <p>
+                Bundled PI WEBUI plugins are developed as TypeScript in the repository, while their package metadata
+                points at the built JavaScript ES modules that the browser loads. <code>npm run dev:web</code> watches and
+                rebuilds bundled plugin TS into <code>dist/pi-webui-plugins/</code> during development, and <code>npm run build</code>
+                emits JS before release packaging.
+              </p>
+              <ul>
+                <li><code>pi-webui-plugins/info/package.json</code> shows the required metadata shape.</li>
+                <li><code>pi-webui-plugins/info/pi-webui-plugin.ts</code> shows the TypeScript source shape.</li>
+                <li><code>dist/pi-webui-plugins/info/pi-webui-plugin.js</code> is the built browser module in a checkout.</li>
+              </ul>
+              <p>
+                Read it on GitHub:
+                <a href="https://github.com/hyperdreamer/pi-webui/tree/main/pi-webui-plugins/info">pi-webui-plugins/info</a>.
+                If you copy it, choose a new plugin id so it does not conflict with the bundled <code>info</code> plugin.
+              </p>
+              <p>
+                The bundled <code>updates</code> plugin demonstrates dynamic <code>visible</code> and <code>badge</code>
+                callbacks for tabs that only appear when the host has status messages or needs extra install visibility.
+              </p>
+            </section>
+
+            <section id="built-in-plugins">
+              <h2>Built-in plugins</h2>
+              <p>
+                PI WEBUI ships core, discoverable plugins in the main <code>@hyperdreamer/pi-webui</code> npm package. No
+                separate <code>pi install</code> step is required: update PI WEBUI, reload the browser tab, and the bundled
+                plugins appear in <code>/pi-webui-plugins/manifest.json</code>.
+              </p>
+              <p>
+                Built-in plugins can be managed from <strong>Settings → PI WEBUI plugins</strong> or with the top-level
+                <code>plugins</code> config key.
+              </p>
+
+              <h3>Updates</h3>
+              <p>
+                <strong>Updates</strong> adds a conditional <strong>Updates</strong> workspace tab with PI WEBUI update,
+                restart, and installed-service guidance, plus a <strong>Check for PI WEBUI Updates</strong> action. It is
+                built into PI WEBUI, enabled by default, and uses the selected machine's plugin copy when machine
+                federation is active.
+              </p>
+              <ul>
+                <li>Plugin id: <code>updates</code></li>
+                <li>Selected-machine status refreshes every 15 minutes while a browser tab is connected.</li>
+                <li>Automatic npm release lookups are cached for six hours; the action bypasses the caches and checks immediately.</li>
+              </ul>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Disable Updates</strong>
+                  <button class="copy-button" data-copy="#updates-disable">Copy</button>
+                </div>
+                <pre id="updates-disable"><code>{
+  "plugins": {
+    "updates": { "enabled": false }
+  }
+}</code></pre>
+              </div>
+
+              <h3>Workspace Tasks</h3>
+              <p>
+                <strong>Workspace Tasks</strong> adds a <strong>Tasks</strong> workspace tab for running configured shell
+                commands in dedicated PI WEBUI terminals. It is built into PI WEBUI and enabled by default.
+              </p>
+              <ul>
+                <li>Plugin id: <code>workspace-tasks</code></li>
+                <li>Config file: <code>.pi-webui/tasks.json</code></li>
+              </ul>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Disable Workspace Tasks</strong>
+                  <button class="copy-button" data-copy="#workspace-tasks-disable">Copy</button>
+                </div>
+                <pre id="workspace-tasks-disable"><code>{
+  "plugins": {
+    "workspace-tasks": { "enabled": false }
+  }
+}</code></pre>
+              </div>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Example .pi-webui/tasks.json</strong>
+                  <button class="copy-button" data-copy="#workspace-tasks-config">Copy</button>
+                </div>
+                <pre id="workspace-tasks-config"><code>{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "app.start",
+      "title": "Start app",
+      "group": "Development",
+      "description": "Start the local development server.",
+      "command": "npm run dev"
+    },
+    {
+      "id": "db.reset",
+      "title": "Reset DB",
+      "group": "Database",
+      "command": "go -C klingit-go run ./cli db reset",
+      "confirm": true
+    }
+  ]
+}</code></pre>
+              </div>
+              <p>
+                Open a workspace, choose the <strong>Tasks</strong> tab, and click <strong>Run</strong> next to a task.
+                Commands run in the workspace root because PI WEBUI creates the terminal for that workspace.
+              </p>
+              <p>
+                Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted
+                shell commands from your repositories.
+              </p>
+            </section>
+
+            <section id="manage-plugins">
+              <h2>Manage PI WEBUI plugins</h2>
+              <p>
+                Open <strong>Settings → PI WEBUI plugins</strong> to review discovered bundled, local, dev, and Pi package
+                plugins for the selected PI WEBUI machine. When the local machine is selected, this is the gateway plugin
+                list; when a remote machine is selected, the list comes from that remote PI WEBUI server and includes
+                disabled discovered plugins it exposes. PI WEBUI can disable any discovered selected-machine plugin before
+                the browser imports it. Core app contributions such as the command palette, base workspace tools, and
+                themes are not managed through this plugin list.
+              </p>
+              <p>
+                This surface is only for PI WEBUI plugin enablement. To install, remove, or update Pi packages that may
+                provide plugins or other Pi resources, use <strong>Settings → Pi packages</strong>. In a federated setup,
+                both the Pi packages panel and the PI WEBUI plugins panel target the selected machine; plugin enablement
+                still writes the PI WEBUI <code>plugins</code> config key rather than changing Pi package-manager settings.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Plugin config shape</strong>
+                  <button class="copy-button" data-copy="#plugin-config-shape">Copy</button>
+                </div>
+                <pre id="plugin-config-shape"><code>{
+  "plugins": {
+    "workspace-tasks": {
+      "enabled": true,
+      "settings": {}
+    },
+    "info": {
+      "enabled": false
+    }
+  }
+}</code></pre>
+              </div>
+              <p>
+                Plugins are enabled by default. Set <code>enabled</code> to <code>false</code> to remove a plugin from
+                <code>/pi-webui-plugins/manifest.json</code> so it is not imported or activated on the next page load.
+                The optional <code>settings</code> object is reserved for plugin-specific settings.
+              </p>
+              <p>
+                After changing plugin enablement, reload the PI WEBUI browser tab. Already-loaded plugin JavaScript is not
+                unloaded from the current page.
+              </p>
+            </section>
+
+            <section id="remote-machine-plugins">
+              <h2>Remote machine plugins</h2>
+              <p>
+                With <a href="machines">machine federation</a>, PI WEBUI also loads discovered plugins from the selected
+                remote machine. Remote plugins are trusted browser-side code like local plugins, but their actions,
+                workspace panels, and workspace labels only appear while that machine is selected.
+              </p>
+              <ul>
+                <li>File and terminal helpers run against the selected remote machine.</li>
+                <li>Remote plugin code is loaded best-effort through the current gateway and cached for the page lifetime.</li>
+                <li>If the gateway and remote machine both have an enabled plugin with the same original id, <code>machineSpecific</code> metadata decides whether the gateway copy is reused or only the selected-machine copy can appear.</li>
+                <li>Remote theme contributions are ignored for now because themes are app-wide.</li>
+                <li>Mixed PI WEBUI versions across federated machines are best-effort and not guaranteed compatible.</li>
+              </ul>
+              <p>
+                Remote plugin enablement is controlled by the remote machine's PI WEBUI plugin config. To edit or disable
+                one, select that machine and use <strong>Settings → PI WEBUI plugins</strong> when the remote server exposes
+                selected-machine settings, or open that machine directly/update its config file.
+              </p>
+              <p>
+                Plugin package metadata can set <code>machineSpecific: true</code>. Use it for plugins like Updates whose
+                UI should come from the selected PI WEBUI instance; on remote machines, the gateway copy is hidden unless
+                the remote machine exposes its own copy.
+              </p>
+              <p>
+                Current PI WEBUI manifests publish leading application-root module references. The browser keeps them
+                inside the current application base, so local and federated plugins follow root or nested reverse-proxy
+                deployments without a prefix-specific build while remaining compatible with existing gateways.
+                Federated gateways also accept manifest-relative references such as
+                <code>./&lt;plugin-id&gt;/plugin.js</code> and legacy plugin-root-relative references such as
+                <code>nested/plugin.js</code> from remote machines.
+              </p>
+              <p>
+                For portable plugin assets, prefer URLs relative to the plugin module, such as
+                <code>new URL("./asset.json", import.meta.url)</code>. If a remote plugin constructs absolute asset URLs,
+                it should use the <code>pluginId</code> from <code>activate()</code>; hard-coded
+                <code>/pi-webui-plugins/&lt;original-id&gt;/...</code> URLs may point at the gateway instead of the remote machine.
+              </p>
+            </section>
+
+            <section id="production">
+              <h2>Production usage</h2>
+              <p>
+                Local plugins work with the production native-service install. Put each plugin under
+                <code>~/.pi-webui/plugins/&lt;plugin-id&gt;/</code>, or symlink it there while developing. No PI WEBUI rebuild or
+                session-daemon restart is required.
+              </p>
+              <div class="callout warning">
+                If <code>PI_WEBUI_DATA_DIR</code> is set, use <code>$PI_WEBUI_DATA_DIR/plugins</code> instead of
+                <code>~/.pi-webui/plugins</code>.
+              </div>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Install a local plugin folder</strong>
+                  <button class="copy-button" data-copy="#plugin-symlink">Copy</button>
+                </div>
+                <pre id="plugin-symlink"><code><span class="prompt">$</span> mkdir -p ~/.pi-webui/plugins
+<span class="prompt">$</span> ln -s /path/to/plugin-folder ~/.pi-webui/plugins/plugin-id</code></pre>
+              </div>
+            </section>
+
+            <section id="agent-docs">
+              <h2>AI-friendly docs</h2>
+              <p>
+                The full plugin reference is available as Markdown for AI agents to read, fetch, and follow:
+                <a href="plugins.md">plugins.md</a>.
+              </p>
+              <p>
+                If you want to understand the API yourself, ask an agent to read that file and explain the relevant
+                public extension points for the plugin you want. Private PI WEBUI internals exist for the daring; treat
+                them as experimental surfaces that may graduate into stable helpers, change shape, or disappear.
+              </p>
+            </section>
+
+            <section id="develop">
+              <h2>Develop and debug</h2>
+              <ul>
+                <li>Keep the source folder outside <code>~/.pi-webui/plugins</code> and symlink it in.</li>
+                <li>After edits, reload or hard-reload the browser tab.</li>
+                <li>Check discovery with the manifest endpoint.</li>
+                <li>Check the browser console if a plugin fails to import or activate.</li>
+              </ul>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Check discovered plugins</strong>
+                  <button class="copy-button" data-copy="#plugin-manifest">Copy</button>
+                </div>
+                <pre id="plugin-manifest"><code><span class="prompt">$</span> curl http://127.0.0.1:8808/pi-webui-plugins/manifest.json</code></pre>
+              </div>
+              <p>
+                For all contribution types and package metadata, read the
+                <a href="plugins.md">Plugin API reference</a>.
+              </p>
+            </section>
+
+            <section id="trust">
+              <h2>Trust model</h2>
+              <p>
+                Plugins are not sandboxed. They run as JavaScript in the browser, can use browser APIs, call documented
+                PI WEBUI helpers, and render arbitrary UI. If a plugin reaches beyond those helpers into private PI WEBUI
+                internals, treat that dependency as experimental: it may become stable, change shape, or disappear.
+                Install only plugins you trust.
+              </p>
+              <p>
+                Plugins do not run inside the session daemon and do not provide server-side hooks.
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>PI WEBUI plugin docs</span>
+        <div class="footer-links">
+          <a href="./">Home</a>
+          <a href="remote-first">Remote-first</a>
+          <a href="machines">Fleet</a>
+          <a href="install">Install</a>
+          <a href="config">Config</a>
+          <a href="faq">FAQ</a>
+          <a href="https://github.com/hyperdreamer/pi-webui">GitHub</a>
+        </div>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

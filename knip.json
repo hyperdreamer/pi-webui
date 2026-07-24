@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/cli.ts",
+    "src/plugin-api.ts",
+    "src/plugin-api/unstable.ts",
+    "extensions/pi-webui.ts",
+    "pi-webui-plugins/**/pi-webui-plugin.ts",
+    "scripts/*.mjs"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "extensions/**/*.ts",
+    "pi-webui-plugins/**/*.ts"
+  ],
+  "ignoreExportsUsedInFile": true
+}

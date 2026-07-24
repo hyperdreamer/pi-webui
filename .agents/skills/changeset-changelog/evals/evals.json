@@ -1,0 +1,29 @@
+{
+  "skill_name": "changeset-changelog",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We fixed the session reconnect bug. Please prepare the changelog entry and commit message.",
+      "expected_output": "The assistant should create or propose a .changeset/*.md patch fragment with user-facing wording and a Conventional Commit style fix message, without editing CHANGELOG.md directly.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Add release notes for this new CLI option before we merge.",
+      "expected_output": "The assistant should add a changeset fragment for @hyperdreamer/pi-webui using patch for a backward-compatible CLI option, reserve major only for explicit user-requested breaking releases, avoid minor because pi-webui uses the semver minor slot for YYYYMM, and keep the text user-facing.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Can we update CHANGELOG.md now with the fix I just made?",
+      "expected_output": "The assistant should explain that normal development should use a .changeset fragment instead of manually editing CHANGELOG.md, then offer to create that fragment.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Please write a changeset for this config migration; older config files may not load after it lands.",
+      "expected_output": "The assistant should identify the possible breaking change and ask the user to confirm whether they explicitly want a breaking major release or want the change made backward-compatible before writing a major changeset.",
+      "files": []
+    }
+  ]
+}

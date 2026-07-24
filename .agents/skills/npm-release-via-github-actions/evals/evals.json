@@ -1,0 +1,35 @@
+{
+  "skill_name": "npm-release-via-github-actions",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Please make a new npm release for this package. Use the next patch version.",
+      "expected_output": "The assistant should inspect package.json, pending Changesets, and the GitHub Actions publish workflow; normalize non-breaking Changesets to patch; compute the pi-webui CalVer target as MAJOR.YYYYMM.PATCH using the release date and next patch for that major/month; run changeset version; enforce the computed version if needed; avoid local npm publish; run verification; commit/push; create a GitHub Release using changelog notes; monitor the publish workflow; and verify npm.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "bump npm to 1.202605.4 and publish it",
+      "expected_output": "The assistant should use the clearly requested exact version, avoid local npm publish, generate/update CHANGELOG.md through Changesets, enforce the requested version with --no-git-tag-version only if needed, push a release commit, create a GitHub Release that triggers publish.yml, and report action/npm status.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "The npm publish action failed last night; can you get the release published?",
+      "expected_output": "The assistant should inspect the failed GitHub Actions run and rerun or fix it through GitHub Actions. It should not use local npm publish as a workaround, and should preserve the generated changelog/release notes.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "make a new release; I added a non-breaking feature changeset that says minor",
+      "expected_output": "The assistant should not ask whether to use a patch bump or date change. It should treat non-breaking pi-webui changesets as patch, compute MAJOR.YYYYMM.PATCH from the release date, run release prep, and enforce the computed CalVer version before creating the GitHub Release.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "make a new release; the API auth config format changed and old config files probably won't work anymore",
+      "expected_output": "The assistant should recognize a possible breaking change and pause to ask the user whether to proceed as an explicitly requested breaking major release or change the work to remain non-breaking. It should not infer or perform a major version bump without user confirmation.",
+      "files": []
+    }
+  ]
+}

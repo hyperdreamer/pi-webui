@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: hostexec [--root] [--] <command...>
+
+Run a command on the Docker host by starting a temporary privileged helper
+container through the mounted Docker socket and entering the host namespaces.
+Commands run as the current container UID/GID by default. Use --root to keep
+root privileges for administrative host commands.
+EOF
+}
+
+run_as_root=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --root)
+      run_as_root=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ "$#" -eq 0 ]; then
+  usage
+  exit 64
+fi
+
+hostexec_mode="${HOSTEXEC_MODE:-nsenter}"
+case "$hostexec_mode" in
+  nsenter) ;;
+  disabled|none)
+    echo "hostexec: disabled for this Docker host profile" >&2
+    echo "hostexec: on Docker Desktop for Mac, containers run inside a Linux VM and cannot enter native macOS namespaces" >&2
+    exit 69
+    ;;
+  *)
+    echo "hostexec: unsupported HOSTEXEC_MODE: $hostexec_mode" >&2
+    exit 64
+    ;;
+esac
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "hostexec: docker CLI not found in this container" >&2
+  exit 127
+fi
+
+docker_host="${DOCKER_HOST:-unix:///var/run/docker.sock}"
+if [[ "$docker_host" == unix://* ]]; then
+  socket_path="${docker_host#unix://}"
+  if [ ! -S "$socket_path" ]; then
+    echo "hostexec: Docker socket is not accessible as a Unix socket at $socket_path" >&2
+    exit 69
+  fi
+fi
+
+helper_image="${HOSTEXEC_IMAGE:-alpine:3.22}"
+target_uid="$(id -u)"
+target_gid="$(id -g)"
+tty_args=(--interactive)
+if [ -t 0 ] && [ -t 1 ]; then
+  tty_args+=(--tty)
+fi
+
+docker_args=(
+  --rm
+  "${tty_args[@]}"
+  --pull=missing
+  --privileged
+  --security-opt label=disable
+  --pid=host
+  --network=host
+  --volume /:/host:rw
+)
+
+if [ "$run_as_root" = true ] || { [ "$target_uid" = 0 ] && [ "$target_gid" = 0 ]; }; then
+  exec docker run \
+    "${docker_args[@]}" \
+    "$helper_image" \
+    nsenter -t 1 -m -u -i -n -p -- "$@"
+fi
+
+run_as_container_user='target_uid="${HOSTEXEC_TARGET_UID:?}"
+target_gid="${HOSTEXEC_TARGET_GID:?}"
+
+target_user=""
+if command -v getent >/dev/null 2>&1; then
+  passwd_entry="$(getent passwd "$target_uid" || true)"
+  if [ -n "$passwd_entry" ]; then
+    target_user="${passwd_entry%%:*}"
+  fi
+fi
+
+if [ -n "$target_user" ]; then
+  if command -v runuser >/dev/null 2>&1; then
+    exec runuser -u "$target_user" -- "$@"
+  fi
+
+  if command -v su >/dev/null 2>&1; then
+    exec su -s /bin/sh -c '\''exec "$@"'\'' -- "$target_user" hostexec-su "$@"
+  fi
+fi
+
+if command -v setpriv >/dev/null 2>&1; then
+  if [ -n "$target_user" ]; then
+    exec setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups -- "$@"
+  fi
+
+  exec setpriv --reuid "$target_uid" --regid "$target_gid" --clear-groups -- "$@"
+fi
+
+if command -v nsenter >/dev/null 2>&1; then
+  exec nsenter -t 1 -m -u -i -n -p -S "$target_uid" -G "$target_gid" -- "$@"
+fi
+
+echo "hostexec: unable to switch to host uid:gid $target_uid:$target_gid" >&2
+exit 69
+'
+
+exec docker run \
+  "${docker_args[@]}" \
+  --env HOSTEXEC_TARGET_UID="$target_uid" \
+  --env HOSTEXEC_TARGET_GID="$target_gid" \
+  "$helper_image" \
+  nsenter -t 1 -m -u -i -n -p -- /bin/sh -c "$run_as_container_user" hostexec-user "$@"

@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PI WEBUI — web UI for Pi Coding Agent</title>
+    <meta
+      name="description"
+      content="PI WEBUI is a web UI for Pi Coding Agent that keeps agent sessions running in real workspaces on your machine or server."
+    />
+    <link rel="canonical" href="https://pi-webui.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PI WEBUI" />
+    <meta property="og:title" content="PI WEBUI — web UI for Pi Coding Agent" />
+    <meta
+      property="og:description"
+      content="Run persistent Pi Coding Agent sessions in real workspaces and supervise them from any browser."
+    />
+    <meta property="og:url" content="https://pi-webui.dev/" />
+    <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <meta property="og:image:alt" content="PI WEBUI browser UI for persistent Pi Coding Agent sessions" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="PI WEBUI — web UI for Pi Coding Agent" />
+    <meta
+      name="twitter:description"
+      content="Run persistent Pi Coding Agent sessions in real workspaces and supervise them from any browser."
+    />
+    <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "PI WEBUI",
+        "alternateName": ["Pi web UI", "Pi Coding Agent web UI"],
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows WSL",
+        "url": "https://pi-webui.dev/",
+        "downloadUrl": "https://www.npmjs.com/package/@hyperdreamer/pi-webui",
+        "codeRepository": "https://github.com/hyperdreamer/pi-webui",
+        "description": "PI WEBUI is a web UI for Pi Coding Agent that keeps persistent agent sessions running in real workspaces on your machine or server.",
+        "softwareRequirements": "Node.js 22.19.0 or newer and Pi Coding Agent >=0.80.8 <0.81",
+        "license": "https://github.com/hyperdreamer/pi-webui/blob/main/LICENSE"
+      }
+    </script>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script>
+      (() => {
+        const theme = window.localStorage.getItem("pi-webui-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="home-page">
+    <header class="site-header">
+      <nav class="container nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="PI WEBUI home">PI WEBUI</a>
+        <div class="nav-links">
+          <div class="nav-pages">
+            <a href="remote-first">Remote-first</a>
+            <a href="machines">Fleet</a>
+            <a href="install">Install</a>
+            <a href="config">Config</a>
+            <a href="plugins">Plugins</a>
+            <a href="faq">FAQ</a>
+          </div>
+          <div class="nav-actions">
+            <a class="github-link" href="https://github.com/hyperdreamer/pi-webui" aria-label="PI WEBUI on GitHub">
+              <svg class="github-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.55-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.2-.08-.2-.36-1.03.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.94c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.16.51.58.82 1.31.82 2.2 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.53 0 1.1-.01 1.99-.01 2.27 0 .22.15.49.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"
+                />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+              <span data-theme-icon aria-hidden="true">◐</span>
+              <span data-theme-label>Theme</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <p class="eyebrow"><span class="pulse"></span> Pi Coding Agent web UI</p>
+            <h1>
+              <span class="title-context">The web UI for</span>
+              <span class="gradient-text intro-target" aria-label="Pi Coding Agent sessions that keep working.">
+                <span class="intro-word" style="--i: 0">Pi</span>
+                <span class="intro-word" style="--i: 1">Coding</span>
+                <span class="intro-word" style="--i: 2">Agent</span>
+                <span class="intro-word" style="--i: 3">sessions</span>
+                <span class="intro-word" style="--i: 4">that</span>
+                <span class="intro-word" style="--i: 5">keep</span>
+                <span class="intro-word" style="--i: 6">working.</span>
+              </span>
+            </h1>
+            <p class="hero-lede">
+              PI WEBUI keeps Pi Coding Agent sessions running in real server-side workspaces, even after your browser
+              leaves, and gives you a fast web UI to supervise, redirect, and review work from any device.
+            </p>
+            <p class="hero-manifesto">
+              Local development made sense when humans drove every keystroke. Agentic development works better when the
+              environment is persistent, remote, and always available.
+            </p>
+            <div class="hero-actions">
+              <a class="button primary" href="#quick-install">Install in minutes</a>
+              <a class="button" href="install">Read the docs</a>
+            </div>
+            <div class="hero-stats" aria-label="Highlights">
+              <div class="stat"><strong>Persistent</strong><span>sessions survive browser disconnects</span></div>
+              <div class="stat"><strong>Parallel</strong><span>projects, worktrees, and agents</span></div>
+              <div class="stat"><strong>Yours</strong><span>runs on your machine or server</span></div>
+            </div>
+          </div>
+
+          <aside class="terminal" aria-label="PI WEBUI install preview">
+            <div class="terminal-top">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span>agent-hub.local</span>
+            </div>
+            <pre><code><span class="prompt">$</span> pi-webui status
+✓ session daemon running
+✓ web server listening on 127.0.0.1:8808
+
+<span class="prompt">$</span> open http://127.0.0.1:8808
+# laptop, phone, tablet — same live sessions
+
+<span class="prompt">$</span> pi-webui doctor
+✓ caller login shell can find node >= 22.19.0
+✓ native-service plan requirements pass in manager context
+✓ ready for persistent agent work</code></pre>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container">
+          <div class="demo-frame" data-demo-carousel>
+            <div class="demo-caption">
+              <div class="demo-caption-copy">
+                <strong>Workspaces, sessions, transcripts, files — one Pi web UI on every screen.</strong>
+                <span>Bring your own repositories. Swipe through the screenshots or click one to enlarge.</span>
+              </div>
+              <div class="demo-controls" data-demo-controls hidden role="group" aria-label="Screenshot gallery controls">
+                <button class="demo-control" type="button" data-demo-prev aria-label="Previous screenshot">‹</button>
+                <div class="demo-dots" role="group" aria-label="Choose screenshot">
+                  <button class="demo-dot" type="button" data-demo-dot="0" aria-label="Show desktop screenshot" aria-current="true"></button>
+                  <button class="demo-dot" type="button" data-demo-dot="1" aria-label="Show tablet screenshot" aria-current="false"></button>
+                  <button class="demo-dot" type="button" data-demo-dot="2" aria-label="Show mobile screenshot" aria-current="false"></button>
+                </div>
+                <button class="demo-control" type="button" data-demo-next aria-label="Next screenshot">›</button>
+              </div>
+            </div>
+            <div class="demo-gallery" data-demo-gallery tabindex="0" aria-label="PI WEBUI screenshots">
+              <figure class="demo-shot demo-shot-desktop" data-demo-slide>
+                <div class="demo-shot-media">
+                  <button class="demo-lightbox-trigger" type="button" data-demo-lightbox-trigger aria-label="Open desktop screenshot preview">
+                    <img
+                      src="assets/pi-webui-desktop.png"
+                      alt="PI WEBUI desktop screenshot showing an agent-created pi-webui.dev screenshot selected in the file preview"
+                    />
+                  </button>
+                </div>
+                <figcaption><strong>Desktop</strong><span>Chat beside workspace file preview.</span></figcaption>
+              </figure>
+              <figure class="demo-shot" data-demo-slide>
+                <div class="demo-shot-media">
+                  <button class="demo-lightbox-trigger" type="button" data-demo-lightbox-trigger aria-label="Open tablet screenshot preview">
+                    <img src="assets/pi-webui-tablet.png" alt="PI WEBUI tablet screenshot" />
+                  </button>
+                </div>
+                <figcaption><strong>Tablet</strong><span>The same live session on a wider touch screen.</span></figcaption>
+              </figure>
+              <figure class="demo-shot demo-shot-mobile" data-demo-slide>
+                <div class="demo-shot-media">
+                  <button class="demo-lightbox-trigger" type="button" data-demo-lightbox-trigger aria-label="Open mobile screenshot preview">
+                    <img src="assets/pi-webui-mobile.png" alt="PI WEBUI mobile chat screenshot" />
+                  </button>
+                </div>
+                <figcaption><strong>Mobile</strong><span>Readable chat controls when you are away from the desk.</span></figcaption>
+              </figure>
+            </div>
+            <dialog class="demo-lightbox" data-demo-lightbox aria-label="Screenshot preview">
+              <div class="demo-lightbox-panel">
+                <button class="demo-lightbox-close" type="button" data-demo-lightbox-close aria-label="Close screenshot preview">×</button>
+                <img data-demo-lightbox-image alt="" />
+                <p data-demo-lightbox-caption></p>
+              </div>
+            </dialog>
+          </div>
+        </div>
+      </section>
+
+      <section class="section manifesto-section" aria-labelledby="manifesto-title">
+        <div class="container manifesto-panel">
+          <div class="manifesto-copy">
+            <p class="eyebrow"><span class="pulse"></span> The mental shift</p>
+            <h2 id="manifesto-title">Developer tools were built for a world that no longer exists.</h2>
+            <p>
+              Editors and terminals assume the work lives with you, on your device, inside your session. AI agents break
+              that assumption: their work should persist, continue, and evolve independently of your laptop.
+            </p>
+            <p>
+              PI WEBUI makes persistence first-class. Sessions live outside the browser, agents keep working, and every
+              device becomes a control surface for supervising, redirecting, and reviewing progress.
+            </p>
+          </div>
+          <div class="manifesto-lines" aria-label="PI WEBUI principles">
+            <p>Persistence should not be something you bolt on after the fact.</p>
+            <p>The work should not disappear the moment your session ends.</p>
+            <p>You do not carry the work. You guide it.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow"><span class="pulse"></span> Remote AI-driven development</p>
+            <h2>Your laptop is a window, not the workstation.</h2>
+            <p>
+              Local-only development can become the blocker: one device owns the tools, terminals, build cache, editor,
+              and agent runtime. PI WEBUI moves the working environment to a machine that stays on, so agents can keep
+              making progress while every browser becomes a control surface.
+            </p>
+          </div>
+          <div class="cards">
+            <article class="card">
+              <div class="card-icon">▣</div>
+              <h3>The workstation becomes remote</h3>
+              <p>
+                Keep repositories, dependencies, secrets, build caches, and long-running agent sessions on the machine
+                designed to run them.
+              </p>
+            </article>
+            <article class="card">
+              <div class="card-icon">⇄</div>
+              <h3>Any browser can supervise the work</h3>
+              <p>
+                Your device is replaceable. The sessions are not. Move between laptop, phone, tablet, and desktop
+                without moving the development environment. Under the hood, PI WEBUI coordinates the running sessions,
+                files, terminals, Pi package management, and remote machines like a browser-based control plane.
+              </p>
+            </article>
+            <article class="card">
+              <div class="card-icon">↯</div>
+              <h3>Agents become persistent workers</h3>
+              <p>
+                Start work, leave, return later, review progress, and keep multiple streams running in parallel from one
+                stable environment.
+              </p>
+            </article>
+          </div>
+          <div class="doc-actions">
+            <a class="button" href="remote-first">Read the remote-first philosophy</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow"><span class="pulse"></span> Why it feels different</p>
+            <h2>Not another tab. A persistent place for agent work.</h2>
+          </div>
+          <div class="cards">
+            <article class="card">
+              <div class="card-icon">↻</div>
+              <h3>Come back later</h3>
+              <p>
+                Active sessions live in a long-running daemon, not in your browser tab. Close the lid, reconnect from a
+                phone, and continue supervising the same work.
+              </p>
+            </article>
+            <article class="card">
+              <div class="card-icon">⌘</div>
+              <h3>Use real workspaces</h3>
+              <p>
+                Add projects once, discover git worktrees automatically, and start agents where the code actually lives.
+              </p>
+            </article>
+            <article class="card">
+              <div class="card-icon" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  focusable="false"
+                >
+                  <circle cx="12" cy="12" r="6.5"></circle>
+                  <path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"></path>
+                </svg>
+              </div>
+              <h3>Keep control</h3>
+              <p>
+                Watch transcript history, status, shell activity, context usage, and costs while redirecting the agent in
+                realtime.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="quick-install" class="section">
+        <div class="container install-panel">
+          <div class="install-card">
+            <p class="eyebrow"><span class="pulse"></span> Quick install</p>
+            <h2>Run PI WEBUI as user services.</h2>
+            <ol>
+              <li>Install the package globally with npm.</li>
+              <li>Run the installer to create native per-user services.</li>
+              <li>Open the local URL, or tunnel it from a remote machine.</li>
+            </ol>
+            <div class="doc-actions">
+              <a class="button primary" href="install">Complete installation guide</a>
+              <a class="button" href="faq">Troubleshooting FAQ</a>
+            </div>
+          </div>
+
+          <div class="terminal quick-install">
+            <div class="copy-row">
+              <strong>User service install</strong>
+              <button class="copy-button" data-copy="#home-install">Copy</button>
+            </div>
+            <pre id="home-install"><code><span class="prompt">$</span> npm install -g @hyperdreamer/pi-webui --allow-scripts=node-pty
+<span class="prompt">$</span> pi-webui install
+<span class="prompt">$</span> pi-webui doctor
+<span class="prompt">$</span> pi-webui version
+<span class="comment"># Open http://127.0.0.1:8808</span></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container doc-grid">
+          <article class="doc-card">
+            <h3>WSL and containers?</h3>
+            <p>
+              Use <code>pi-webui install</code> where a supported per-user service manager is available. WSL works with the
+              installer when systemd is enabled; otherwise use the manual run path.
+            </p>
+            <a href="faq#is-this-linux-only">Read compatibility notes →</a>
+          </article>
+          <article class="doc-card">
+            <h3>Local UI plugins?</h3>
+            <p>
+              Ask AI agents to add trusted local UI plugins from <code>~/.pi-webui/plugins</code> without rebuilding or
+              restarting the session daemon.
+            </p>
+            <a href="plugins">Build a plugin →</a>
+          </article>
+          <article class="doc-card">
+            <h3>Node or tools not found?</h3>
+            <p>
+              Services run login shells. If tools work in your interactive terminal but not in PI WEBUI, fix PATH in your
+              login shell startup files and run the doctor command.
+            </p>
+            <a href="faq#tools-are-not-found">Fix PATH issues →</a>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>PI WEBUI · web UI for persistent Pi Coding Agent sessions.</span>
+        <div class="footer-links">
+          <a href="remote-first">Remote-first</a>
+          <a href="machines">Fleet</a>
+          <a href="install">Install</a>
+          <a href="config">Config</a>
+          <a href="plugins">Plugins</a>
+          <a href="faq">FAQ</a>
+          <a href="https://www.npmjs.com/package/@hyperdreamer/pi-webui">npm</a>
+        </div>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>PI WEBUI</title>
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --pi-control-font-size: 16px;
+        --pi-control-font-family: system-ui, sans-serif;
+        --pi-control-monospace-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --pi-bg: #0d1117;
+        --pi-surface: #161b22;
+        --pi-surface-hover: #21262d;
+        --pi-terminal-bg: #05070a;
+        --pi-terminal-text: #e6edf3;
+        --pi-border: #30363d;
+        --pi-border-muted: #21262d;
+        --pi-text: #e6edf3;
+        --pi-text-secondary: #c9d1d9;
+        --pi-text-bright: #f0f6fc;
+        --pi-muted: #8b949e;
+        --pi-dim: #6e7681;
+        --pi-accent: #58a6ff;
+        --pi-accent-border: #2f81f7;
+        --pi-selection-bg: #0d2847;
+        --pi-success: #3fb950;
+        --pi-success-border: #238636;
+        --pi-success-bg: #0f1b12;
+        --pi-success-surface: #0f2a16;
+        --pi-success-ring: #3fb95055;
+        --pi-warning: #d29922;
+        --pi-warning-border: #6e5200;
+        --pi-warning-surface: #1f1a10;
+        --pi-danger: #ff7b72;
+        --pi-purple: #d2a8ff;
+        --pi-purple-border: #a371f7;
+        --pi-purple-surface: #21132f;
+        --pi-overlay: #0008;
+        --pi-shadow-soft: #0006;
+        --pi-shadow: #0008;
+        --pi-shadow-strong: #000b;
+        --pi-bg-overlay-soft: #0d1117dd;
+        --pi-bg-overlay: #0d1117e6;
+        --pi-success-bg-overlay: #0f1b12ee;
+        --pi-terminal-selection: #264f78;
+      }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--pi-bg); color: var(--pi-text); }
+      body { min-height: 100dvh; }
+    </style>
+  </head>
+  <body>
+    <pi-webui-app></pi-webui-app>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

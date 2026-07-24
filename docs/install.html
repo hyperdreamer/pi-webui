@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install PI WEBUI — web UI for Pi Coding Agent</title>
+    <meta
+      name="description"
+      content="Install PI WEBUI, the web UI for Pi Coding Agent, on Linux, macOS, or Windows WSL with persistent user services."
+    />
+    <link rel="canonical" href="https://pi-webui.dev/install" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PI WEBUI" />
+    <meta property="og:title" content="Install PI WEBUI — web UI for Pi Coding Agent" />
+    <meta
+      property="og:description"
+      content="Install PI WEBUI with npm, Pi, or manual service commands and keep Pi Coding Agent sessions running."
+    />
+    <meta property="og:url" content="https://pi-webui.dev/install" />
+    <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <meta property="og:image:alt" content="PI WEBUI browser UI for persistent Pi Coding Agent sessions" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Install PI WEBUI — web UI for Pi Coding Agent" />
+    <meta
+      name="twitter:description"
+      content="Install PI WEBUI with npm, Pi, or manual service commands and keep Pi Coding Agent sessions running."
+    />
+    <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script>
+      (() => {
+        const theme = window.localStorage.getItem("pi-webui-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="container nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="PI WEBUI home">PI WEBUI</a>
+        <div class="nav-links">
+          <div class="nav-pages">
+            <a href="remote-first">Remote-first</a>
+            <a href="machines">Fleet</a>
+            <a href="install" aria-current="page">Install</a>
+            <a href="config">Config</a>
+            <a href="plugins">Plugins</a>
+            <a href="faq">FAQ</a>
+          </div>
+          <div class="nav-actions">
+            <a class="github-link" href="https://github.com/hyperdreamer/pi-webui" aria-label="PI WEBUI on GitHub">
+              <svg class="github-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.55-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.2-.08-.2-.36-1.03.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.94c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.16.51.58.82 1.31.82 2.2 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.53 0 1.1-.01 1.99-.01 2.27 0 .22.15.49.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"
+                />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+              <span data-theme-icon aria-hidden="true">◐</span>
+              <span data-theme-label>Theme</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <div class="container">
+          <p class="eyebrow"><span class="pulse"></span> Installation guide</p>
+          <h1>Get PI WEBUI running where your agents work.</h1>
+          <p>
+            The recommended setup runs PI WEBUI as per-user services. PI WEBUI chooses the native user-service backend for
+            your operating system.
+          </p>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container doc-layout">
+          <aside class="toc" aria-label="Install page contents">
+            <strong>On this page</strong>
+            <a href="#requirements">Requirements</a>
+            <a href="#user-services">User service install</a>
+            <a href="#pi-package">Install through Pi</a>
+            <a href="#manual-run">WSL / manual run</a>
+            <a href="#remote-access">Remote access</a>
+            <a href="#reverse-proxy-prefix">Reverse proxy prefixes</a>
+            <a href="#federated-machines">Federated machines</a>
+            <a href="#manage-services">Manage services</a>
+            <a href="#configure">Configure</a>
+            <a href="#uninstall">Uninstall</a>
+          </aside>
+
+          <div class="doc-content">
+            <section id="requirements">
+              <h2>Requirements</h2>
+              <ul>
+                <li><strong>Node.js 22.19.0 or newer</strong> and npm.</li>
+                <li><strong>Pi Coding Agent <code>&gt;=0.80.8 &lt;0.81</code></strong> installed/configured so the <code>pi</code> command works for your user.</li>
+                <li>A shell login environment that exposes Node, npm, Pi, git, and any tools your agents need.</li>
+                <li>For the automatic installer: a supported per-user service manager.</li>
+              </ul>
+              <div class="callout warning">
+                <strong>Important PATH detail:</strong>
+                PI WEBUI services run through a non-interactive login shell with <code>-lc</code>. Setup that only lives in
+                interactive shell files or prompt hooks may not be visible to the systemd or launchd manager. The installer
+                probes the safely verifiable requirements of the exact candidate plan in that manager context before changing
+                config or replacing services. Arbitrary configured command overrides are preserved but not executed by
+                preflight; run <code>pi-webui doctor</code> later to repeat plan-specific diagnostics.
+              </div>
+            </section>
+
+            <section id="user-services">
+              <h2>Recommended: run PI WEBUI as user services</h2>
+              <p>
+                This creates two per-user services: one long-lived session daemon and one web/API service. The CLI chooses
+                the native user-service backend automatically. It is the easiest way to keep sessions available after SSH
+                disconnects, browser restarts, or web/API restarts.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>User service install</strong>
+                  <button class="copy-button" data-copy="#linux-install">Copy</button>
+                </div>
+                <pre id="linux-install"><code><span class="prompt">$</span> npm install -g @hyperdreamer/pi-webui --allow-scripts=node-pty
+<span class="prompt">$</span> pi-webui install
+<span class="prompt">$</span> pi-webui doctor</code></pre>
+              </div>
+              <p>
+                The scoped <code>--allow-scripts=node-pty</code> flag lets npm 12 run the native-module installation required
+                by PI WEBUI terminals without enabling install scripts for other dependencies.
+              </p>
+              <p>Then open <a href="http://127.0.0.1:8808">http://127.0.0.1:8808</a>.</p>
+              <p>If preflight fails, no config or existing services are changed. Follow the detected shell guidance: zsh services read <code>~/.zprofile</code>, not interactive-only <code>~/.zshrc</code>; bash uses <code>~/.bash_profile</code> or <code>~/.profile</code>.</p>
+              <p>On Linux servers, also consider <code>sudo loginctl enable-linger "$USER"</code> so user services survive logout/reboot.</p>
+            </section>
+
+            <section id="pi-package">
+              <h2>Install through Pi</h2>
+              <p>PI WEBUI is also published as a Pi package. This exposes a <code>/pi-webui</code> command inside Pi.</p>
+              <p>When installed this way, <code>/pi-webui install</code> can use PI WEBUI's package-local service entrypoints, so <code>pi-webui-server</code> and <code>pi-webui-sessiond</code> do not need to be on your shell <code>PATH</code>.</p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Pi package path</strong>
+                  <button class="copy-button" data-copy="#pi-package-install">Copy</button>
+                </div>
+                <pre id="pi-package-install"><code><span class="prompt">$</span> pi install npm:@hyperdreamer/pi-webui
+
+<span class="comment"># Then inside Pi:</span>
+/pi-webui install
+/pi-webui status
+/pi-webui logs
+/pi-webui doctor
+/pi-webui version</code></pre>
+              </div>
+            </section>
+
+            <section id="manual-run">
+              <h2>WSL / manual run</h2>
+              <p>
+                On WSL without systemd, containers without a user service manager, or other unsupported environments,
+                install the package and run the daemon and web server yourself.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Manual processes</strong>
+                  <button class="copy-button" data-copy="#manual-install">Copy</button>
+                </div>
+                <pre id="manual-install"><code><span class="prompt">$</span> npm install -g @hyperdreamer/pi-webui --allow-scripts=node-pty
+
+<span class="comment"># Terminal 1</span>
+<span class="prompt">$</span> pi-webui-sessiond
+
+<span class="comment"># Terminal 2</span>
+<span class="prompt">$</span> PI_WEBUI_PORT=8808 pi-webui-server</code></pre>
+              </div>
+              <p>
+                On modern WSL distributions with systemd enabled, the installer can work. Without systemd, use the
+                manual run approach above.
+              </p>
+              <p>
+                From a PI WEBUI checkout, <code>pi-webui install --dev</code> installs the split development services on supported user-service platforms.
+                <code>pi-webui uninstall</code> removes both production and development service files; no uninstall flags are needed.
+              </p>
+            </section>
+
+            <section id="remote-access">
+              <h2>Remote access</h2>
+              <p>
+                PI WEBUI binds to <code>127.0.0.1:8808</code> by default. For a remote server, the safest option is an SSH
+                tunnel:
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>SSH tunnel</strong>
+                  <button class="copy-button" data-copy="#ssh-tunnel">Copy</button>
+                </div>
+                <pre id="ssh-tunnel"><code><span class="prompt">$</span> ssh -L 8808:127.0.0.1:8808 user@your-server
+<span class="comment"># Open http://127.0.0.1:8808 on your local machine</span></code></pre>
+              </div>
+              <div class="callout danger">
+                PI WEBUI is designed for trusted users and trusted server paths. Do not expose it directly to the public
+                internet. If you use a VPN or private network, bind PI WEBUI to the server's VPN/private IP, such as a
+                NetBird/Tailscale/WireGuard/LAN address, and make sure that network policy limits access. Avoid
+                <code>0.0.0.0</code> unless a firewall, VPN, or authenticated reverse proxy strictly controls the port.
+              </div>
+            </section>
+
+            <section id="reverse-proxy-prefix">
+              <h2>Reverse proxy root and path-prefix deployments</h2>
+              <p>
+                The published PI WEBUI client is deployment-independent. The same package works at the origin root
+                (<code>/</code>) or at canonical nested prefixes such as <code>/ai/</code> and <code>/test/ai/</code>;
+                no prefix-specific rebuild or PI WEBUI configuration is needed.
+              </p>
+              <p>
+                For a root deployment, proxy <code>/</code> directly to <code>http://127.0.0.1:8808</code> without
+                rewriting the path. For a nested deployment:
+              </p>
+              <ol>
+                <li>Redirect the slashless prefix, such as <code>/ai</code>, to <code>/ai/</code>. The browser uses the trailing-slash document URL as the application base.</li>
+                <li>Strip the prefix before forwarding. PI WEBUI continues to serve root paths on its localhost listener.</li>
+                <li>Apply authentication to the whole served <code>/ai/</code> application and preserve required authentication headers and cookies.</li>
+                <li>Forward WebSocket upgrades through the same location as HTTP, API, image, PWA, and plugin traffic.</li>
+              </ol>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Nginx path-prefix proxy</strong>
+                  <button class="copy-button" data-copy="#nginx-prefix-proxy">Copy</button>
+                </div>
+                <pre id="nginx-prefix-proxy"><code><span class="comment"># http context</span>
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    server_name pi.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/pi.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pi.example.com/privkey.pem;
+
+    auth_basic "PI WEBUI";
+    auth_basic_user_file /etc/nginx/pi-webui.htpasswd;
+
+    location = /ai {
+        return 308 /ai/$is_args$args;
+    }
+
+    location ^~ /ai/ {
+        <span class="comment"># The trailing slash strips /ai/ before forwarding.</span>
+        proxy_pass http://127.0.0.1:8808/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Cookie $http_cookie;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 1h;
+    }
+}</code></pre>
+              </div>
+              <p>
+                Use the same pattern for <code>/test/ai/</code> by changing both Nginx locations. If your proxy uses
+                bearer tokens, SSO, or another authentication mechanism, keep that policy on the prefixed application
+                location and continue forwarding the headers or cookies it requires; the slashless redirect serves no
+                PI WEBUI content. Do not create unprotected exceptions for <code>/api/</code> or
+                <code>/pi-webui-plugins/</code>.
+              </p>
+              <p>
+                Once the proxy follows this contract, relative client assets, images, PWA assets, API calls, local and
+                federated plugins, and WebSocket URLs stay inside the prefix. Installed PWA <code>start_url</code> and
+                scope stay inside it as well.
+              </p>
+            </section>
+
+            <section id="federated-machines">
+              <h2>Federated machines</h2>
+              <p>
+                To use one PI WEBUI instance as a gateway to others, install and run PI WEBUI on each target machine first.
+                Make each target reachable from the gateway through a trusted path, then open the gateway and use
+                <strong>Actions → Add Machine</strong> with the target PI WEBUI base URL.
+              </p>
+              <p>
+                The remote URL can be reachable through NetBird, Tailscale, WireGuard, LAN, an SSH tunnel, or an authenticated reverse proxy. The
+                browser keeps using the gateway origin while projects, sessions, files, and terminals run on the selected
+                remote runtime.
+              </p>
+              <div class="doc-actions">
+                <a class="button" href="machines">Read the fleet guide</a>
+              </div>
+            </section>
+
+            <section id="manage-services">
+              <h2>Manage services</h2>
+              <p><code>pi-webui version</code> compares the installed package version with the versions reported by the running Web/UI and session daemon services.</p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Useful commands</strong>
+                  <button class="copy-button" data-copy="#manage-commands">Copy</button>
+                </div>
+                <pre id="manage-commands"><code><span class="prompt">$</span> pi-webui status
+<span class="prompt">$</span> pi-webui logs
+<span class="prompt">$</span> pi-webui restart
+<span class="prompt">$</span> pi-webui doctor
+<span class="prompt">$</span> pi-webui version
+
+<span class="comment"># From a checkout, install the split development services:</span>
+<span class="prompt">$</span> pi-webui install --dev</code></pre>
+              </div>
+            </section>
+
+            <section id="configure">
+              <h2>Configure</h2>
+              <p>
+                The installer writes a config file to <code>~/.config/pi-webui/config.json</code>, or to
+                <code>$XDG_CONFIG_HOME/pi-webui/config.json</code> when <code>XDG_CONFIG_HOME</code> is set. You can choose a
+                different config file during install with <code>pi-webui install --config /path/to/config.json</code>, or at
+                runtime with <code>PI_WEBUI_CONFIG=/path/to/config.json</code>.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Common config</strong>
+                  <button class="copy-button" data-copy="#config-example">Copy</button>
+                </div>
+                <pre id="config-example"><code>{
+  "host": "127.0.0.1",
+  "port": 8808,
+  "pathAccess": {
+    "allowedPaths": ["~/SDKs", "/opt/reference"]
+  },
+  "spawnSessions": true,
+  "subsessions": false
+}</code></pre>
+              </div>
+              <p>
+                Use <strong>Settings → General</strong> for host, port, and external filesystem roots; <strong>Settings → Session daemon</strong>
+                for agent-spawn tools; <strong>Settings → Pi packages</strong> for Pi package install/remove/update;
+                <strong>Settings → PI WEBUI plugins</strong> for browser plugin enablement; and <strong>Settings → Keyboard</strong>
+                for shortcut overrides.
+              </p>
+              <div class="callout">
+                Need the full schema, restart rules, project-local <code>.pi-webui/config.json</code>, path access details, and
+                environment variable reference? Read the <a href="config">configuration reference</a>.
+              </div>
+              <p>
+                The web server defaults to <code>127.0.0.1:8808</code>, and PI WEBUI-managed state defaults to
+                <code>~/.pi-webui</code>. External filesystem paths are denied by default unless listed in
+                <code>pathAccess.allowedPaths</code>.
+              </p>
+            </section>
+
+            <section id="uninstall">
+              <h2>Uninstall</h2>
+              <p>
+                <code>pi-webui uninstall</code> stops, disables, and removes PI WEBUI's production and development service files.
+                It does not remove the npm package, config file, or data directory.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Uninstall services and package</strong>
+                  <button class="copy-button" data-copy="#uninstall-commands">Copy</button>
+                </div>
+                <pre id="uninstall-commands"><code><span class="prompt">$</span> pi-webui uninstall
+<span class="prompt">$</span> npm uninstall -g @hyperdreamer/pi-webui</code></pre>
+              </div>
+              <p>Optional cleanup, if you also want to delete PI WEBUI config and state:</p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Delete config and data</strong>
+                  <button class="copy-button" data-copy="#delete-data-commands">Copy</button>
+                </div>
+                <pre id="delete-data-commands"><code><span class="prompt">$</span> CONFIG_FILE="${PI_WEBUI_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/pi-webui/config.json}"
+<span class="prompt">$</span> DATA_DIR="${PI_WEBUI_DATA_DIR:-$HOME/.pi-webui}"
+<span class="prompt">$</span> rm -f "$CONFIG_FILE"
+<span class="prompt">$</span> rmdir "$(dirname "$CONFIG_FILE")" 2&gt;/dev/null || true
+<span class="prompt">$</span> rm -rf "$DATA_DIR"
+
+<span class="comment"># If you configured a socket outside PI_WEBUI_DATA_DIR, remove it too:</span>
+<span class="prompt">$</span> [ -z "${PI_WEBUI_SESSIOND_SOCKET:-}" ] || rm -f "$PI_WEBUI_SESSIOND_SOCKET"</code></pre>
+              </div>
+              <p>
+                If you installed with <code>pi-webui install --config /custom/path.json</code>, delete that custom file instead
+                of the default config path.
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>PI WEBUI docs</span>
+        <div class="footer-links">
+          <a href="./">Home</a>
+          <a href="remote-first">Remote-first</a>
+          <a href="machines">Fleet</a>
+          <a href="config">Config</a>
+          <a href="plugins">Plugins</a>
+          <a href="faq">FAQ</a>
+          <a href="https://github.com/hyperdreamer/pi-webui">GitHub</a>
+        </div>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

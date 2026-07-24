@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Configure PI WEBUI — config files, uploads, paths, and session tools</title>
+    <meta
+      name="description"
+      content="Configure PI WEBUI config files, external path access, manual upload defaults, session daemon tools, plugins, shortcuts, and runtime environment variables."
+    />
+    <link rel="canonical" href="https://pi-webui.dev/config" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PI WEBUI" />
+    <meta property="og:title" content="Configure PI WEBUI" />
+    <meta
+      property="og:description"
+      content="Reference for PI WEBUI config files, path access allowlists, manual upload defaults, session daemon options, plugins, shortcuts, and environment variables."
+    />
+    <meta property="og:url" content="https://pi-webui.dev/config" />
+    <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <meta property="og:image:alt" content="PI WEBUI browser UI for persistent Pi Coding Agent sessions" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Configure PI WEBUI" />
+    <meta
+      name="twitter:description"
+      content="Reference for PI WEBUI config files, path access allowlists, manual upload defaults, session daemon options, plugins, shortcuts, and environment variables."
+    />
+    <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <script>
+      (() => {
+        const theme = window.localStorage.getItem("pi-webui-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="container nav" aria-label="Main navigation">
+        <a class="brand" href="./" aria-label="PI WEBUI home">PI WEBUI</a>
+        <div class="nav-links">
+          <div class="nav-pages">
+            <a href="remote-first">Remote-first</a>
+            <a href="machines">Fleet</a>
+            <a href="install">Install</a>
+            <a href="config" aria-current="page">Config</a>
+            <a href="plugins">Plugins</a>
+            <a href="faq">FAQ</a>
+          </div>
+          <div class="nav-actions">
+            <a class="github-link" href="https://github.com/hyperdreamer/pi-webui" aria-label="PI WEBUI on GitHub">
+              <svg class="github-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.7 5.47 7.79.4.08.55-.18.55-.4 0-.2-.01-.85-.01-1.55-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.16-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.84.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.04 0-.89.31-1.62.82-2.2-.08-.2-.36-1.03.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.94c.68 0 1.36.09 2 .28 1.53-1.06 2.2-.84 2.2-.84.44 1.13.16 1.96.08 2.16.51.58.82 1.31.82 2.2 0 3.14-1.87 3.83-3.65 4.04.29.26.54.76.54 1.53 0 1.1-.01 1.99-.01 2.27 0 .22.15.49.55.4A8.12 8.12 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z"
+                />
+              </svg>
+              <span>GitHub</span>
+            </a>
+            <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
+              <span data-theme-icon aria-hidden="true">◐</span>
+              <span data-theme-label>Theme</span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <div class="container">
+          <p class="eyebrow"><span class="pulse"></span> Configuration reference</p>
+          <h1>Configure PI WEBUI where your agents work.</h1>
+          <p>
+            PI WEBUI configuration covers the machine-local and project-local settings you usually need: bind address,
+            trusted development-host settings, UI preferences, PI WEBUI plugin enablement, file-explorer path access,
+            manual upload defaults, upload limits, Pi-compatible agent profiles and companion CLIs, and session-daemon tools.
+          </p>
+        </div>
+      </section>
+
+      <section class="section compact">
+        <div class="container doc-layout">
+          <aside class="toc" aria-label="Config page contents">
+            <strong>On this page</strong>
+            <a href="#files">Config files</a>
+            <a href="#deployment-paths">Deployment paths</a>
+            <a href="#precedence">Precedence and reloads</a>
+            <a href="#global-config">Global config</a>
+            <a href="#project-config">Project config</a>
+            <a href="#keys">Config matrix</a>
+            <a href="#path-access">External path access</a>
+            <a href="#manual-uploads">Manual uploads</a>
+            <a href="#agent-runtime">Agent profile and companion CLI</a>
+            <a href="#models-and-skills">Models and skills</a>
+            <a href="#session-tools">Session tools</a>
+            <a href="#completion-tools">Completion tools</a>
+          </aside>
+
+          <div class="doc-content">
+            <section id="files">
+              <h2>Config files</h2>
+              <p>PI WEBUI uses a global config file for machine-local settings and a project-local file for repository settings.</p>
+              <ul>
+                <li><strong>Global config:</strong> <code>$PI_WEBUI_CONFIG</code>, or <code>$XDG_CONFIG_HOME/pi-webui/config.json</code>, or <code>~/.config/pi-webui/config.json</code>.</li>
+                <li><strong>Project config:</strong> <code>&lt;project&gt;/.pi-webui/config.json</code> for commit-able project settings.</li>
+              </ul>
+              <p>
+                Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected
+                machine for config that affects work running there: the Pi-compatible agent profile and companion CLI,
+                session daemon tools, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
+                keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers
+                that do not advertise selected-machine settings support report those settings as unavailable instead of
+                silently falling back to the gateway.
+              </p>
+              <p>
+                Pi package settings are separate from PI WEBUI config. They live in Pi's package-manager settings on the
+                target machine and are managed by Pi (<code>pi install</code>, <code>pi remove</code>, <code>pi update</code>) or
+                <strong>Settings → Pi packages</strong>. In a federated setup, <strong>Settings → Pi packages</strong>
+                targets the currently selected machine. The PI WEBUI <code>plugins</code> config key only enables or
+                disables discovered PI WEBUI browser plugins on the machine whose config you are editing; it does not
+                install, remove, or update Pi packages.
+              </p>
+              <p>
+                If you installed services with a custom config path, rerun
+                <code>pi-webui install --config /path/to/config.json</code> after changing that path or after upgrading from
+                a version that only applied the custom path to the web service. This regenerates service files so the
+                web/API and session daemon use the same <code>PI_WEBUI_CONFIG</code>.
+              </p>
+            </section>
+
+            <section id="deployment-paths">
+              <h2>Reverse-proxy deployment paths</h2>
+              <p>
+                The deployment path is not a PI WEBUI config-file key or environment setting. The published client is
+                portable: one build works at <code>/</code> and at canonical trailing-slash prefixes such as
+                <code>/ai/</code> or <code>/test/ai/</code>.
+              </p>
+              <p>
+                For a nested deployment, redirect the slashless prefix to the trailing-slash URL, strip the prefix
+                before forwarding to PI WEBUI, and proxy authenticated HTTP and WebSocket traffic through the same
+                location. Relative browser and PWA URLs then stay within that prefix. See the
+                <a href="install#reverse-proxy-prefix">reverse proxy deployment example</a> for complete Nginx
+                configuration.
+              </p>
+            </section>
+
+            <section id="precedence">
+              <h2>Precedence and reloads</h2>
+              <p>Machine-global runtime values are resolved in this order:</p>
+              <div class="code-card">
+                <pre><code>defaults → global config file → environment overrides</code></pre>
+              </div>
+              <p>
+                Supported project-local settings are then applied for that project's workspaces. For upload defaults,
+                <code>&lt;project&gt;/.pi-webui/config.json</code> overrides the global value.
+              </p>
+              <p>
+                Environment overrides include <code>PI_WEBUI_HOST</code>, <code>PI_WEBUI_PORT</code> / <code>PORT</code>,
+                <code>PI_WEBUI_ALLOWED_HOSTS</code>, <code>PI_WEBUI_MAX_UPLOAD_BYTES</code>, <code>PI_WEBUI_AGENT_COMMAND</code>,
+                <code>PI_WEBUI_AGENT_DIR</code>, <code>PI_WEBUI_AGENT_SESSION_DIR</code>, <code>PI_CODING_AGENT_DIR</code> /
+                <code>PI_CODING_AGENT_SESSION_DIR</code> for Pi compatibility, <code>PI_WEBUI_SPAWN_SESSIONS</code>, and
+                <code>PI_WEBUI_SUBSESSIONS</code>.
+              </p>
+              <ul>
+                <li><code>host</code> / <code>port</code>: restart the gateway web/API service or process.</li>
+                <li><code>maxUploadBytes</code>: restart both the web/API process and the session daemon on that machine.</li>
+                <li><code>agent.command</code> / <code>agent.dir</code> / <code>spawnSessions</code> / <code>subsessions</code>: restart the session daemon on that machine.</li>
+                <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
+                <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
+                <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
+                <li>Pi package install/remove/update: not a PI WEBUI config key; after a mutation, type <code>/reload</code> in each idle PI WEBUI session on the target machine to refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system prompt files as supported by Pi. Reload the browser page separately for PI WEBUI browser plugin changes. A routine session daemon restart is not required.</li>
+                <li><code>shortcuts</code>: saved settings apply in the browser after config refresh/save.</li>
+              </ul>
+            </section>
+
+            <section id="global-config">
+              <h2>Global config example</h2>
+              <p>
+                <code>pi-webui install</code> creates the initial file. You can also save PI WEBUI config settings from
+                <strong>Settings → General</strong>, <strong>Settings → PI WEBUI plugins</strong>,
+                <strong>Settings → Keyboard</strong>, and <strong>Settings → Session daemon</strong>. Machine-affecting
+                Settings fields target the selected machine; gateway host/port/allowed-hosts and keyboard shortcuts stay
+                local. Pi package operations live separately under <strong>Settings → Pi packages</strong>.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Example config.json</strong>
+                  <button class="copy-button" data-copy="#global-config-example">Copy</button>
+                </div>
+                <pre id="global-config-example"><code>{
+  "host": "127.0.0.1",
+  "port": 8808,
+  "pathAccess": {
+    "allowedPaths": ["~/SDKs", "/opt/reference"]
+  },
+  "uploads": {
+    "defaultFolder": ".pi-webui/uploads"
+  },
+  "maxUploadBytes": 67108864,
+  "agent": {
+    "command": "pi",
+    "dir": "~/agent-profiles/research"
+  },
+  "spawnSessions": true,
+  "subsessions": false,
+  "plugins": {
+    "workspace-tasks": { "enabled": true },
+    "updates": { "enabled": true },
+    "info": { "enabled": false }
+  },
+  "shortcuts": {
+    "core:view.chat": "mod+1",
+    "core:session.stop": null
+  }
+}</code></pre>
+              </div>
+            </section>
+
+            <section id="project-config">
+              <h2>Project-local config</h2>
+              <p>
+                Project-local config lives at <code>&lt;project&gt;/.pi-webui/config.json</code>. Use it for settings that should
+                follow a repository.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>.pi-webui/config.json</strong>
+                  <button class="copy-button" data-copy="#project-config-example">Copy</button>
+                </div>
+                <pre id="project-config-example"><code>{
+  "version": 1,
+  "pathAccess": {
+    "allowedPaths": ["~/SDKs", "/opt/reference"]
+  },
+  "uploads": {
+    "defaultFolder": "manual/uploads"
+  }
+}</code></pre>
+              </div>
+              <p>
+                Project-local <code>pathAccess.allowedPaths</code> entries are merged after the global list and deduplicated.
+                Paths must still be host-absolute or <code>~</code>-prefixed; relative roots are not supported.
+              </p>
+              <p>
+                Project-local <code>uploads.defaultFolder</code> overrides the global upload destination for workspaces in
+                that project. Current PI WEBUI servers include this workspace-effective value on local and federated
+                workspace responses; older remote servers may omit it and the browser falls back to the global/default
+                upload folder.
+              </p>
+              <p>
+                Plugins may own separate project files, such as <code>.pi-webui/tasks.json</code> for the built-in Workspace
+                Tasks plugin.
+              </p>
+            </section>
+
+            <section id="keys">
+              <h2>Config matrix</h2>
+              <p>
+                Use this table as the quick reference for where a setting can live, which environment variable overrides
+                it, and whether project-local config overrides or merges with global config. Rows with JSON key
+                <code>—</code> are runtime-only environment variables, not config-file keys. <code>Global</code> means
+                machine-global. In Settings, selected-machine-safe global keys (<code>pathAccess</code>, <code>uploads</code>,
+                <code>maxUploadBytes</code>, <code>agent</code>, <code>spawnSessions</code>, <code>subsessions</code>, and <code>plugins</code>)
+                are edited for the selected machine; gateway host/port/allowed-hosts, keyboard shortcuts, and machine
+                registry/tokens stay local.
+              </p>
+              <div class="table-scroll" role="region" aria-label="PI WEBUI configuration matrix" tabindex="0">
+                <table class="config-matrix">
+                  <thead>
+                    <tr>
+                      <th scope="col">Config</th>
+                      <th scope="col">JSON key</th>
+                      <th scope="col">Env var</th>
+                      <th scope="col">Scope</th>
+                      <th scope="col">Project-local behavior</th>
+                      <th scope="col">Applies / restart</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="table-section"><th scope="rowgroup" colspan="6">Config-file keys</th></tr>
+                    <tr>
+                      <td>Web/API bind host</td>
+                      <td><code>host</code></td>
+                      <td><code>PI_WEBUI_HOST</code></td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API</td>
+                    </tr>
+                    <tr>
+                      <td>Web/API port</td>
+                      <td><code>port</code></td>
+                      <td><code>PI_WEBUI_PORT</code>, <code>PORT</code></td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API</td>
+                    </tr>
+                    <tr>
+                      <td>Dev-server allowed hosts</td>
+                      <td><code>allowedHosts</code></td>
+                      <td><code>PI_WEBUI_ALLOWED_HOSTS</code></td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Restart dev web/UI</td>
+                    </tr>
+                    <tr>
+                      <td>External filesystem roots</td>
+                      <td><code>pathAccess.allowedPaths</code></td>
+                      <td>—</td>
+                      <td>Global + project</td>
+                      <td><strong>Merges:</strong> global roots first, then project roots; duplicates removed</td>
+                      <td>Next file request; refresh existing views if needed</td>
+                    </tr>
+                    <tr>
+                      <td>Manual file upload default folder</td>
+                      <td><code>uploads.defaultFolder</code></td>
+                      <td>—</td>
+                      <td>Global + project</td>
+                      <td><strong>Overrides:</strong> project value wins for workspaces in that project; otherwise global/default applies</td>
+                      <td>New Upload dialogs and direct drag/drop batches after config/workspace refresh</td>
+                    </tr>
+                    <tr>
+                      <td>Upload/body limit</td>
+                      <td><code>maxUploadBytes</code></td>
+                      <td><code>PI_WEBUI_MAX_UPLOAD_BYTES</code></td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API and session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>Companion CLI command</td>
+                      <td><code>agent.command</code></td>
+                      <td><code>PI_WEBUI_AGENT_COMMAND</code></td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon on that machine; affects doctor/status/update checks</td>
+                    </tr>
+                    <tr>
+                      <td>Agent profile state directory</td>
+                      <td><code>agent.dir</code></td>
+                      <td><code>PI_WEBUI_AGENT_DIR</code> (<code>PI_CODING_AGENT_DIR</code> for Pi compatibility)</td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon on that machine; affects auth, models, settings, sessions, Pi packages, and package-backed plugins</td>
+                    </tr>
+                    <tr>
+                      <td>Agent can spawn sessions</td>
+                      <td><code>spawnSessions</code></td>
+                      <td><code>PI_WEBUI_SPAWN_SESSIONS</code></td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>Tracked subsessions (beta)</td>
+                      <td><code>subsessions</code></td>
+                      <td><code>PI_WEBUI_SUBSESSIONS</code></td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally; also requires <code>spawnSessions</code></td>
+                      <td>Restart session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>PI WEBUI plugin enablement/settings</td>
+                      <td><code>plugins.&lt;id&gt;.enabled</code>, <code>plugins.&lt;id&gt;.settings</code></td>
+                      <td>—</td>
+                      <td>Global</td>
+                      <td>Not core local config; plugins may read their own project files</td>
+                      <td>Reload browser tab</td>
+                    </tr>
+                    <tr>
+                      <td>Keyboard shortcuts</td>
+                      <td><code>shortcuts.&lt;actionId&gt;</code></td>
+                      <td>—</td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Applies after settings save/config refresh</td>
+                    </tr>
+                    <tr>
+                      <td>Project config version</td>
+                      <td><code>version</code></td>
+                      <td>—</td>
+                      <td>Project</td>
+                      <td>Project-local only; must be <code>1</code> when present</td>
+                      <td>Next project-config read</td>
+                    </tr>
+                    <tr class="table-section"><th scope="rowgroup" colspan="6">Runtime-only environment variables</th></tr>
+                    <tr>
+                      <td>Global config file path</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_CONFIG</code> (<code>XDG_CONFIG_HOME</code> affects the default path)</td>
+                      <td>Process/env</td>
+                      <td>Selects the global config file; not a project config</td>
+                      <td>Restart services/processes after changing env</td>
+                    </tr>
+                    <tr>
+                      <td>Managed data directory</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_DATA_DIR</code></td>
+                      <td>Process/env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart services before changing; moves managed state location</td>
+                    </tr>
+                    <tr>
+                      <td>Session daemon socket</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_SESSIOND_SOCKET</code></td>
+                      <td>Web/API + session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart daemon and web/API; both must match</td>
+                    </tr>
+                    <tr>
+                      <td>Session daemon TCP port</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_SESSIOND_PORT</code></td>
+                      <td>Session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon; set <code>PI_WEBUI_SESSIOND_URL</code> for web/API too</td>
+                    </tr>
+                    <tr>
+                      <td>Session daemon TCP host</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_SESSIOND_HOST</code></td>
+                      <td>Session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon</td>
+                    </tr>
+                    <tr>
+                      <td>Web-to-daemon URL</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_SESSIOND_URL</code></td>
+                      <td>Web/API env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API</td>
+                    </tr>
+                    <tr>
+                      <td>Projects storage file</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_PROJECTS_FILE</code></td>
+                      <td>Web/API + session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart services; advanced state override</td>
+                    </tr>
+                    <tr>
+                      <td>Remote machines storage file</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_MACHINES_FILE</code></td>
+                      <td>Web/API env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API; advanced state override</td>
+                    </tr>
+                    <tr>
+                      <td>Agent profile session storage directory</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_AGENT_SESSION_DIR</code> (<code>PI_CODING_AGENT_SESSION_DIR</code> for Pi compatibility)</td>
+                      <td>Session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon; env-only session storage override</td>
+                    </tr>
+                    <tr>
+                      <td>Agent profile state directory</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_AGENT_DIR</code> (<code>PI_CODING_AGENT_DIR</code> for Pi compatibility)</td>
+                      <td>Web/API + session daemon env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart services</td>
+                    </tr>
+                    <tr>
+                      <td>Skip update checks</td>
+                      <td>—</td>
+                      <td><code>PI_WEBUI_SKIP_VERSION_CHECK</code>, <code>PI_WEBUI_OFFLINE</code>, <code>PI_SKIP_VERSION_CHECK</code>, <code>PI_OFFLINE</code></td>
+                      <td>Web/API env</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API after env changes</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section id="path-access">
+              <h2>External path access</h2>
+              <p>
+                <code>pathAccess.allowedPaths</code> grants PI WEBUI's file explorer and absolute <code>@</code> path
+                completions access to specific filesystem roots outside the current workspace. By default,
+                workspace-relative file reads stay inside the workspace and absolute paths are denied.
+              </p>
+              <p>Accepted root forms:</p>
+              <ul>
+                <li>Unix absolute paths, for example <code>/opt/reference</code>.</li>
+                <li>Home-relative paths, for example <code>~/SDKs</code>.</li>
+                <li>Windows absolute paths on Windows hosts, for example <code>C:\Users\dev\SDKs</code>.</li>
+              </ul>
+              <p>
+                When an absolute request is served, PI WEBUI expands <code>~</code>, canonicalizes configured roots with
+                <code>realpath</code>, requires roots to be existing directories, and rejects symlink escapes outside the
+                allowed roots.
+              </p>
+              <p>
+                In <strong>Settings → General</strong>, external filesystem roots are saved on the selected machine.
+                Gateway host, port, and allowed-hosts fields stay on the gateway config.
+              </p>
+              <div class="callout warning">
+                This is not a sandbox for the underlying Pi Coding Agent or your OS user. It only controls PI WEBUI UI/API
+                file exposure outside a workspace. Add only roots you trust PI WEBUI to list and read through the browser UI.
+              </div>
+            </section>
+
+            <section id="manual-uploads">
+              <h2>Manual upload defaults</h2>
+              <p>
+                The Files panel can upload files by dropping them onto the panel or by using the toolbar
+                <strong>Upload</strong> button. <code>uploads.defaultFolder</code> sets the workspace-effective default
+                destination. The built-in default is <code>.pi-webui/uploads</code>; a project-local value overrides the
+                global value for workspaces in that project.
+              </p>
+              <p>
+                The value must be a non-empty workspace-relative folder. PI WEBUI normalizes repeated separators and
+                backslashes to <code>/</code>, and rejects absolute paths or <code>..</code> traversal. In the upload
+                dialog only, clearing the destination field uploads that batch to the workspace root.
+              </p>
+              <p>
+                Manual uploads use the workspace file-write path: paths stay workspace-relative, parent folder creation is
+                enabled by default, and overwrite is disabled by default. Browser-owned XHR progress is shown per
+                batch/file, and conflicts or errors stay visible in the upload progress UI.
+              </p>
+              <p>
+                For machine federation, Settings saves the global upload default on the selected machine. Current remote
+                PI WEBUI servers also return workspace-effective upload defaults on workspace responses; older remote
+                servers may omit them and the browser falls back to the global/default upload folder.
+              </p>
+            </section>
+
+            <section id="agent-runtime">
+              <h2>Pi-compatible agent profile and companion CLI</h2>
+              <p>
+                <code>agent.command</code> selects the Pi-compatible companion CLI used by <code>pi-webui doctor</code> and,
+                when it can be generated safely, package-managed update commands. It defaults to <code>pi</code>. This
+                setting does <strong>not</strong> replace the embedded runtime: every session continues to use PI WEBUI's
+                bundled Pi SDK.
+              </p>
+              <p>
+                <code>agent.dir</code> selects the Pi-compatible state profile used for auth providers, models, settings,
+                sessions, Pi packages, and Pi-package-backed PI WEBUI plugin discovery. It defaults to
+                <code>~/.pi/agent</code> only for a canonical Pi companion command. The directory must use the data layout
+                supported by the bundled Pi SDK; PI WEBUI does not load or convert incompatible fork formats, migrate
+                profile data, or repartition PI WEBUI-managed archives when the profile changes.
+              </p>
+              <div class="code-card">
+                <pre><code>{
+  "agent": {
+    "command": "pi-lab",
+    "dir": "/opt/pi-profiles/lab"
+  }
+}</code></pre>
+              </div>
+              <p>
+                An alternate command always requires an explicit state directory. The command must be a safe bare
+                executable name such as <code>pi-lab</code> or a host-absolute executable path such as
+                <code>/opt/pi/bin/pi</code>; relative paths, shell expressions, and launcher strings are rejected. The
+                state directory must be host-absolute or start with <code>~</code>. In a federated save, the gateway
+                transports Unix and Windows absolute paths without reinterpreting them, and the target machine validates
+                and returns the persisted profile.
+              </p>
+              <p>
+                Environment variables take precedence over the config file. <code>PI_WEBUI_AGENT_COMMAND</code> selects the
+                companion CLI, <code>PI_WEBUI_AGENT_DIR</code> sets the profile state directory, and
+                <code>PI_WEBUI_AGENT_SESSION_DIR</code> overrides session storage separately from <code>agent.dir</code>. The
+                legacy <code>PI_CODING_AGENT_DIR</code> and <code>PI_CODING_AGENT_SESSION_DIR</code> names apply only to a
+                canonical Pi companion command; PI WEBUI never derives ambient environment-variable names from an arbitrary
+                command. Use the explicit <code>PI_WEBUI_AGENT_*</code> names for alternate commands.
+                <code>PI_WEBUI_AGENT_DIR</code> is an unconditional override, while a legacy
+                <code>PI_CODING_AGENT_DIR</code> override stops applying when Settings selects an alternate command so the
+                command and directory can transition together.
+              </p>
+              <p>
+                The session daemon resolves the persisted desired values plus its environment once at startup. That
+                secret-free active profile stays fixed for the daemon lifetime. <strong>Settings → Session daemon</strong>
+                saves command and directory together as desired configuration and shows whether the profile is active,
+                needs a restart, or cannot be compared. Until the daemon restarts, sessions, Pi package operations,
+                package-backed plugin discovery, status/install detection, and update planning continue to use the
+                daemon-owned active profile; a web/API restart recovers that same active profile instead of applying the
+                newly saved values.
+              </p>
+              <div class="callout warning">
+                If the session daemon cannot report a valid active profile, profile-dependent package and plugin
+                operations report unavailable instead of falling back to independently resolved config. A package-managed
+                update command is shown only when PI WEBUI can preserve the active profile with a recognized, safe Pi
+                companion CLI; otherwise the command is omitted. Remote profile editing likewise requires advertised
+                support, and the gateway rejects a remote save if the target does not return the requested profile.
+                Restart the session daemon on the selected machine to establish the next active profile.
+              </div>
+            </section>
+
+            <section id="models-and-skills">
+              <h2>Models and skills</h2>
+              <p>
+                The navigation footer exposes <strong>Models</strong> for the selected machine and <strong>Skills</strong>
+                after you select a workspace. <strong>Models</strong> edits custom providers and model settings in that
+                machine's Pi-compatible profile <code>models.json</code>. Saving reloads model configuration in the session
+                daemon, and the dialog can send a small authenticated request to test a configured model. For a provider with
+                a Base URL, <strong>Fetch models</strong> retrieves its current model catalog using the unsaved provider draft
+                and credentials on the selected machine. The fetched catalog is scoped to that provider for the open dialog:
+                Model ID becomes a selector, and choosing a model fills its editable display-name default. Use
+                <strong>Refresh models</strong> after changing provider settings or when the provider's catalog changes. This
+                is Pi profile state, not a PI WEBUI config-file key.
+              </p>
+              <p>
+                <strong>Skills</strong> lists the skills available to the selected workspace. It can toggle the
+                <code>disable-model-invocation</code> frontmatter setting in a <code>SKILL.md</code>, search skills.sh, and
+                install or update skills at global or project scope. Review third-party skill sources before installing
+                them. After changing, installing, or updating a skill, use <code>/reload</code> in each idle session that
+                should pick up the changed resource.
+              </p>
+            </section>
+
+            <section id="session-tools">
+              <h2>Session daemon tools</h2>
+              <h3><code>spawnSessions</code></h3>
+              <p>
+                Boolean. Controls whether agents receive the <code>spawn_session</code> tool. Defaults to
+                <code>true</code>. Set it to <code>false</code> if you do not want an agent to start independent PI WEBUI sessions.
+              </p>
+              <p>Environment override: <code>PI_WEBUI_SPAWN_SESSIONS=0|1|true|false</code>.</p>
+
+              <h3><code>subsessions</code></h3>
+              <p>
+                Boolean. Beta. Controls whether agents receive the tracked-subsession tools:
+                <code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>,
+                <code>read_subsession</code>, and <code>yield_to_subsessions</code>. Defaults to <code>false</code> and also
+                requires <code>spawnSessions</code> to be enabled.
+              </p>
+              <p>
+                Tracked subsessions are join-oriented. Calling <code>spawn_subsession</code> returns immediately, so the
+                parent can continue independent work while the child runs. Work whose result the parent does not need to
+                join belongs in the fire-and-forget <code>spawn_session</code> tool instead.
+              </p>
+              <p>
+                At a join point, after finishing its independent work, the parent calls
+                <code>yield_to_subsessions</code> alone as the final action in its tool batch. Pi ends a tool batch early
+                only when every result in that batch is terminating. If any tracked child is still working, the action
+                ends the current agent run so the parent becomes idle. If none are working, it does not end the run and
+                clearly reports that there is nothing to wait for.
+              </p>
+              <p>
+                A completion notice wakes an idle parent or queues behind in-flight work. Each notice lists any other
+                tracked children still working, so the parent can continue work or call
+                <code>yield_to_subsessions</code> again at the next join point. Further notices arrive automatically; do
+                not poll. The notice includes the child's final output when it fits. If that output is too long, PI WEBUI
+                omits it entirely instead of adding a truncated duplicate to the parent's context and directs the parent
+                to retrieve it with <code>check_subsession</code>.
+              </p>
+              <p>
+                <code>list_subsessions</code>, <code>check_subsession</code>, and <code>read_subsession</code> never yield
+                or change control flow. They are for deliberate inspection or recovery, not completion polling. While a
+                child works, agent-facing <code>check_subsession</code> and <code>read_subsession</code> withhold partial
+                output and direct the parent to continue independent work or yield at the join point. Output becomes
+                available when the child stops. Included output and transcripts follow a labeled marker and come last,
+                after PI WEBUI guidance.
+              </p>
+              <p>
+                In <strong>Settings → Session daemon</strong>, these keys are saved on the selected machine. Restart the
+                session daemon on that machine after changing them.
+              </p>
+              <p>Environment override: <code>PI_WEBUI_SUBSESSIONS=0|1|true|false</code>.</p>
+            </section>
+
+
+            <section id="completion-tools">
+              <h2>Optional completion tools</h2>
+              <p>
+                File and path <code>@</code> completions work without extra tools. If <code>fzf</code> is available on the
+                PI WEBUI server's <code>PATH</code>, PI WEBUI uses it to improve completion filtering and ranking; otherwise it
+                falls back to built-in ranking.
+              </p>
+              <div class="doc-actions">
+                <a class="button primary" href="install">Install guide</a>
+                <a class="button" href="config.md">Markdown reference</a>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>PI WEBUI docs</span>
+        <div class="footer-links">
+          <a href="./">Home</a>
+          <a href="remote-first">Remote-first</a>
+          <a href="machines">Fleet</a>
+          <a href="install">Install</a>
+          <a href="config">Config</a>
+          <a href="plugins">Plugins</a>
+          <a href="faq">FAQ</a>
+          <a href="https://github.com/hyperdreamer/pi-webui">GitHub</a>
+        </div>
+      </div>
+    </footer>
+    <script src="site.js"></script>
+  </body>
+</html>

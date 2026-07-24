@@ -1,0 +1,97 @@
+import { describe, expect, it } from "vitest";
+import { effectivePiWebUiCapabilities, PI_WEBUI_CAPABILITIES, SESSIOND_RUNTIME_CAPABILITIES, WEB_RUNTIME_CAPABILITIES, parseKnownPiWebUiCapabilities } from "./capabilities";
+
+describe("PI WEBUI capabilities", () => {
+  it("advertises web-only capabilities without requiring session daemon support", () => {
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.piPackagesManage);
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.selectedMachineSettings);
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.agentProfileConfig);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).not.toContain(PI_WEBUI_CAPABILITIES.piPackagesManage);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).not.toContain(PI_WEBUI_CAPABILITIES.selectedMachineSettings);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).not.toContain(PI_WEBUI_CAPABILITIES.agentProfileConfig);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, PI_WEBUI_CAPABILITIES.agentProfileConfig] },
+      sessiond: { available: false, capabilities: [] },
+    })).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, PI_WEBUI_CAPABILITIES.agentProfileConfig]);
+  });
+
+  it("requires web and session daemon support for authoritative session persistence", () => {
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsPersistedState] },
+      sessiond: { available: false, capabilities: [PI_WEBUI_CAPABILITIES.sessionsPersistedState] },
+    })).not.toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsPersistedState] },
+      sessiond: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsPersistedState] },
+    })).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
+  });
+
+  it("requires web and session daemon support for server-side queue clearing", () => {
+    const clearQueue = PI_WEBUI_CAPABILITIES.sessionsClearQueue;
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(clearQueue);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(clearQueue);
+    expect(parseKnownPiWebUiCapabilities([clearQueue, "future.capability"])).toEqual([clearQueue]);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [clearQueue] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(clearQueue);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [] },
+      sessiond: { available: true, capabilities: [clearQueue] },
+    })).not.toContain(clearQueue);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [clearQueue] },
+      sessiond: { available: true, capabilities: [clearQueue] },
+    })).toContain(clearQueue);
+  });
+
+  it("requires both web and session daemon support for notification inboxes", () => {
+    const notifications = PI_WEBUI_CAPABILITIES.sessionsNotifications;
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(notifications);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(notifications);
+    expect(parseKnownPiWebUiCapabilities([notifications, "future.capability"])).toEqual([notifications]);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [notifications] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(notifications);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [] },
+      sessiond: { available: true, capabilities: [notifications] },
+    })).not.toContain(notifications);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [notifications] },
+      sessiond: { available: true, capabilities: [notifications] },
+    })).toContain(notifications);
+  });
+
+  it("negotiates daemon-authoritative unread state only when both runtimes support it", () => {
+    const unread = PI_WEBUI_CAPABILITIES.sessionsUnread;
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(unread);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(unread);
+    expect(parseKnownPiWebUiCapabilities([unread, "future.capability"])).toEqual([unread]);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [unread] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(unread);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [] },
+      sessiond: { available: true, capabilities: [unread] },
+    })).not.toContain(unread);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [unread] },
+      sessiond: { available: true, capabilities: [unread] },
+    })).toContain(unread);
+  });
+
+  it("keeps only known string capabilities when parsing runtime data", () => {
+    expect(parseKnownPiWebUiCapabilities([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, "future.capability"])).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings]);
+    expect(parseKnownPiWebUiCapabilities([PI_WEBUI_CAPABILITIES.piPackagesManage, 1])).toBeUndefined();
+  });
+});

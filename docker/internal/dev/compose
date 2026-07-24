@@ -1,0 +1,313 @@
+#!/usr/bin/env sh
+set -eu
+
+log() {
+  printf '%s\n' "$*" >&2
+}
+
+die() {
+  log "pi-webui Docker dev compose: $*"
+  exit 1
+}
+
+script_dir=$(unset CDPATH; cd "$(dirname "$0")" && pwd -P)
+repo_root=$(unset CDPATH; cd "$script_dir/../../.." && pwd -P)
+dev_config_file=$repo_root/.pi-webui/docker-compose-dev.local.env
+legacy_dev_env_file=$repo_root/.pi-webui/docker-compose-dev.env
+generated_env_file=$repo_root/.pi-webui/docker-compose-dev.generated.env
+
+# shellcheck source=../host-profile.sh
+# shellcheck disable=SC1091
+. "$repo_root/docker/internal/host-profile.sh"
+
+strip_wrapping_quotes() {
+  value=$1
+  case "$value" in
+    \"*\")
+      case "$value" in
+        *\") value=${value#\"}; value=${value%\"} ;;
+      esac
+      ;;
+    \'*\')
+      case "$value" in
+        *\') value=${value#\'}; value=${value%\'} ;;
+      esac
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+env_file_value() {
+  file=$1
+  key=$2
+  [ -f "$file" ] || return 1
+  raw=$(awk -v key="$key" '
+    function trim(value) {
+      sub(/^[ \t]+/, "", value)
+      sub(/[ \t\r]+$/, "", value)
+      return value
+    }
+    /^[ \t]*(#|$)/ { next }
+    {
+      line = $0
+      sub(/^[ \t]*export[ \t]+/, "", line)
+      name = line
+      sub(/=.*/, "", name)
+      name = trim(name)
+      if (name == key) {
+        sub(/^[^=]*=/, "", line)
+        print trim(line)
+        found = 1
+        exit
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$file") || return 1
+  strip_wrapping_quotes "$raw"
+}
+
+dev_config_value() {
+  env_file_value "$dev_config_file" "$1"
+}
+
+runtime_env_value() {
+  env_file_value "$runtime_env_file" "$1"
+}
+
+generated_env_value() {
+  env_file_value "$generated_env_file" "$1"
+}
+
+write_initial_dev_config() {
+  [ ! -e "$dev_config_file" ] || return 0
+
+  temp_config=$dev_config_file.$$
+  previous_umask=$(umask)
+  umask 077
+  cat >"$temp_config" <<'EOF'
+# PI WEBUI Docker dev settings. Safe to edit.
+#
+# docker/pi-webui-docker --dev creates this file once and does not
+# overwrite it. Put persistent dev Docker settings here.
+#
+# Precedence for values used by docker/pi-webui-docker --dev:
+#   1. this file
+#   2. previous generated values, when present
+#   3. current shell environment, on first generation only
+#   4. runtime installer env, usually ~/.local/share/pi-webui-docker/.env
+#   5. built-in defaults
+#
+# Generated effective values are written to:
+#   .pi-webui/docker-compose-dev.generated.env
+#
+# Bind addresses:
+# - 127.0.0.1 exposes only to this machine.
+# - 0.0.0.0 exposes on all host interfaces. Use only on trusted networks.
+#
+# Uncomment or add values to persist them. PI_WEBUI_DEV_API_BIND_ADDR
+# controls the web/API server; PI_WEBUI_DEV_BIND_ADDR controls the Vite UI.
+# PI_WEBUI_DEV_API_BIND_ADDR=127.0.0.1
+# PI_WEBUI_DEV_BIND_ADDR=127.0.0.1
+# PI_WEBUI_DEV_API_PORT=8808
+# PI_WEBUI_DEV_PORT=8809
+#
+# Shared Docker/runtime-style defaults may also be set here:
+# PI_WEBUI_DOCKER_DATA_DIR=/absolute/path/to/pi-webui-docker/data
+# PI_WEBUI_DOCKER_EXTRA_HOST_PATHS="/absolute/path/one /absolute/path/two"
+#
+# PI_WEBUI_UID and PI_WEBUI_GID default to the current host user so
+# bind-mounted checkout files are not written as root or another user.
+# Set them here only if you intentionally want a different container user.
+EOF
+  umask "$previous_umask"
+
+  if [ -f "$legacy_dev_env_file" ]; then
+    {
+      printf '\n%s\n' "# Values copied from the previous generated dev env file."
+      printf '%s\n' "# Keep, edit, or delete these lines as needed."
+      for key in PI_WEBUI_DEV_API_BIND_ADDR PI_WEBUI_DEV_BIND_ADDR PI_WEBUI_DEV_API_PORT PI_WEBUI_DEV_PORT; do
+        if value=$(env_file_value "$legacy_dev_env_file" "$key"); then
+          printf '%s=%s\n' "$key" "$value"
+        fi
+      done
+    } >>"$temp_config"
+  fi
+
+  mv "$temp_config" "$dev_config_file"
+  log "Created user-editable dev config: $dev_config_file"
+}
+
+value_from_config_or_generated_or_env_or_runtime_or_default() {
+  key=$1
+  default_value=$2
+  if existing=$(dev_config_value "$key"); then
+    printf '%s\n' "$existing"
+  elif existing=$(generated_env_value "$key"); then
+    printf '%s\n' "$existing"
+  else
+    eval "is_set=\${$key+x}"
+    if [ "${is_set:-}" = x ]; then
+      eval "printf '%s\n' \"\${$key}\""
+    elif existing=$(runtime_env_value "$key"); then
+      printf '%s\n' "$existing"
+    else
+      printf '%s\n' "$default_value"
+    fi
+  fi
+}
+
+value_from_config_or_generated_or_env_or_default() {
+  key=$1
+  default_value=$2
+  if existing=$(dev_config_value "$key"); then
+    printf '%s\n' "$existing"
+  elif existing=$(generated_env_value "$key"); then
+    printf '%s\n' "$existing"
+  else
+    eval "is_set=\${$key+x}"
+    if [ "${is_set:-}" = x ]; then
+      eval "printf '%s\n' \"\${$key}\""
+    else
+      printf '%s\n' "$default_value"
+    fi
+  fi
+}
+
+is_truthy() {
+  case "${1:-}" in
+    ""|0|false|FALSE|False) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+is_unsigned_int() {
+  case "${1:-}" in
+    ""|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+require_unsigned_int() {
+  name=$1
+  value=$2
+  is_unsigned_int "$value" || die "$name must be a numeric Unix id, got: $value"
+}
+
+enforce_dev_root_safety() {
+  uid=$(id -u 2>/dev/null || printf '0')
+  [ "$uid" != 0 ] || is_truthy "${PI_WEBUI_DOCKER_ALLOW_ROOT:-0}" || die "refusing to run Docker development mode as root; retry with --allow-root if this is intentional"
+}
+
+enforce_non_root_dev_uid() {
+  [ "${1:-0}" -ne 0 ] || is_truthy "${PI_WEBUI_DOCKER_ALLOW_ROOT:-0}" || die "refusing to generate Docker development env with PI_WEBUI_UID=0; retry with --allow-root if this is intentional"
+}
+
+enforce_dev_root_safety
+
+if ! pi_webui_docker_host_detect_profile; then
+  pi_webui_docker_host_print_detection_failure
+  die "refusing to run Docker Compose for an unsupported or unknown host setup"
+fi
+
+runtime_env_file=${PI_WEBUI_DOCKER_RUNTIME_ENV_FILE:-}
+if [ -z "$runtime_env_file" ] && [ -n "${HOME:-}" ]; then
+  runtime_env_file=$HOME/.local/share/pi-webui-docker/.env
+fi
+
+mkdir -p "$repo_root/.pi-webui" || die "could not create .pi-webui directory"
+write_initial_dev_config
+
+host_uid=$(id -u 2>/dev/null || printf '0')
+host_gid=$(id -g 2>/dev/null || printf '0')
+pi_webui_uid=$(value_from_config_or_generated_or_env_or_default PI_WEBUI_UID "$host_uid")
+pi_webui_gid=$(value_from_config_or_generated_or_env_or_default PI_WEBUI_GID "$host_gid")
+docker_gid=$(value_from_config_or_generated_or_env_or_runtime_or_default DOCKER_GID "$(pi_webui_docker_host_detect_docker_gid)")
+default_data_dir=${HOME:-$repo_root/.pi-webui}/.local/share/pi-webui-docker/data
+pi_webui_data_dir=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DOCKER_DATA_DIR "$default_data_dir")
+pi_webui_extra_host_paths=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DOCKER_EXTRA_HOST_PATHS "")
+pi_webui_opensuse_image=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_OPENSUSE_IMAGE opensuse/tumbleweed)
+pi_webui_nodejs_major=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_NODEJS_MAJOR 22)
+pi_webui_nodejs_repo=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_NODEJS_REPO auto)
+pi_webui_extra_zypper_packages=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_EXTRA_ZYPPER_PACKAGES "")
+pi_webui_dev_image=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DEV_IMAGE pi-webui:dev)
+compose_project_name=$(value_from_config_or_generated_or_env_or_default COMPOSE_PROJECT_NAME pi-webui-dev)
+hostexec_image=$(value_from_config_or_generated_or_env_or_runtime_or_default HOSTEXEC_IMAGE alpine:3.22)
+pi_webui_max_upload_bytes=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_MAX_UPLOAD_BYTES 67108864)
+default_dev_bind_addr=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_BIND_ADDR 127.0.0.1)
+pi_webui_dev_api_bind_addr=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DEV_API_BIND_ADDR "$default_dev_bind_addr")
+pi_webui_dev_bind_addr=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DEV_BIND_ADDR "$default_dev_bind_addr")
+pi_webui_dev_api_port=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DEV_API_PORT 8808)
+pi_webui_dev_port=$(value_from_config_or_generated_or_env_or_runtime_or_default PI_WEBUI_DEV_PORT 8809)
+
+require_unsigned_int PI_WEBUI_UID "$pi_webui_uid"
+require_unsigned_int PI_WEBUI_GID "$pi_webui_gid"
+require_unsigned_int DOCKER_GID "$docker_gid"
+enforce_non_root_dev_uid "$pi_webui_uid"
+case "$pi_webui_data_dir" in
+  /*) ;;
+  *) die "PI_WEBUI_DOCKER_DATA_DIR must be an absolute path, got: $pi_webui_data_dir" ;;
+esac
+[ -n "$compose_project_name" ] || die "COMPOSE_PROJECT_NAME must not be empty"
+
+mkdir -p "$pi_webui_data_dir" || die "could not create data directory: $pi_webui_data_dir"
+
+env_file=$generated_env_file
+override_file=$repo_root/.pi-webui/docker-compose-dev.host.generated.yml
+
+if ! pi_webui_docker_host_write_compose_override "$override_file" "$PI_WEBUI_DETECTED_DOCKER_HOST_PROFILE" "$pi_webui_extra_host_paths" "$repo_root"; then
+  die "could not write host-specific Compose override"
+fi
+
+umask 077
+temp_env=$env_file.$$
+cat >"$temp_env" <<EOF
+# Generated by docker/pi-webui-docker --dev. Do not edit by hand.
+PI_WEBUI_UID=$pi_webui_uid
+PI_WEBUI_GID=$pi_webui_gid
+DOCKER_GID=$docker_gid
+PI_WEBUI_DOCKER_DATA_DIR=$pi_webui_data_dir
+PI_WEBUI_DOCKER_DEV_REPO_ROOT=$repo_root
+PI_WEBUI_DOCKER_HOST_PROFILE=$PI_WEBUI_DETECTED_DOCKER_HOST_PROFILE
+HOSTEXEC_MODE=$PI_WEBUI_DETECTED_HOSTEXEC_MODE
+PI_WEBUI_DOCKER_EXTRA_HOST_PATHS=$pi_webui_extra_host_paths
+PI_WEBUI_OPENSUSE_IMAGE=$pi_webui_opensuse_image
+PI_WEBUI_NODEJS_MAJOR=$pi_webui_nodejs_major
+PI_WEBUI_NODEJS_REPO=$pi_webui_nodejs_repo
+PI_WEBUI_EXTRA_ZYPPER_PACKAGES=$pi_webui_extra_zypper_packages
+PI_WEBUI_DEV_IMAGE=$pi_webui_dev_image
+COMPOSE_PROJECT_NAME=$compose_project_name
+HOSTEXEC_IMAGE=$hostexec_image
+PI_WEBUI_MAX_UPLOAD_BYTES=$pi_webui_max_upload_bytes
+PI_WEBUI_DEV_API_BIND_ADDR=$pi_webui_dev_api_bind_addr
+PI_WEBUI_DEV_BIND_ADDR=$pi_webui_dev_bind_addr
+PI_WEBUI_DEV_API_PORT=$pi_webui_dev_api_port
+PI_WEBUI_DEV_PORT=$pi_webui_dev_port
+EOF
+mv "$temp_env" "$env_file"
+
+log "Selected PI WEBUI Docker host profile: $PI_WEBUI_DETECTED_DOCKER_HOST_PROFILE"
+if [ -f "$runtime_env_file" ]; then
+  log "Reused runtime Docker environment defaults from: $runtime_env_file"
+fi
+case "$PI_WEBUI_DETECTED_DOCKER_HOST_PROFILE" in
+  linux-native-docker)
+    log "Enabled Linux host mounts and hostexec namespace bridge."
+    ;;
+  mac-docker-desktop)
+    log "Enabled Docker Desktop for Mac project mounts. hostexec is disabled because containers cannot enter native macOS namespaces."
+    ;;
+esac
+log "User-editable dev config: $dev_config_file"
+log "Generated dev env: $env_file"
+log "Generated dev Compose override: $override_file"
+
+if [ "$#" -eq 0 ]; then
+  set -- up --build
+fi
+
+pi_webui_docker_compose \
+  --project-name "$compose_project_name" \
+  --env-file "$env_file" \
+  -f "$repo_root/docker/compose.dev.yml" \
+  -f "$override_file" \
+  "$@"

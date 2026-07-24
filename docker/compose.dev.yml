@@ -1,0 +1,119 @@
+name: pi-webui-dev
+
+x-pi-webui-dev-build: &pi-webui-dev-build
+  context: ..
+  dockerfile: docker/Dockerfile.dev
+  args:
+    OPENSUSE_IMAGE: ${PI_WEBUI_OPENSUSE_IMAGE:-opensuse/tumbleweed}
+    NODEJS_MAJOR: ${PI_WEBUI_NODEJS_MAJOR:-22}
+    NODEJS_REPO: ${PI_WEBUI_NODEJS_REPO:-auto}
+    PI_WEBUI_EXTRA_ZYPPER_PACKAGES: ${PI_WEBUI_EXTRA_ZYPPER_PACKAGES:-}
+    PI_WEBUI_UID: ${PI_WEBUI_UID:-1000}
+    PI_WEBUI_GID: ${PI_WEBUI_GID:-1000}
+
+x-pi-webui-dev-environment: &pi-webui-dev-environment
+  HOME: /data/home
+  XDG_CONFIG_HOME: /data/config
+  PI_WEBUI_DATA_DIR: /data/pi-webui
+  PI_WEBUI_SESSIOND_SOCKET: /data/pi-webui/sessiond.sock
+  PI_CODING_AGENT_DIR: /data/pi-agent
+  HOSTEXEC_IMAGE: ${HOSTEXEC_IMAGE:-alpine:3.22}
+  HOSTEXEC_MODE: ${HOSTEXEC_MODE:-disabled}
+  PI_WEBUI_UID: ${PI_WEBUI_UID:-1000}
+  PI_WEBUI_GID: ${PI_WEBUI_GID:-1000}
+  DOCKER_GID: ${DOCKER_GID:-0}
+  PI_WEBUI_MAX_UPLOAD_BYTES: ${PI_WEBUI_MAX_UPLOAD_BYTES:-67108864}
+  PI_WEBUI_DOCKER_RUNTIME: "1"
+  PI_WEBUI_DOCKER_MODE: dev
+  PI_WEBUI_DOCKER_DEV_REPO_ROOT: ${PI_WEBUI_DOCKER_DEV_REPO_ROOT:?set by docker/pi-webui-docker --dev}
+  PI_WEBUI_DOCKER_HELPER_IMAGE: ${PI_WEBUI_DEV_IMAGE:-pi-webui:dev}
+  COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-pi-webui-dev}
+  NPM_CONFIG_UPDATE_NOTIFIER: "false"
+  NPM_CONFIG_CACHE: /data/npm-cache
+
+x-pi-webui-dev-data-volume: &pi-webui-dev-data-volume
+  type: bind
+  source: ${PI_WEBUI_DOCKER_DATA_DIR:-${HOME}/.local/share/pi-webui-docker/data}
+  target: /data
+
+x-pi-webui-dev-volumes: &pi-webui-dev-volumes
+  - type: bind
+    source: ..
+    target: /workspace
+  - type: volume
+    source: node_modules
+    target: /workspace/node_modules
+  - *pi-webui-dev-data-volume
+
+services:
+  data-init:
+    build: *pi-webui-dev-build
+    image: ${PI_WEBUI_DEV_IMAGE:-pi-webui:dev}
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        mkdir -p /data/home /data/config /data/npm-cache /data/pi-webui /data/pi-agent
+        chown -R "${PI_WEBUI_UID:-1000}:${PI_WEBUI_GID:-1000}" /data
+        /usr/local/sbin/pi-webui-dev-sync-node-modules
+    user: "0:0"
+    security_opt:
+      - label=disable
+    environment:
+      PI_WEBUI_UID: ${PI_WEBUI_UID:-1000}
+      PI_WEBUI_GID: ${PI_WEBUI_GID:-1000}
+    volumes: *pi-webui-dev-volumes
+
+  sessiond:
+    build: *pi-webui-dev-build
+    image: ${PI_WEBUI_DEV_IMAGE:-pi-webui:dev}
+    command: ["npm", "run", "start:sessiond"]
+    working_dir: /workspace
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    user: "${PI_WEBUI_UID:-1000}:${PI_WEBUI_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:-0}"
+    security_opt:
+      - label=disable
+    environment: *pi-webui-dev-environment
+    volumes: *pi-webui-dev-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /data/pi-webui/sessiond.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  web:
+    build: *pi-webui-dev-build
+    image: ${PI_WEBUI_DEV_IMAGE:-pi-webui:dev}
+    command: ["bash", "-lc", "trap 'kill 0' EXIT; npm run dev:web & npm run dev:client & wait"]
+    working_dir: /workspace
+    depends_on:
+      sessiond:
+        condition: service_healthy
+    user: "${PI_WEBUI_UID:-1000}:${PI_WEBUI_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:-0}"
+    security_opt:
+      - label=disable
+    environment:
+      <<: *pi-webui-dev-environment
+      PI_WEBUI_HOST: 0.0.0.0
+      PI_WEBUI_PORT: "8808"
+    ports:
+      - "${PI_WEBUI_DEV_API_BIND_ADDR:-127.0.0.1}:${PI_WEBUI_DEV_API_PORT:-8808}:8808"
+      - "${PI_WEBUI_DEV_BIND_ADDR:-127.0.0.1}:${PI_WEBUI_DEV_PORT:-8809}:8809"
+    volumes: *pi-webui-dev-volumes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8808/api/pi-webui/runtime >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  node_modules:

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.DS_Store
+*.log
+.playwright-cli/
+
+# Local plugin development sandboxes. Symlink these into ~/.pi-webui/plugins/<plugin-id>.
+/dev-plugins/
+
+# Local Docker image build hooks for development containers.
+/docker/custom-image.d/*
+!/docker/custom-image.d/.gitkeep
+
+# Local runtime attachment uploads (created by the chat composer "save to folder" mode).
+.pi-webui/

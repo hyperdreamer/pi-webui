@@ -1,0 +1,634 @@
+import type { TemplateResult } from "lit";
+import { describe, expect, it, vi } from "vitest";
+import type { QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
+import {
+  notificationTargetKey,
+  notificationTrayIsCollapsed,
+  type SelectedSessionNotificationView,
+} from "../sessionNotifications";
+import type { ChatLine } from "./shared";
+import {
+  ChatView,
+  activityDockMetricGroups,
+  activityDockMetrics,
+  activityDockWarningControlContent,
+  chatEventAnchorKey,
+  chatGroupAnchorKey,
+  chatGroupScrollMarkerId,
+  chatMessageGroupClassName,
+  chatMessageGroupLabel,
+  chatMessageMetadataLabel,
+  chatQueuedMessageSections,
+  chatQueuedSectionShowsClearAction,
+  chatSessionWarningRows,
+} from "./ChatView";
+import { findOptionalTemplateEventHandlerAfterMarker, templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+
+describe("chatQueuedMessageSections", () => {
+  it("labels client-side pending-start sends separately from server queued messages", () => {
+    const sections = chatQueuedMessageSections(
+      [{ kind: "followUp", text: "queued before start" }],
+      [{ kind: "steer", text: "server queued" }],
+    );
+
+    expect(sections).toEqual([
+      {
+        source: "client",
+        heading: "Queued until session starts",
+        detail: "Will send once the backend session is ready",
+        messages: [{ kind: "followUp", text: "queued before start" }],
+      },
+      {
+        source: "server",
+        heading: "Queued messages",
+        detail: "1 pending",
+        messages: [{ kind: "steer", text: "server queued" }],
+      },
+    ]);
+  });
+});
+
+describe("activityDockMetrics", () => {
+  it("formats session flow, usage, and paid-cost values for the activity dock", () => {
+    expect(activityDockMetrics({
+      ...queuedStatus([]),
+      tokens: { input: 25_000, output: 9_400, cacheRead: 0, cacheWrite: 0, total: 34_400 },
+      cost: 2.5,
+      contextUsage: { tokens: 34_400, contextWindow: 1_000_000, percent: 0.9 },
+    })).toEqual([
+      { label: "Input tokens", text: "↑25k" },
+      { label: "Output tokens", text: "↓9.4k" },
+      { label: "Context usage", text: "0.9%/1.0M" },
+      { label: "Session cost", text: "$2.50" },
+    ]);
+  });
+
+  it("shows provider-reported received tokens and generation speed", () => {
+    expect(activityDockMetrics({
+      ...queuedStatus([]),
+      generation: { outputTokens: 32, tokensPerSecond: 4.2 },
+    })).toEqual(expect.arrayContaining([
+      { label: "Received tokens", text: "↓ 32" },
+      { label: "Generation speed", text: "4.2 t/s", className: "generation-rate slow" },
+    ]));
+  });
+
+  it("identifies Pi Web-style text-derived generation metrics as estimates", () => {
+    const estimatedGeneration = { outputTokens: 2, tokensPerSecond: 4, estimated: true };
+
+    expect(activityDockMetrics({
+      ...queuedStatus([]),
+      generation: estimatedGeneration,
+    })).toEqual(expect.arrayContaining([
+      { label: "Estimated received tokens", text: "↓ 2" },
+      { label: "Estimated generation speed", text: "4.0 t/s", className: "generation-rate slow" },
+    ]));
+  });
+
+  it("groups live generation metrics immediately after the activity status", () => {
+    const groups = activityDockMetricGroups({
+      ...queuedStatus([]),
+      generation: { outputTokens: 32, tokensPerSecond: 4.2 },
+    });
+
+    expect(groups.afterStatus).toEqual([
+      { label: "Received tokens", text: "↓ 32" },
+      { label: "Generation speed", text: "4.2 t/s", className: "generation-rate slow" },
+    ]);
+    expect(groups.trailing.map((metric) => metric.label)).toEqual([
+      "Input tokens",
+      "Output tokens",
+      "Context usage",
+      "Session cost",
+    ]);
+  });
+
+  it("hides generation metrics when the session is idle", () => {
+    const metrics = activityDockMetrics({
+      ...queuedStatus([]),
+      isStreaming: false,
+      generation: { outputTokens: 32, tokensPerSecond: 4.2 },
+    });
+
+    expect(metrics.map((metric) => metric.label)).not.toContain("Received tokens");
+    expect(metrics.map((metric) => metric.label)).not.toContain("Generation speed");
+  });
+
+  it("does not infer streaming metrics from cumulative session usage", () => {
+    const metrics = activityDockMetrics({
+      ...queuedStatus([]),
+      tokens: { input: 0, output: 32, cacheRead: 0, cacheWrite: 0, total: 32 },
+    });
+
+    expect(metrics.map((metric) => metric.label)).not.toContain("Received tokens");
+    expect(metrics.map((metric) => metric.label)).not.toContain("Generation speed");
+  });
+
+  it("keeps the queued-message count in the activity dock when work is pending", () => {
+    expect(activityDockMetrics({ ...queuedStatus([{ kind: "followUp", text: "wait" }, { kind: "steer", text: "adjust" }]), pendingMessageCount: 2 })).toContainEqual({ label: "Queued messages", text: "2 queued" });
+  });
+
+  it("omits activity-dock metrics until session status is available", () => {
+    expect(activityDockMetrics(undefined)).toEqual([]);
+  });
+});
+
+describe("activityDockWarningControlContent", () => {
+  it("provides an action label for both warning visibility states", () => {
+    expect(activityDockWarningControlContent(1, true)).toEqual({
+      countText: "1",
+      accessibleLabel: "Minimise 1 warning",
+    });
+    expect(activityDockWarningControlContent(3, false)).toEqual({
+      countText: "3",
+      accessibleLabel: "Show 3 warnings in the warning area",
+    });
+  });
+
+  it("omits the control content when there are no warnings", () => {
+    expect(activityDockWarningControlContent(0, false)).toBeUndefined();
+  });
+});
+
+describe("chatQueuedSectionShowsClearAction", () => {
+  // The show/hide decision for the server clear-queue button is content/layout,
+  // so it lives in a pure exported seam instead of scraping rendered markup.
+  const serverSection = requireSection(chatQueuedMessageSections([], [{ kind: "steer", text: "server queued" }])[0]);
+  const clientSection = requireSection(chatQueuedMessageSections([{ kind: "followUp", text: "waiting" }], [])[0]);
+
+  it("shows the action for the server queue when clearing is supported and wired", () => {
+    expect(chatQueuedSectionShowsClearAction(serverSection, true, true)).toBe(true);
+  });
+
+  it("hides the action when the runtime does not support clearing", () => {
+    expect(chatQueuedSectionShowsClearAction(serverSection, false, true)).toBe(false);
+  });
+
+  it("hides the action when no clear handler is wired", () => {
+    expect(chatQueuedSectionShowsClearAction(serverSection, true, false)).toBe(false);
+  });
+
+  it("never shows the server action for the separate client pending-start queue", () => {
+    expect(chatQueuedSectionShowsClearAction(clientSection, true, true)).toBe(false);
+  });
+});
+
+describe("ChatView queued-message clear wiring", () => {
+  // Escape hatch: this case verifies the Clear queue button's Lit event wiring,
+  // whose only observable effect is invoking the injected callback. Vitest runs
+  // with no DOM environment here, so a shadow-DOM click harness would add
+  // disproportionate setup; handler extraction anchored to the user-facing
+  // "Clear queue" button text is proportionate.
+  it("invokes onClearServerQueue when the server-queue action is activated", () => {
+    const view = new ChatView();
+    const onClearServerQueue = vi.fn();
+    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = onClearServerQueue;
+
+    templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear queue")(new Event("click"));
+
+    expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+});
+
+describe("chatSessionWarningRows", () => {
+  // Warning-row content (severity class, message, path, source, dismiss
+  // capability, ordering) is derived by a pure exported seam rather than scraped
+  // from rendered `TemplateResult` markup, per the testing-guide rule that
+  // TemplateResult inspection is not for general content assertions.
+  it("derives one severity-tagged row per warning with optional path and source", () => {
+    const rows = chatSessionWarningRows(warningStatus([
+      { severity: "error", message: "skill failed to load", source: "skill", path: "/skills/a.md" },
+      { severity: "warning", message: "subscription auth is active" },
+      { severity: "info", message: "heads up", source: "runtime" },
+    ]));
+
+    expect(rows).toEqual([
+      { severity: "error", severityClass: "session-warning error", message: "skill failed to load", source: "skill", path: "/skills/a.md", dismissId: undefined },
+      { severity: "warning", severityClass: "session-warning warning", message: "subscription auth is active", source: undefined, path: undefined, dismissId: undefined },
+      { severity: "info", severityClass: "session-warning info", message: "heads up", source: "runtime", path: undefined, dismissId: undefined },
+    ]);
+  });
+
+  it("exposes a dismiss id only for warnings carrying a dismiss capability", () => {
+    const rows = chatSessionWarningRows(warningStatus([
+      { severity: "error", message: "skill failed to load", source: "skill" },
+      { severity: "warning", message: "subscription auth is active", source: "anthropic", dismiss: { id: "anthropicExtraUsage" } },
+    ]));
+
+    expect(rows.map((row) => row.dismissId)).toEqual([undefined, "anthropicExtraUsage"]);
+  });
+
+  it("derives no rows when there are no warnings or status is unset", () => {
+    expect(chatSessionWarningRows(warningStatus([]))).toEqual([]);
+    expect(chatSessionWarningRows(undefined)).toEqual([]);
+  });
+});
+
+describe("ChatView activity-dock warning toggle wiring", () => {
+  // Escape hatch: this verifies the interactive warning toggle retained in the
+  // status dock. Vitest has no DOM environment, so the handler is anchored to
+  // the stable semantic control class and exercises its observable callback.
+  it("invokes onToggleWarnings when the dock warning control is activated", () => {
+    const view = withStatus(new ChatView(), warningStatus([{ severity: "warning", message: "subscription auth is active" }]));
+    const onToggleWarnings = vi.fn();
+    view.warningCount = 1;
+    view.warningsExpanded = true;
+    view.onToggleWarnings = onToggleWarnings;
+
+    const handler = findOptionalTemplateEventHandlerAfterMarker(renderActivityDock(view), "warning-toggle");
+    expect(handler).toBeTypeOf("function");
+    if (handler === undefined) return;
+
+    handler(new Event("click"));
+    expect(onToggleWarnings).toHaveBeenCalledOnce();
+  });
+});
+
+describe("ChatView session-warning dismiss wiring", () => {
+  // Escape hatch: this case verifies the dismiss button's Lit event wiring,
+  // whose observable effect is invoking onDismissWarning with the warning's
+  // dismiss id. No DOM environment is available, so handler extraction anchored
+  // to the stable `session-warning-dismiss` class marker is proportionate.
+  it("invokes onDismissWarning with the warning's dismiss id", () => {
+    const view = new ChatView();
+    const onDismissWarning = vi.fn();
+    view.onDismissWarning = onDismissWarning;
+    view.status = warningStatus([
+      { severity: "warning", message: "subscription auth is active", source: "anthropic", dismiss: { id: "anthropicExtraUsage" } },
+    ]);
+
+    const rendered = renderWarnings(view);
+    if (rendered === null) throw new Error("expected a warnings banner");
+    templateEventHandlerAfterMarker(rendered, "session-warning-dismiss")(new Event("click"));
+
+    expect(onDismissWarning).toHaveBeenCalledExactlyOnceWith("anthropicExtraUsage");
+  });
+
+  it("removes the warning area while presentation is collapsed or there are no warnings", () => {
+    const view = withStatus(new ChatView(), warningStatus([
+      { severity: "warning", message: "subscription auth is active" },
+    ]));
+    view.warningsVisible = false;
+
+    expect(renderWarnings(view)).toBeNull();
+    expect(renderWarnings(withStatus(new ChatView(), warningStatus([])))).toBeNull();
+  });
+});
+
+describe("ChatView notification tray wiring", () => {
+  // Escape hatch: these cases verify only the tray buttons' Lit callback wiring.
+  // Content and identity decisions use pure seams; Vitest has no shadow-DOM
+  // harness, so stable semantic class markers keep handler extraction narrow.
+  // A minimal render-root fake verifies the resulting focus move without
+  // recreating a browser DOM harness.
+  it("wires individual dismissal and recovers header focus after the final row", () => {
+    const view = withNotificationInbox(new ChatView());
+    const onDismissNotification = vi.fn();
+    const headerFocus = installNotificationFocusRoot(view);
+    view.onDismissNotification = onDismissNotification;
+
+    const rendered = renderNotificationTray(view);
+    if (rendered === null) throw new Error("expected a notification tray");
+    templateEventHandlerAfterMarker(rendered, "notification-row-dismiss")(new Event("click"));
+    view.notificationInbox = emptyNotificationInbox(requireNotificationInbox(view));
+
+    expect(renderNotificationTray(view)).not.toBeNull();
+    focusPendingNotificationTarget(view);
+    expect(onDismissNotification).toHaveBeenCalledExactlyOnceWith("daemon-a:1");
+    expect(headerFocus).toHaveBeenCalledOnce();
+  });
+
+  it("wires clear-all and recovers header focus while the emptied tray is retained", () => {
+    const view = withNotificationInbox(new ChatView());
+    const onDismissAllNotifications = vi.fn();
+    const headerFocus = installNotificationFocusRoot(view);
+    view.onDismissAllNotifications = onDismissAllNotifications;
+
+    const rendered = renderNotificationTray(view);
+    if (rendered === null) throw new Error("expected a notification tray");
+    templateEventHandlerAfterMarker(rendered, "notification-clear")(new Event("click"));
+    view.notificationInbox = emptyNotificationInbox(requireNotificationInbox(view));
+
+    expect(renderNotificationTray(view)).not.toBeNull();
+    focusPendingNotificationTarget(view);
+    expect(onDismissAllNotifications).toHaveBeenCalledOnce();
+    expect(headerFocus).toHaveBeenCalledOnce();
+  });
+
+  it("does not move pending dismissal focus into another exact chat", () => {
+    const view = withNotificationInbox(new ChatView());
+    const headerFocus = installNotificationFocusRoot(view);
+    view.onDismissAllNotifications = vi.fn();
+
+    const rendered = renderNotificationTray(view);
+    if (rendered === null) throw new Error("expected a notification tray");
+    templateEventHandlerAfterMarker(rendered, "notification-clear")(new Event("click"));
+    view.notificationInbox = { ...requireNotificationInbox(view), machineId: "remote" };
+    focusPendingNotificationTarget(view);
+
+    expect(headerFocus).not.toHaveBeenCalled();
+  });
+
+  it("keeps a collapsed tray closed for new arrivals and isolates matching session ids by exact chat", () => {
+    const view = withNotificationInbox(new ChatView());
+    const inbox = requireNotificationInbox(view);
+    const rendered = renderNotificationTray(view);
+    if (rendered === null) throw new Error("expected a notification tray");
+
+    templateEventHandlerAfterMarker(rendered, "notification-toggle")(new Event("click"));
+
+    const collapsedTargetKeys: unknown = Reflect.get(view, "collapsedNotificationTargetKeys");
+    if (!(collapsedTargetKeys instanceof Set)) throw new Error("Expected collapsed notification target keys");
+    const firstNotification = inbox.notifications[0];
+    if (firstNotification === undefined) throw new Error("expected a retained notification");
+    const newArrival = {
+      ...inbox,
+      notifications: [{ ...firstNotification, id: "daemon-a:2", order: 2 }, ...inbox.notifications],
+      retainedCount: 2,
+    };
+    expect(notificationTrayIsCollapsed(collapsedTargetKeys, newArrival)).toBe(true);
+    expect(notificationTrayIsCollapsed(collapsedTargetKeys, { ...newArrival, cwd: "/other" })).toBe(false);
+    expect(notificationTrayIsCollapsed(collapsedTargetKeys, { ...newArrival, machineId: "remote" })).toBe(false);
+    expect(collapsedTargetKeys.has(notificationTargetKey(inbox))).toBe(true);
+  });
+});
+
+describe("chatMessageMetadataLabel", () => {
+  it("uses one full date and model label without a model prefix", () => {
+    const timestamp = "2026-07-10T19:15:30.000Z";
+    const formattedTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
+
+    expect(chatMessageMetadataLabel({
+      role: "assistant",
+      parts: [],
+      meta: { timestamp, model: { provider: "provider", id: "model" } },
+    })).toBe(`${formattedTimestamp} · provider/model`);
+  });
+});
+
+describe("chat event-group content seams", () => {
+  // Group scroll-anchor keys, marker ids, class list, and disclosure label are
+  // content/structure derived from pure exported seams rather than scraped from
+  // rendered markup.
+  it("derives stable group and event scroll-anchor keys and marker ids", () => {
+    expect(chatGroupAnchorKey(40)).toBe("g:40");
+    expect(chatEventAnchorKey(40)).toBe("e:40");
+    expect(chatEventAnchorKey(41)).toBe("e:41");
+    expect(chatGroupScrollMarkerId(41)).toBe("g:41");
+  });
+
+  it("distinguishes the live tail group by class and disclosure label", () => {
+    expect(chatMessageGroupClassName(true)).toBe("msg event-group live");
+    expect(chatMessageGroupClassName(false)).toBe("msg event-group");
+    expect(chatMessageGroupLabel(true)).toBe("live events");
+    expect(chatMessageGroupLabel(false)).toBe("events");
+  });
+});
+
+describe("ChatView event-group disclosure wiring", () => {
+  const messages: ChatLine[] = [
+    { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
+    { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "inspect a file", status: "success", resultText: "large result" }] },
+  ];
+
+  it("defers a closed group body until it is opened", () => {
+    const view = new ChatView();
+    view.sessionId = "session-1";
+    const bodyCalls = observeGroupBodyRenders(view);
+
+    renderMessageGroup(view, messages, 40, 41, false);
+
+    expect(bodyCalls).toEqual([]);
+  });
+
+  it("renders a live tail body by default", () => {
+    const view = new ChatView();
+    view.sessionId = "session-1";
+    const bodyCalls = observeGroupBodyRenders(view);
+
+    renderMessageGroup(view, messages, 40, 41, true);
+
+    expect(bodyCalls).toEqual([{ messages, startIndex: 40 }]);
+  });
+
+  // Escape hatch: this case verifies the native `<details>` `@toggle` wiring,
+  // whose observable effect is that a re-render renders (or defers) the group
+  // body. No DOM environment is available for a real disclosure interaction, so
+  // handler extraction anchored to the stable `@toggle=` attribute marker plus
+  // an injected details-toggle event is proportionate.
+  it("renders the body after a toggle-open and removes it when closed again", () => {
+    const view = new ChatView();
+    view.sessionId = "session-1";
+    const bodyCalls = observeGroupBodyRenders(view);
+    const initiallyClosed = renderMessageGroup(view, messages, 40, 41, false);
+
+    dispatchDetailsToggle(templateEventHandlerAfterMarker(initiallyClosed, "@toggle="), true);
+    renderMessageGroup(view, messages, 40, 41, false);
+
+    expect(bodyCalls).toEqual([{ messages, startIndex: 40 }]);
+
+    bodyCalls.length = 0;
+    dispatchDetailsToggle(templateEventHandlerAfterMarker(initiallyClosed, "@toggle="), false);
+    renderMessageGroup(view, messages, 40, 41, false);
+
+    expect(bodyCalls).toEqual([]);
+  });
+});
+
+interface GroupBodyRenderCall {
+  messages: ChatLine[];
+  startIndex: number;
+}
+
+type RenderActivityDock = (this: ChatView) => TemplateResult | null;
+type RenderQueuedMessages = (this: ChatView) => TemplateResult;
+type RenderMessageGroup = (this: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean) => TemplateResult;
+type RenderMessageGroupBody = (this: ChatView, messages: ChatLine[], startIndex: number) => TemplateResult;
+type RenderWarnings = (this: ChatView) => TemplateResult | null;
+type RenderNotificationTray = (this: ChatView) => TemplateResult | null;
+type FocusPendingNotificationTarget = (this: ChatView) => void;
+type TemplateEventHandler = (event: Event) => void;
+
+function renderActivityDock(view: ChatView): TemplateResult {
+  const method: unknown = Reflect.get(view, "renderActivityDock");
+  if (!isRenderActivityDock(method)) throw new Error("ChatView.renderActivityDock is not callable");
+  const rendered = method.call(view);
+  if (rendered === null) throw new Error("Expected an activity dock");
+  return rendered;
+}
+
+function renderQueuedMessages(view: ChatView): TemplateResult {
+  const method: unknown = Reflect.get(view, "renderQueuedMessages");
+  if (!isRenderQueuedMessages(method)) throw new Error("ChatView.renderQueuedMessages is not callable");
+  return method.call(view);
+}
+
+function renderMessageGroup(view: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean): TemplateResult {
+  const method: unknown = Reflect.get(view, "renderMessageGroup");
+  if (!isRenderMessageGroup(method)) throw new Error("ChatView.renderMessageGroup is not callable");
+  return method.call(view, messages, startIndex, endIndex, defaultOpen);
+}
+
+function renderWarnings(view: ChatView): TemplateResult | null {
+  const method: unknown = Reflect.get(view, "renderWarnings");
+  if (!isRenderWarnings(method)) throw new Error("ChatView.renderWarnings is not callable");
+  return method.call(view);
+}
+
+function renderNotificationTray(view: ChatView): TemplateResult | null {
+  const method: unknown = Reflect.get(view, "renderNotificationTray");
+  if (!isRenderNotificationTray(method)) throw new Error("ChatView.renderNotificationTray is not callable");
+  return method.call(view);
+}
+
+function focusPendingNotificationTarget(view: ChatView): void {
+  const method: unknown = Reflect.get(view, "focusPendingNotificationTarget");
+  if (!isFocusPendingNotificationTarget(method)) throw new Error("ChatView.focusPendingNotificationTarget is not callable");
+  method.call(view);
+}
+
+function observeGroupBodyRenders(view: ChatView): GroupBodyRenderCall[] {
+  const method: unknown = Reflect.get(view, "renderMessageGroupBody");
+  if (!isRenderMessageGroupBody(method)) throw new Error("ChatView.renderMessageGroupBody is not callable");
+  const calls: GroupBodyRenderCall[] = [];
+  const observed: RenderMessageGroupBody = function (messages, startIndex) {
+    calls.push({ messages, startIndex });
+    return method.call(this, messages, startIndex);
+  };
+  if (!Reflect.set(view, "renderMessageGroupBody", observed)) throw new Error("Could not observe ChatView.renderMessageGroupBody");
+  return calls;
+}
+
+function isRenderActivityDock(value: unknown): value is RenderActivityDock {
+  return typeof value === "function";
+}
+
+function isRenderQueuedMessages(value: unknown): value is RenderQueuedMessages {
+  return typeof value === "function";
+}
+
+function isRenderMessageGroup(value: unknown): value is RenderMessageGroup {
+  return typeof value === "function";
+}
+
+function isRenderMessageGroupBody(value: unknown): value is RenderMessageGroupBody {
+  return typeof value === "function";
+}
+
+function isRenderWarnings(value: unknown): value is RenderWarnings {
+  return typeof value === "function";
+}
+
+function isRenderNotificationTray(value: unknown): value is RenderNotificationTray {
+  return typeof value === "function";
+}
+
+function isFocusPendingNotificationTarget(value: unknown): value is FocusPendingNotificationTarget {
+  return typeof value === "function";
+}
+
+function dispatchDetailsToggle(handler: TemplateEventHandler, open: boolean): void {
+  const hadDetailsElement = Reflect.has(globalThis, "HTMLDetailsElement");
+  const previousDetailsElement = Reflect.get(globalThis, "HTMLDetailsElement");
+  class StubDetailsElement extends EventTarget {
+    constructor(readonly open: boolean) {
+      super();
+    }
+  }
+  Reflect.set(globalThis, "HTMLDetailsElement", StubDetailsElement);
+  try {
+    const details = new StubDetailsElement(open);
+    details.addEventListener("toggle", (event) => { handler(event); });
+    details.dispatchEvent(new Event("toggle"));
+  } finally {
+    if (hadDetailsElement) Reflect.set(globalThis, "HTMLDetailsElement", previousDetailsElement);
+    else Reflect.deleteProperty(globalThis, "HTMLDetailsElement");
+  }
+}
+
+function requireSection(section: ReturnType<typeof chatQueuedMessageSections>[number] | undefined): ReturnType<typeof chatQueuedMessageSections>[number] {
+  if (section === undefined) throw new Error("expected a queued-message section");
+  return section;
+}
+
+function withStatus(view: ChatView, status: SessionStatus): ChatView {
+  view.status = status;
+  return view;
+}
+
+function withNotificationInbox(view: ChatView): ChatView {
+  const notificationInbox: SelectedSessionNotificationView = {
+    machineId: "local",
+    sessionId: "session-1",
+    cwd: "/repo",
+    daemonInstanceId: "daemon-a",
+    notifications: [{
+      id: "daemon-a:1",
+      message: "plain <strong>text</strong>\nsecond line",
+      truncated: false,
+      severity: "warning",
+      receivedAt: "2026-07-18T00:00:00.000Z",
+      order: 1,
+    }],
+    retainedCount: 1,
+    discardedCount: 0,
+    highestSeverity: "warning",
+    dismissThrough: { order: 1, overflowWatermark: 0 },
+    pendingDismissedIds: new Set(),
+    dismissAllPending: false,
+    announcements: [],
+  };
+  view.sessionId = notificationInbox.sessionId;
+  view.notificationInbox = notificationInbox;
+  return view;
+}
+
+function requireNotificationInbox(view: ChatView): SelectedSessionNotificationView {
+  if (view.notificationInbox === undefined) throw new Error("expected a notification inbox");
+  return view.notificationInbox;
+}
+
+function emptyNotificationInbox(inbox: SelectedSessionNotificationView): SelectedSessionNotificationView {
+  const empty: SelectedSessionNotificationView = {
+    ...inbox,
+    notifications: [],
+    retainedCount: 0,
+    discardedCount: 0,
+    pendingDismissedIds: new Set(),
+    dismissAllPending: false,
+  };
+  delete empty.highestSeverity;
+  return empty;
+}
+
+function installNotificationFocusRoot(view: ChatView): ReturnType<typeof vi.fn> {
+  const headerFocus = vi.fn();
+  const renderRoot = {
+    querySelector: (selector: string) => selector === "[data-notification-focus='header']" ? { focus: headerFocus } : null,
+    querySelectorAll: () => [],
+  };
+  if (!Reflect.set(view, "renderRoot", renderRoot)) throw new Error("Could not install notification focus root");
+  return headerFocus;
+}
+
+function warningStatus(warnings: SessionWarning[]): SessionStatus {
+  return {
+    ...queuedStatus([]),
+    ...(warnings.length === 0 ? {} : { warnings }),
+  };
+}
+
+function queuedStatus(queuedMessages: QueuedSessionMessage[]): SessionStatus {
+  return {
+    sessionId: "session-1",
+    isStreaming: true,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: queuedMessages.length,
+    queuedMessages,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+  };
+}

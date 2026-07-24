@@ -1,0 +1,9 @@
+{
+  "name": "@pi-webui/updates-plugin",
+  "private": true,
+  "piWebUi": {
+    "plugins": [
+      { "id": "updates", "module": "pi-webui-plugin.js", "machineSpecific": true }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@pi-webui/info-plugin",
+  "private": true,
+  "piWebUi": {
+    "plugins": [
+      { "id": "info", "module": "pi-webui-plugin.js" }
+    ]
+  }
+}

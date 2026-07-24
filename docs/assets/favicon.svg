@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">PI WEBUI icon</title>
+  <desc id="desc">A thin green rounded speech-bubble outline framing a bold mathematical pi symbol.</desc>
+  <g id="speech-bubble" fill="none" stroke="#1E9E4A" stroke-width="32" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 88H392A48 48 0 0 1 440 136V304A48 48 0 0 1 392 352H224L152 416L168 352H120A48 48 0 0 1 72 304V136A48 48 0 0 1 120 88Z"/>
+  </g>
+  <path id="pi-symbol" fill="#1E9E4A" transform="translate(121 311) scale(.17 -.17)" d="M86 1120H1499V864H1303V362Q1303 233 1327.5 201.5Q1352 170 1408 170Q1465 170 1497 174V-14Q1435 -39 1223 -39Q1156 -39 1091 -20Q987 11 958 102Q945 145 945 233V864H640V0H282V864H86Z"/>
+</svg>

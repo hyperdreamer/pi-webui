@@ -1,0 +1,832 @@
+#!/usr/bin/env sh
+set -eu
+
+log() {
+  printf '%s\n' "$*" >&2
+}
+
+die() {
+  log "pi-webui-docker: $*"
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage: pi-webui-docker [--dev] [--allow-root] <command> [args...]
+
+Runtime/production mode is the default. Development mode must be selected
+explicitly with --dev.
+
+Commands:
+  install                 Run the production one-line/bootstrap installer
+  start                   Start the PI WEBUI Docker stack
+  stop                    Stop the PI WEBUI Docker stack without deleting data
+  restart                 Restart web and sessiond
+  restart-web             Restart only the web service
+  restart-sessiond        Restart only the session daemon
+  update                  Rebuild/update and recreate the Docker stack
+                          (development mode requires a clean Git checkout)
+  status                  Show Docker Compose service status
+  logs [web|sessiond|data-init]
+                          Follow Docker Compose logs
+  shell [web|sessiond]    Open a shell in a service container
+  doctor                  Print static Docker command diagnostics
+  cli <pi-webui args...>    Run the pi-webui CLI in the web container
+
+Update and restart commands launched inside a PI WEBUI Docker container start an
+independent helper container first, then stream the helper logs inline. The
+helper continues running if the terminal or web/sessiond exits.
+EOF
+}
+
+is_truthy() {
+  case "${1:-}" in
+    ""|0|false|FALSE|False) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+is_unsigned_int() {
+  case "${1:-}" in
+    ""|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required"
+}
+
+assert_no_args() {
+  checked_command=$1
+  shift
+  [ "$#" -eq 0 ] || die "$checked_command does not accept positional arguments"
+}
+
+assert_at_most_one_arg() {
+  checked_command=$1
+  shift
+  [ "$#" -le 1 ] || die "$checked_command accepts at most one target"
+}
+
+entrypoint_dir() {
+  script_path=${0:-}
+  case "$script_path" in
+    */*) script_dir=$(dirname "$script_path") ;;
+    *) script_dir=. ;;
+  esac
+  unset CDPATH
+  cd "$script_dir" 2>/dev/null && pwd -P
+}
+
+ENTRYPOINT_DIR=$(entrypoint_dir) || die "could not resolve entrypoint directory"
+PI_WEBUI_DOCKER_SELECTED_MODE=runtime
+PI_WEBUI_DOCKER_ALLOW_ROOT=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dev)
+      PI_WEBUI_DOCKER_SELECTED_MODE=dev
+      shift
+      ;;
+    --allow-root)
+      PI_WEBUI_DOCKER_ALLOW_ROOT=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown global option: $1"
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+command_name=${1:-}
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+if [ -z "$command_name" ]; then
+  usage >&2
+  exit 2
+fi
+
+docker_mode() {
+  case "$PI_WEBUI_DOCKER_SELECTED_MODE" in
+    runtime|dev) printf '%s\n' "$PI_WEBUI_DOCKER_SELECTED_MODE" ;;
+    *) die "unsupported Docker mode: $PI_WEBUI_DOCKER_SELECTED_MODE" ;;
+  esac
+}
+
+mode_flag() {
+  case "$(docker_mode)" in
+    runtime) return 0 ;;
+    dev) printf '%s\n' --dev ;;
+  esac
+}
+
+absolute_existing_dir() {
+  dir=$1
+  (cd "$dir" && pwd -P)
+}
+
+strip_wrapping_quotes() {
+  value=$1
+  case "$value" in
+    \"*\")
+      case "$value" in
+        *\") value=${value#\"}; value=${value%\"} ;;
+      esac
+      ;;
+    \'*\')
+      case "$value" in
+        *\') value=${value#\'}; value=${value%\'} ;;
+      esac
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+env_file_value() {
+  file=$1
+  key=$2
+  [ -f "$file" ] || return 1
+  raw=$(awk -v key="$key" '
+    function trim(value) {
+      sub(/^[ \t]+/, "", value)
+      sub(/[ \t\r]+$/, "", value)
+      return value
+    }
+    /^[ \t]*(#|$)/ { next }
+    {
+      line = $0
+      sub(/^[ \t]*export[ \t]+/, "", line)
+      name = line
+      sub(/=.*/, "", name)
+      name = trim(name)
+      if (name == key) {
+        sub(/^[^=]*=/, "", line)
+        print trim(line)
+        found = 1
+        exit
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$file") || return 1
+  strip_wrapping_quotes "$raw"
+}
+
+runtime_root() {
+  root=${PI_WEBUI_DOCKER_INSTALL_DIR:-}
+  if [ -z "$root" ]; then
+    root=$ENTRYPOINT_DIR
+  fi
+  case "$root" in
+    /*) ;;
+    *) die "PI WEBUI Docker runtime root must be an absolute path: $root" ;;
+  esac
+  [ -d "$root" ] || die "PI WEBUI Docker runtime root does not exist: $root"
+  printf '%s\n' "$root"
+}
+
+dev_root() {
+  root=${PI_WEBUI_DOCKER_DEV_REPO_ROOT:-}
+  if [ -z "$root" ]; then
+    if [ -f "$ENTRYPOINT_DIR/compose.dev.yml" ] && [ -d "$ENTRYPOINT_DIR/.." ]; then
+      root=$(absolute_existing_dir "$ENTRYPOINT_DIR/..") || die "could not resolve Docker development repo root"
+    elif [ -f "$ENTRYPOINT_DIR/docker/compose.dev.yml" ]; then
+      root=$ENTRYPOINT_DIR
+    fi
+  fi
+  [ -n "$root" ] || die "PI_WEBUI_DOCKER_DEV_REPO_ROOT must be set or pi-webui-docker must run from this checkout's docker/ directory"
+  case "$root" in
+    /*) ;;
+    *) die "PI WEBUI Docker development repo root must be an absolute path: $root" ;;
+  esac
+  [ -d "$root" ] || die "PI WEBUI Docker development repo root does not exist: $root"
+  printf '%s\n' "$root"
+}
+
+control_root() {
+  case "$(docker_mode)" in
+    runtime) runtime_root ;;
+    dev) dev_root ;;
+  esac
+}
+
+enforce_dev_root_safety() {
+  [ "$(docker_mode)" = dev ] || return 0
+  [ "$PI_WEBUI_DOCKER_ALLOW_ROOT" != 1 ] || return 0
+  uid=$(id -u 2>/dev/null || printf '0')
+  [ "$uid" != 0 ] || die "refusing to run Docker development mode as root; retry with --allow-root if this is intentional"
+}
+
+dev_git_operation() {
+  git_dir=$1
+  if [ -f "$git_dir/MERGE_HEAD" ]; then
+    printf '%s\n' merge
+  elif [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] || [ -f "$git_dir/REBASE_HEAD" ]; then
+    printf '%s\n' rebase
+  elif [ -f "$git_dir/CHERRY_PICK_HEAD" ]; then
+    printf '%s\n' cherry-pick
+  elif [ -f "$git_dir/REVERT_HEAD" ]; then
+    printf '%s\n' revert
+  elif [ -d "$git_dir/sequencer" ]; then
+    printf '%s\n' sequenced-operation
+  elif [ -f "$git_dir/BISECT_LOG" ]; then
+    printf '%s\n' bisect
+  else
+    return 1
+  fi
+}
+
+require_clean_dev_update_checkout() {
+  [ "$(docker_mode)" = dev ] || return 0
+  root=$(dev_root)
+  require_command git
+
+  git_root=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null) \
+    || die "Docker development update requires a Git checkout at $root"
+  git_root=$(absolute_existing_dir "$git_root") \
+    || die "could not resolve Git checkout root: $git_root"
+  [ "$git_root" = "$root" ] \
+    || die "Docker development root $root must be the Git checkout root ($git_root)"
+  git_dir=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null) \
+    || die "could not resolve Git metadata for $root"
+
+  operation=$(dev_git_operation "$git_dir" 2>/dev/null || true)
+  if [ -n "$operation" ]; then
+    log "pi-webui-docker: refusing to update the Docker development stack while a Git $operation is in progress: $root"
+    checkout_status=$(git -C "$root" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)
+    if [ -n "$checkout_status" ]; then
+      log "Checkout status:"
+      printf '%s\n' "$checkout_status" >&2
+    fi
+    die "resolve or abort the Git $operation before rerunning pi-webui-docker --dev update"
+  fi
+
+  checkout_status=$(git -C "$root" status --porcelain=v1 --untracked-files=all) \
+    || die "could not inspect Git checkout status at $root"
+  if [ -n "$checkout_status" ]; then
+    log "pi-webui-docker: refusing to update the Docker development stack because the checkout has uncommitted changes: $root"
+    log "Checkout status:"
+    printf '%s\n' "$checkout_status" >&2
+    die "commit, stash, or remove these changes before rerunning pi-webui-docker --dev update; no files were changed"
+  fi
+}
+
+enforce_container_mode_match() {
+  is_truthy "${PI_WEBUI_DOCKER_RUNTIME:-}" || return 0
+  runtime_mode=${PI_WEBUI_DOCKER_MODE:-}
+  [ -n "$runtime_mode" ] || return 0
+  case "$runtime_mode" in
+    runtime|dev) ;;
+    *) die "unsupported PI_WEBUI_DOCKER_MODE inside PI WEBUI Docker runtime: $runtime_mode" ;;
+  esac
+  selected_mode=$(docker_mode)
+  [ "$runtime_mode" = "$selected_mode" ] || die "this PI WEBUI Docker container is in $runtime_mode mode; rerun pi-webui-docker with the matching mode flag"
+}
+
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "$@"
+  else
+    die "Docker Compose is required (docker compose plugin or docker-compose)"
+  fi
+}
+
+is_checkout_runtime_default_root() {
+  root=$1
+  [ -z "${PI_WEBUI_DOCKER_INSTALL_DIR:-}" ] || return 1
+  [ -f "$root/compose.dev.yml" ] || return 1
+  [ -f "$root/../package.json" ] || return 1
+  [ -f "$root/pi-webui-docker" ] || return 1
+}
+
+runtime_command_hint() {
+  command=${command_name:-status}
+  printf '%s\n' "$command"
+}
+
+default_runtime_entrypoint_hint() {
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    printf '%s\n' "$XDG_DATA_HOME/pi-webui-docker/pi-webui-docker"
+  elif [ -n "${HOME:-}" ]; then
+    printf '%s\n' "$HOME/.local/share/pi-webui-docker/pi-webui-docker"
+  else
+    printf '%s\n' '~/.local/share/pi-webui-docker/pi-webui-docker'
+  fi
+}
+
+die_missing_runtime_asset() {
+  root=$1
+  missing_path=$2
+  if is_checkout_runtime_default_root "$root"; then
+    command_hint=$(runtime_command_hint)
+    runtime_entrypoint=$(default_runtime_entrypoint_hint)
+    log "pi-webui-docker: runtime install assets were not found in $root."
+    log "Missing generated asset: $missing_path"
+    log ""
+    log "You appear to be running this checkout's Docker command in runtime mode."
+    log "For development, use:"
+    log ""
+    log "  ./docker/pi-webui-docker --dev $command_hint"
+    log ""
+    log "For an installed runtime, use the installed command, usually:"
+    log ""
+    log "  $runtime_entrypoint $command_hint"
+    log ""
+    log "Or set PI_WEBUI_DOCKER_INSTALL_DIR to your runtime install directory."
+    exit 1
+  fi
+
+  die "runtime install asset not found at $missing_path; run pi-webui-docker install first"
+}
+
+require_runtime_compose_assets() {
+  root=$1
+  [ -f "$root/compose.yml" ] || die_missing_runtime_asset "$root" "$root/compose.yml"
+  [ -f "$root/compose.override.yml" ] || die_missing_runtime_asset "$root" "$root/compose.override.yml"
+  [ -f "$root/.env" ] || die_missing_runtime_asset "$root" "$root/.env"
+}
+
+runtime_compose() {
+  root=$(runtime_root)
+  require_runtime_compose_assets "$root"
+  project_name=$(required_env_file_value "$root/.env" COMPOSE_PROJECT_NAME)
+  (
+    cd "$root" || exit 1
+    docker_compose --project-name "$project_name" --env-file .env -f compose.yml -f compose.override.yml "$@"
+  )
+}
+
+dev_compose() {
+  root=$(dev_root)
+  wrapper=$root/docker/internal/dev/compose
+  [ -x "$wrapper" ] || die "dev Compose helper is not executable at $wrapper"
+  (
+    cd "$root" || exit 1
+    PI_WEBUI_DOCKER_ALLOW_ROOT=$PI_WEBUI_DOCKER_ALLOW_ROOT "$wrapper" "$@"
+  )
+}
+
+compose_for_install() {
+  case "$(docker_mode)" in
+    runtime) runtime_compose "$@" ;;
+    dev) dev_compose "$@" ;;
+  esac
+}
+
+entrypoint_installer() {
+  installer=$ENTRYPOINT_DIR/install.sh
+  [ -x "$installer" ] || die "installer not found or not executable at $installer"
+  printf '%s\n' "$installer"
+}
+
+runtime_installer() {
+  root=$1
+  installer=$root/install.sh
+  [ -x "$installer" ] || die "runtime installer not found or not executable at $installer; run pi-webui-docker install first"
+  printf '%s\n' "$installer"
+}
+
+run_install() {
+  [ "$(docker_mode)" = runtime ] || die "install is only available in runtime mode; omit --dev"
+  installer=$(entrypoint_installer)
+  exec "$installer" "$@"
+}
+
+run_start() {
+  assert_no_args start "$@"
+  require_command docker
+  case "$(docker_mode)" in
+    runtime) runtime_compose up -d ;;
+    dev) dev_compose up -d --build ;;
+  esac
+}
+
+run_stop() {
+  assert_no_args stop "$@"
+  require_command docker
+  compose_for_install down
+}
+
+run_status() {
+  assert_no_args status "$@"
+  require_command docker
+  compose_for_install ps
+}
+
+run_restart_web() {
+  assert_no_args restart-web "$@"
+  compose_for_install restart web
+}
+
+run_restart_sessiond() {
+  assert_no_args restart-sessiond "$@"
+  compose_for_install restart sessiond
+}
+
+run_restart_all() {
+  assert_no_args restart "$@"
+  # Restart web first to mirror native service commands. Detached helpers keep
+  # running after sessiond restarts, so this is safe when launched from PI WEBUI.
+  compose_for_install restart web sessiond
+}
+
+run_runtime_host_update() {
+  root=$(runtime_root)
+  require_runtime_compose_assets "$root"
+  installer=$(runtime_installer "$root")
+  PI_WEBUI_DOCKER_REFRESH_ASSETS=1
+  export PI_WEBUI_DOCKER_REFRESH_ASSETS
+  exec "$installer" --install-dir "$root"
+}
+
+run_update() {
+  assert_no_args update "$@"
+  require_clean_dev_update_checkout
+  case "$(docker_mode)" in
+    runtime)
+      if ! is_truthy "${PI_WEBUI_DOCKER_RUNTIME:-}"; then
+        run_runtime_host_update
+      fi
+      cache_bust=${CACHE_BUST:-pi-webui-docker-$(date -u +%Y%m%dT%H%M%SZ)}
+      log "Building PI WEBUI runtime image with CACHE_BUST=$cache_bust ..."
+      CACHE_BUST=$cache_bust runtime_compose build --pull --no-cache
+      log "Recreating PI WEBUI runtime services ..."
+      runtime_compose up -d --force-recreate --remove-orphans
+      ;;
+    dev)
+      log "Rebuilding PI WEBUI development image ..."
+      dev_compose build --pull
+      log "Recreating PI WEBUI development services ..."
+      dev_compose up -d --force-recreate --remove-orphans
+      ;;
+  esac
+}
+
+validate_logs_target() {
+  target=${1:-}
+  case "$target" in
+    ""|web|sessiond) return 0 ;;
+    data-init)
+      [ "$(docker_mode)" = dev ] || die "logs data-init is only available with --dev"
+      return 0
+      ;;
+    *) die "logs target must be web, sessiond, or data-init" ;;
+  esac
+}
+
+run_logs() {
+  assert_at_most_one_arg logs "$@"
+  require_command docker
+  target=${1:-}
+  validate_logs_target "$target"
+  if [ -n "$target" ]; then
+    compose_for_install logs -f "$target"
+  else
+    compose_for_install logs -f
+  fi
+}
+
+validate_shell_target() {
+  target=${1:-web}
+  case "$target" in
+    web|sessiond) printf '%s\n' "$target" ;;
+    *) die "shell target must be web or sessiond" ;;
+  esac
+}
+
+run_shell() {
+  assert_at_most_one_arg shell "$@"
+  require_command docker
+  target=$(validate_shell_target "${1:-web}")
+  compose_for_install exec "$target" bash
+}
+
+run_doctor() {
+  assert_no_args doctor "$@"
+  root=$(control_root)
+  printf 'PI WEBUI Docker mode: %s\n' "$(docker_mode)"
+  printf 'PI WEBUI Docker root: %s\n' "$root"
+  case "$(docker_mode)" in
+    runtime)
+      [ -f "$root/.env" ] && printf 'Runtime env: %s\n' "$root/.env" || printf 'Runtime env: missing (%s/.env)\n' "$root"
+      [ -f "$root/compose.yml" ] && printf 'Runtime Compose file: %s\n' "$root/compose.yml" || printf 'Runtime Compose file: missing (%s/compose.yml)\n' "$root"
+      [ -f "$root/compose.override.yml" ] && printf 'Runtime Compose override: %s\n' "$root/compose.override.yml" || printf 'Runtime Compose override: missing (%s/compose.override.yml)\n' "$root"
+      [ -x "$root/install.sh" ] && printf 'Runtime installer: %s\n' "$root/install.sh" || printf 'Runtime installer: missing or not executable (%s/install.sh)\n' "$root"
+      ;;
+    dev)
+      dev_config=$root/.pi-webui/docker-compose-dev.local.env
+      dev_env=$root/.pi-webui/docker-compose-dev.generated.env
+      dev_override=$root/.pi-webui/docker-compose-dev.host.generated.yml
+      dev_compose_file=$root/docker/compose.dev.yml
+      dev_wrapper=$root/docker/internal/dev/compose
+      [ -f "$dev_config" ] && printf 'Dev config: %s\n' "$dev_config" || printf 'Dev config: missing (%s)\n' "$dev_config"
+      [ -f "$dev_env" ] && printf 'Generated dev env: %s\n' "$dev_env" || printf 'Generated dev env: missing (%s)\n' "$dev_env"
+      [ -f "$dev_override" ] && printf 'Generated dev Compose override: %s\n' "$dev_override" || printf 'Generated dev Compose override: missing (%s)\n' "$dev_override"
+      [ -f "$dev_compose_file" ] && printf 'Dev Compose file: %s\n' "$dev_compose_file" || printf 'Dev Compose file: missing (%s)\n' "$dev_compose_file"
+      [ -x "$dev_wrapper" ] && printf 'Dev Compose helper: %s\n' "$dev_wrapper" || printf 'Dev Compose helper: missing or not executable (%s)\n' "$dev_wrapper"
+      if [ -f "$dev_env" ]; then
+        dev_uid=$(env_file_value "$dev_env" PI_WEBUI_UID 2>/dev/null || true)
+        dev_gid=$(env_file_value "$dev_env" PI_WEBUI_GID 2>/dev/null || true)
+        [ -n "$dev_uid" ] && printf 'Generated dev UID: %s\n' "$dev_uid"
+        [ -n "$dev_gid" ] && printf 'Generated dev GID: %s\n' "$dev_gid"
+      fi
+      ;;
+  esac
+  if command -v docker >/dev/null 2>&1; then
+    docker --version || true
+    if docker compose version >/dev/null 2>&1; then
+      docker compose version || true
+    elif command -v docker-compose >/dev/null 2>&1; then
+      docker-compose --version || true
+    else
+      printf '%s\n' 'Docker Compose: not found'
+    fi
+  else
+    printf '%s\n' 'Docker CLI: not found'
+  fi
+}
+
+run_cli() {
+  [ "$#" -gt 0 ] || die "cli requires pi-webui arguments"
+  require_command docker
+  compose_for_install exec web pi-webui "$@"
+}
+
+current_container_ref() {
+  if [ -n "${PI_WEBUI_DOCKER_CONTAINER_ID:-}" ]; then
+    printf '%s\n' "$PI_WEBUI_DOCKER_CONTAINER_ID"
+    return 0
+  fi
+
+  hostname_value=$(hostname 2>/dev/null || true)
+  [ -n "$hostname_value" ] || return 1
+  if docker container inspect "$hostname_value" >/dev/null 2>&1; then
+    printf '%s\n' "$hostname_value"
+    return 0
+  fi
+
+  return 1
+}
+
+helper_image() {
+  env_file=$1
+  case "$(docker_mode)" in
+    runtime)
+      image=$(env_file_value "$env_file" PI_WEBUI_IMAGE 2>/dev/null || true)
+      [ -n "$image" ] || image=${PI_WEBUI_IMAGE:-}
+      ;;
+    dev)
+      image=$(env_file_value "$env_file" PI_WEBUI_DEV_IMAGE 2>/dev/null || true)
+      [ -n "$image" ] || image=${PI_WEBUI_DEV_IMAGE:-}
+      ;;
+  esac
+
+  if [ -z "${image:-}" ]; then
+    image=${PI_WEBUI_DOCKER_HELPER_IMAGE:-}
+  fi
+
+  if [ -n "${image:-}" ]; then
+    printf '%s\n' "$image"
+    return 0
+  fi
+
+  container_ref=$(current_container_ref) || die "could not detect this Docker container; set PI_WEBUI_DOCKER_HELPER_IMAGE explicitly"
+  image=$(docker container inspect "$container_ref" --format '{{.Config.Image}}' 2>/dev/null || true)
+  [ -n "$image" ] && [ "$image" != "<no value>" ] || die "could not detect this container's image; set PI_WEBUI_DOCKER_HELPER_IMAGE explicitly"
+  printf '%s\n' "$image"
+}
+
+control_env_file() {
+  root=$1
+  case "$(docker_mode)" in
+    runtime) candidate=$root/.env ;;
+    dev) candidate=$root/.pi-webui/docker-compose-dev.generated.env ;;
+  esac
+  [ -f "$candidate" ] || die "generated $(docker_mode) Docker env not found at $candidate; run pi-webui-docker $(mode_flag || true) status or start from the host first"
+  printf '%s\n' "$candidate"
+}
+
+control_root_env_key() {
+  case "$(docker_mode)" in
+    runtime) printf '%s\n' PI_WEBUI_DOCKER_INSTALL_DIR ;;
+    dev) printf '%s\n' PI_WEBUI_DOCKER_DEV_REPO_ROOT ;;
+  esac
+}
+
+required_env_file_value() {
+  file=$1
+  key=$2
+  value=$(env_file_value "$file" "$key" 2>/dev/null || true)
+  [ -n "$value" ] || die "generated Docker env $file must define $key for detached helpers"
+  printf '%s\n' "$value"
+}
+
+cleanup_old_helpers() {
+  root=${1:-}
+  project_name=${2:-}
+  base_filters="label=pi-webui.docker-helper=true"
+  if [ -n "$root" ] && [ -n "$project_name" ]; then
+    ids=$(docker ps -aq --filter "$base_filters" --filter "label=pi-webui.docker-helper.root=$root" --filter "label=pi-webui.docker-helper.project=$project_name" --filter status=exited 2>/dev/null || true)
+  elif [ -n "$root" ]; then
+    ids=$(docker ps -aq --filter "$base_filters" --filter "label=pi-webui.docker-helper.root=$root" --filter status=exited 2>/dev/null || true)
+  else
+    ids=$(docker ps -aq --filter "$base_filters" --filter status=exited 2>/dev/null || true)
+  fi
+  old_ids=$(docker ps -aq --filter label=pi-webui.docker-control=true --filter status=exited 2>/dev/null || true)
+  ids="$ids $old_ids"
+  for id in $ids; do
+    [ -n "$id" ] || continue
+    docker rm "$id" >/dev/null 2>&1 || true
+  done
+}
+
+stream_detached_helper_logs() {
+  helper_name=$1
+  printf '\n'
+  printf 'Streaming detached PI WEBUI Docker helper logs inline.\n'
+  printf 'If this terminal disconnects, the helper keeps running.\n'
+  printf 'Reconnect with: docker logs -f %s\n' "$helper_name"
+  printf '\n'
+
+  if docker logs -f "$helper_name"; then
+    logs_status=0
+  else
+    logs_status=$?
+  fi
+
+  if [ "$logs_status" -ne 0 ]; then
+    log "pi-webui-docker: detached helper log streaming stopped with status $logs_status"
+    log "pi-webui-docker: reconnect with: docker logs -f $helper_name"
+    return "$logs_status"
+  fi
+
+  helper_status=$(docker inspect --format '{{.State.ExitCode}}' "$helper_name" 2>/dev/null || true)
+  if is_unsigned_int "$helper_status" && [ "$helper_status" -ne 0 ]; then
+    log "pi-webui-docker: detached helper exited with status $helper_status"
+    return "$helper_status"
+  fi
+
+  return 0
+}
+
+start_detached_helper() {
+  action=$1
+  is_truthy "${PI_WEBUI_DOCKER_RUNTIME:-}" || die "detached helpers are only available inside the PI WEBUI Docker runtime"
+  require_command docker
+  selected_mode=$(docker_mode)
+  root=$(control_root)
+  env_file=$(control_env_file "$root")
+  root_key=$(control_root_env_key)
+  env_root=$(required_env_file_value "$env_file" "$root_key")
+  [ "$env_root" = "$root" ] || die "generated Docker env $env_file has $root_key=$env_root, but selected $selected_mode root is $root"
+  project_name=$(required_env_file_value "$env_file" COMPOSE_PROJECT_NAME)
+  helper_uid=$(required_env_file_value "$env_file" PI_WEBUI_UID)
+  helper_gid=$(required_env_file_value "$env_file" PI_WEBUI_GID)
+  helper_docker_gid=$(required_env_file_value "$env_file" DOCKER_GID)
+  is_unsigned_int "$helper_uid" || die "generated Docker env must define numeric PI_WEBUI_UID for detached helpers"
+  is_unsigned_int "$helper_gid" || die "generated Docker env must define numeric PI_WEBUI_GID for detached helpers"
+  is_unsigned_int "$helper_docker_gid" || die "generated Docker env must define numeric DOCKER_GID for detached helpers"
+  if [ "$selected_mode" = dev ] && [ "$helper_uid" -eq 0 ] && [ "$PI_WEBUI_DOCKER_ALLOW_ROOT" != 1 ]; then
+    die "refusing to start a Docker development helper as root; regenerate dev env with a non-root PI_WEBUI_UID or retry with --allow-root if intentional"
+  fi
+  helper_user=$helper_uid:$helper_gid
+  helper_group_add=$helper_docker_gid
+  image=$(helper_image "$env_file")
+  container_ref=$(current_container_ref) || die "could not detect this Docker container; set PI_WEBUI_DOCKER_CONTAINER_ID to enable detached helpers"
+  cleanup_old_helpers "$root" "$project_name"
+
+  timestamp=$(date -u +%Y%m%d%H%M%S)
+  helper_name=pi-webui-docker-$action-$timestamp-$$
+  generated_env_keys="PI_WEBUI_UID PI_WEBUI_GID DOCKER_GID PI_WEBUI_DOCKER_HOST_PROFILE HOSTEXEC_MODE PI_WEBUI_DOCKER_EXTRA_HOST_PATHS PI_WEBUI_DOCKER_DATA_DIR PI_WEBUI_DOCKER_INSTALL_DIR PI_WEBUI_DOCKER_DEV_REPO_ROOT PI_WEBUI_DOCKER_REF PI_WEBUI_BIND_ADDR PI_WEBUI_PORT PI_WEBUI_DEV_API_BIND_ADDR PI_WEBUI_DEV_BIND_ADDR PI_WEBUI_DEV_API_PORT PI_WEBUI_DEV_PORT PI_WEBUI_VERSION PI_WEBUI_OPENSUSE_IMAGE PI_WEBUI_NODEJS_MAJOR PI_WEBUI_NODEJS_REPO PI_WEBUI_EXTRA_ZYPPER_PACKAGES PI_WEBUI_IMAGE PI_WEBUI_DEV_IMAGE COMPOSE_PROJECT_NAME HOSTEXEC_IMAGE PI_WEBUI_MAX_UPLOAD_BYTES"
+
+  set -- run -d \
+    --env-file "$env_file" \
+    --name "$helper_name" \
+    --label pi-webui.docker-helper=true \
+    --label "pi-webui.docker-helper.action=$action" \
+    --label "pi-webui.docker-helper.mode=$selected_mode" \
+    --label "pi-webui.docker-helper.root=$root" \
+    --label "pi-webui.docker-helper.project=$project_name" \
+    --group-add "$helper_group_add" \
+    --user "$helper_user" \
+    --volumes-from "$container_ref" \
+    --workdir "$root" \
+    --env PI_WEBUI_DOCKER_RUNTIME=1 \
+    --env "PI_WEBUI_DOCKER_MODE=$selected_mode" \
+    --env "PI_WEBUI_DOCKER_ALLOW_ROOT=$PI_WEBUI_DOCKER_ALLOW_ROOT" \
+    --env "PI_WEBUI_DOCKER_HELPER_IMAGE=$image" \
+    --env "COMPOSE_PROJECT_NAME=$project_name"
+
+  # Keep --env-file for traceability, then pass parsed values explicitly so
+  # helper process env matches Compose dotenv semantics for quoted values.
+  for key in $generated_env_keys; do
+    if value=$(env_file_value "$env_file" "$key" 2>/dev/null); then
+      set -- "$@" --env "$key=$value"
+    fi
+  done
+
+  case "$selected_mode" in
+    runtime) set -- "$@" --env "PI_WEBUI_DOCKER_INSTALL_DIR=$root" ;;
+    dev) set -- "$@" --env "PI_WEBUI_DOCKER_DEV_REPO_ROOT=$root" ;;
+  esac
+  if [ "${CACHE_BUST+x}" = x ]; then
+    set -- "$@" --env "CACHE_BUST=$CACHE_BUST"
+  fi
+  set -- "$@" "$image" pi-webui-docker
+
+  flag=$(mode_flag || true)
+  if [ -n "$flag" ]; then
+    set -- "$@" "$flag"
+  fi
+  if [ "$PI_WEBUI_DOCKER_ALLOW_ROOT" = 1 ]; then
+    set -- "$@" --allow-root
+  fi
+  set -- "$@" __run-detached "$action"
+
+  container_id=$(docker "$@") || die "could not start detached Docker helper"
+  printf 'Started detached PI WEBUI Docker helper: %s\n' "$helper_name"
+  printf 'Container ID: %s\n' "$container_id"
+  stream_detached_helper_logs "$helper_name"
+}
+
+run_detached_action() {
+  action=${1:-}
+  [ "$#" -eq 1 ] || die "__run-detached requires exactly one action"
+  is_truthy "${PI_WEBUI_DOCKER_RUNTIME:-}" || die "detached actions only run inside the PI WEBUI Docker runtime"
+  require_command docker
+  log "PI WEBUI Docker helper running action: $action"
+  case "$action" in
+    update) run_update ;;
+    restart) run_restart_all ;;
+    restart-web) run_restart_web ;;
+    restart-sessiond) run_restart_sessiond ;;
+    *) die "unsupported detached action: $action" ;;
+  esac
+  log "PI WEBUI Docker helper completed action: $action"
+}
+
+run_restart_or_update() {
+  action=$1
+  shift
+  assert_no_args "$action" "$@"
+  if is_truthy "${PI_WEBUI_DOCKER_RUNTIME:-}"; then
+    # Fail before scheduling a helper, then recheck inside the helper in
+    # run_update so a checkout change cannot race the detached operation.
+    if [ "$action" = update ]; then
+      require_clean_dev_update_checkout
+    fi
+    start_detached_helper "$action"
+    return 0
+  fi
+
+  case "$action" in
+    update) run_update ;;
+    restart) run_restart_all ;;
+    restart-web) run_restart_web ;;
+    restart-sessiond) run_restart_sessiond ;;
+    *) die "unsupported action: $action" ;;
+  esac
+}
+
+case "$command_name" in
+  help|-h|--help)
+    usage
+    ;;
+  install)
+    run_install "$@"
+    ;;
+  start|stop|status|logs|shell|doctor|cli|update|restart|restart-web|restart-sessiond|__run-detached)
+    enforce_dev_root_safety
+    enforce_container_mode_match
+    case "$command_name" in
+      start) run_start "$@" ;;
+      stop) run_stop "$@" ;;
+      status) run_status "$@" ;;
+      logs) run_logs "$@" ;;
+      shell) run_shell "$@" ;;
+      doctor) run_doctor "$@" ;;
+      cli) run_cli "$@" ;;
+      update|restart|restart-web|restart-sessiond) run_restart_or_update "$command_name" "$@" ;;
+      __run-detached) run_detached_action "$@" ;;
+    esac
+    ;;
+  *)
+    usage >&2
+    die "unknown command: $command_name"
+    ;;
+esac

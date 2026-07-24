@@ -1,0 +1,9 @@
+{
+  "name": "@pi-webui/workspace-tasks-plugin",
+  "private": true,
+  "piWebUi": {
+    "plugins": [
+      { "id": "workspace-tasks", "module": "pi-webui-plugin.js" }
+    ]
+  }
+}
