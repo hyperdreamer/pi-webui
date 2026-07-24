@@ -76,6 +76,7 @@ import type { AppMobileMainTab, AppMobileMainTabIcon } from "./appShell/AppMobil
 import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
+import "./ActivityRail";
 import { appStyles } from "./shared";
 
 
@@ -2357,7 +2358,10 @@ export class PiWebUiApp extends LitElement {
     const state = this.state;
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
-        <aside id="navigation-panel">${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}</aside>
+        <aside id="navigation-panel">
+          <activity-rail></activity-rail>
+          ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
+        </aside>
         ${this.renderNavigationPanelEdgeControl()}
         <main class=${mainViewClass(state.mainView)}>
           ${this.renderContextBar()}
