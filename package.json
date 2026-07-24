@@ -1,6 +1,6 @@
 {
   "name": "@hyperdreamer/pi-webui",
-  "version": "1.0.0",
+  "version": "1.0.0-dev",
   "description": "Web UI for persistent Pi Coding Agent sessions in real workspaces.",
   "license": "MIT",
   "author": "Federico Jaramillo Martinez and HyperDreamer",
