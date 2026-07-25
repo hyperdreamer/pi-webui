@@ -18,6 +18,7 @@ export class WorkspacePanel extends LitElement {
   @property({ attribute: false }) emptyState: WorkspacePanelEmptyState | undefined;
   @property() tool: QualifiedContributionId = "core:workspace.files";
   @property({ attribute: false }) panels: QualifiedWorkspacePanelContribution[] = [];
+  @property({ attribute: false }) hiddenTools: QualifiedContributionId[] = [];
   @property({ type: Boolean }) hideToolTabs = false;
   @property({ attribute: false }) onSelectTool: (tool: QualifiedContributionId) => void = () => undefined;
   @query(".workspace-header-strip") private workspaceHeaderStrip?: HTMLElement | null;
@@ -58,8 +59,9 @@ export class WorkspacePanel extends LitElement {
       title: "Workspace tools unavailable",
       body: "Try selecting the workspace again.",
     });
-    const visiblePanels = this.panels;
-    const selectedPanel = visiblePanels.find((panel) => panel.id === this.tool) ?? visiblePanels[0];
+    const panels = this.panels;
+    const visiblePanels = panels.filter((panel) => !this.hiddenTools.includes(panel.id));
+    const selectedPanel = panels.find((panel) => panel.id === this.tool) ?? panels[0];
     return html`
       ${this.hideToolTabs ? null : html`
         <header>

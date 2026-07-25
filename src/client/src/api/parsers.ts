@@ -1,5 +1,5 @@
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
-import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot } from "../../../shared/apiTypes";
+import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SystemInfoResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
@@ -1773,4 +1773,74 @@ function numberOrNull(record: Record<string, unknown>, key: string): number | nu
 
 function optionalField(key: string, value: unknown): object {
   return value === undefined ? {} : { [key]: value };
+}
+
+export function parseSystemInfoResponse(value: unknown): SystemInfoResponse {
+  const record = requireRecord(value);
+  const os = requireRecord(record["os"]);
+  const cpu = requireRecord(record["cpu"]);
+  const memory = requireRecord(record["memory"]);
+  const network = requireRecord(record["network"]);
+
+  const gpuRaw = record["gpu"];
+  let gpu: SystemInfoResponse["gpu"] | undefined;
+  if (gpuRaw !== undefined && gpuRaw !== null) {
+    const gpuRecord = requireRecord(gpuRaw);
+    const gpuInfo: SystemInfoResponse["gpu"] = { name: requireString(gpuRecord, "name") };
+    const driverVer = optionalString(gpuRecord, "driverVersion");
+    if (driverVer !== undefined) gpuInfo.driverVersion = driverVer;
+    const memTotal = optionalNumber(gpuRecord, "memoryTotalBytes");
+    if (memTotal !== undefined) gpuInfo.memoryTotalBytes = memTotal;
+    const memUsed = optionalNumber(gpuRecord, "memoryUsedBytes");
+    if (memUsed !== undefined) gpuInfo.memoryUsedBytes = memUsed;
+    const utilPct = optionalNumber(gpuRecord, "utilizationPercent");
+    if (utilPct !== undefined) gpuInfo.utilizationPercent = utilPct;
+    const tempC = optionalNumber(gpuRecord, "temperatureCelsius");
+    if (tempC !== undefined) gpuInfo.temperatureCelsius = tempC;
+    gpu = gpuInfo;
+  }
+
+  const result: SystemInfoResponse = {
+    generatedAt: requireString(record, "generatedAt"),
+    os: {
+      platform: requireString(os, "platform"),
+      release: requireString(os, "release"),
+      arch: requireString(os, "arch"),
+      uptimeSeconds: requireNumber(os, "uptimeSeconds"),
+    },
+    cpu: {
+      model: requireString(cpu, "model"),
+      cores: requireNumber(cpu, "cores"),
+      usagePercent: requireNumber(cpu, "usagePercent"),
+    },
+    memory: {
+      totalBytes: requireNumber(memory, "totalBytes"),
+      usedBytes: requireNumber(memory, "usedBytes"),
+      freeBytes: requireNumber(memory, "freeBytes"),
+      usagePercent: requireNumber(memory, "usagePercent"),
+    },
+    network: buildSystemNetworkInfo(network),
+  };
+  if (gpu !== undefined) result.gpu = gpu;
+  const piVer = optionalString(record, "piVersion");
+  if (piVer !== undefined) result.piVersion = piVer;
+  const webUiVer = optionalString(record, "piWebUiVersion");
+  if (webUiVer !== undefined) result.piWebUiVersion = webUiVer;
+  return result;
+}
+
+function buildSystemNetworkInfo(network: Record<string, unknown>): SystemInfoResponse["network"] {
+  const result: SystemInfoResponse["network"] = {
+    hostname: requireString(network, "hostname"),
+    localIpv4Addresses: arrayOfString(network["localIpv4Addresses"], "localIpv4Addresses"),
+  };
+  const ipv4 = optionalString(network, "publicIpv4");
+  if (ipv4 !== undefined) result.publicIpv4 = ipv4;
+  const ipv6 = optionalString(network, "publicIpv6");
+  if (ipv6 !== undefined) result.publicIpv6 = ipv6;
+  const downloadSpeed = optionalNumber(network, "downloadSpeedBytesPerSecond");
+  if (downloadSpeed !== undefined) result.downloadSpeedBytesPerSecond = downloadSpeed;
+  const uploadSpeed = optionalNumber(network, "uploadSpeedBytesPerSecond");
+  if (uploadSpeed !== undefined) result.uploadSpeedBytesPerSecond = uploadSpeed;
+  return result;
 }

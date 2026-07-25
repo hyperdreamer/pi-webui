@@ -291,6 +291,7 @@ export class PiWebUiApp extends LitElement {
   @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
   @state() private terminalTabHidden = readTerminalTabHidden();
+  @state() private infoTabHidden = readInfoTabHidden();
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -1189,7 +1190,8 @@ export class PiWebUiApp extends LitElement {
         .panelContext=${panelContext}
         .emptyState=${emptyState}
         .tool=${this.state.workspaceTool}
-        .panels=${this.visibleWorkspacePanels()}
+        .panels=${this.workspacePanels()}
+        .hiddenTools=${this.hiddenWorkspacePanelTools()}
         .onSelectTool=${(tool: QualifiedContributionId) => { this.openWorkspaceTool(tool); }}
       ></workspace-panel>
     `;
@@ -1578,7 +1580,7 @@ export class PiWebUiApp extends LitElement {
     `;
   }
 
-  private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
+  private workspacePanels(): QualifiedWorkspacePanelContribution[] {
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
@@ -1586,6 +1588,14 @@ export class PiWebUiApp extends LitElement {
       if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
       return panel.visible?.(context) ?? true;
     });
+  }
+
+  private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
+    return this.workspacePanels().filter((panel) => !this.infoTabHidden || panel.id !== "core:workspace.info");
+  }
+
+  private hiddenWorkspacePanelTools(): QualifiedContributionId[] {
+    return this.infoTabHidden ? ["core:workspace.info"] : [];
   }
 
   private workspacePanelEmptyState(): WorkspacePanelEmptyState {
@@ -1798,6 +1808,15 @@ export class PiWebUiApp extends LitElement {
           : "Hide the terminal tab from the workspace panel",
         group: "View",
         run: () => { this.toggleTerminalTab(); },
+      },
+      {
+        id: "app.layout.toggle-info-tab",
+        title: this.infoTabHidden ? "Show Info Tab" : "Hide Info Tab",
+        description: this.infoTabHidden
+          ? "Show the info tab in the workspace panel"
+          : "Hide the info tab from the workspace panel",
+        group: "View",
+        run: () => { this.toggleInfoTab(); },
       },
       {
         id: "app.layout.reset-navigation-panel-size",
@@ -2447,6 +2466,11 @@ export class PiWebUiApp extends LitElement {
     writeTerminalTabHidden(this.terminalTabHidden);
   }
 
+  private toggleInfoTab(): void {
+    this.infoTabHidden = !this.infoTabHidden;
+    writeInfoTabHidden(this.infoTabHidden);
+  }
+
   private readonly handleStopActiveWork = (): void => {
     void this.sessions.stopActiveWork();
   };
@@ -2615,6 +2639,7 @@ export class PiWebUiApp extends LitElement {
             }}
             .historyEnabled=${this.canOpenSessionHistory()}
             .onOpenHistory=${() => { this.openSessionHistory(); }}
+            .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
           ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
@@ -2758,6 +2783,29 @@ function writeTerminalTabHidden(hidden: boolean): void {
     if (storage === undefined) return;
     if (hidden) storage.setItem(TERMINAL_TAB_HIDDEN_KEY, "true");
     else storage.removeItem(TERMINAL_TAB_HIDDEN_KEY);
+  } catch {
+    // Ignore localStorage quota/privacy errors.
+  }
+}
+
+const INFO_TAB_HIDDEN_KEY = "pi-webui:info-tab-hidden";
+
+function readInfoTabHidden(): boolean {
+  try {
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    if (storage === undefined) return false;
+    return storage.getItem(INFO_TAB_HIDDEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeInfoTabHidden(hidden: boolean): void {
+  try {
+    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
+    if (storage === undefined) return;
+    if (hidden) storage.setItem(INFO_TAB_HIDDEN_KEY, "true");
+    else storage.removeItem(INFO_TAB_HIDDEN_KEY);
   } catch {
     // Ignore localStorage quota/privacy errors.
   }

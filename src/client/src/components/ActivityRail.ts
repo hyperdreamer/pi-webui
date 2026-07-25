@@ -8,6 +8,7 @@ export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenTerminal?: () => void;
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
   @property({ attribute: false }) onOpenHistory?: () => void;
+  @property({ attribute: false }) onOpenInfo?: () => void;
   @property({ type: Number }) terminalCount = 0;
   @property({ type: Boolean }) systemPromptEnabled = false;
   @property({ type: Boolean }) historyEnabled = false;
@@ -44,6 +45,10 @@ export class ActivityRail extends LitElement {
 
   private readonly openHistory = (): void => {
     this.onOpenHistory?.();
+  };
+
+  private readonly openInfo = (): void => {
+    this.onOpenInfo?.();
   };
 
   override render() {
@@ -101,6 +106,22 @@ export class ActivityRail extends LitElement {
             <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>
             <path d="M3 3v5h5"/>
             <path d="M12 7v5l3 2"/>
+          </svg>
+        </button>
+        <div class="rail-spacer"></div>
+        <button
+          type="button"
+          class="icon-button info-button"
+          title="System Info"
+          aria-label="Open system info"
+          @click=${this.openInfo}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true" focusable="false">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8"/>
+            <path d="M12 17v4"/>
           </svg>
         </button>
       </nav>
@@ -163,5 +184,7 @@ export class ActivityRail extends LitElement {
       outline: 2px solid var(--pi-accent);
       outline-offset: 2px;
     }
+    .rail-spacer { flex: 1 1 auto; min-height: 0; }
+    .info-button { margin-bottom: 12px; }
   `;
 }

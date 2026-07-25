@@ -1222,3 +1222,52 @@ export type GlobalSessionEvent =
   | SessionNotificationSummaryEvent
   | SessionUnreadEvent;
 export type RealtimeEvent = GlobalSessionEvent | TerminalUiEvent | WorkspaceActivityUiEvent;
+
+export interface SystemCpuInfo {
+  model: string;
+  cores: number;
+  usagePercent: number;
+}
+
+export interface SystemGpuInfo {
+  name: string;
+  driverVersion?: string;
+  memoryTotalBytes?: number;
+  memoryUsedBytes?: number;
+  utilizationPercent?: number;
+  temperatureCelsius?: number;
+}
+
+export interface SystemMemoryInfo {
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  usagePercent: number;
+}
+
+export interface SystemNetworkInfo {
+  hostname: string;
+  publicIpv4?: string;
+  publicIpv6?: string;
+  localIpv4Addresses: string[];
+  downloadSpeedBytesPerSecond?: number;
+  uploadSpeedBytesPerSecond?: number;
+}
+
+export interface SystemOsInfo {
+  platform: string;
+  release: string;
+  arch: string;
+  uptimeSeconds: number;
+}
+
+export interface SystemInfoResponse {
+  generatedAt: string;
+  os: SystemOsInfo;
+  cpu: SystemCpuInfo;
+  gpu?: SystemGpuInfo;
+  memory: SystemMemoryInfo;
+  network: SystemNetworkInfo;
+  piVersion?: string;
+  piWebUiVersion?: string;
+}

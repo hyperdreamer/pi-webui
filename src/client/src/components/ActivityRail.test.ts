@@ -21,11 +21,12 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, System prompt, and Full history icon buttons on desktop", () => {
+    it("renders the rail with terminal, System prompt, Full history, and system info icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
       expect(railText(rail)).toContain("Open system prompt");
       expect(railText(rail)).toContain("Open full history");
+      expect(railText(rail)).toContain("Open system info");
     });
 
     it("does not render rail content when viewport is below 1181px", () => {
@@ -90,6 +91,17 @@ describe("ActivityRail", () => {
       handler(new Event("click"));
 
       expect(onOpenHistory).toHaveBeenCalledOnce();
+    });
+
+    it("opens system info from the bottom rail icon", () => {
+      const rail = createRail();
+      const onOpenInfo = vi.fn();
+      rail.onOpenInfo = onOpenInfo;
+
+      const handler = templateEventHandlerAfterMarker(rail.render(), "info-button");
+      handler(new Event("click"));
+
+      expect(onOpenInfo).toHaveBeenCalledOnce();
     });
 
     it("is safe to click when no callback is provided", () => {

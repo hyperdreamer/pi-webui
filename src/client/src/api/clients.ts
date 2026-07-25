@@ -68,6 +68,7 @@ import {
   parseWriteWorkspaceFileResponse,
   parseWorkspace,
   parseWorkspaceActivityResponse,
+  parseSystemInfoResponse,
 } from "./parsers";
 import { machineGitDiffPath, messagePath } from "./urls";
 
@@ -127,6 +128,7 @@ export const piWebUiApi = {
   piWebUiStatus: (machineId = "local") => request(piWebUiStatusPath(machineId), parsePiWebUiStatusResponse),
   checkForUpdates: (machineId = "local") => request(`${piWebUiStatusPath(machineId)}?refresh=1`, parsePiWebUiStatusResponse, { cache: "no-store" }),
   piWebUiRuntime: () => request("api/pi-webui/runtime", parsePiWebUiRuntimeResponse),
+  systemInfo: (machineId = "local") => request(`${machinePrefix(machineId)}/pi-webui/system-info`, parseSystemInfoResponse),
 };
 
 export const machinesApi = {
