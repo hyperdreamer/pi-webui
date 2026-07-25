@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,7 @@ describe("production build contents", () => {
       const fixtureDist = join(fixtureRoot, "dist", "server");
       await mkdir(fixtureDist, { recursive: true });
       await Promise.all([
-        copyFile(join(repoRoot, "package.json"), join(fixtureRoot, "package.json")),
+        writeFixturePackageManifest(fixtureRoot),
         writeFile(join(fixtureDist, "app.js"), "export {};\n", "utf8"),
         writeFile(join(fixtureDist, "app.testSupport.js"), "export {};\n", "utf8"),
         writeFile(join(fixtureDist, "app.testSupport.js.map"), "{}\n", "utf8"),
@@ -47,6 +47,17 @@ describe("production build contents", () => {
     }
   });
 });
+
+async function writeFixturePackageManifest(fixtureRoot: string): Promise<void> {
+  const sourceManifest: unknown = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+  if (!isRecord(sourceManifest)) throw new Error("package.json must contain an object");
+
+  const fixtureManifest = { ...sourceManifest };
+  // Some npm releases invoke `prepare` during `pack` despite `--ignore-scripts`.
+  // Lifecycle scripts do not affect the package allowlist this test verifies.
+  delete fixtureManifest["scripts"];
+  await writeFile(join(fixtureRoot, "package.json"), `${JSON.stringify(fixtureManifest, null, 2)}\n`, "utf8");
+}
 
 function readBuildConfig(): ts.ParsedCommandLine {
   const configPath = join(repoRoot, "tsconfig.build.json");
