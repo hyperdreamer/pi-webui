@@ -140,13 +140,22 @@
               <p>
                 Browser is a lightweight embedded viewer, not a native browser or a server-side proxy. The panel labels
                 this mode explicitly. It accepts <code>http://</code> and <code>https://</code> addresses and renders
-                them in a sandboxed, no-referrer frame. Pages that send frame-protection headers can refuse to load, and
-                an HTTPS PI WEBUI deployment may have its browser block an HTTP page as mixed content.
+                them in a sandboxed, no-referrer frame. Pages whose <code>X-Frame-Options</code> or
+                <code>Content-Security-Policy: frame-ancestors</code> policy disallows framing can refuse to load, and an
+                HTTPS PI WEBUI deployment may have its browser block an HTTP page as mixed content.
               </p>
               <p>
-                PI WEBUI does not currently ship a remote arbitrary-site browser runtime. No setting rewrites page
-                headers or turns this viewer into a proxy, so use a normal browser for sites that block framing or require
-                local-browser capabilities.
+                Remote browser mode is unavailable in this installation by design. PI WEBUI does not start a remote
+                Chromium runtime or <code>browserd</code>, and it provides no remote browser controls or pixel stream.
+                There is no remote site-login session or PI WEBUI-managed destination-cookie storage. The iframe remains
+                subject to the normal cookie policy of the user's browser; PI WEBUI does not proxy, inspect, or rewrite
+                those cookies.
+              </p>
+              <p>
+                No setting rewrites page headers or turns this viewer into a proxy. A future remote-browser mode would
+                require an authenticated principal, an isolated sandboxed browser runtime with a private control channel,
+                and enforced public-web egress. Those security prerequisites are not deployed or configurable today, so
+                use a normal browser for sites that block framing or require local-browser capabilities.
               </p>
               <p>
                 The address field tracks pages opened from the Browser controls. For privacy and browser security, PI

@@ -2,6 +2,8 @@
 
 **Architecture phase status:** `pass` — proposed design only; no feature, runtime-owner, deployment, or third-party restriction bypass is implemented by this document.
 
+**Phase-1 implementation status (QA commit `11a78d28612b9b9679164bcb975145357b0ce412`):** The implemented foundation is limited to unavailable-by-default capability/readiness/policy seams and clear lightweight-iframe labeling. It does not implement `browserd`, Chromium, browser sessions, control or streaming routes, remote-machine delegation, remote site login or cookie profiles, or an egress runtime. The remainder of this document is the proposed target architecture and is not shipped behavior.
+
 **Source revision reviewed:** `a00d3490c818b333ff880551665e8e75663a9637` (`agent/browser-connection-fix`, merged `main`)
 
 **Commit intent:** `docs(architecture): design arbitrary-site browser service`
