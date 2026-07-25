@@ -15,6 +15,41 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("PiWebUiApp per-message action wiring", () => {
+  it("passes stable supported-runtime callbacks through to SessionController", async () => {
+    const app = createApp();
+    const state = stateWithRuntime(runtimeWithCapabilities([PI_WEBUI_CAPABILITIES.sessionsMessageActions]));
+    setAppState(app, state);
+    const controller = appSessionController(app);
+    const editFromHere = vi.spyOn(controller, "editFromHere").mockResolvedValue({ cancelled: false });
+    const forkFromHere = vi.spyOn(controller, "forkFromHere").mockResolvedValue(undefined);
+
+    const firstRender = renderChatView(app, state);
+    const secondRender = renderChatView(app, state);
+    const firstEdit = templateEditFromHereCallback(firstRender);
+    const firstFork = templateForkFromHereCallback(firstRender);
+
+    expect(templateValueAfterMarker(firstRender, ".canMessageActions=")).toBe(true);
+    expect(templateEditFromHereCallback(secondRender)).toBe(firstEdit);
+    expect(templateForkFromHereCallback(secondRender)).toBe(firstFork);
+    const focusChatComposer = vi.fn(() => Promise.resolve());
+    if (!Reflect.set(app, "focusChatComposer", focusChatComposer)) throw new Error("Could not replace prompt focus boundary");
+    await firstEdit("assistant-1", "Revise this");
+    await firstFork("user-2");
+    expect(editFromHere).toHaveBeenCalledExactlyOnceWith("assistant-1", "Revise this");
+    expect(focusChatComposer).toHaveBeenCalledOnce();
+    expect(forkFromHere).toHaveBeenCalledExactlyOnceWith("user-2");
+  });
+
+  it("does not enable per-message actions without their capability", () => {
+    const app = createApp();
+    const state = stateWithRuntime(runtimeWithCapabilities([PI_WEBUI_CAPABILITIES.sessionsReload]));
+    setAppState(app, state);
+
+    expect(templateValueAfterMarker(renderChatView(app, state), ".canMessageActions=")).toBe(false);
+  });
+});
+
 describe("PiWebUiApp queued-message clear wiring", () => {
   it("passes a stable supported-runtime callback through to SessionController", () => {
     const app = createApp();
@@ -52,6 +87,8 @@ describe("PiWebUiApp queued-message clear wiring", () => {
 
 type RenderChatView = (this: PiWebUiApp, state: AppState, session: SessionInfo) => TemplateResult;
 type ClearServerQueueCallback = () => void;
+type EditFromHereCallback = (assistantEntryId: string, editorText: string) => void | Promise<void>;
+type ForkFromHereCallback = (userEntryId: string) => void | Promise<void>;
 
 function createApp(): PiWebUiApp {
   const storage = {
@@ -127,5 +164,25 @@ function templateCallbackAfterMarker(template: TemplateResult, marker: string): 
 }
 
 function isClearServerQueueCallback(value: unknown): value is ClearServerQueueCallback {
+  return typeof value === "function";
+}
+
+function templateEditFromHereCallback(template: TemplateResult): EditFromHereCallback {
+  const value = templateValueAfterMarker(template, ".onEditFromHere=");
+  if (!isEditFromHereCallback(value)) throw new Error("Expected edit-from-here callback");
+  return value;
+}
+
+function templateForkFromHereCallback(template: TemplateResult): ForkFromHereCallback {
+  const value = templateValueAfterMarker(template, ".onForkFromHere=");
+  if (!isForkFromHereCallback(value)) throw new Error("Expected fork-from-here callback");
+  return value;
+}
+
+function isEditFromHereCallback(value: unknown): value is EditFromHereCallback {
+  return typeof value === "function";
+}
+
+function isForkFromHereCallback(value: unknown): value is ForkFromHereCallback {
   return typeof value === "function";
 }

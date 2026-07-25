@@ -54,6 +54,13 @@ describe("federated route contract", () => {
     expect(FEDERATED_WEBSOCKET_ROUTES.some((path) => path.includes("tree"))).toBe(false);
   });
 
+  it("allowlists per-message edit and fork actions with tree-operation timeouts", () => {
+    expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("/messages/"))).toEqual([
+      { method: "POST", path: "/sessions/:sessionId/messages/edit-from-here", timeoutMs: SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS },
+      { method: "POST", path: "/sessions/:sessionId/messages/fork", timeoutMs: SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS },
+    ]);
+  });
+
   it("allowlists read-only full-history exports for remote machines", () => {
     expect(FEDERATED_HTTP_ROUTES.find((route) => route.path === "/sessions/:sessionId/export")).toEqual({
       method: "GET",
@@ -128,6 +135,8 @@ describe("federated route contract", () => {
       ignoreParseFailure(sessionsApi.runCommand(session, "/help", machineId)),
       ignoreParseFailure(sessionsApi.respondToCommand(session, "req 1", "yes", machineId)),
       ignoreParseFailure(sessionsApi.navigateTree(session, { targetId: "entry-1", expectedLeafId: "leaf-1", summary: { mode: "none" } }, machineId)),
+      ignoreParseFailure(sessionsApi.editFromHere(session, "assistant-1", machineId)),
+      ignoreParseFailure(sessionsApi.forkFromHere(session, "user-2", machineId)),
       ignoreParseFailure(sessionsApi.abort(session, machineId)),
       ignoreParseFailure(sessionsApi.stop(session, machineId)),
       ignoreParseFailure(sessionsApi.archive(session, machineId)),

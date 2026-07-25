@@ -62,6 +62,10 @@ export type ChatPart =
 export interface ChatLine {
   role: "user" | "assistant" | "tool" | "system" | "bash" | "skill";
   parts: ChatPart[];
+  /** Session-entry metadata used by per-user-message history actions. */
+  entryId?: string;
+  previousAssistantEntryId?: string;
+  canFork?: boolean;
   source?: "compaction" | "branch_summary";
   meta?: {
     timestamp?: string;
@@ -602,7 +606,11 @@ export const chatStyles = css`
   .msg-actions { flex: 0 0 auto; display: inline-flex; gap: 6px; opacity: 0; transition: opacity .12s ease; }
   .msg-action { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 14px system-ui, sans-serif; line-height: 1; cursor: pointer; }
   .msg-action:hover, .msg-action:focus { color: var(--pi-text); border-color: var(--pi-accent); }
-  .msg:hover > .msg-header .msg-actions, .msg:focus-within > .msg-header .msg-actions, .group-msg:hover > .msg-header .msg-actions, .group-msg:focus-within > .msg-header .msg-actions { opacity: 1; }
+  .msg-history-action { display: inline-flex; align-items: center; gap: 4px; width: auto; height: 22px; padding: 3px 8px; border: 0; border-radius: 5px; background: none; color: var(--pi-muted); font: 400 11px system-ui, sans-serif; white-space: nowrap; }
+  .msg-history-action:hover, .msg-history-action:focus { color: var(--pi-accent); border-color: transparent; }
+  .msg-history-action:disabled { color: var(--pi-accent); cursor: not-allowed; }
+  .msg-history-action-icon { width: 11px; height: 11px; flex: 0 0 auto; }
+  .msg:hover > .msg-header .msg-actions, .msg:focus-within > .msg-header .msg-actions, .group-msg:hover > .msg-header .msg-actions, .group-msg:focus-within > .msg-header .msg-actions, .msg-actions.forking { opacity: 1; }
   .label { display: block; color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
   .msg-header .label { margin: 0; }
   .msg-meta { min-width: 0; opacity: .28; border: 0; background: transparent; color: var(--pi-dim); padding: 0; font: 11px system-ui, sans-serif; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity .12s ease; cursor: pointer; user-select: text; -webkit-user-select: text; }

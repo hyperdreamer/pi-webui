@@ -7,6 +7,7 @@ export const PI_WEBUI_CAPABILITIES = {
   sessionsCleanup: "sessions.cleanup",
   sessionsReload: "sessions.reload",
   sessionsClearQueue: "sessions.clearQueue",
+  sessionsMessageActions: "sessions.messageActions",
   sessionsSystemPrompt: "sessions.systemPrompt",
   sessionsPersistedState: "sessions.persistedState",
   sessionsNotifications: "sessions.notifications",
@@ -1153,6 +1154,11 @@ export interface SessionTreeNavigateRequest {
 export type SessionTreeNavigateResult =
   | { cancelled: false; editorText?: string }
   | { cancelled: true; aborted?: boolean };
+
+/** Result of creating an independent session from a user-message history entry. */
+export type SessionMessageForkResult =
+  | { cancelled: false; session: SessionInfo }
+  | { cancelled: true };
 
 export interface MessagePage {
   messages: unknown[];

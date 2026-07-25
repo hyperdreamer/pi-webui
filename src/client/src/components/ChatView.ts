@@ -231,6 +231,31 @@ export function chatMessageMetadataLabel(message: ChatLine): string {
   return parts.length === 0 ? "No Pi message metadata available" : parts.join(" · ");
 }
 
+export interface ChatUserMessageActionAvailability {
+  editFromHereEntryId?: string;
+  forkEntryId?: string;
+}
+
+/** The server annotates history messages so the UI never infers session-tree IDs from display order. */
+export function chatUserMessageActionAvailability(
+  message: ChatLine,
+  options: { enabled: boolean; busy: boolean },
+): ChatUserMessageActionAvailability {
+  if (!options.enabled || options.busy || message.role !== "user") return {};
+  return {
+    ...(message.previousAssistantEntryId === undefined ? {} : { editFromHereEntryId: message.previousAssistantEntryId }),
+    ...(message.canFork === true && message.entryId !== undefined ? { forkEntryId: message.entryId } : {}),
+  };
+}
+
+/** Text restored to the composer by "Edit from here"; image parts intentionally remain attachments only. */
+export function chatMessageEditText(message: ChatLine): string {
+  return message.parts
+    .filter((part): part is Extract<ChatPart, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+}
+
 function formatMessageTimestamp(timestamp: string): string | undefined {
   const date = new Date(timestamp);
   if (!Number.isFinite(date.getTime())) return undefined;
@@ -266,6 +291,9 @@ export class ChatView extends LitElement {
   @property({ attribute: false }) sessionInfo?: SessionInfo;
   @property({ attribute: false }) notificationInbox?: SelectedSessionNotificationView;
   @property({ type: Boolean }) canClearServerQueue = false;
+  @property({ type: Boolean }) canMessageActions = false;
+  @property({ attribute: false }) onEditFromHere?: (assistantEntryId: string, editorText: string) => void | Promise<void>;
+  @property({ attribute: false }) onForkFromHere?: (userEntryId: string) => void | Promise<void>;
   @property({ attribute: false }) onClearServerQueue?: () => void;
   @property({ attribute: false }) onDismissWarning?: (dismissId: string) => void;
   @property({ attribute: false }) onDismissNotification?: (notificationId: string) => void;
@@ -278,6 +306,7 @@ export class ChatView extends LitElement {
   @state() private zoomedImage: { src: string; alt: string } | undefined = undefined;
   @state() private expandedMetaKey: string | undefined;
   @state() private copiedMessageKey: string | undefined;
+  @state() private forkingEntryId: string | undefined;
   @state() private currentConversationIndex: number | undefined;
   @state() private collapsedNotificationTargetKeys: ReadonlySet<string> = new Set();
   @state() private retainedEmptyNotificationTrayTargetKey: string | undefined;
@@ -1068,15 +1097,69 @@ export class ChatView extends LitElement {
   }
 
   private renderMessageActions(message: ChatLine, key: string) {
-    if (!this.isCopyableMessage(message)) return null;
+    const copyable = this.isCopyableMessage(message);
+    const available = chatUserMessageActionAvailability(message, {
+      enabled: this.canMessageActions,
+      busy: this.messageActionsBusy(),
+    });
+    const editEntryId = this.onEditFromHere === undefined ? undefined : available.editFromHereEntryId;
+    const forkEntryId = this.onForkFromHere === undefined ? undefined : available.forkEntryId;
+    if (!copyable && editEntryId === undefined && forkEntryId === undefined) return null;
+
     const copied = this.copiedMessageKey === key;
+    const forking = forkEntryId !== undefined && this.forkingEntryId === forkEntryId;
     return html`
-      <div class="msg-actions" aria-label="Message actions">
-        <button type="button" class="msg-action" title=${copied ? "Copied" : "Copy message"} aria-label=${`${copied ? "Copied" : "Copy"} ${message.role} message`} @click=${(event: MouseEvent) => { void this.copyMessage(message, key, event); }}>
-          <span aria-hidden="true">${copied ? "✓" : "⧉"}</span>
-        </button>
+      <div class=${`msg-actions${forking ? " forking" : ""}`} aria-label="Message actions">
+        ${copyable ? html`
+          <button type="button" class="msg-action" title=${copied ? "Copied" : "Copy message"} aria-label=${`${copied ? "Copied" : "Copy"} ${message.role} message`} @click=${(event: MouseEvent) => { void this.copyMessage(message, key, event); }}>
+            <span aria-hidden="true">${copied ? "✓" : "⧉"}</span>
+          </button>
+        ` : null}
+        ${editEntryId === undefined ? null : html`
+          <button type="button" class="msg-action msg-history-action" data-message-action="edit-from-here" title="Edit from here — branches within this session" @click=${() => { void this.editFromHere(editEntryId, chatMessageEditText(message)); }}>
+            <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="15 10 20 15 15 20"></polyline>
+              <path d="M4 4v7a4 4 0 0 0 4 4h12"></path>
+            </svg>
+            Edit from here
+          </button>
+        `}
+        ${forkEntryId === undefined ? null : html`
+          <button type="button" class="msg-action msg-history-action" title=${forking ? "Creating new session…" : "New session — creates an independent copy from here"} ?disabled=${forking} data-message-action="new-session" @click=${() => { void this.forkFromHere(forkEntryId); }}>
+            <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="6" y1="3" x2="6" y2="15"></line>
+              <circle cx="18" cy="6" r="3"></circle>
+              <circle cx="6" cy="18" r="3"></circle>
+              <path d="M18 9a9 9 0 0 1-9 9"></path>
+            </svg>
+            ${forking ? "Creating…" : "New session"}
+          </button>
+        `}
       </div>
     `;
+  }
+
+  private messageActionsBusy(): boolean {
+    return this.isSendingPrompt
+      || this.isCompacting
+      || this.status?.isStreaming === true
+      || this.status?.isBashRunning === true
+      || this.status?.isCompacting === true
+      || (this.status?.pendingMessageCount ?? this.pendingMessageCount) > 0;
+  }
+
+  private async editFromHere(assistantEntryId: string, editorText: string): Promise<void> {
+    await this.onEditFromHere?.(assistantEntryId, editorText);
+  }
+
+  private async forkFromHere(userEntryId: string): Promise<void> {
+    if (this.forkingEntryId !== undefined) return;
+    this.forkingEntryId = userEntryId;
+    try {
+      await this.onForkFromHere?.(userEntryId);
+    } finally {
+      if (this.forkingEntryId === userEntryId) this.forkingEntryId = undefined;
+    }
   }
 
   private onMetaKeydown(event: KeyboardEvent, key: string, expanded: boolean) {

@@ -19,13 +19,13 @@ import {
   type ModelRuntime,
   type ResourceDiagnostic,
 } from "@earendil-works/pi-coding-agent";
-import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionStatus, ClientSessionSystemPrompt, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
+import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionStatus, ClientSessionSystemPrompt, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientSessionMessageForkResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
 import { projectBrowserMessage } from "../browserMessageProjection.js";
 import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
 import { exportSessionHistoryHtml } from "./sessionHistoryExport.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import { BUILTIN_COMMANDS } from "./builtinCommands.js";
-import { SessionCommandService } from "./sessionCommandService.js";
+import { SessionCommandService, clientSessionFromRuntime } from "./sessionCommandService.js";
 import { projectSessionTree, type ProjectableSessionTreeNode } from "./sessionTreeProjection.js";
 import { SessionArchiveStore, type ArchivedSessionRecord, type ArchiveSessionInput } from "./sessionArchiveStore.js";
 import { SessionMetadataStore } from "./sessionMetadataStore.js";
@@ -1623,11 +1623,44 @@ export class PiSessionService implements SessionRouteService {
 
   async navigateTree(ref: PiSessionLookup, request: ClientSessionTreeNavigateRequest): Promise<ClientSessionTreeNavigateResult> {
     if (request.targetId.trim() === "") throw new Error("Session tree target is required");
+    return this.navigateToTreeEntry(ref, request.targetId, sessionTreeNavigationOptions(request), request.expectedLeafId);
+  }
+
+  async editFromHere(ref: PiSessionLookup, targetId: string): Promise<ClientSessionTreeNavigateResult> {
+    return this.navigateToTreeEntry(ref, targetId, { summarize: false });
+  }
+
+  async forkFromHere(ref: PiSessionLookup, entryId: string): Promise<ClientSessionMessageForkResult> {
+    if (entryId.trim() === "") throw new Error("Session entry is required for forking");
+    if (this.isTreeExclusiveSessionIdentityActive(sessionIdFromLookup(ref))) {
+      throw new Error("Stop current session activity before replacing the session");
+    }
+    await this.assertWritable(ref);
+    const active = await this.getActive(ref);
+    const sourceSession = active.runtime.session;
+    const result = await this.runTreeExclusiveOperation(
+      [{ sessionId: sourceSession.sessionId, session: sourceSession, runtime: active.runtime }],
+      "Stop current session activity before replacing the session",
+      () => active.runtime.fork(entryId),
+    );
+    if (result.cancelled) return { cancelled: true };
+
+    const session = clientSessionFromRuntime(active.runtime);
+    this.events.publishGlobal({ type: "session.created", session });
+    return { cancelled: false, session };
+  }
+
+  private async navigateToTreeEntry(
+    ref: PiSessionLookup,
+    targetId: string,
+    options: PiTreeNavigationOptions,
+    expectedLeafId?: string | null,
+  ): Promise<ClientSessionTreeNavigateResult> {
+    if (targetId.trim() === "") throw new Error("Session tree target is required");
     if (this.isTreeExclusiveSessionIdentityActive(sessionIdFromLookup(ref))) {
       throw new Error("Stop current session activity before navigating the session tree");
     }
     await this.assertWritable(ref);
-    const options = sessionTreeNavigationOptions(request);
     const session = await this.getOrOpen(ref);
     if (typeof session.navigateTree !== "function") throw new Error("Session tree navigation is not supported by this Pi runtime");
     if (this.hasActiveWork(session)) throw new Error("Stop current session activity before navigating the session tree");
@@ -1636,13 +1669,13 @@ export class PiSessionService implements SessionRouteService {
     // may enter this runtime until Pi's potentially asynchronous summary settles.
     this.treeNavigations.add(session);
     try {
-      if (session.sessionManager.getLeafId() !== request.expectedLeafId) {
+      if (expectedLeafId !== undefined && session.sessionManager.getLeafId() !== expectedLeafId) {
         throw new Error("The session changed since /tree was opened. Reopen /tree and try again.");
       }
 
       this.publishActivity(session, options.summarize ? "summarizing branch" : "navigating session tree", "active");
       this.publishStatus(session);
-      const result = await session.navigateTree(request.targetId, options);
+      const result = await session.navigateTree(targetId, options);
       if (result.cancelled) {
         if (this.isCurrentActiveSession(session)) {
           this.publishActivity(session, result.aborted === true ? "branch summary aborted" : "tree navigation cancelled", "idle");
@@ -3633,12 +3666,48 @@ function stringValue(value: unknown): string {
 
 function historyMessages(session: PiAgentSession): unknown[] {
   const messages: unknown[] = [];
+  let previousMessage: { role: string | undefined; entryId: string | undefined } | undefined;
   for (const entry of session.sessionManager.getBranch()) {
     if (!isRecord(entry)) continue;
-    if (entry["type"] === "message") messages.push(entry["message"]);
-    else if (entry["type"] === "custom_message" && entry["display"] === true) messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"] });
-    else if (entry["type"] === "compaction") messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}` });
-    else if (entry["type"] === "branch_summary") messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}` });
+    if (entry["type"] === "message") {
+      const message = entry["message"];
+      const entryId = getString(entry, "id");
+      const role = getString(message, "role");
+      if (role === "user" && isRecord(message) && entryId !== undefined) {
+        // History action fields are service-owned annotations, never persisted
+        // user-message payload fields supplied by an extension.
+        const historyMessage = { ...message };
+        delete historyMessage["entryId"];
+        delete historyMessage["previousAssistantEntryId"];
+        delete historyMessage["canFork"];
+        messages.push({
+          ...historyMessage,
+          entryId,
+          ...(previousMessage?.role === "assistant" && previousMessage.entryId !== undefined
+            ? { previousAssistantEntryId: previousMessage.entryId }
+            : {}),
+          ...(messages.length > 0 ? { canFork: true } : {}),
+        });
+      } else {
+        messages.push(message);
+      }
+      previousMessage = { role, entryId };
+      continue;
+    }
+    if (entry["type"] === "custom_message" && entry["display"] === true) {
+      messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"] });
+      previousMessage = { role: "custom", entryId: undefined };
+      continue;
+    }
+    if (entry["type"] === "compaction") {
+      messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}` });
+      previousMessage = { role: "system", entryId: undefined };
+      continue;
+    }
+    if (entry["type"] === "branch_summary") {
+      messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}` });
+      previousMessage = { role: "system", entryId: undefined };
+    }
   }
   return messages;
 }

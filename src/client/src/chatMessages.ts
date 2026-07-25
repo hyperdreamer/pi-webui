@@ -10,7 +10,16 @@ export function textMessage(role: ChatLine["role"], text: string): ChatLine {
 
 export function withMessageMeta(line: ChatLine, rawMessage: unknown): ChatLine {
   const meta = normalizeMeta(rawMessage);
-  return meta === undefined ? line : { ...line, meta };
+  const entryId = getString(rawMessage, "entryId");
+  const previousAssistantEntryId = getString(rawMessage, "previousAssistantEntryId");
+  const canFork = getBoolean(rawMessage, "canFork");
+  return {
+    ...line,
+    ...(meta === undefined ? {} : { meta }),
+    ...(entryId === undefined ? {} : { entryId }),
+    ...(previousAssistantEntryId === undefined ? {} : { previousAssistantEntryId }),
+    ...(canFork === undefined ? {} : { canFork }),
+  };
 }
 
 export function appendText(messages: ChatLine[], role: ChatLine["role"], text: string): ChatLine[] {
@@ -209,7 +218,13 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
 
   for (const line of lines) {
     let passthroughParts: ChatPart[] = [];
-    const metadata = { ...(line.source === undefined ? {} : { source: line.source }), ...(line.meta === undefined ? {} : { meta: line.meta }) };
+    const metadata = {
+      ...(line.entryId === undefined ? {} : { entryId: line.entryId }),
+      ...(line.previousAssistantEntryId === undefined ? {} : { previousAssistantEntryId: line.previousAssistantEntryId }),
+      ...(line.canFork === undefined ? {} : { canFork: line.canFork }),
+      ...(line.source === undefined ? {} : { source: line.source }),
+      ...(line.meta === undefined ? {} : { meta: line.meta }),
+    };
     const flushPassthrough = () => {
       if (passthroughParts.length === 0) return;
       result.push({ role: line.role, parts: passthroughParts, ...metadata });

@@ -24,6 +24,7 @@ import type {
   ClientSessionSystemPrompt,
   ClientSessionTreeNavigateRequest,
   ClientSessionTreeNavigateResult,
+  ClientSessionMessageForkResult,
   ClientThinkingLevel,
   SessionStreamSnapshot,
 } from "../types.js";
@@ -72,6 +73,8 @@ export interface SessionRouteService {
   runCommand(ref: SessionRouteLookup, text: string): Promise<ClientCommandResult>;
   respondToCommand(ref: SessionRouteLookup, requestId: string, value: string): Promise<ClientCommandResult>;
   navigateTree(ref: SessionRouteLookup, request: ClientSessionTreeNavigateRequest): Promise<ClientSessionTreeNavigateResult>;
+  editFromHere(ref: SessionRouteLookup, targetId: string): Promise<ClientSessionTreeNavigateResult>;
+  forkFromHere(ref: SessionRouteLookup, entryId: string): Promise<ClientSessionMessageForkResult>;
   abort(ref: SessionRouteLookup): Promise<void>;
   stop(ref: SessionRouteLookup): void | Promise<void>;
   archive(ref: SessionRouteLookup): Promise<void>;

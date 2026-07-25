@@ -11,6 +11,7 @@ import type {
   SessionCleanupExecuteResponse,
   SessionCleanupPreviewResponse,
   SessionInfo,
+  SessionMessageForkResult,
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
@@ -301,6 +302,37 @@ describe("session routes", () => {
           request: { targetId: "entry-3", expectedLeafId: "leaf-2", summary: { mode: "default" } },
         },
       ]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("routes cwd-scoped per-message edit and fork actions", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const edit = await routeApp.inject({
+        method: "POST",
+        url: "/sessions/session-1/messages/edit-from-here",
+        payload: { cwd: "/repo/./", entryId: "assistant-1" },
+      });
+      const fork = await routeApp.inject({
+        method: "POST",
+        url: "/sessions/session-1/messages/fork",
+        payload: { cwd: "/repo/./", entryId: "user-2" },
+      });
+
+      expect(edit.statusCode).toBe(200);
+      expect(edit.json()).toEqual({ cancelled: false });
+      expect(fork.statusCode).toBe(200);
+      expect(fork.json()).toMatchObject({ cancelled: false, session: { id: "session-1" } });
+      expect(routeService.editFromHereCalls).toEqual([{ lookup: { id: "session-1", cwd: resolve("/repo") }, entryId: "assistant-1" }]);
+      expect(routeService.forkFromHereCalls).toEqual([{ lookup: { id: "session-1", cwd: resolve("/repo") }, entryId: "user-2" }]);
     } finally {
       await routeService.dispose();
       await routeApp.close();
@@ -751,6 +783,8 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly bulkArchiveCalls: SessionBulkMutationRef[][] = [];
   readonly bulkDeleteCalls: SessionBulkMutationRef[][] = [];
   readonly navigateTreeCalls: { lookup: SessionRouteLookup; request: SessionTreeNavigateRequest }[] = [];
+  readonly editFromHereCalls: { lookup: SessionRouteLookup; entryId: string }[] = [];
+  readonly forkFromHereCalls: { lookup: SessionRouteLookup; entryId: string }[] = [];
   readonly historyExportCalls: SessionRouteLookup[] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
@@ -911,6 +945,14 @@ class CapturingRouteSessionService implements SessionRouteService {
   navigateTree(lookup: SessionRouteLookup, request: SessionTreeNavigateRequest): Promise<SessionTreeNavigateResult> {
     this.navigateTreeCalls.push({ lookup, request });
     return Promise.resolve({ cancelled: false, editorText: "edit this" });
+  }
+  editFromHere(lookup: SessionRouteLookup, entryId: string): Promise<SessionTreeNavigateResult> {
+    this.editFromHereCalls.push({ lookup, entryId });
+    return Promise.resolve({ cancelled: false });
+  }
+  forkFromHere(lookup: SessionRouteLookup, entryId: string): Promise<SessionMessageForkResult> {
+    this.forkFromHereCalls.push({ lookup, entryId });
+    return Promise.resolve({ cancelled: false, session: pinnedSessionInfo(lookup) });
   }
   abort(): never { throw unusedRouteMethod("abort"); }
   stop(): never { throw unusedRouteMethod("stop"); }
