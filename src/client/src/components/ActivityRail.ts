@@ -7,8 +7,10 @@ const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
 export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenTerminal?: () => void;
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
+  @property({ attribute: false }) onOpenHistory?: () => void;
   @property({ type: Number }) terminalCount = 0;
   @property({ type: Boolean }) systemPromptEnabled = false;
+  @property({ type: Boolean }) historyEnabled = false;
   private desktopMedia: MediaQueryList | undefined;
 
   constructor() {
@@ -40,6 +42,10 @@ export class ActivityRail extends LitElement {
     this.onOpenSystemPrompt?.();
   };
 
+  private readonly openHistory = (): void => {
+    this.onOpenHistory?.();
+  };
+
   override render() {
     const isDesktop = this.desktopMedia?.matches ?? true;
     if (!isDesktop) return html``;
@@ -51,6 +57,7 @@ export class ActivityRail extends LitElement {
         <button
           type="button"
           class="icon-button"
+          title="Terminal"
           aria-label=${`Open terminal${badgeLabel === "" ? "" : `, ${badgeLabel}`}` }
           @click=${this.openTerminal}
         >
@@ -78,6 +85,22 @@ export class ActivityRail extends LitElement {
             <polyline points="14 2 14 8 20 8"/>
             <line x1="8" y1="13" x2="16" y2="13"/>
             <line x1="8" y1="17" x2="13" y2="17"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="icon-button history-button"
+          title="Full history"
+          aria-label="Open full history"
+          ?disabled=${!this.historyEnabled}
+          @click=${this.openHistory}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true" focusable="false">
+            <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M12 7v5l3 2"/>
           </svg>
         </button>
       </nav>
