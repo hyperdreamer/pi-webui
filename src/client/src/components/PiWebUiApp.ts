@@ -1476,6 +1476,8 @@ export class PiWebUiApp extends LitElement {
         .onDeleteArchivedSessions=${(sessions: SessionInfo[]) => this.sessions.deleteArchivedSessions(sessions)}
         .onDetachParentSession=${(session: SessionInfo) => this.sessions.detachParent(session)}
         .onReloadSession=${(session: SessionInfo) => this.sessions.reloadSession(session)}
+        .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
+        .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}
         .onFocusNavigationTarget=${(target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); }}
         .onCancelKeyboardNavigation=${() => { void this.focusChatComposer(); }}

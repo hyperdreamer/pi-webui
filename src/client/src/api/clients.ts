@@ -309,6 +309,8 @@ export const sessionsApi = {
   deleteArchived: (session: SessionLookup, machineId = "local") => request(sessionBaseQueryPath(session, machineId), parseDeleted, { method: "DELETE" }),
   detachParent: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "detach-parent", machineId), parseDetached, { method: "POST", body: sessionBody(session) }),
   reloadSession: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "reload", machineId), parseReloaded, { method: "POST", body: sessionBody(session) }),
+  pin: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "pin", machineId), parseSessionInfo, { method: "POST", body: sessionBody(session) }),
+  unpin: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "unpin", machineId), parseSessionInfo, { method: "POST", body: sessionBody(session) }),
   authProviders: (options?: { mode?: "login" | "logout"; authType?: "oauth" | "api_key"; machineId?: string }) => {
     const params = new URLSearchParams();
     if (options?.mode !== undefined) params.set("mode", options.mode);

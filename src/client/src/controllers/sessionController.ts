@@ -803,6 +803,26 @@ export class SessionController {
     }
   }
 
+  async pinSession(session = this.getState().selectedSession) {
+    if (!session || session.archived === true) return;
+    try {
+      const updated = await this.api.pin(session, selectedMachineId(this.getState()));
+      this.replaceSession(updated);
+    } catch (error) {
+      this.setState({ error: String(error) });
+    }
+  }
+
+  async unpinSession(session = this.getState().selectedSession) {
+    if (!session || session.archived === true) return;
+    try {
+      const updated = await this.api.unpin(session, selectedMachineId(this.getState()));
+      this.replaceSession(updated);
+    } catch (error) {
+      this.setState({ error: String(error) });
+    }
+  }
+
   async listModels() {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return [];

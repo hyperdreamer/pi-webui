@@ -80,4 +80,6 @@ export interface SessionRouteService {
   deleteArchived(ref: SessionRouteLookup): Promise<void>;
   reload(ref: SessionRouteLookup): Promise<void>;
   detachParent(ref: SessionRouteLookup): Promise<void>;
+  pin(ref: SessionRouteLookup): Promise<ClientSession>;
+  unpin(ref: SessionRouteLookup): Promise<ClientSession>;
 }

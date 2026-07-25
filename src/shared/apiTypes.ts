@@ -497,6 +497,8 @@ export interface SessionInfo extends SessionRef {
   parentSessionPath?: string;
   archived?: boolean;
   archivedAt?: string;
+  /** True when the user has pinned this session so it sorts first in lists. */
+  pinned?: boolean;
 }
 
 export interface ArchiveSessionsResponse {

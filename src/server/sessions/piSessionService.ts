@@ -28,6 +28,7 @@ import { BUILTIN_COMMANDS } from "./builtinCommands.js";
 import { SessionCommandService } from "./sessionCommandService.js";
 import { projectSessionTree, type ProjectableSessionTreeNode } from "./sessionTreeProjection.js";
 import { SessionArchiveStore, type ArchivedSessionRecord, type ArchiveSessionInput } from "./sessionArchiveStore.js";
+import { SessionMetadataStore } from "./sessionMetadataStore.js";
 import { findArchiveCandidateByIdOrPrefix, planSessionArchiveTree, type SessionArchiveTreeCandidate } from "./sessionArchiveTree.js";
 import type { ActiveSession } from "./sessionRuntimeStore.js";
 import { deterministicSessionName, fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
@@ -670,6 +671,8 @@ export interface PiSessionServiceDependencies {
   unreadStore?: SessionUnreadStore;
   /** Initial retry delay for durable unread publication failures. */
   unreadPublicationRetryDelayMs?: number;
+  /** Durable session metadata store for pinned state and future metadata. */
+  metadataStore?: SessionMetadataStore;
 }
 
 export class PiSessionService implements SessionRouteService {
@@ -706,6 +709,7 @@ export class PiSessionService implements SessionRouteService {
    */
   private readonly subsessionNotifyArmed = new Map<string, boolean>();
   private readonly archiveStore: SessionArchiveRepository;
+  private readonly metadataStore: SessionMetadataStore;
   private readonly agentDir: string;
   private readonly sessionManager: PiSessionManagerGateway;
   private readonly createRuntime: PiWebUiCreateAgentSessionRuntimeFactory;
@@ -729,6 +733,7 @@ export class PiSessionService implements SessionRouteService {
 
   constructor(private readonly events: SessionEventHub, deps: PiSessionServiceDependencies) {
     this.archiveStore = deps.archiveStore ?? new SessionArchiveStore();
+    this.metadataStore = deps.metadataStore ?? new SessionMetadataStore();
     this.agentDir = deps.agentDir;
     this.sessionManager = deps.sessionManager;
     this.modelRuntime = deps.modelRuntime;
@@ -928,7 +933,12 @@ export class PiSessionService implements SessionRouteService {
   }
 
   async list(cwd: string): Promise<ClientSession[]> {
-    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list()]);
+    const [sessions, archivedRecords, pinnedPaths] = await Promise.all([
+      this.sessionManager.list(cwd),
+      this.archiveStore.list(),
+      this.metadataStore.pinnedPaths(),
+    ]);
+    const pinnedPathSet = new Set(pinnedPaths);
     const sessionsById = new Map(sessions.map((session) => [session.id, session]));
     const archivedForCwd = await Promise.all(
       archivedRecords
@@ -939,14 +949,17 @@ export class PiSessionService implements SessionRouteService {
     for (const record of archivedForCwd) {
       this.publishNotificationMutations(this.notificationStore.clearSession(record.sessionId, "archive-reconcile"));
     }
-    const unarchivedSessions = sessions.filter((session) => !archivedById.has(session.id)).map(clientSessionFromListEntry);
+    const unarchivedSessions = sessions
+      .filter((session) => !archivedById.has(session.id))
+      .map((entry) => mergeSessionMetadata(clientSessionFromListEntry(entry), pinnedPathSet));
     const reconcilableSessionIds = this.reconcilableSessionIds(cwd, unarchivedSessions.map((session) => session.id), archivedById);
     this.workspaceActivity?.reconcileSessionActivity(cwd, reconcilableSessionIds);
     await this.publishUnreadMutations(this.unreadStore.reconcileCwd(canonicalizeStoredCwd(cwd), reconcilableSessionIds));
     const archivedSessions = archivedForCwd
       .sort(compareArchivedRecords)
       .map((record) => clientSessionFromArchivedRecord(record, sessionsById.get(record.sessionId)))
-      .filter(isDefined);
+      .filter(isDefined)
+      .map((session) => mergeSessionMetadata(session, pinnedPathSet));
     return [...unarchivedSessions, ...archivedSessions];
   }
 
@@ -1951,6 +1964,39 @@ export class PiSessionService implements SessionRouteService {
     clearParentSessionHeader(session.sessionManager);
     this.unregisterSubsession(session.sessionId);
     await this.forgetUnreadSessions([{ sessionId: session.sessionId, cwd: session.sessionManager.getCwd() }]);
+  }
+
+  async pin(ref: PiSessionLookup): Promise<ClientSession> {
+    const session = await this.getOrOpen(ref);
+    const sessionFile = session.sessionFile;
+    if (sessionFile === undefined || sessionFile === "") throw new Error("Session is not persisted");
+    await this.metadataStore.pin(sessionFile);
+    return this.sessionInfoFromActive(session, { pinned: true });
+  }
+
+  async unpin(ref: PiSessionLookup): Promise<ClientSession> {
+    const session = await this.getOrOpen(ref);
+    const sessionFile = session.sessionFile;
+    if (sessionFile === undefined || sessionFile === "") throw new Error("Session is not persisted");
+    await this.metadataStore.unpin(sessionFile);
+    return this.sessionInfoFromActive(session, { pinned: false });
+  }
+
+  private sessionInfoFromActive(session: PiAgentSession, overrides: Partial<ClientSession>): ClientSession {
+    const parentSessionPath = session.sessionManager.getHeader?.()?.parentSession;
+    return {
+      id: session.sessionId,
+      path: session.sessionFile ?? "",
+      cwd: session.sessionManager.getCwd(),
+      persisted: session.sessionFile !== undefined && session.sessionFile !== "",
+      created: new Date().toISOString(),
+      modified: new Date().toISOString(),
+      messageCount: session.messages.length,
+      firstMessage: "",
+      ...(session.sessionName === undefined ? {} : { name: session.sessionName }),
+      ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+      ...overrides,
+    };
   }
 
   async clearQueue(ref: PiSessionLookup): Promise<ClientSessionStatus> {
@@ -3312,6 +3358,11 @@ function archivedTimestamp(record: ArchivedSessionRecord): number {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function mergeSessionMetadata(session: ClientSession, pinnedPaths: ReadonlySet<string>): ClientSession {
+  if (!pinnedPaths.has(session.path)) return session;
+  return { ...session, pinned: true };
 }
 
 interface TrackedSubsessionSessionIdentity {

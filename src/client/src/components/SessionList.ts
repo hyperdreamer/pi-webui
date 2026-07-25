@@ -60,6 +60,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onDeleteArchivedMany?: (sessions: SessionInfo[]) => void | Promise<void>;
   @property({ attribute: false }) onDetachParent?: (session: SessionInfo) => void;
   @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
+  @property({ attribute: false }) onPin?: (session: SessionInfo) => void;
+  @property({ attribute: false }) onUnpin?: (session: SessionInfo) => void;
   @property({ attribute: false }) onCleanup?: () => void;
 
   @state() private openMenuSessionId: string | undefined;
@@ -277,7 +279,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
           <span class="action-name-line">
             ${this.renamingSessionId === session.id
               ? this.renderSessionRenameInput(session)
-              : html`<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>`}
+              : html`<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${session.pinned === true ? html`<span class="pinned-star" title="Pinned session">★</span> ` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>`}
           </span><small>${this.renderSessionMetaPrefix(session, status, activity)}${String(session.messageCount)} messages</small>
           ${this.renderActivity(indicatorKind)}
         </div>
@@ -299,6 +301,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
                     ` : null}
                     ${session.parentSessionPath !== undefined ? html`<button title="Detach from parent" @click=${() => { this.openMenuSessionId = undefined; this.onDetachParent?.(session); }}>Detach from parent</button>` : null}
                     ${canReloadSession ? html`<button title=${isSessionActive(this.statuses[session.id], this.activities[session.id]) ? "Stop current session activity before reloading from disk" : "Reload session from disk without refreshing Pi runtime resources"} ?disabled=${isSessionActive(this.statuses[session.id], this.activities[session.id])} @click=${() => { this.openMenuSessionId = undefined; this.onReload?.(session); }}>Reload from disk</button>` : null}
+                    ${session.pinned === true
+                      ? html`<button title="Unpin session" @click=${() => { this.openMenuSessionId = undefined; this.onUnpin?.(session); }}>Unpin</button>`
+                      : html`<button title="Pin session to keep it at the top of the list" @click=${() => { this.openMenuSessionId = undefined; this.onPin?.(session); }}>Pin</button>`}
                   `}
             </div>
           ` : null}
@@ -533,6 +538,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     .pending-session-row.starting-session .activity-indicator { flex: 0 0 auto; margin: 0; }
     .action-main.selecting { padding-left: calc(32px + var(--depth, 0) * 16px); }
     .session-checkbox { position: absolute; top: 9px; left: calc(8px + var(--depth, 0) * 16px); z-index: 2; margin: 0; }
+    .pinned-star { color: #d4a017; font-size: 14px; line-height: 1; flex: 0 0 auto; }
   `];
 }
 
@@ -649,6 +655,9 @@ function sessionRows(sessions: SessionInfo[]): SessionRow[] {
     childrenByPath.set(parent.path, children);
   }
 
+  // Pinned sessions sort before unpinned, preserving existing order within each group.
+  roots.sort(compareSessionPinnedFirst);
+
   const rows: SessionRow[] = [];
   const visit = (session: SessionInfo, depth: number, stack: Set<string>) => {
     if (stack.has(session.path)) return;
@@ -656,8 +665,18 @@ function sessionRows(sessions: SessionInfo[]): SessionRow[] {
     rows.push({ session, depth, hasMissingParent: parentPath !== undefined && !byPath.has(parentPath) });
     const nextStack = new Set(stack);
     nextStack.add(session.path);
-    for (const child of childrenByPath.get(session.path) ?? []) visit(child, depth + 1, nextStack);
+    const children = childrenByPath.get(session.path) ?? [];
+    children.sort(compareSessionPinnedFirst);
+    for (const child of children) visit(child, depth + 1, nextStack);
   };
   for (const root of roots) visit(root, 0, new Set());
   return rows;
+}
+
+function compareSessionPinnedFirst(a: SessionInfo, b: SessionInfo): number {
+  const aPinned = a.pinned === true;
+  const bPinned = b.pinned === true;
+  if (aPinned && !bPinned) return -1;
+  if (!aPinned && bPinned) return 1;
+  return 0;
 }

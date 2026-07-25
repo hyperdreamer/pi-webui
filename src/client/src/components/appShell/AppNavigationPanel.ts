@@ -85,6 +85,8 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onDeleteArchivedSessions?: (sessions: SessionInfo[]) => void | Promise<void>;
   @property({ attribute: false }) onDetachParentSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onReloadSession?: (session: SessionInfo) => void | Promise<void>;
+  @property({ attribute: false }) onPinSession?: (session: SessionInfo) => void | Promise<void>;
+  @property({ attribute: false }) onUnpinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onCleanupSessions?: () => void | Promise<void>;
   @property({ attribute: false }) onArchivedCollapsed?: () => void | Promise<void>;
   @property({ attribute: false }) onSelectMachine?: (machine: Machine) => void | Promise<void>;
@@ -207,6 +209,8 @@ export class AppNavigationPanel extends LitElement {
         .onDeleteArchivedMany=${(sessions: SessionInfo[]) => this.onDeleteArchivedSessions?.(sessions)}
         .onDetachParent=${(session: SessionInfo) => this.onDetachParentSession?.(session)}
         .onReload=${(session: SessionInfo) => this.onReloadSession?.(session)}
+        .onPin=${(session: SessionInfo) => this.onPinSession?.(session)}
+        .onUnpin=${(session: SessionInfo) => this.onUnpinSession?.(session)}
         .onCleanup=${() => this.onCleanupSessions?.()}
         .onFocusPreviousSection=${() => { this.focusPreviousFrom("sessions"); }}
         .onFocusNextSection=${() => { this.focusNextFrom("sessions"); }}

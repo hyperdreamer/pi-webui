@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0
+
+### Patch Changes
+
+- 7efd8aa: Show the current PI WEBUI version beside the sidebar application name.
+- 9f8b9f2: Add an Activity Rail Browser with tabs, address navigation, reload, resizable window controls, and page zoom.
+- 8bf61a4: Replace the Activity Rail File Manager with Git Update Manager for reviewing staged and unstaged workspace changes, highlighted diffs, and a changed-file count badge.
+- cfc0279: Allow users to rearrange Activity Rail icons via drag-and-drop. The customized order persists across page reloads and the system info icon is always pinned at the bottom.
+
 ## 1.5.1
 
 ### Patch Changes

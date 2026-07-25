@@ -10,6 +10,7 @@ import type {
   SessionBulkMutationRef,
   SessionCleanupExecuteResponse,
   SessionCleanupPreviewResponse,
+  SessionInfo,
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
@@ -920,6 +921,29 @@ class CapturingRouteSessionService implements SessionRouteService {
 
 
   detachParent(): never { throw unusedRouteMethod("detachParent"); }
+
+  pin(lookup: SessionRouteLookup) {
+    this.calls.push({ pin: lookup });
+    return Promise.resolve(pinnedSessionInfo(lookup));
+  }
+
+  unpin(lookup: SessionRouteLookup) {
+    this.calls.push({ unpin: lookup });
+    return Promise.resolve({ ...pinnedSessionInfo(lookup), pinned: false });
+  }
+}
+
+function pinnedSessionInfo(lookup: SessionRouteLookup): SessionInfo {
+  return {
+    id: sessionIdFromLookup(lookup),
+    path: `/sessions/${sessionIdFromLookup(lookup)}.jsonl`,
+    cwd: "/repo",
+    created: "2026-01-01T00:00:00.000Z",
+    modified: "2026-06-01T00:00:00.000Z",
+    messageCount: 1,
+    firstMessage: "Hello",
+    pinned: true,
+  };
 }
 
 class RejectingSessionManager implements PiSessionManagerGateway {
