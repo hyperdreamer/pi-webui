@@ -95,6 +95,70 @@ export function messageTopRatio(
   return clampRatio((elementTop - containerTop + scrollTop) / scrollHeight);
 }
 
+const MINIMAP_TOOLTIP_HEIGHT_PX = 22;
+const MINIMAP_TOOLTIP_GAP_PX = 2;
+
+/**
+ * Calculate a top position for every minimap preview while keeping nearby
+ * previews apart where the rail has enough room. Positions remain in source
+ * order and within the rail; crowded rails distribute previews across the
+ * available height so no marker's information is omitted.
+ */
+export function minimapTooltipTopPositions(
+  markers: readonly MinimapMarker[],
+  railHeight: number,
+): number[] {
+  if (markers.length === 0) return [];
+
+  const height = Number.isFinite(railHeight) ? Math.max(0, railHeight) : 0;
+  const maxTop = Math.max(0, height - MINIMAP_TOOLTIP_HEIGHT_PX);
+  const ordered = markers
+    .map((marker, index) => ({
+      index,
+      desiredTop: clampRatio(marker.topRatio) * height - MINIMAP_TOOLTIP_HEIGHT_PX / 2,
+    }))
+    .sort((left, right) => left.desiredTop - right.desiredTop || left.index - right.index);
+  const positions = new Array<number>(markers.length).fill(0);
+  const assignPositions = (tops: readonly number[]): number[] => {
+    for (let index = 0; index < ordered.length; index += 1) {
+      const marker = ordered[index];
+      const top = tops[index];
+      if (marker === undefined || top === undefined) continue;
+      positions[marker.index] = Math.round(top);
+    }
+    return positions;
+  };
+
+  if (ordered.length === 1) {
+    return assignPositions([Math.min(maxTop, Math.max(0, ordered[0]?.desiredTop ?? 0))]);
+  }
+
+  const minimumSpacing = MINIMAP_TOOLTIP_HEIGHT_PX + MINIMAP_TOOLTIP_GAP_PX;
+  const requiredHeight = ordered.length * MINIMAP_TOOLTIP_HEIGHT_PX
+    + (ordered.length - 1) * MINIMAP_TOOLTIP_GAP_PX;
+  if (requiredHeight > height) {
+    return assignPositions(ordered.map((_, index) => maxTop * index / (ordered.length - 1)));
+  }
+
+  const separatedTops = ordered.map(({ desiredTop }) => Math.min(maxTop, Math.max(0, desiredTop)));
+  for (let index = 1; index < separatedTops.length; index += 1) {
+    const previous = separatedTops[index - 1];
+    const current = separatedTops[index];
+    if (previous === undefined || current === undefined) continue;
+    separatedTops[index] = Math.max(current, previous + minimumSpacing);
+  }
+  const lastIndex = separatedTops.length - 1;
+  const lastTop = separatedTops[lastIndex];
+  if (lastTop !== undefined) separatedTops[lastIndex] = Math.min(lastTop, maxTop);
+  for (let index = lastIndex - 1; index >= 0; index -= 1) {
+    const next = separatedTops[index + 1];
+    const current = separatedTops[index];
+    if (next === undefined || current === undefined) continue;
+    separatedTops[index] = Math.min(current, next - minimumSpacing);
+  }
+  return assignPositions(separatedTops);
+}
+
 /** Extract a validated scroll ratio from a CustomEvent detail payload. */
 export function extractMinimapScrollRatio(detail: unknown): number | undefined {
   if (typeof detail !== "object" || detail === null) return undefined;

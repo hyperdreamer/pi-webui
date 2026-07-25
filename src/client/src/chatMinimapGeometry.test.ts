@@ -4,6 +4,7 @@ import {
   computeMinimapViewport,
   extractMinimapScrollRatio,
   messageTopRatio,
+  minimapTooltipTopPositions,
   minimapClickToScrollRatio,
   scrollToMinimapTopRatio,
 } from "./chatMinimapGeometry";
@@ -132,6 +133,41 @@ describe("messageTopRatio", () => {
     const result = messageTopRatio(3000, 0, 0, 1000);
     // (3000 - 0 + 0) / 1000 = 3 → clamped to 1
     expect(result).toBe(1);
+  });
+});
+
+describe("minimapTooltipTopPositions", () => {
+  const markers = [
+    { topRatio: 0.1, role: "user" as const, preview: "First" },
+    { topRatio: 0.11, role: "assistant" as const, preview: "Second" },
+    { topRatio: 0.12, role: "user" as const, preview: "Third" },
+  ];
+
+  it("returns a separated preview position for every minimap marker", () => {
+    const positions = minimapTooltipTopPositions(markers, 200);
+
+    expect(positions).toEqual([9, 33, 57]);
+    expect(positions).toHaveLength(markers.length);
+  });
+
+  it("keeps previews inside the minimap rail", () => {
+    expect(
+      minimapTooltipTopPositions([
+        { topRatio: 0, role: "user", preview: "Top" },
+        { topRatio: 1, role: "assistant", preview: "Bottom" },
+      ], 100),
+    ).toEqual([0, 78]);
+  });
+
+  it("still assigns every preview a distinct rail position when there is not enough room to separate them", () => {
+    expect(
+      minimapTooltipTopPositions([
+        { topRatio: 0, role: "user", preview: "One" },
+        { topRatio: 0.1, role: "assistant", preview: "Two" },
+        { topRatio: 0.2, role: "user", preview: "Three" },
+        { topRatio: 0.3, role: "assistant", preview: "Four" },
+      ], 80),
+    ).toEqual([0, 19, 39, 58]);
   });
 });
 

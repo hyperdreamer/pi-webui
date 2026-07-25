@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import { clampRatio, scrollToMinimapTopRatio, type MinimapMarker } from "../chatMinimapGeometry";
+import { clampRatio, minimapTooltipTopPositions, scrollToMinimapTopRatio, type MinimapMarker } from "../chatMinimapGeometry";
 
 /**
  * Right-side conversation minimap rail.
@@ -9,7 +9,7 @@ import { clampRatio, scrollToMinimapTopRatio, type MinimapMarker } from "../chat
  * user's position within a long conversation.  Message markers distinguish
  * user turns (accent-coloured rounded-square dots) from assistant turns
  * (muted circular dots).  Hovering over the rail highlights the nearest
- * marker and exposes a short preview tooltip.
+ * marker and shows a short preview tooltip for every message marker.
  *
  * Clicking or dragging on the rail dispatches `minimap-scroll-to` with a
  * target 0–1 ratio.  The parent (`ChatView`) is responsible for translating
@@ -126,8 +126,8 @@ export class ChatMinimap extends LitElement {
     if (!this.visible) return html``;
 
     const rail = this._renderRail();
-    const tooltip = this._renderTooltip();
-    return html`${rail}${tooltip}`;
+    const tooltips = this._renderTooltips();
+    return html`${rail}${tooltips}`;
   }
 
   private _renderRail() {
@@ -155,8 +155,9 @@ export class ChatMinimap extends LitElement {
           this._hovered = false;
           this._nearestIndex = null;
         }}
-        @pointerenter=${() => {
+        @pointerenter=${(e: PointerEvent) => {
           this._hovered = true;
+          this._handlePointerMove(e);
         }}
         @keydown=${(e: KeyboardEvent) => { this._handleKeyDown(e); }}
       >
@@ -191,17 +192,26 @@ export class ChatMinimap extends LitElement {
     `;
   }
 
-  private _renderTooltip() {
-    if (!this._hovered || this._nearestIndex === null) return null;
-    const marker = this.markers[this._nearestIndex];
-    if (marker === undefined || marker.preview === "") return null;
+  private _renderTooltips() {
+    if (!this._hovered) return null;
 
-    const dotTop = marker.topRatio * 100;
-    return html`
-      <div class="tooltip" style=${`top:${dotTop.toFixed(2)}%`}>
-        <div class="tooltip-text">${marker.preview}</div>
-      </div>
-    `;
+    const positions = minimapTooltipTopPositions(
+      this.markers,
+      this._rail?.clientHeight ?? 600,
+    );
+    return this.markers.map((marker, index) => {
+      const top = positions[index];
+      if (marker.preview === "" || top === undefined) return null;
+      const isNearest = this._nearestIndex === index;
+      return html`
+        <div
+          class=${`tooltip ${marker.role}${isNearest ? " nearest" : ""}`}
+          style=${`top:${String(top)}px`}
+        >
+          <div class="tooltip-text">${marker.preview}</div>
+        </div>
+      `;
+    });
   }
 
   static override styles = css`
@@ -212,7 +222,7 @@ export class ChatMinimap extends LitElement {
       top: 0;
       bottom: 0;
       width: 36px;
-      z-index: 5;
+      z-index: 30;
       overflow: visible;
     }
 
@@ -302,31 +312,36 @@ export class ChatMinimap extends LitElement {
     .tooltip {
       position: absolute;
       right: calc(100% + 6px);
-      transform: translateY(-50%);
       background: var(--pi-surface);
-      border-top: 1px solid var(--pi-border);
-      border-right: 1px solid var(--pi-border);
-      border-bottom: 1px solid var(--pi-border);
-      border-left: 2px solid var(--pi-accent);
+      border: 1px solid var(--pi-border);
+      border-left-width: 2px;
       border-radius: 4px;
       padding: 2px 7px;
       width: 200px;
       max-height: 22px;
       z-index: 100;
       pointer-events: none;
+      opacity: .45;
+      transition: top .1s, opacity .1s;
     }
+    .tooltip.user { border-left-color: color-mix(in srgb, var(--pi-accent) 70%, transparent); }
+    .tooltip.assistant { border-left-color: color-mix(in srgb, var(--pi-text) 30%, transparent); }
+    .tooltip.nearest { z-index: 101; opacity: 1; }
+    .tooltip.nearest.user { border-color: color-mix(in srgb, var(--pi-accent) 70%, transparent); }
+    .tooltip.nearest.assistant { border-color: color-mix(in srgb, var(--pi-text) 30%, transparent); }
 
     .tooltip-text {
       font-size: 11px;
-      color: var(--pi-text);
+      color: var(--pi-muted);
       line-height: 1.4;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .tooltip.nearest .tooltip-text { color: var(--pi-text); }
 
     @media (prefers-reduced-motion: reduce) {
-      .marker-dot {
+      .marker-dot, .tooltip {
         transition: none;
       }
     }
