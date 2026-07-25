@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+### Patch Changes
+
+- 8851af0: Add a workspace system-info panel with application versions, environment, hardware, network addresses, and live upload/download transfer rates.
+- d16cde5: Keep minimap previews above session history and show every message preview while hovering the conversation navigator.
+
 ## 1.4.1
 
 ### Patch Changes
