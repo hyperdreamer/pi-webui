@@ -411,6 +411,36 @@ describe("session API compatibility", () => {
     expect(JSON.parse(requestBody(init))).toEqual({ cwd: "/repo with spaces", ...navigation });
   });
 
+  it("posts encoded per-message edit and fork actions with workspace context", async () => {
+    const forkedSession = {
+      id: "forked /?",
+      path: "/sessions/forked.jsonl",
+      cwd: "/repo with spaces",
+      created: "2026-08-01T00:00:00.000Z",
+      modified: "2026-08-01T00:01:00.000Z",
+      messageCount: 2,
+      firstMessage: "Start here",
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse({ cancelled: false }),
+      jsonResponse({ cancelled: false, session: forkedSession }),
+    ]);
+    const ref = { id: "s /?", cwd: "/repo with spaces" };
+
+    await expect(sessionsApi.editFromHere(ref, "assistant /?", "remote /?")).resolves.toEqual({ cancelled: false });
+    await expect(sessionsApi.forkFromHere(ref, "user /?", "remote /?")).resolves.toEqual({ cancelled: false, session: forkedSession });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [editUrl, editInit] = fetchCall(fetchMock, 0);
+    expect(editUrl).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/sessions/s%20%2F%3F/messages/edit-from-here");
+    expect(editInit?.method).toBe("POST");
+    expect(JSON.parse(requestBody(editInit))).toEqual({ cwd: "/repo with spaces", entryId: "assistant /?" });
+    const [forkUrl, forkInit] = fetchCall(fetchMock, 1);
+    expect(forkUrl).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/sessions/s%20%2F%3F/messages/fork");
+    expect(forkInit?.method).toBe("POST");
+    expect(JSON.parse(requestBody(forkInit))).toEqual({ cwd: "/repo with spaces", entryId: "user /?" });
+  });
+
   it("keeps session tree navigation under a canonical nested deployment base", async () => {
     vi.stubEnv("BASE_URL", "./");
     vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });

@@ -1325,6 +1325,11 @@ export class PiWebUiApp extends LitElement {
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsClearQueue);
   }
 
+  private canMessageActions(): boolean {
+    const runtime = this.selectedMachineRuntime();
+    return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsMessageActions);
+  }
+
   private canViewSystemPrompt(): boolean {
     const runtime = this.selectedMachineRuntime();
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsSystemPrompt);
@@ -2543,6 +2548,27 @@ export class PiWebUiApp extends LitElement {
     void this.sessions.clearServerQueue();
   };
 
+  private readonly handleEditFromHere = async (assistantEntryId: string, editorText: string): Promise<void> => {
+    const originMachineId = selectedMachineId(this.state);
+    const originSessionId = this.state.selectedSession?.id;
+    try {
+      const result = await this.sessions.editFromHere(assistantEntryId, editorText);
+      if (!result.cancelled
+        && originSessionId !== undefined
+        && selectedMachineId(this.state) === originMachineId
+        && this.state.selectedSession?.id === originSessionId) {
+        await this.focusChatComposer();
+      }
+    } catch {
+      // SessionController records the actionable error in app state; a message
+      // action is fire-and-forget from Lit, so avoid an unhandled rejection.
+    }
+  };
+
+  private readonly handleForkFromHere = async (userEntryId: string): Promise<void> => {
+    await this.sessions.forkFromHere(userEntryId);
+  };
+
   private readonly handleDismissWarning = (dismissId: string): void => {
     void this.sessions.dismissWarning(dismissId);
   };
@@ -2572,7 +2598,7 @@ export class PiWebUiApp extends LitElement {
 
   private renderChatView(state: AppState, session: SessionInfo) {
     return html`
-      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
+      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
     `;
   }
 

@@ -267,7 +267,7 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
   }
 }
 
-function clientSessionFromRuntime(runtime: CommandRuntime): ClientSession {
+export function clientSessionFromRuntime(runtime: CommandRuntime): ClientSession {
   const session = runtime.session;
   const parentSessionPath = typeof session.sessionManager.getHeader === "function" ? session.sessionManager.getHeader()?.parentSession : undefined;
   return {

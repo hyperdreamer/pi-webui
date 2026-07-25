@@ -355,6 +355,24 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
+  app.post<{ Params: { sessionId: string }; Body: Record<string, unknown> | undefined }>(`${prefix}/sessions/:sessionId/messages/edit-from-here`, async (request, reply) => {
+    try {
+      const body = requireRecord(request.body);
+      return await sessions.editFromHere(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "entryId"));
+    } catch (error) {
+      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string }; Body: Record<string, unknown> | undefined }>(`${prefix}/sessions/:sessionId/messages/fork`, async (request, reply) => {
+    try {
+      const body = requireRecord(request.body);
+      return await sessions.forkFromHere(sessionLookupFromBody(request.params.sessionId, body), requireString(body, "entryId"));
+    } catch (error) {
+      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/abort`, async (request, reply) => {
     try {
       await sessions.abort(sessionLookupFromBody(request.params.sessionId, optionalRecord(request.body)));

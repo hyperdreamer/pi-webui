@@ -486,7 +486,6 @@ export class SessionController {
 
     const machineId = selectedMachineId(state);
     const selectionSeq = this.selectionSeq;
-    const cacheKey = machineSessionKey(machineId, session.id);
     let result: SessionTreeNavigateResult;
     try {
       result = await this.api.navigateTree(session, { targetId, expectedLeafId: tree.activeLeafId, summary }, machineId);
@@ -495,24 +494,81 @@ export class SessionController {
       throw error;
     }
 
-    if (result.cancelled) return result;
+    if (!result.cancelled) await this.refreshAfterTreeNavigation(session, machineId, result.editorText ?? "", tree);
+    return result;
+  }
 
-    const editorText = result.editorText ?? "";
+  async editFromHere(targetId: string, editorText: string): Promise<SessionTreeNavigateResult> {
+    const state = this.getState();
+    const session = state.selectedSession;
+    if (session === undefined || session.archived === true || isClientPendingStartSessionInfo(session)) {
+      throw new Error("The message action is no longer available");
+    }
+
+    const machineId = selectedMachineId(state);
+    const selectionSeq = this.selectionSeq;
+    let result: SessionTreeNavigateResult;
+    try {
+      result = await this.api.editFromHere(session, targetId, machineId);
+    } catch (error) {
+      if (this.isCurrentSessionSelection(session.id, machineId, selectionSeq)) this.setState({ error: String(error) });
+      throw error;
+    }
+
+    if (!result.cancelled) await this.refreshAfterTreeNavigation(session, machineId, editorText);
+    return result;
+  }
+
+  async forkFromHere(entryId: string): Promise<void> {
+    const state = this.getState();
+    const session = state.selectedSession;
+    if (session === undefined || session.archived === true || isClientPendingStartSessionInfo(session)) return;
+
+    const machineId = selectedMachineId(state);
+    const selectionSeq = this.selectionSeq;
+    let result;
+    try {
+      result = await this.api.forkFromHere(session, entryId, machineId);
+    } catch (error) {
+      if (this.isCurrentSessionSelection(session.id, machineId, selectionSeq)) this.setState({ error: String(error) });
+      return;
+    }
+    if (result.cancelled) return;
+
+    const current = this.getState();
+    if (selectedMachineId(current) !== machineId) return;
+    const sessions = [result.session, ...current.sessions.filter((candidate) => candidate.id !== result.session.id)];
+    this.setState({ sessions });
+    if (!this.isCurrentSessionSelection(session.id, machineId, selectionSeq)) return;
+    await this.selectSession(result.session);
+  }
+
+  private async refreshAfterTreeNavigation(
+    session: SessionInfo,
+    machineId: string,
+    editorText: string,
+    tree?: AppState["treeDialog"],
+  ): Promise<void> {
+    const cacheKey = machineSessionKey(machineId, session.id);
     saveDraft(cacheKey, editorText);
     this.transcripts.discard(cacheKey);
 
     // A user can reselect the same session while the request is in flight. Its
     // sequence changes, but the server mutation still belongs to the selected
     // identity and requires a fresh authoritative branch read.
-    if (!this.isSelectedSessionIdentity(session.id, machineId)) return result;
+    if (!this.isSelectedSessionIdentity(session.id, machineId)) return;
     this.clearPendingUpdates();
     let authoritativeRefreshFailure: { error: unknown } | undefined;
     try {
-      await this.selectSession(session, { updateUrl: false, preserveTreeDialog: true, propagateRefreshError: true });
+      await this.selectSession(session, {
+        updateUrl: false,
+        ...(tree === undefined ? {} : { preserveTreeDialog: true }),
+        propagateRefreshError: true,
+      });
     } catch (error) {
       authoritativeRefreshFailure = { error };
     }
-    if (!this.isSelectedSessionIdentity(session.id, machineId)) return result;
+    if (!this.isSelectedSessionIdentity(session.id, machineId)) return;
 
     try {
       await this.replacePromptEditorText?.({ machineId, sessionId: session.id, text: editorText });
@@ -524,8 +580,9 @@ export class SessionController {
       if (this.isSelectedSessionIdentity(session.id, machineId)) this.setState({ error: String(authoritativeRefreshFailure.error) });
       throw authoritativeRefreshFailure.error;
     }
-    if (this.isSelectedSessionIdentity(session.id, machineId) && this.getState().treeDialog === tree) this.setState({ treeDialog: undefined });
-    return result;
+    if (tree !== undefined && this.isSelectedSessionIdentity(session.id, machineId) && this.getState().treeDialog === tree) {
+      this.setState({ treeDialog: undefined });
+    }
   }
 
   async abortTreeNavigation(): Promise<void> {

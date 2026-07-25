@@ -50,6 +50,22 @@ describe("PI WEBUI capabilities", () => {
     })).toContain(clearQueue);
   });
 
+  it("requires both web and session daemon support for per-message history actions", () => {
+    const messageActions = PI_WEBUI_CAPABILITIES.sessionsMessageActions;
+    expect(messageActions).toBe("sessions.messageActions");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(messageActions);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(messageActions);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [messageActions] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(messageActions);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [messageActions] },
+      sessiond: { available: true, capabilities: [messageActions] },
+    })).toContain(messageActions);
+  });
+
   it("requires both web and session daemon support for viewing system prompts", () => {
     const systemPrompt = PI_WEBUI_CAPABILITIES.sessionsSystemPrompt;
     expect(systemPrompt).toBe("sessions.systemPrompt");

@@ -18,11 +18,89 @@ import {
   chatMessageGroupClassName,
   chatMessageGroupLabel,
   chatMessageMetadataLabel,
+  chatMessageEditText,
   chatQueuedMessageSections,
   chatQueuedSectionShowsClearAction,
   chatSessionWarningRows,
+  chatUserMessageActionAvailability,
 } from "./ChatView";
 import { findOptionalTemplateEventHandlerAfterMarker, templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+
+describe("chatUserMessageActionAvailability", () => {
+  const message: ChatLine = {
+    role: "user",
+    parts: [{ type: "text", text: "Revise this" }],
+    entryId: "user-2",
+    previousAssistantEntryId: "assistant-1",
+    canFork: true,
+  };
+
+  it("exposes both history actions only when an idle capable session supplies entry metadata", () => {
+    expect(chatUserMessageActionAvailability(message, { enabled: true, busy: false })).toEqual({
+      editFromHereEntryId: "assistant-1",
+      forkEntryId: "user-2",
+    });
+  });
+
+  it("keeps actions unavailable without capability support, while active, or without applicable metadata", () => {
+    expect(chatUserMessageActionAvailability(message, { enabled: false, busy: false })).toEqual({});
+    expect(chatUserMessageActionAvailability(message, { enabled: true, busy: true })).toEqual({});
+    expect(chatUserMessageActionAvailability({ role: "user", parts: message.parts, entryId: "user-2" }, { enabled: true, busy: false })).toEqual({});
+  });
+
+  it("uses untrimmed text parts as the edit draft, matching the original user message", () => {
+    expect(chatMessageEditText({ ...message, parts: [{ type: "text", text: " first " }, { type: "text", text: "second" }] })).toBe(" first \nsecond");
+  });
+});
+
+describe("ChatView per-message action wiring", () => {
+  // Escape hatch: this verifies only the two action callbacks wired into Lit's
+  // message-action template. The node suite has no DOM harness, so handler
+  // extraction anchored to visible semantic controls is proportionate.
+  it("wires edit and new-session actions for an eligible user message", async () => {
+    const view = new ChatView();
+    const onEditFromHere = vi.fn(() => Promise.resolve());
+    const onForkFromHere = vi.fn(() => Promise.resolve());
+    Reflect.set(view, "canMessageActions", true);
+    Reflect.set(view, "onEditFromHere", onEditFromHere);
+    Reflect.set(view, "onForkFromHere", onForkFromHere);
+    const message: ChatLine = {
+      role: "user",
+      parts: [{ type: "text", text: "Revise this" }],
+      entryId: "user-2",
+      previousAssistantEntryId: "assistant-1",
+      canFork: true,
+    };
+
+    const rendered = renderMessageActions(view, message, "user-2");
+    templateEventHandlerNearMarker(rendered, "data-message-action=\"edit-from-here\"")(new Event("click"));
+    templateEventHandlerNearMarker(rendered, "data-message-action=\"new-session\"")(new Event("click"));
+    await Promise.resolve();
+
+    expect(onEditFromHere).toHaveBeenCalledExactlyOnceWith("assistant-1", "Revise this");
+    expect(onForkFromHere).toHaveBeenCalledExactlyOnceWith("user-2");
+  });
+
+  it("keeps the new-session action pending and ignores duplicate clicks", async () => {
+    const view = new ChatView();
+    let resolveFork: (() => void) | undefined;
+    const onForkFromHere = vi.fn(() => new Promise<void>((resolve) => { resolveFork = resolve; }));
+    Reflect.set(view, "canMessageActions", true);
+    Reflect.set(view, "onForkFromHere", onForkFromHere);
+    const message: ChatLine = { role: "user", parts: [{ type: "text", text: "Fork this" }], entryId: "user-2", canFork: true };
+    const rendered = renderMessageActions(view, message, "user-2");
+    const clickFork = templateEventHandlerNearMarker(rendered, "data-message-action=\"new-session\"");
+
+    clickFork(new Event("click"));
+    clickFork(new Event("click"));
+
+    expect(onForkFromHere).toHaveBeenCalledExactlyOnceWith("user-2");
+    expect(Reflect.get(view, "forkingEntryId")).toBe("user-2");
+    resolveFork?.();
+    await Promise.resolve();
+    expect(Reflect.get(view, "forkingEntryId")).toBeUndefined();
+  });
+});
 
 describe("chatQueuedMessageSections", () => {
   it("labels client-side pending-start sends separately from server queued messages", () => {
@@ -445,6 +523,7 @@ interface GroupBodyRenderCall {
 type RenderActivityDock = (this: ChatView) => TemplateResult | null;
 type RenderQueuedMessages = (this: ChatView) => TemplateResult;
 type RenderMessageGroup = (this: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean) => TemplateResult;
+type RenderMessageActions = (this: ChatView, message: ChatLine, key: string) => TemplateResult | null;
 type RenderMessageGroupBody = (this: ChatView, messages: ChatLine[], startIndex: number) => TemplateResult;
 type RenderWarnings = (this: ChatView) => TemplateResult | null;
 type RenderNotificationTray = (this: ChatView) => TemplateResult | null;
@@ -469,6 +548,14 @@ function renderMessageGroup(view: ChatView, messages: ChatLine[], startIndex: nu
   const method: unknown = Reflect.get(view, "renderMessageGroup");
   if (!isRenderMessageGroup(method)) throw new Error("ChatView.renderMessageGroup is not callable");
   return method.call(view, messages, startIndex, endIndex, defaultOpen);
+}
+
+function renderMessageActions(view: ChatView, message: ChatLine, key: string): TemplateResult {
+  const method: unknown = Reflect.get(view, "renderMessageActions");
+  if (!isRenderMessageActions(method)) throw new Error("ChatView.renderMessageActions is not callable");
+  const rendered = method.call(view, message, key);
+  if (rendered === null) throw new Error("Expected message actions");
+  return rendered;
 }
 
 function renderWarnings(view: ChatView): TemplateResult | null {
@@ -510,6 +597,10 @@ function isRenderQueuedMessages(value: unknown): value is RenderQueuedMessages {
 }
 
 function isRenderMessageGroup(value: unknown): value is RenderMessageGroup {
+  return typeof value === "function";
+}
+
+function isRenderMessageActions(value: unknown): value is RenderMessageActions {
   return typeof value === "function";
 }
 

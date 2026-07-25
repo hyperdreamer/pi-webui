@@ -54,6 +54,7 @@ import {
   parseSessionCleanupPreviewResponse,
   parseSessionDefaultsResponse,
   parseSessionInfo,
+  parseSessionMessageForkResult,
   parseSessionNotificationInboxSnapshot,
   parseSessionStatus,
   parseSessionSystemPrompt,
@@ -301,6 +302,14 @@ export const sessionsApi = {
   navigateTree: (session: SessionLookup, navigation: SessionTreeNavigateRequest, machineId = "local") => request(sessionPath(session, "tree/navigate", machineId), parseSessionTreeNavigateResult, {
     method: "POST",
     body: sessionBody(session, { targetId: navigation.targetId, expectedLeafId: navigation.expectedLeafId, summary: navigation.summary }),
+  }),
+  editFromHere: (session: SessionLookup, entryId: string, machineId = "local") => request(sessionPath(session, "messages/edit-from-here", machineId), parseSessionTreeNavigateResult, {
+    method: "POST",
+    body: sessionBody(session, { entryId }),
+  }),
+  forkFromHere: (session: SessionLookup, entryId: string, machineId = "local") => request(sessionPath(session, "messages/fork", machineId), parseSessionMessageForkResult, {
+    method: "POST",
+    body: sessionBody(session, { entryId }),
   }),
   abort: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "abort", machineId), parseAborted, { method: "POST", body: sessionBody(session) }),
   stop: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "stop", machineId), parseStopped, { method: "POST", body: sessionBody(session) }),

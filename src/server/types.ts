@@ -21,6 +21,7 @@ export type {
   SessionTreeSnapshot as ClientSessionTreeSnapshot,
   SessionTreeNavigateRequest as ClientSessionTreeNavigateRequest,
   SessionTreeNavigateResult as ClientSessionTreeNavigateResult,
+  SessionMessageForkResult as ClientSessionMessageForkResult,
   SessionActivity as ClientSessionActivity,
   SessionUiEvent,
   GlobalSessionEvent,

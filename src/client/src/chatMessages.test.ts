@@ -13,6 +13,22 @@ describe("chat message normalization", () => {
     ]);
   });
 
+  it("preserves message-action metadata for a user history entry", () => {
+    expect(normalizeMessages([{
+      role: "user",
+      content: "Please revise this",
+      entryId: "user-entry-2",
+      previousAssistantEntryId: "assistant-entry-1",
+      canFork: true,
+    }])).toEqual([{
+      role: "user",
+      parts: [{ type: "text", text: "Please revise this" }],
+      entryId: "user-entry-2",
+      previousAssistantEntryId: "assistant-entry-1",
+      canFork: true,
+    }]);
+  });
+
   it("preserves already-normalized chat lines", () => {
     const line = { role: "assistant" as const, parts: [{ type: "text" as const, text: "cached" }] };
 
