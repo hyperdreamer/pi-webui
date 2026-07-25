@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1
+
+### Patch Changes
+
+- 68e4c89: Refresh the sidebar wordmark with a prominent π symbol and WebUI capitalization.
+- d02208f: Show the latest reachable Git tag in the workspace Git summary.
+
 ## 1.4.0
 
 ### Patch Changes
