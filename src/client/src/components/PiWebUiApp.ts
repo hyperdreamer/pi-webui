@@ -2709,6 +2709,7 @@ export class PiWebUiApp extends LitElement {
             .historyEnabled=${this.canOpenSessionHistory()}
             .onOpenHistory=${() => { this.openSessionHistory(); }}
             .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
+            .onOpenSettings=${() => { this.openSettings(); }}
             .railOrder=${this.railOrder}
             .onRailOrderChange=${this.handleRailOrderChange}
           ></activity-rail>

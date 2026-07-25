@@ -27,23 +27,23 @@ describe("activityRailOrder", () => {
     });
 
     it("returns a valid stored order", () => {
-      const order: ReorderableRailItem[] = ["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"];
+      const order: ReorderableRailItem[] = ["info", "history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(order));
       expect(readRailOrder()).toEqual(order);
     });
 
     it("replaces the legacy File Manager identifier with Git Update Manager", () => {
-      const legacyOrder = ["history", "theme", "terminal", "browser", "file-manager", "system-prompt"];
+      const legacyOrder = ["info", "history", "theme", "terminal", "browser", "file-manager", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(legacyOrder));
 
-      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]);
+      expect(readRailOrder()).toEqual(["info", "history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]);
     });
 
-    it("adds Browser and Git Update Manager to a valid saved order from before either existed", () => {
+    it("adds Browser, Git Update Manager, and info to a valid saved order from before they existed", () => {
       const legacyOrder = ["history", "theme", "terminal", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(legacyOrder));
 
-      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]);
+      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt", "info"]);
     });
 
     it("returns undefined for invalid JSON", () => {
@@ -57,7 +57,7 @@ describe("activityRailOrder", () => {
     });
 
     it("returns undefined when the array has wrong length", () => {
-      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(["terminal", "theme"]));
+      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(["terminal", "theme", "info"]));
       expect(readRailOrder()).toBeUndefined();
     });
 
@@ -76,15 +76,21 @@ describe("activityRailOrder", () => {
       expect(readRailOrder()).toBeUndefined();
     });
 
-    it("rejects an order that includes info (info is never reorderable)", () => {
-      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(["terminal", "theme", "system-prompt", "info"]));
-      expect(readRailOrder()).toBeUndefined();
+    it("accepts an order that includes info (info is now reorderable)", () => {
+      const order: ReorderableRailItem[] = ["info", "terminal", "theme", "browser", "git-update-manager", "system-prompt", "history"];
+      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(order));
+      expect(readRailOrder()).toEqual(order);
+    });
+
+    it("migrates an order missing info by appending info at the end", () => {
+      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]));
+      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt", "info"]);
     });
   });
 
   describe("writeRailOrder", () => {
     it("persists the order to localStorage", () => {
-      const order: ReorderableRailItem[] = ["history", "system-prompt", "theme", "git-update-manager", "terminal", "browser"];
+      const order: ReorderableRailItem[] = ["info", "history", "system-prompt", "theme", "git-update-manager", "terminal", "browser"];
       writeRailOrder(order);
       const stored = storage.getItem("pi-webui:activity-rail-order");
       expect(stored).not.toBeNull();
@@ -103,8 +109,8 @@ describe("activityRailOrder", () => {
   });
 
   describe("constants", () => {
-    it("DEFAULT_RAIL_ORDER contains exactly 6 reorderable items", () => {
-      expect(DEFAULT_RAIL_ORDER).toHaveLength(6);
+    it("DEFAULT_RAIL_ORDER contains exactly 7 reorderable items", () => {
+      expect(DEFAULT_RAIL_ORDER).toHaveLength(7);
       const itemSet = new Set(DEFAULT_RAIL_ORDER);
       expect(itemSet.has("terminal")).toBe(true);
       expect(itemSet.has("browser")).toBe(true);
@@ -112,7 +118,8 @@ describe("activityRailOrder", () => {
       expect(itemSet.has("theme")).toBe(true);
       expect(itemSet.has("system-prompt")).toBe(true);
       expect(itemSet.has("history")).toBe(true);
-      expect(itemSet.size).toBe(6);
+      expect(itemSet.has("info")).toBe(true);
+      expect(itemSet.size).toBe(7);
     });
   });
 });

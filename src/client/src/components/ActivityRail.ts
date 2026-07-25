@@ -3,7 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
 
 const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
-const REORDERABLE_IDS: readonly string[] = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history"];
+const REORDERABLE_IDS: readonly string[] = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history", "info"];
 
 function isReorderableItem(value: string): value is ReorderableRailItem {
   return REORDERABLE_IDS.includes(value);
@@ -18,6 +18,7 @@ export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
   @property({ attribute: false }) onOpenHistory?: () => void;
   @property({ attribute: false }) onOpenInfo?: () => void;
+  @property({ attribute: false }) onOpenSettings?: () => void;
   @property({ type: Number }) terminalCount = 0;
   @property({ type: Number }) gitUpdateManagerCount = 0;
   @property({ type: Boolean }) systemPromptEnabled = false;
@@ -58,6 +59,7 @@ export class ActivityRail extends LitElement {
   private readonly openSystemPrompt = (): void => { this.onOpenSystemPrompt?.(); };
   private readonly openHistory = (): void => { this.onOpenHistory?.(); };
   private readonly openInfo = (): void => { this.onOpenInfo?.(); };
+  private readonly openSettings = (): void => { this.onOpenSettings?.(); };
 
   // -- Drag-and-drop (reorderable items only) --
 
@@ -132,7 +134,7 @@ export class ActivityRail extends LitElement {
 
   // -- Button rendering --
 
-  /** Returns drag attributes for reorderable items only (info is fixed). */
+  /** Returns drag attributes for reorderable items only (settings is fixed). */
   private dndProps(item: ReorderableRailItem) {
     return {
       draggable: "true",
@@ -148,6 +150,7 @@ export class ActivityRail extends LitElement {
       case "theme": return this.renderThemeButton();
       case "system-prompt": return this.renderSystemPromptButton();
       case "history": return this.renderHistoryButton();
+      case "info": return this.renderInfoButton();
     }
   }
 
@@ -312,6 +315,7 @@ export class ActivityRail extends LitElement {
   }
 
   private renderInfoButton(): TemplateResult {
+    const p = this.dndProps("info");
     return html`
       <button
         type="button"
@@ -319,6 +323,10 @@ export class ActivityRail extends LitElement {
         title="System Info"
         aria-label="Open system info"
         @click=${this.openInfo}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("info", event); }}
+        @dragend=${() => { this.onDragEnd("info"); }}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -326,6 +334,25 @@ export class ActivityRail extends LitElement {
           <rect x="2" y="3" width="20" height="14" rx="2"/>
           <path d="M8 21h8"/>
           <path d="M12 17v4"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  private renderSettingsButton(): TemplateResult {
+    return html`
+      <button
+        type="button"
+        class="icon-button settings-button"
+        title="Settings"
+        aria-label="Open settings"
+        @click=${this.openSettings}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+          <circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
     `;
@@ -345,7 +372,7 @@ export class ActivityRail extends LitElement {
       >
         ${order.map((item) => this.renderReorderableButton(item))}
         <div class="rail-spacer"></div>
-        ${this.renderInfoButton()}
+        ${this.renderSettingsButton()}
       </nav>
     `;
   }
@@ -412,6 +439,6 @@ export class ActivityRail extends LitElement {
       box-shadow: 0 -2px 0 0 var(--pi-accent);
     }
     .rail-spacer { flex: 1 1 auto; min-height: 0; }
-    .info-button { margin-bottom: 12px; }
+    .settings-button { margin-bottom: 12px; }
   `;
 }

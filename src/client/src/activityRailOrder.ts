@@ -1,10 +1,10 @@
 /**
  * Stable identifiers for Activity Rail icons.
  *
- * The Browser and Git Update Manager join the reorderable tools. The "info"
- * icon remains pinned at the bottom, separated by a spacer.
+ * The Browser and Git Update Manager join the reorderable tools. The
+ * "settings" icon remains pinned at the bottom, separated by a spacer.
  */
-export type ReorderableRailItem = "terminal" | "browser" | "git-update-manager" | "theme" | "system-prompt" | "history";
+export type ReorderableRailItem = "terminal" | "browser" | "git-update-manager" | "theme" | "system-prompt" | "history" | "info";
 
 const REORDERABLE_ITEMS: readonly ReorderableRailItem[] = [
   "terminal",
@@ -13,6 +13,7 @@ const REORDERABLE_ITEMS: readonly ReorderableRailItem[] = [
   "theme",
   "system-prompt",
   "history",
+  "info",
 ];
 const LEGACY_FILE_MANAGER_ITEM = "file-manager";
 
@@ -51,6 +52,9 @@ function normalizeRailOrder(value: unknown): ReorderableRailItem[] | undefined {
   if (!seen.has("git-update-manager")) {
     const browserIndex = migrated.indexOf("browser");
     migrated.splice(browserIndex + 1, 0, "git-update-manager");
+  }
+  if (!seen.has("info")) {
+    migrated.push("info");
   }
   return migrated.length === REORDERABLE_ITEMS.length ? migrated : undefined;
 }

@@ -22,7 +22,7 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, Browser, Git Update Manager, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
+    it("renders the rail with terminal, Browser, Git Update Manager, theme, System prompt, Full history, system info, and settings icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
       expect(railText(rail)).toContain("Open Git Update Manager");
@@ -31,6 +31,7 @@ describe("ActivityRail", () => {
       expect(railText(rail)).toContain("Open system prompt");
       expect(railText(rail)).toContain("Open full history");
       expect(railText(rail)).toContain("Open system info");
+      expect(railText(rail)).toContain("Open settings");
     });
 
     it("does not render rail content when viewport is below 1181px", () => {
@@ -136,7 +137,7 @@ describe("ActivityRail", () => {
       expect(onOpenHistory).toHaveBeenCalledOnce();
     });
 
-    it("opens system info from the bottom rail icon", () => {
+    it("opens system info from its rail icon", () => {
       const rail = createRail();
       const onOpenInfo = vi.fn();
       rail.onOpenInfo = onOpenInfo;
@@ -145,6 +146,17 @@ describe("ActivityRail", () => {
       handler(new Event("click"));
 
       expect(onOpenInfo).toHaveBeenCalledOnce();
+    });
+
+    it("opens settings from the bottom rail icon", () => {
+      const rail = createRail();
+      const onOpenSettings = vi.fn();
+      rail.onOpenSettings = onOpenSettings;
+
+      const handler = templateEventHandlerAfterMarker(rail.render(), "settings-button");
+      handler(new Event("click"));
+
+      expect(onOpenSettings).toHaveBeenCalledOnce();
     });
 
     it("is safe to click when no callback is provided", () => {
@@ -200,25 +212,29 @@ describe("ActivityRail", () => {
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
       const historyPos = text.indexOf("Open full history");
-      // Default order: terminal, Browser, Git Update Manager, theme, system-prompt, history (info fixed at bottom)
+      const infoPos = text.indexOf("Open system info");
+      // Default order: terminal, Browser, Git Update Manager, theme, system-prompt, history, info (settings fixed at bottom)
       expect(terminalPos).toBeLessThan(browserPos);
       expect(browserPos).toBeLessThan(gitUpdateManagerPos);
       expect(gitUpdateManagerPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
       expect(spPos).toBeLessThan(historyPos);
+      expect(historyPos).toBeLessThan(infoPos);
     });
 
     it("renders reorderable buttons in a custom railOrder", () => {
       const rail = createRail();
-      const customOrder: ReorderableRailItem[] = ["history", "browser", "git-update-manager", "terminal", "theme", "system-prompt"];
+      const customOrder: ReorderableRailItem[] = ["info", "history", "browser", "git-update-manager", "terminal", "theme", "system-prompt"];
       rail.railOrder = customOrder;
       const text = railText(rail);
+      const infoPos = text.indexOf("Open system info");
       const historyPos = text.indexOf("Open full history");
       const browserPos = text.indexOf("Open browser");
       const gitUpdateManagerPos = text.indexOf("Open Git Update Manager");
       const terminalPos = text.indexOf("Open terminal");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
+      expect(infoPos).toBeLessThan(historyPos);
       expect(historyPos).toBeLessThan(browserPos);
       expect(browserPos).toBeLessThan(gitUpdateManagerPos);
       expect(gitUpdateManagerPos).toBeLessThan(terminalPos);
@@ -233,21 +249,21 @@ describe("ActivityRail", () => {
       expect(railText(rail)).toContain("Open system info");
     });
 
-    it("always renders the info button last, after a spacer", () => {
+    it("always renders the settings button last, after a spacer", () => {
       const rail = createRail();
-      rail.railOrder = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history"];
+      rail.railOrder = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history", "info"];
       const text = railText(rail);
-      const historyPos = text.indexOf("Open full history");
-      const infoPos = text.indexOf("Open system info");
-      // Info always appears after all reorderable items.
-      expect(historyPos).toBeLessThan(infoPos);
+      const lastReorderablePos = text.indexOf("Open system info");
+      const settingsPos = text.indexOf("Open settings");
+      // Settings always appears after all reorderable items.
+      expect(lastReorderablePos).toBeLessThan(settingsPos);
 
-      // Swap order: info should still be last.
-      rail.railOrder = ["history", "system-prompt", "theme", "git-update-manager", "browser", "terminal"];
+      // Swap order: settings should still be last.
+      rail.railOrder = ["info", "history", "system-prompt", "theme", "git-update-manager", "browser", "terminal"];
       const text2 = railText(rail);
       const terminalPos2 = text2.indexOf("Open terminal");
-      const infoPos2 = text2.indexOf("Open system info");
-      expect(terminalPos2).toBeLessThan(infoPos2);
+      const settingsPos2 = text2.indexOf("Open settings");
+      expect(terminalPos2).toBeLessThan(settingsPos2);
     });
   });
 
@@ -262,30 +278,34 @@ describe("ActivityRail", () => {
 
     it("reorderable buttons have dragstart and dragend handlers", () => {
       const rail = createRail();
-      const markers = ["terminal-button", "browser-button", "git-update-manager-button", "theme-button", "system-prompt-button", "history-button"];
+      const markers = ["terminal-button", "browser-button", "git-update-manager-button", "theme-button", "system-prompt-button", "history-button", "info-button"];
       for (const marker of markers) {
         const dragStart = templateEventHandlerAfterMarker(rail.render(), marker);
         expect(typeof dragStart).toBe("function");
       }
     });
 
-    it("info button does not have drag handlers (it is fixed)", () => {
+    it("settings button does not have drag handlers (it is fixed)", () => {
       const rail = createRail();
-      // The info button's @click handler is after the info-button marker.
-      // There should be no @dragstart binding on the info button.
+      // The settings button has no drag attributes because it is pinned.
       const text = railText(rail);
-      // Info button has no draggable attribute or data-rail-item in its template.
-      expect(text).toContain("Open system info");
+      expect(text).toContain("Open settings");
+      // Settings button has no data-rail-item or draggable in its template.
+      const afterSettingsMarker = text.indexOf("Open settings");
+      const restAfterSettings = text.slice(afterSettingsMarker);
+      expect(restAfterSettings).not.toContain("data-rail-item");
     });
 
     it("exposes railOrder and onRailOrderChange for parent wiring", () => {
       const rail = createRail();
-      expect(rail.railOrder).toHaveLength(6);
+      expect(rail.railOrder).toHaveLength(7);
       expect(rail.railOrder).toContain("terminal");
       expect(rail.railOrder).toContain("browser");
       expect(rail.railOrder).toContain("git-update-manager");
-      // info is NOT in railOrder (it's always fixed).
-      expect(rail.railOrder).not.toContain("info");
+      // info IS now in railOrder (it is reorderable).
+      expect(rail.railOrder).toContain("info");
+      // settings is NOT in railOrder (it's always fixed).
+      expect(rail.railOrder).not.toContain("settings");
 
       const onRailOrderChange = vi.fn();
       rail.onRailOrderChange = onRailOrderChange;
