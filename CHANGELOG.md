@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1
+
+### Patch Changes
+
+- Add a theme icon to the activity rail.
+- Switch theme button from dark/light toggle to a palette icon.
+
 ## 1.5.0
 
 ### Patch Changes
