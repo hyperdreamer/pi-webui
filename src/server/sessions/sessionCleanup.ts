@@ -30,6 +30,12 @@ export interface NormalizedSessionCleanupRequest {
   projectCwds?: string[];
 }
 
+export interface ForceCleanupPlanInput {
+  archivedRecords: readonly ArchivedSessionRecord[];
+  activeSessions?: readonly CleanupActiveSessionStatus[];
+  now: Date;
+}
+
 export function normalizeSessionCleanupRequest(record: Record<string, unknown>): NormalizedSessionCleanupRequest {
   const projectCwds = optionalProjectCwds(record);
   return {
@@ -136,6 +142,20 @@ export function summarizeSessionCleanupExecution(input: {
   };
 }
 
+export function summarizeForceCleanupExecution(input: {
+  deleteRecords: readonly ArchivedSessionRecord[];
+  generatedAt: string;
+  skippedBusySessionIds?: readonly string[];
+}): SessionCleanupExecuteResponse {
+  return summarizeSessionCleanupExecution({
+    archiveInputs: [],
+    deleteRecords: input.deleteRecords,
+    thresholds: {},
+    generatedAt: input.generatedAt,
+    ...(input.skippedBusySessionIds === undefined ? {} : { skippedBusySessionIds: input.skippedBusySessionIds }),
+  });
+}
+
 function optionalDayThreshold(record: Record<string, unknown>, field: keyof SessionCleanupThresholds): number | undefined {
   const value = record[field];
   if (value === undefined || value === null) return undefined;
@@ -200,4 +220,30 @@ function copyThresholds(thresholds: SessionCleanupThresholds): SessionCleanupThr
   if (thresholds.archiveIdleDays !== undefined) copy.archiveIdleDays = thresholds.archiveIdleDays;
   if (thresholds.deleteArchivedDays !== undefined) copy.deleteArchivedDays = thresholds.deleteArchivedDays;
   return copy;
+}
+
+export interface ForceCleanupPlan {
+  deleteRecords: ArchivedSessionRecord[];
+  skippedBusySessionIds: string[];
+  generatedAt: string;
+}
+
+export function planForceCleanup(input: ForceCleanupPlanInput): ForceCleanupPlan {
+  const busySessionIds = new Set((input.activeSessions ?? []).filter((s) => s.hasActiveWork).map((s) => s.sessionId));
+  const deleteRecords: ArchivedSessionRecord[] = [];
+  const skippedBusy = new Set<string>();
+
+  for (const record of input.archivedRecords) {
+    if (busySessionIds.has(record.sessionId)) {
+      skippedBusy.add(record.sessionId);
+      continue;
+    }
+    deleteRecords.push(record);
+  }
+
+  return {
+    deleteRecords,
+    skippedBusySessionIds: [...skippedBusy].sort(),
+    generatedAt: input.now.toISOString(),
+  };
 }

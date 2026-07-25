@@ -59,7 +59,7 @@ import type { WorkspaceActivityService } from "../activity/workspaceActivityServ
 import { createSpawnSessionToolDefinition, type SpawnSessionInvocation, type SpawnSessionResult } from "./spawnSessionTool.js";
 import { createSubsessionToolDefinitions, type SpawnSubsessionInvocation, type SpawnSubsessionResult, type SubsessionCheckResult, type SubsessionReadQuery, type SubsessionReadResult, type SubsessionStatus, type SubsessionSummary, type SubsessionToolDeps } from "./spawnSubsessionTool.js";
 import { buildTranscriptView } from "./subsessionTranscript.js";
-import { planSessionCleanup, summarizeSessionCleanupExecution, type NormalizedSessionCleanupRequest, type SessionCleanupPlan } from "./sessionCleanup.js";
+import { planForceCleanup, planSessionCleanup, summarizeForceCleanupExecution, summarizeSessionCleanupExecution, type NormalizedSessionCleanupRequest, type SessionCleanupPlan } from "./sessionCleanup.js";
 import type { SpawnTargetDecision, SpawnTargetResolver } from "./spawnTargetResolver.js";
 import {
   SessionNotificationStore,
@@ -894,6 +894,40 @@ export class PiSessionService implements SessionRouteService {
       archiveInputs,
       deleteRecords,
       thresholds: plan.thresholds,
+      generatedAt: plan.generatedAt,
+      skippedBusySessionIds: [...skippedBusySessionIds],
+    });
+  }
+
+  async forceCleanup(): Promise<ClientSessionCleanupExecuteResponse> {
+    if (this.archiveStore.deleteArchived === undefined && this.archiveStore.deleteArchivedMany === undefined) throw new Error("Archive store does not support deletion");
+
+    const archivedRecords = await this.archiveStore.list();
+    const plan = planForceCleanup({
+      archivedRecords,
+      activeSessions: this.cleanupActiveSessionStatuses(),
+      now: this.now(),
+    });
+
+    const readyDeleteRecords: ArchivedSessionRecord[] = [];
+    const skippedBusySessionIds = new Set(plan.skippedBusySessionIds);
+
+    for (const record of plan.deleteRecords) {
+      if (this.activeSessionHasWork(record.sessionId)) {
+        skippedBusySessionIds.add(record.sessionId);
+        continue;
+      }
+      await this.closeActive(record.sessionId, { kind: "clear", reason: "delete" });
+      readyDeleteRecords.push(record);
+    }
+
+    await this.ensureArchivedRecordsMoved(readyDeleteRecords);
+    const deletedSessionIds = new Set(await this.archiveStoreDeleteArchivedMany(readyDeleteRecords.map((record) => record.sessionId)));
+    const deleteRecords = readyDeleteRecords.filter((record) => deletedSessionIds.has(record.sessionId));
+    await this.forgetUnreadSessions(deleteRecords);
+
+    return summarizeForceCleanupExecution({
+      deleteRecords,
       generatedAt: plan.generatedAt,
       skippedBusySessionIds: [...skippedBusySessionIds],
     });

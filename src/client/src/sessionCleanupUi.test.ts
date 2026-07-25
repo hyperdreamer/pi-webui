@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionCleanupPreviewResponse } from "./api";
-import { canRunSessionCleanup, confirmSessionCleanup, selectedSessionCleanupProjectCwds, sessionCleanupConfirmationMessage, sessionCleanupPreviewForSelectedProjects, sessionCleanupRequestKey, sessionCleanupUnavailableMessage, validateSessionCleanupDraft, type SessionCleanupDraft } from "./sessionCleanupUi";
+import { canRunSessionCleanup, confirmForceCleanup, confirmSessionCleanup, forceCleanupConfirmationMessage, selectedSessionCleanupProjectCwds, sessionCleanupConfirmationMessage, sessionCleanupPreviewForSelectedProjects, sessionCleanupRequestKey, sessionCleanupUnavailableMessage, validateSessionCleanupDraft, type SessionCleanupDraft } from "./sessionCleanupUi";
 
 const draft: SessionCleanupDraft = {
   archiveIdleEnabled: true,
@@ -79,5 +79,21 @@ describe("session cleanup UI helpers", () => {
     expect(confirmMessages[0]).toContain("permanently delete 1 archived session");
     expect(sessionCleanupConfirmationMessage(preview)).toContain("cannot be undone");
     expect(sessionCleanupUnavailableMessage("Remote Dev")).toBe("Update and restart Pi-Web on Remote Dev to clean up sessions.");
+  });
+
+  it("force cleanup confirmation warns about deleting all archived sessions", () => {
+    const confirmMessages: string[] = [];
+    expect(confirmForceCleanup((message) => {
+      confirmMessages.push(message);
+      return true;
+    })).toBe(true);
+    expect(confirmMessages[0]).toContain("Permanently delete ALL archived sessions");
+    expect(confirmMessages[0]).toContain("cannot be undone");
+    expect(confirmMessages[0]).toContain("not recoverable");
+    expect(forceCleanupConfirmationMessage()).toContain("regardless of age");
+  });
+
+  it("force cleanup confirmation returns false when user declines", () => {
+    expect(confirmForceCleanup(() => false)).toBe(false);
   });
 });

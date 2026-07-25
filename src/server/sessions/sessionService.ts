@@ -66,6 +66,7 @@ export interface SessionRouteService {
   saveAttachments(ref: SessionRouteLookup, attachments: unknown, folder?: string): Promise<SavedPromptAttachment[]>;
   cleanupPreview(request: NormalizedSessionCleanupRequest): Promise<ClientSessionCleanupPreviewResponse>;
   cleanup(request: NormalizedSessionCleanupRequest): Promise<ClientSessionCleanupExecuteResponse>;
+  forceCleanup(): Promise<ClientSessionCleanupExecuteResponse>;
   archiveMany(refs: readonly SessionBulkMutationRef[]): Promise<SessionBulkArchiveResponse>;
   deleteArchivedMany(refs: readonly SessionBulkMutationRef[]): Promise<SessionBulkDeleteArchivedResponse>;
   shell(ref: SessionRouteLookup, text: string): Promise<void>;

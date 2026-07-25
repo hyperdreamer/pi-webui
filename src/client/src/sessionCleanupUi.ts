@@ -107,6 +107,14 @@ export function sessionCleanupUnavailableMessage(machineName: string | undefined
   return `Update and restart Pi-Web on ${machineName ?? "this machine"} to clean up sessions.`;
 }
 
+export function confirmForceCleanup(confirmFn: (message: string) => boolean): boolean {
+  return confirmFn(forceCleanupConfirmationMessage());
+}
+
+export function forceCleanupConfirmationMessage(): string {
+  return "Permanently delete ALL archived sessions?\n\nThis will delete every archived session on this machine regardless of age or cleanup settings. This action cannot be undone and the data is not recoverable.";
+}
+
 function parseDayThreshold(value: string, label: string): number | string {
   const trimmed = value.trim();
   if (trimmed === "") return `${label} must be set.`;

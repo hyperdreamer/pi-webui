@@ -108,6 +108,14 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
+  app.post(`${prefix}/sessions/cleanup/force`, async (request, reply) => {
+    try {
+      return await sessions.forceCleanup();
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post<{ Body: SessionBulkMutationRequest | undefined }>(`${prefix}/sessions/bulk/archive`, async (request, reply) => {
     try {
       return await sessions.archiveMany(bulkMutationRefsFromBody(request.body));

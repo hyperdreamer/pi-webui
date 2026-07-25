@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSessionCleanupRequest, normalizeSessionCleanupThresholds, planSessionCleanup } from "./sessionCleanup.js";
+import { normalizeSessionCleanupRequest, normalizeSessionCleanupThresholds, planForceCleanup, planSessionCleanup, summarizeForceCleanupExecution } from "./sessionCleanup.js";
 import type { PiSessionListEntry } from "./piSessionService.js";
 import type { ArchivedSessionRecord } from "./sessionArchiveStore.js";
 
@@ -87,6 +87,49 @@ describe("session cleanup planning", () => {
     });
     expect(normalizeSessionCleanupRequest({ projectCwds: null })).toEqual({ thresholds: {} });
     expect(() => normalizeSessionCleanupRequest({ projectCwds: ["/repo", 1] })).toThrow("projectCwds field must be an array of strings");
+  });
+
+  it("force cleanup deletes all archived records regardless of age", () => {
+    const now = new Date("2026-06-25T00:00:00.000Z");
+    const archivedRecords: ArchivedSessionRecord[] = [
+      archivedRecord("old-archive", "/repo-a", "2026-01-01T00:00:00.000Z"),
+      archivedRecord("recent-archive", "/repo-a", "2026-06-24T23:59:59.999Z"),
+      archivedRecord("other-repo", "/repo-b", "2026-03-15T00:00:00.000Z"),
+    ];
+
+    const plan = planForceCleanup({ archivedRecords, now });
+
+    expect(plan.deleteRecords.map((r) => r.sessionId)).toEqual(["old-archive", "recent-archive", "other-repo"]);
+    expect(plan.skippedBusySessionIds).toEqual([]);
+  });
+
+  it("force cleanup skips busy archived sessions", () => {
+    const now = new Date("2026-06-25T00:00:00.000Z");
+    const archivedRecords: ArchivedSessionRecord[] = [
+      archivedRecord("idle-archive", "/repo", "2026-01-01T00:00:00.000Z"),
+      archivedRecord("busy-archive", "/repo", "2026-01-01T00:00:00.000Z"),
+    ];
+
+    const plan = planForceCleanup({
+      archivedRecords,
+      now,
+      activeSessions: [{ sessionId: "busy-archive", hasActiveWork: true }],
+    });
+
+    expect(plan.deleteRecords.map((r) => r.sessionId)).toEqual(["idle-archive"]);
+    expect(plan.skippedBusySessionIds).toEqual(["busy-archive"]);
+  });
+
+  it("summarizeForceCleanupExecution produces a result with zero archive counts", () => {
+    const result = summarizeForceCleanupExecution({
+      deleteRecords: [archivedRecord("del-1", "/repo", "2026-01-01T00:00:00.000Z")],
+      generatedAt: "2026-06-25T00:00:00.000Z",
+    });
+
+    expect(result.archivedSessionIds).toEqual([]);
+    expect(result.deletedSessionIds).toEqual(["del-1"]);
+    expect(result.totals.archiveCount).toBe(0);
+    expect(result.totals.deleteCount).toBe(1);
   });
 });
 

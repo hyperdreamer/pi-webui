@@ -109,6 +109,8 @@ interface SessionCleanupDialogState {
   result?: SessionCleanupExecuteResponse | undefined;
   loading?: boolean | undefined;
   running?: boolean | undefined;
+  runningForce?: boolean | undefined;
+  forceCleanupResult?: SessionCleanupExecuteResponse | undefined;
   error?: string | undefined;
 }
 
@@ -1401,6 +1403,24 @@ export class PiWebUiApp extends LitElement {
       await this.sessions.applySessionCleanupResult(result, machineId);
     } catch (error) {
       if (selectedMachineId(this.state) === machineId) this.sessionCleanupDialog = { ...this.sessionCleanupDialog, running: false, error: `Failed to run cleanup: ${errorMessage(error)}` };
+    }
+  }
+
+  private async runForceSessionCleanup(): Promise<void> {
+    const dialog = this.sessionCleanupDialog;
+    if (!this.canCleanupSessions()) {
+      this.sessionCleanupDialog = { ...(dialog ?? {}), error: this.sessionCleanupUnavailableMessage(), runningForce: false };
+      return;
+    }
+    const machineId = selectedMachineId(this.state);
+    this.sessionCleanupDialog = { ...(dialog ?? {}), runningForce: true, error: "" };
+    try {
+      const result = await sessionsApi.forceCleanup(machineId);
+      if (selectedMachineId(this.state) !== machineId) return;
+      this.sessionCleanupDialog = { ...this.sessionCleanupDialog, forceCleanupResult: result, runningForce: false, error: "" };
+      await this.sessions.applySessionCleanupResult(result, machineId);
+    } catch (error) {
+      if (selectedMachineId(this.state) === machineId) this.sessionCleanupDialog = { ...this.sessionCleanupDialog, runningForce: false, error: `Failed to force cleanup: ${errorMessage(error)}` };
     }
   }
 
@@ -2717,7 +2737,7 @@ export class PiWebUiApp extends LitElement {
         ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
-        ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
+        ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onForceCleanup=${() => { void this.runForceSessionCleanup(); }} .forceCleanupResult=${this.sessionCleanupDialog.forceCleanupResult} .runningForce=${this.sessionCleanupDialog.runningForce === true} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
         ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }}></models-config-dialog>` : null}
         ${this.skillsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<skills-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .onClose=${() => { this.skillsConfigDialogOpen = false; }}></skills-config-dialog>` : null}
         ${this.pluginsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<plugins-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .session=${state.selectedSession} .onClose=${() => { this.pluginsConfigDialogOpen = false; }} .onReloaded=${() => this.sessions.refreshSelectedSession(state.selectedSession?.id)}></plugins-config-dialog>` : null}

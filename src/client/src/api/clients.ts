@@ -277,6 +277,7 @@ export const sessionsApi = {
   updateSessionDefaults: (cwd: string, update: SessionDefaultsUpdate, machineId = "local") => request(`${machinePrefix(machineId)}/session-defaults`, parseSessionDefaultsResponse, { method: "PUT", body: JSON.stringify({ cwd, ...update }) }),
   cleanupPreview: (input: SessionCleanupRequest, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup/preview`, parseSessionCleanupPreviewResponse, { method: "POST", body: JSON.stringify(input) }),
   cleanup: (input: SessionCleanupRequest, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup`, parseSessionCleanupExecuteResponse, { method: "POST", body: JSON.stringify(input) }),
+  forceCleanup: (machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup/force`, parseSessionCleanupExecuteResponse, { method: "POST" }),
   archiveMany: (sessions: readonly SessionLookup[], machineId = "local") => request(`${machinePrefix(machineId)}/sessions/bulk/archive`, parseSessionBulkArchiveResponse, { method: "POST", body: sessionBulkMutationBody(sessions) }),
   deleteArchivedMany: (sessions: readonly SessionLookup[], machineId = "local") => request(`${machinePrefix(machineId)}/sessions/bulk/delete-archived`, parseSessionBulkDeleteArchivedResponse, { method: "POST", body: sessionBulkMutationBody(sessions) }),
   messages: (session: SessionLookup, options?: { limit?: number; before?: number }, machineId = "local") => request(messagePath(session, options, machineId), parseMessagePage),

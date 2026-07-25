@@ -1,7 +1,7 @@
 import { LitElement, css, html, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest } from "../api";
-import { canRunSessionCleanup, confirmSessionCleanup, DEFAULT_SESSION_CLEANUP_DRAFT, selectedSessionCleanupProjectCwds, sessionCleanupPreviewForSelectedProjects, sessionCleanupPreviewHasTargets, sessionCleanupRequestKey, validateSessionCleanupDraft, type SessionCleanupDraft } from "../sessionCleanupUi";
+import { canRunSessionCleanup, confirmForceCleanup, confirmSessionCleanup, DEFAULT_SESSION_CLEANUP_DRAFT, selectedSessionCleanupProjectCwds, sessionCleanupPreviewForSelectedProjects, sessionCleanupPreviewHasTargets, sessionCleanupRequestKey, validateSessionCleanupDraft, type SessionCleanupDraft } from "../sessionCleanupUi";
 
 @customElement("session-cleanup-dialog")
 export class SessionCleanupDialog extends LitElement {
@@ -15,7 +15,10 @@ export class SessionCleanupDialog extends LitElement {
   @property({ type: String }) error = "";
   @property({ attribute: false }) onPreview?: (request: SessionCleanupRequest) => void | Promise<void>;
   @property({ attribute: false }) onRun?: (request: SessionCleanupRequest) => void | Promise<void>;
+  @property({ attribute: false }) onForceCleanup?: () => void | Promise<void>;
   @property({ attribute: false }) onClose?: () => void;
+  @property({ attribute: false }) forceCleanupResult?: SessionCleanupExecuteResponse;
+  @property({ type: Boolean }) runningForce = false;
 
   @state() private draft: SessionCleanupDraft = { ...DEFAULT_SESSION_CLEANUP_DRAFT };
   @state() private formError = "";
@@ -46,11 +49,13 @@ export class SessionCleanupDialog extends LitElement {
             ${this.renderMessage()}
             ${this.preview === undefined ? null : this.renderPreview(this.preview)}
             ${this.result === undefined ? null : this.renderResult(this.result)}
+            ${this.forceCleanupResult === undefined ? null : this.renderForceResult(this.forceCleanupResult)}
           </div>
           <footer>
-            <button @click=${() => { this.onClose?.(); }}>${this.result === undefined ? "Cancel" : "Close"}</button>
+            <button @click=${() => { this.onClose?.(); }}>${this.result === undefined && this.forceCleanupResult === undefined ? "Cancel" : "Close"}</button>
             <button ?disabled=${!this.canCleanup || this.loading || this.running} @click=${() => { this.previewCleanup(); }}>${this.loading ? "Previewing…" : "Preview"}</button>
             <button class="danger" ?disabled=${!runEnabled} title=${runTitle} @click=${() => { this.runCleanup(); }}>${this.running ? "Running…" : "Run cleanup"}</button>
+            <button class="danger" ?disabled=${!this.canCleanup || this.runningForce} @click=${() => { this.runForceCleanup(); }}>${this.runningForce ? "Deleting…" : "Force cleanup"}</button>
           </footer>
         </section>
       </div>
@@ -151,6 +156,16 @@ export class SessionCleanupDialog extends LitElement {
     `;
   }
 
+  private renderForceResult(result: SessionCleanupExecuteResponse): TemplateResult {
+    return html`
+      <section class="result danger-result" aria-label="Force cleanup result">
+        <h2>Force cleanup complete</h2>
+        <p>Permanently deleted ${result.deletedSessionIds.length} archived ${result.deletedSessionIds.length === 1 ? "session" : "sessions"}.</p>
+        ${result.skippedBusySessionIds !== undefined && result.skippedBusySessionIds.length > 0 ? html`<p class="hint">${result.skippedBusySessionIds.length} busy ${result.skippedBusySessionIds.length === 1 ? "session was" : "sessions were"} skipped.</p>` : null}
+      </section>
+    `;
+  }
+
   private updateDraft(patch: Partial<SessionCleanupDraft>): void {
     this.draft = { ...this.draft, ...patch };
     this.formError = "";
@@ -211,6 +226,12 @@ export class SessionCleanupDialog extends LitElement {
     void this.onRun?.({ ...validation.request, projectCwds: selectedProjectCwds });
   }
 
+  private runForceCleanup(): void {
+    if (!confirmForceCleanup((message) => confirm(message))) return;
+    this.formError = "";
+    void this.onForceCleanup?.();
+  }
+
   private handleKeyDown(event: KeyboardEvent): void {
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -240,6 +261,7 @@ export class SessionCleanupDialog extends LitElement {
     .unavailable { border-color: var(--pi-warning-border); background: var(--pi-warning-surface); color: var(--pi-warning); }
     .dialog-error { border-color: var(--pi-danger); background: color-mix(in srgb, var(--pi-danger) 10%, var(--pi-bg)); color: var(--pi-danger); }
     .result { border-color: var(--pi-success-border); background: var(--pi-success-bg); }
+    .danger-result { border-color: var(--pi-danger); background: color-mix(in srgb, var(--pi-danger) 10%, var(--pi-bg)); color: var(--pi-danger); }
     .preview { display: grid; gap: 10px; min-width: 0; }
     .selection-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .selection-controls span { color: var(--pi-muted); }

@@ -765,6 +765,13 @@ class CapturingRouteSessionService implements SessionRouteService {
     return Promise.resolve({ generatedAt: "2026-06-25T00:00:00.000Z", thresholds: request.thresholds, projects: [], totals: { archiveCount: 0, deleteCount: 0 }, archivedSessionIds: [], deletedSessionIds: [] });
   }
 
+  forceCleanupCalls = 0;
+
+  forceCleanup(): Promise<SessionCleanupExecuteResponse> {
+    this.forceCleanupCalls += 1;
+    return Promise.resolve({ generatedAt: "2026-06-25T00:00:00.000Z", thresholds: {}, projects: [], totals: { archiveCount: 0, deleteCount: 0 }, archivedSessionIds: [], deletedSessionIds: [] });
+  }
+
   archiveMany(refs: readonly SessionBulkMutationRef[]): Promise<SessionBulkArchiveResponse> {
     this.bulkArchiveCalls.push([...refs]);
     return Promise.resolve({ archived: true, archivedSessionIds: refs.map((ref) => ref.id), failures: [], generatedAt: "2026-06-25T00:00:00.000Z" });
