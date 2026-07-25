@@ -539,6 +539,22 @@ describe("API parsers", () => {
     });
   });
 
+  it("preserves the latest Git tag when supplied", () => {
+    expect(parseGitStatusResponse({
+      isGitRepo: true,
+      hash: "h",
+      branch: "main",
+      latestTag: "v1.4.0",
+      files: [],
+    })).toEqual({
+      isGitRepo: true,
+      hash: "h",
+      branch: "main",
+      latestTag: "v1.4.0",
+      files: [],
+    });
+  });
+
   it("rejects invalid enum-like fields", () => {
     expect(() => parseSlashCommand({ name: "bad", source: "remote" })).toThrow("Invalid command source");
     expect(() => parseFileSuggestion({ path: "a", kind: "deleted" })).toThrow("Invalid file kind");

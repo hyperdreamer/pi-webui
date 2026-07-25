@@ -368,7 +368,9 @@ export const workspacePanelStyles = css`
   .row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 4px; width: 100%; border: 0; border-radius: 5px; background: transparent; text-align: left; padding: 4px 6px 4px calc(6px + var(--depth, 0) * 14px); }
   .row:hover, .row.selected { background: var(--pi-selection-bg); }
   .row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .summary { margin: 4px 6px 8px; color: var(--pi-muted); }
+  .summary { display: flex; align-items: baseline; gap: 8px; margin: 4px 6px 8px; color: var(--pi-muted); }
+  .summary-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary-tag { flex: 0 0 auto; margin-left: auto; text-align: right; white-space: nowrap; }
   .viewer { min-height: 0; overflow: auto; display: flex; flex-direction: column; }
   .diffs { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-rows: minmax(120px, 1fr) minmax(120px, 1fr); }
   .diffs.single { grid-template-rows: minmax(0, 1fr); }

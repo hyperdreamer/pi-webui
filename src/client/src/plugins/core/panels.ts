@@ -52,7 +52,7 @@ function renderGit(context: WorkspacePanelContext): TemplateResult {
     <section class="split">
       <div class="list">
         ${status === undefined ? html`<p class="muted">No status loaded.</p>` : !status.isGitRepo ? html`<p class="muted">Not a git repository.</p>` : html`
-          <p class="summary">${gitSummary(status)}</p>
+          ${renderGitSummary(status)}
           ${status.files.length === 0 ? html`<p class="muted">No changes.</p>` : status.files.map((file) => html`
             <button class="row ${context.selectedDiffPath === file.path ? "selected" : ""}" @click=${() => { context.onSelectDiff(file.path); }}>
               <span>${stateLabel(file.index, file.workingTree)}</span>
@@ -100,11 +100,22 @@ function loadTerminalPanel(): void {
   void import("../../components/TerminalPanel");
 }
 
-function gitSummary(status: GitStatusResponse): string {
+function renderGitSummary(status: GitStatusResponse): TemplateResult {
+  const summary = gitSummary(status);
+  return html`
+    <p class="summary">
+      <span class="summary-branch">${summary.branch}</span>
+      ${summary.latestTag === undefined ? null : html`<span class="summary-tag" aria-label=${`Latest tag ${summary.latestTag}`}>${summary.latestTag}</span>`}
+    </p>
+  `;
+}
+
+export function gitSummary(status: GitStatusResponse): { branch: string; latestTag?: string } {
   const branch = status.branch ?? "detached";
   const ahead = status.ahead ?? 0;
   const behind = status.behind ?? 0;
-  return ahead === 0 && behind === 0 ? branch : `${branch} · ↑${String(ahead)} ↓${String(behind)}`;
+  const branchSummary = ahead === 0 && behind === 0 ? branch : `${branch} · ↑${String(ahead)} ↓${String(behind)}`;
+  return { branch: branchSummary, ...(status.latestTag === undefined ? {} : { latestTag: status.latestTag }) };
 }
 
 function stateLabel(index: string, workingTree: string): string {

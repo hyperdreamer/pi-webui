@@ -1098,7 +1098,7 @@ function optionalFileMediaType(value: unknown): FileContentResponse["mediaType"]
 
 export function parseGitStatusResponse(value: unknown): GitStatusResponse {
   const record = requireRecord(value);
-  return { isGitRepo: requireBoolean(record, "isGitRepo"), hash: requireString(record, "hash"), ...optionalField("branch", optionalString(record, "branch")), ...optionalField("upstream", optionalString(record, "upstream")), ...optionalField("ahead", optionalNumber(record, "ahead")), ...optionalField("behind", optionalNumber(record, "behind")), files: arrayOf(parseGitStatusFile)(record["files"]) };
+  return { isGitRepo: requireBoolean(record, "isGitRepo"), hash: requireString(record, "hash"), ...optionalField("branch", optionalString(record, "branch")), ...optionalField("latestTag", optionalString(record, "latestTag")), ...optionalField("upstream", optionalString(record, "upstream")), ...optionalField("ahead", optionalNumber(record, "ahead")), ...optionalField("behind", optionalNumber(record, "behind")), files: arrayOf(parseGitStatusFile)(record["files"]) };
 }
 
 function parseGitStatusFile(value: unknown): GitStatusFile {

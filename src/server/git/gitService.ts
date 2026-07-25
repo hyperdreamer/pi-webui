@@ -7,9 +7,13 @@ import { sanitizedGitEnv } from "./gitEnv.js";
 const MAX_OUTPUT = 2 * 1024 * 1024;
 
 export async function gitStatus(cwd: string): Promise<GitStatusResponse> {
-  const result = await runGit(cwd, ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"]);
+  const [result, tagResult] = await Promise.all([
+    runGit(cwd, ["status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z"]),
+    runGit(cwd, ["describe", "--tags", "--abbrev=0"]),
+  ]);
   if (result.code !== 0) return { isGitRepo: false, hash: hash(result.stdout + result.stderr), files: [] };
-  return parseStatus(result.stdout);
+  const latestTag = tagResult.code === 0 ? tagResult.stdout.trim() : "";
+  return { ...parseStatus(result.stdout), ...(latestTag === "" ? {} : { latestTag }) };
 }
 
 export async function gitDiff(cwd: string, options: { path?: string; staged?: boolean }): Promise<GitDiffResponse> {

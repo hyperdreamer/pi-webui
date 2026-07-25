@@ -929,6 +929,7 @@ export interface GitStatusResponse {
   isGitRepo: boolean;
   hash: string;
   branch?: string;
+  latestTag?: string;
   upstream?: string;
   ahead?: number;
   behind?: number;
