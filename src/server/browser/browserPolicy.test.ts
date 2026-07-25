@@ -1,17 +1,79 @@
 import { describe, expect, it } from "vitest";
-import { evaluateBrowserEgress, evaluateBrowserNavigation, isPublicInternetAddress, type BrowserEgressPolicy } from "./browserPolicy.js";
+import {
+  compileBrowserEgressPolicy,
+  evaluateBrowserEgress,
+  evaluateBrowserNavigation,
+  isPublicInternetAddress,
+  type BrowserDnsResolutionOptions,
+  type BrowserEgressPolicy,
+  type BrowserPolicyTimer,
+} from "./browserPolicy.js";
 
-const publicWeb: BrowserEgressPolicy = {
+function compilePolicy(config: unknown): BrowserEgressPolicy {
+  const policy = compileBrowserEgressPolicy(config);
+  if (policy === undefined) throw new Error("Expected valid browser-policy test fixture");
+  return policy;
+}
+
+const publicWeb = compilePolicy({
   mode: "public-web",
   allowedDomains: [],
   allowedPorts: [80, 443],
-};
+});
 
-const documentationOnly: BrowserEgressPolicy = {
+const documentationOnly = compilePolicy({
   mode: "domain-allowlist",
   allowedDomains: ["docs.example.test", "*.static.example.test"],
   allowedPorts: [443],
-};
+});
+
+const unsupportedIpv6Destinations = [
+  ["deprecated site-local space", "fec0::1"],
+  ["an address outside the global-unicast allocation", "4000::1"],
+  ["Teredo with a metadata endpoint field", "2001:0000:4136:e378:8000:63bf:5601:5601"],
+  ["ORCHIDv2", "2001:20::1"],
+  ["6to4", "2002:5db8:d822::1"],
+  ["a locally assigned NAT64 prefix", "64:ff9b:1::5db8:d822"],
+  ["an unsupported NAT64 prefix", "64:ff9b:2::5db8:d822"],
+] as const;
+
+const publicIpv6Destinations = [
+  ["ordinary public native IPv6", "2606:2800:220:1:248:1893:25c8:1946"],
+  ["well-known NAT64 carrying a public IPv4 address", "64:ff9b::5db8:d822"],
+  ["IPv4-compatible IPv6 carrying a public IPv4 address", "::5db8:d822"],
+  ["IPv4-mapped IPv6 carrying a public IPv4 address", "::ffff:5db8:d822"],
+  ["IPv4-translated IPv6 carrying a public IPv4 address", "::ffff:0:5db8:d822"],
+] as const;
+
+function createManualTimer(): {
+  timer: BrowserPolicyTimer;
+  fireNext(): boolean;
+  pendingCount(): number;
+} {
+  let scheduled: (() => void) | undefined;
+  let nextHandle = 0;
+
+  return {
+    timer: {
+      setTimeout: (callback) => {
+        scheduled = callback;
+        nextHandle += 1;
+        return nextHandle;
+      },
+      clearTimeout: () => {
+        scheduled = undefined;
+      },
+    },
+    fireNext: () => {
+      const callback = scheduled;
+      scheduled = undefined;
+      if (callback === undefined) return false;
+      callback();
+      return true;
+    },
+    pendingCount: () => scheduled === undefined ? 0 : 1,
+  };
+}
 
 describe("browser egress policy", () => {
   it.each([
@@ -35,11 +97,42 @@ describe("browser egress policy", () => {
     expect(evaluateBrowserNavigation(`https://[${address}]/`, publicWeb)).toEqual({ allowed: false, reason: "non-public-host" });
   });
 
-  it("fails closed when a policy has an unknown mode", () => {
-    const malformed = { ...publicWeb };
-    Reflect.set(malformed, "mode", "private-network");
+  it.each(unsupportedIpv6Destinations)("rejects %s through the literal URL path", (_description, address) => {
+    expect(evaluateBrowserNavigation(`https://[${address}]/`, publicWeb)).toEqual({ allowed: false, reason: "non-public-host" });
+  });
 
-    expect(evaluateBrowserNavigation("https://example.test", malformed)).toEqual({ allowed: false, reason: "policy-invalid" });
+  it.each(unsupportedIpv6Destinations)("rejects %s through the controlled resolver path", async (_description, address) => {
+    await expect(evaluateBrowserEgress("https://resolver.example.test/", publicWeb, {
+      resolve: () => Promise.resolve([address]),
+    })).resolves.toEqual({
+      allowed: false,
+      reason: "non-public-address",
+      auditOrigin: "https://resolver.example.test",
+    });
+  });
+
+  it.each(publicIpv6Destinations)("allows %s through the literal URL path", (_description, address) => {
+    expect(evaluateBrowserNavigation(`https://[${address}]/`, publicWeb)).toMatchObject({ allowed: true });
+  });
+
+  it.each(publicIpv6Destinations)("allows %s through the controlled resolver path", async (_description, address) => {
+    await expect(evaluateBrowserEgress("https://resolver.example.test/", publicWeb, {
+      resolve: () => Promise.resolve([address]),
+    })).resolves.toMatchObject({ allowed: true, host: "resolver.example.test", port: 443 });
+  });
+
+  it("fails closed when a policy has an unknown mode", () => {
+    const malformed = {
+      mode: "private-network",
+      allowedDomains: [],
+      allowedPorts: [443],
+    };
+
+    expect(compileBrowserEgressPolicy(malformed)).toBeUndefined();
+    expect(evaluateBrowserNavigation("https://example.test", compileBrowserEgressPolicy(malformed))).toEqual({
+      allowed: false,
+      reason: "policy-invalid",
+    });
   });
 
   it("normalizes a permitted public-web navigation without retaining query data in audit projection", () => {
@@ -70,6 +163,58 @@ describe("browser egress policy", () => {
     expect(evaluateBrowserNavigation("https://127.0.0.1", documentationOnly)).toEqual({ allowed: false, reason: "literal-ip-not-allowed" });
   });
 
+  it("compiles trusted policy lists before navigation", () => {
+    const config = {
+      mode: "domain-allowlist",
+      allowedDomains: ["Docs.Example.Test."],
+      allowedPorts: [443, 443],
+    };
+    const policy = compilePolicy(config);
+    config.allowedDomains[0] = "attacker.example.test";
+    config.allowedPorts[0] = 80;
+
+    expect(policy.allowedDomains).toEqual(["docs.example.test"]);
+    expect(policy.allowedPorts).toEqual([443]);
+    expect(Object.isFrozen(policy.allowedDomains)).toBe(true);
+    expect(Object.isFrozen(policy.allowedPorts)).toBe(true);
+    expect(evaluateBrowserNavigation("https://docs.example.test", policy)).toMatchObject({ allowed: true });
+  });
+
+  it("fails closed when navigation receives an uncompiled policy", () => {
+    const rawPolicy: BrowserEgressPolicy = {
+      mode: "public-web",
+      allowedDomains: [],
+      allowedPorts: [443],
+    };
+
+    expect(evaluateBrowserNavigation("https://example.test", rawPolicy)).toEqual({ allowed: false, reason: "policy-invalid" });
+  });
+
+  it.each([
+    {
+      mode: "public-web",
+      allowedDomains: Array.from({ length: 65 }, (_, index) => `domain-${String(index)}.example.test`),
+      allowedPorts: [80, 443],
+    },
+    {
+      mode: "public-web",
+      allowedDomains: [],
+      allowedPorts: Array.from({ length: 17 }, () => 443),
+    },
+  ] as const)("rejects an oversized trusted policy list", (policy) => {
+    expect(compileBrowserEgressPolicy(policy)).toBeUndefined();
+  });
+
+  it("rejects a sparse trusted port list", () => {
+    const sparsePorts = new Array<number>(1);
+
+    expect(compileBrowserEgressPolicy({
+      mode: "public-web",
+      allowedDomains: [],
+      allowedPorts: sparsePorts,
+    })).toBeUndefined();
+  });
+
   it("requires every resolved address to be public before allowing a hostname", async () => {
     const resolver = { resolve: () => Promise.resolve(["93.184.216.34", "10.0.0.8"]) };
 
@@ -93,6 +238,67 @@ describe("browser egress policy", () => {
     });
   });
 
+  it("rejects a resolver answer set above the bounded cardinality", async () => {
+    await expect(evaluateBrowserEgress("https://example.test", publicWeb, {
+      resolve: () => Promise.resolve(Array.from({ length: 17 }, () => "93.184.216.34")),
+    })).resolves.toEqual({
+      allowed: false,
+      reason: "dns-answer-limit-exceeded",
+      auditOrigin: "https://example.test",
+    });
+  });
+
+  it("accepts a resolver answer set at the bounded cardinality", async () => {
+    await expect(evaluateBrowserEgress("https://example.test", publicWeb, {
+      resolve: () => Promise.resolve(Array.from({ length: 16 }, () => "93.184.216.34")),
+    })).resolves.toMatchObject({ allowed: true });
+  });
+
+  it("bounds a never-settling resolver with an injected deadline and cancellation signal", async () => {
+    // This only proves a bounded preflight; browserd still needs a connection-time
+    // network boundary and concurrency budget before it can advertise availability.
+    const manualTimer = createManualTimer();
+    let deadlineAtMs: number | undefined;
+    let signal: AbortSignal | undefined;
+    const resolver = {
+      resolve: (_host: string, options: BrowserDnsResolutionOptions) => {
+        deadlineAtMs = options.deadlineAtMs;
+        signal = options.signal;
+        return new Promise<readonly string[]>(() => undefined);
+      },
+    };
+    const evaluation = evaluateBrowserEgress("https://example.test", publicWeb, resolver, {
+      clock: { now: () => 1_000 },
+      timer: manualTimer.timer,
+      resolverDeadlineMs: 50,
+    });
+    await Promise.resolve();
+
+    expect(deadlineAtMs).toBe(1_050);
+    expect(signal?.aborted).toBe(false);
+    expect(manualTimer.fireNext()).toBe(true);
+    await expect(evaluation).resolves.toEqual({
+      allowed: false,
+      reason: "dns-unavailable",
+      auditOrigin: "https://example.test",
+    });
+    expect(signal?.aborted).toBe(true);
+    expect(manualTimer.pendingCount()).toBe(0);
+  });
+
+  it("cleans an injected resolver deadline after a public resolution", async () => {
+    const manualTimer = createManualTimer();
+
+    await expect(evaluateBrowserEgress("https://example.test", publicWeb, {
+      resolve: () => Promise.resolve(["93.184.216.34"]),
+    }, {
+      clock: { now: () => 1_000 },
+      timer: manualTimer.timer,
+      resolverDeadlineMs: 50,
+    })).resolves.toMatchObject({ allowed: true });
+    expect(manualTimer.pendingCount()).toBe(0);
+  });
+
   it("allows a hostname only when its controlled resolution is public", async () => {
     const resolver = { resolve: () => Promise.resolve(["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]) };
 
@@ -107,6 +313,10 @@ describe("browser egress policy", () => {
 });
 
 describe("public address classifier", () => {
+  it.each(unsupportedIpv6Destinations)("rejects %s (%s)", (_description, address) => {
+    expect(isPublicInternetAddress(address)).toBe(false);
+  });
+
   it.each([
     "127.0.0.1",
     "0.0.0.0",
@@ -132,10 +342,8 @@ describe("public address classifier", () => {
   });
 
   it.each([
-    ["well-known NAT64 carrying a public IPv4 address", "64:ff9b::5db8:d822"],
-    ["IPv4-translated IPv6 carrying a public IPv4 address", "::ffff:0:5db8:d822"],
     ["ordinary public IPv4", "93.184.216.34"],
-    ["ordinary public IPv6", "2606:2800:220:1:248:1893:25c8:1946"],
+    ...publicIpv6Destinations,
   ] as const)("accepts %s (%s)", (_description, address) => {
     expect(isPublicInternetAddress(address)).toBe(true);
   });
