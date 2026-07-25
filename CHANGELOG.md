@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+
+### Patch Changes
+
+- d47359b: Add a Full history sidebar control that opens Pi session exports inside the app.
+
 ## 1.3.0
 
 ### Patch Changes
