@@ -22,9 +22,10 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
+    it("renders the rail with terminal, Browser, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
+      expect(railText(rail)).toContain("Open browser");
       expect(railText(rail)).toContain("Open theme picker");
       expect(railText(rail)).toContain("Open system prompt");
       expect(railText(rail)).toContain("Open full history");
@@ -47,6 +48,18 @@ describe("ActivityRail", () => {
     it("uses a semantic button with accessible name", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
+    });
+
+    it("opens the embedded browser from its activity-rail icon", () => {
+      const rail = createRail();
+      const onOpenBrowser = vi.fn();
+      rail.onOpenBrowser = onOpenBrowser;
+
+      expect(railText(rail)).toContain("Open browser");
+      const handler = templateEventHandlerAfterMarker(rail.render(), "browser-button");
+      handler(new Event("click"));
+
+      expect(onOpenBrowser).toHaveBeenCalledOnce();
     });
 
     it("calls onOpenTerminal callback when clicked", () => {
@@ -163,25 +176,29 @@ describe("ActivityRail", () => {
       const rail = createRail();
       const text = railText(rail);
       const terminalPos = text.indexOf("Open terminal");
+      const browserPos = text.indexOf("Open browser");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
       const historyPos = text.indexOf("Open full history");
-      // Default order: terminal, theme, system-prompt, history (info fixed at bottom)
-      expect(terminalPos).toBeLessThan(themePos);
+      // Default order: terminal, Browser, theme, system-prompt, history (info fixed at bottom)
+      expect(terminalPos).toBeLessThan(browserPos);
+      expect(browserPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
       expect(spPos).toBeLessThan(historyPos);
     });
 
     it("renders reorderable buttons in a custom railOrder", () => {
       const rail = createRail();
-      const customOrder: ReorderableRailItem[] = ["history", "terminal", "theme", "system-prompt"];
+      const customOrder: ReorderableRailItem[] = ["history", "browser", "terminal", "theme", "system-prompt"];
       rail.railOrder = customOrder;
       const text = railText(rail);
       const historyPos = text.indexOf("Open full history");
+      const browserPos = text.indexOf("Open browser");
       const terminalPos = text.indexOf("Open terminal");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
-      expect(historyPos).toBeLessThan(terminalPos);
+      expect(historyPos).toBeLessThan(browserPos);
+      expect(browserPos).toBeLessThan(terminalPos);
       expect(terminalPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
     });
@@ -195,7 +212,7 @@ describe("ActivityRail", () => {
 
     it("always renders the info button last, after a spacer", () => {
       const rail = createRail();
-      rail.railOrder = ["terminal", "theme", "system-prompt", "history"];
+      rail.railOrder = ["terminal", "browser", "theme", "system-prompt", "history"];
       const text = railText(rail);
       const historyPos = text.indexOf("Open full history");
       const infoPos = text.indexOf("Open system info");
@@ -203,7 +220,7 @@ describe("ActivityRail", () => {
       expect(historyPos).toBeLessThan(infoPos);
 
       // Swap order: info should still be last.
-      rail.railOrder = ["history", "system-prompt", "theme", "terminal"];
+      rail.railOrder = ["history", "system-prompt", "theme", "browser", "terminal"];
       const text2 = railText(rail);
       const terminalPos2 = text2.indexOf("Open terminal");
       const infoPos2 = text2.indexOf("Open system info");
@@ -222,7 +239,7 @@ describe("ActivityRail", () => {
 
     it("reorderable buttons have dragstart and dragend handlers", () => {
       const rail = createRail();
-      const markers = ["terminal-button", "theme-button", "system-prompt-button", "history-button"];
+      const markers = ["terminal-button", "browser-button", "theme-button", "system-prompt-button", "history-button"];
       for (const marker of markers) {
         const dragStart = templateEventHandlerAfterMarker(rail.render(), marker);
         expect(typeof dragStart).toBe("function");
@@ -240,8 +257,9 @@ describe("ActivityRail", () => {
 
     it("exposes railOrder and onRailOrderChange for parent wiring", () => {
       const rail = createRail();
-      expect(rail.railOrder).toHaveLength(4);
+      expect(rail.railOrder).toHaveLength(5);
       expect(rail.railOrder).toContain("terminal");
+      expect(rail.railOrder).toContain("browser");
       // info is NOT in railOrder (it's always fixed).
       expect(rail.railOrder).not.toContain("info");
 

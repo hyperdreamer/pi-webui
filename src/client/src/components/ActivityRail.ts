@@ -3,7 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
 
 const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
-const REORDERABLE_IDS: readonly string[] = ["terminal", "theme", "system-prompt", "history"];
+const REORDERABLE_IDS: readonly string[] = ["terminal", "browser", "theme", "system-prompt", "history"];
 
 function isReorderableItem(value: string): value is ReorderableRailItem {
   return REORDERABLE_IDS.includes(value);
@@ -12,6 +12,7 @@ function isReorderableItem(value: string): value is ReorderableRailItem {
 @customElement("activity-rail")
 export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenTerminal?: () => void;
+  @property({ attribute: false }) onOpenBrowser?: () => void;
   @property({ attribute: false }) onOpenTheme?: () => void;
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
   @property({ attribute: false }) onOpenHistory?: () => void;
@@ -49,6 +50,7 @@ export class ActivityRail extends LitElement {
   // -- Click handlers --
 
   private readonly openTerminal = (): void => { this.onOpenTerminal?.(); };
+  private readonly openBrowser = (): void => { this.onOpenBrowser?.(); };
   private readonly openTheme = (): void => { this.onOpenTheme?.(); };
   private readonly openSystemPrompt = (): void => { this.onOpenSystemPrompt?.(); };
   private readonly openHistory = (): void => { this.onOpenHistory?.(); };
@@ -138,6 +140,7 @@ export class ActivityRail extends LitElement {
   private renderReorderableButton(item: ReorderableRailItem): TemplateResult {
     switch (item) {
       case "terminal": return this.renderTerminalButton();
+      case "browser": return this.renderBrowserButton();
       case "theme": return this.renderThemeButton();
       case "system-prompt": return this.renderSystemPromptButton();
       case "history": return this.renderHistoryButton();
@@ -168,6 +171,32 @@ export class ActivityRail extends LitElement {
           <path d="M12 16h5"/>
         </svg>
         ${badge === undefined ? nothing : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
+      </button>
+    `;
+  }
+
+  private renderBrowserButton(): TemplateResult {
+    const p = this.dndProps("browser");
+    return html`
+      <button
+        type="button"
+        class="icon-button browser-button"
+        title="Browser"
+        aria-label="Open browser"
+        @click=${this.openBrowser}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("browser", event); }}
+        @dragend=${() => { this.onDragEnd("browser"); }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M3 12h18"/>
+          <path d="M12 3a14 14 0 0 1 0 18"/>
+          <path d="M12 3a14 14 0 0 0 0 18"/>
+        </svg>
       </button>
     `;
   }

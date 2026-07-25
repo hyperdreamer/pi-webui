@@ -27,9 +27,16 @@ describe("activityRailOrder", () => {
     });
 
     it("returns a valid stored order", () => {
-      const order: ReorderableRailItem[] = ["history", "theme", "terminal", "system-prompt"];
+      const order: ReorderableRailItem[] = ["history", "theme", "terminal", "browser", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(order));
       expect(readRailOrder()).toEqual(order);
+    });
+
+    it("adds Browser to a valid saved order from before Browser existed", () => {
+      const legacyOrder = ["history", "theme", "terminal", "system-prompt"];
+      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(legacyOrder));
+
+      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "system-prompt"]);
     });
 
     it("returns undefined for invalid JSON", () => {
@@ -70,7 +77,7 @@ describe("activityRailOrder", () => {
 
   describe("writeRailOrder", () => {
     it("persists the order to localStorage", () => {
-      const order: ReorderableRailItem[] = ["history", "system-prompt", "theme", "terminal"];
+      const order: ReorderableRailItem[] = ["history", "system-prompt", "theme", "terminal", "browser"];
       writeRailOrder(order);
       const stored = storage.getItem("pi-webui:activity-rail-order");
       expect(stored).not.toBeNull();
@@ -89,14 +96,15 @@ describe("activityRailOrder", () => {
   });
 
   describe("constants", () => {
-    it("DEFAULT_RAIL_ORDER contains exactly 4 reorderable items", () => {
-      expect(DEFAULT_RAIL_ORDER).toHaveLength(4);
+    it("DEFAULT_RAIL_ORDER contains exactly 5 reorderable items", () => {
+      expect(DEFAULT_RAIL_ORDER).toHaveLength(5);
       const itemSet = new Set(DEFAULT_RAIL_ORDER);
       expect(itemSet.has("terminal")).toBe(true);
+      expect(itemSet.has("browser")).toBe(true);
       expect(itemSet.has("theme")).toBe(true);
       expect(itemSet.has("system-prompt")).toBe(true);
       expect(itemSet.has("history")).toBe(true);
-      expect(itemSet.size).toBe(4);
+      expect(itemSet.size).toBe(5);
     });
   });
 });
