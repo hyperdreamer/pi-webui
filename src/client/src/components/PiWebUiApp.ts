@@ -82,6 +82,7 @@ import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocu
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import "./ActivityRail";
+import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ReorderableRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
 
 
@@ -292,6 +293,7 @@ export class PiWebUiApp extends LitElement {
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
   @state() private terminalTabHidden = readTerminalTabHidden();
   @state() private infoTabHidden = readInfoTabHidden();
+  @state() private railOrder: ReorderableRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -2361,6 +2363,11 @@ export class PiWebUiApp extends LitElement {
     this.openThemeDialog();
   };
 
+  private readonly handleRailOrderChange = (order: ReorderableRailItem[]): void => {
+    this.railOrder = order;
+    writeRailOrder(order);
+  };
+
   private readonly handleCloseTerminalModal = (): void => {
     this.finishTerminalModalPointerInteraction();
     this.terminalModalOpen = false;
@@ -2646,6 +2653,8 @@ export class PiWebUiApp extends LitElement {
             .historyEnabled=${this.canOpenSessionHistory()}
             .onOpenHistory=${() => { this.openSessionHistory(); }}
             .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
+            .railOrder=${this.railOrder}
+            .onRailOrderChange=${this.handleRailOrderChange}
           ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>

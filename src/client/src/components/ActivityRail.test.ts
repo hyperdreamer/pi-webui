@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ActivityRail } from "./ActivityRail";
-import { templateEventHandlerAfterMarker, templateStrings, templateText, templateClickHandlerForText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { templateEventHandlerAfterMarker, templateText, templateClickHandlerForText, templateValueAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+import { type ReorderableRailItem } from "../activityRailOrder";
 
 describe("ActivityRail", () => {
   function createRail(terminalCount = 0, systemPromptEnabled = false) {
@@ -76,8 +77,6 @@ describe("ActivityRail", () => {
       const onOpenSystemPrompt = vi.fn();
       rail.onOpenSystemPrompt = onOpenSystemPrompt;
 
-      // The rail has two icon buttons; anchor to the System button's stable
-      // semantic class rather than relying on handler order.
       const handler = templateEventHandlerAfterMarker(rail.render(), "system-prompt-button");
       handler(new Event("click"));
 
@@ -148,13 +147,107 @@ describe("ActivityRail", () => {
   describe("icon SVG", () => {
     it("marks the icon as hidden from assistive technology", () => {
       const rail = createRail();
-      const svgString = templateStrings(rail.render()).join("");
-      expect(svgString).toContain("aria-hidden");
+      // templateText recurses into nested TemplateResults (each icon button
+      // is now a separate template); templateStrings would only see the
+      // top-level nav wrapper.
+      expect(templateText(rail.render())).toContain("aria-hidden");
     });
 
     it("preserves the original System prompt document icon geometry", () => {
-      const svgString = templateStrings(createRail().render()).join("");
-      expect(svgString).toContain("M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z");
+      expect(templateText(createRail().render())).toContain("M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z");
+    });
+  });
+
+  describe("rail order", () => {
+    it("renders reorderable buttons in the default order", () => {
+      const rail = createRail();
+      const text = railText(rail);
+      const terminalPos = text.indexOf("Open terminal");
+      const themePos = text.indexOf("Open theme picker");
+      const spPos = text.indexOf("Open system prompt");
+      const historyPos = text.indexOf("Open full history");
+      // Default order: terminal, theme, system-prompt, history (info fixed at bottom)
+      expect(terminalPos).toBeLessThan(themePos);
+      expect(themePos).toBeLessThan(spPos);
+      expect(spPos).toBeLessThan(historyPos);
+    });
+
+    it("renders reorderable buttons in a custom railOrder", () => {
+      const rail = createRail();
+      const customOrder: ReorderableRailItem[] = ["history", "terminal", "theme", "system-prompt"];
+      rail.railOrder = customOrder;
+      const text = railText(rail);
+      const historyPos = text.indexOf("Open full history");
+      const terminalPos = text.indexOf("Open terminal");
+      const themePos = text.indexOf("Open theme picker");
+      const spPos = text.indexOf("Open system prompt");
+      expect(historyPos).toBeLessThan(terminalPos);
+      expect(terminalPos).toBeLessThan(themePos);
+      expect(themePos).toBeLessThan(spPos);
+    });
+
+    it("falls back to default order when railOrder is empty", () => {
+      const rail = createRail();
+      rail.railOrder = [];
+      expect(railText(rail)).toContain("Open terminal");
+      expect(railText(rail)).toContain("Open system info");
+    });
+
+    it("always renders the info button last, after a spacer", () => {
+      const rail = createRail();
+      rail.railOrder = ["terminal", "theme", "system-prompt", "history"];
+      const text = railText(rail);
+      const historyPos = text.indexOf("Open full history");
+      const infoPos = text.indexOf("Open system info");
+      // Info always appears after all reorderable items.
+      expect(historyPos).toBeLessThan(infoPos);
+
+      // Swap order: info should still be last.
+      rail.railOrder = ["history", "system-prompt", "theme", "terminal"];
+      const text2 = railText(rail);
+      const terminalPos2 = text2.indexOf("Open terminal");
+      const infoPos2 = text2.indexOf("Open system info");
+      expect(terminalPos2).toBeLessThan(infoPos2);
+    });
+  });
+
+  describe("drag-and-drop", () => {
+    it("nav has dragover and drop handlers", () => {
+      const rail = createRail();
+      const dragoverHandler = templateEventHandlerNearMarker(rail.render(), "@dragover=");
+      expect(typeof dragoverHandler).toBe("function");
+      const dropHandler = templateEventHandlerNearMarker(rail.render(), "@drop=");
+      expect(typeof dropHandler).toBe("function");
+    });
+
+    it("reorderable buttons have dragstart and dragend handlers", () => {
+      const rail = createRail();
+      const markers = ["terminal-button", "theme-button", "system-prompt-button", "history-button"];
+      for (const marker of markers) {
+        const dragStart = templateEventHandlerAfterMarker(rail.render(), marker);
+        expect(typeof dragStart).toBe("function");
+      }
+    });
+
+    it("info button does not have drag handlers (it is fixed)", () => {
+      const rail = createRail();
+      // The info button's @click handler is after the info-button marker.
+      // There should be no @dragstart binding on the info button.
+      const text = railText(rail);
+      // Info button has no draggable attribute or data-rail-item in its template.
+      expect(text).toContain("Open system info");
+    });
+
+    it("exposes railOrder and onRailOrderChange for parent wiring", () => {
+      const rail = createRail();
+      expect(rail.railOrder).toHaveLength(4);
+      expect(rail.railOrder).toContain("terminal");
+      // info is NOT in railOrder (it's always fixed).
+      expect(rail.railOrder).not.toContain("info");
+
+      const onRailOrderChange = vi.fn();
+      rail.onRailOrderChange = onRailOrderChange;
+      expect(rail.onRailOrderChange).toBe(onRailOrderChange);
     });
   });
 });

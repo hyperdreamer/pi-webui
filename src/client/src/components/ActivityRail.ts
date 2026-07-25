@@ -1,7 +1,13 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, css, html, nothing, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
+import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
 
 const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
+const REORDERABLE_IDS: readonly string[] = ["terminal", "theme", "system-prompt", "history"];
+
+function isReorderableItem(value: string): value is ReorderableRailItem {
+  return REORDERABLE_IDS.includes(value);
+}
 
 @customElement("activity-rail")
 export class ActivityRail extends LitElement {
@@ -13,7 +19,11 @@ export class ActivityRail extends LitElement {
   @property({ type: Number }) terminalCount = 0;
   @property({ type: Boolean }) systemPromptEnabled = false;
   @property({ type: Boolean }) historyEnabled = false;
+  @property({ attribute: false }) railOrder: ReorderableRailItem[] = [...DEFAULT_RAIL_ORDER];
+  @property({ attribute: false }) onRailOrderChange?: (order: ReorderableRailItem[]) => void;
+
   private desktopMedia: MediaQueryList | undefined;
+  private dragItem: ReorderableRailItem | undefined;
 
   constructor() {
     super();
@@ -36,112 +46,243 @@ export class ActivityRail extends LitElement {
     // Media change triggers a re-render; no popup state to clean up.
   };
 
-  private readonly openTerminal = (): void => {
-    this.onOpenTerminal?.();
+  // -- Click handlers --
+
+  private readonly openTerminal = (): void => { this.onOpenTerminal?.(); };
+  private readonly openTheme = (): void => { this.onOpenTheme?.(); };
+  private readonly openSystemPrompt = (): void => { this.onOpenSystemPrompt?.(); };
+  private readonly openHistory = (): void => { this.onOpenHistory?.(); };
+  private readonly openInfo = (): void => { this.onOpenInfo?.(); };
+
+  // -- Drag-and-drop (reorderable items only) --
+
+  private readonly onDragStart = (item: ReorderableRailItem, event: DragEvent): void => {
+    this.dragItem = item;
+    if (event.dataTransfer !== null) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", item);
+    }
+    requestAnimationFrame(() => {
+      const el = this.renderRoot.querySelector(`[data-rail-item="${item}"]`);
+      el?.classList.add("dragging");
+    });
   };
 
-  private readonly openTheme = (): void => {
-    this.onOpenTheme?.();
+  private readonly onDragEnd = (item: ReorderableRailItem): void => {
+    this.dragItem = undefined;
+    const el = this.renderRoot.querySelector(`[data-rail-item="${item}"]`);
+    el?.classList.remove("dragging");
+    this.renderRoot.querySelectorAll(".drag-over").forEach((el) => { el.classList.remove("drag-over"); });
   };
 
-  private readonly openSystemPrompt = (): void => {
-    this.onOpenSystemPrompt?.();
+  private readonly onRailDragOver = (event: DragEvent): void => {
+    event.preventDefault();
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
+    if (this.dragItem === undefined) return;
+
+    const target = this.resolveDragTarget(event.target);
+    this.renderRoot.querySelectorAll(".drag-over").forEach((el) => { el.classList.remove("drag-over"); });
+    if (target !== null && target.dataset["railItem"] !== this.dragItem) {
+      target.classList.add("drag-over");
+    }
   };
 
-  private readonly openHistory = (): void => {
-    this.onOpenHistory?.();
+  private readonly onRailDrop = (event: DragEvent): void => {
+    event.preventDefault();
+    this.renderRoot.querySelectorAll(".drag-over").forEach((el) => { el.classList.remove("drag-over"); });
+
+    if (this.dragItem === undefined) return;
+    const target = this.resolveDragTarget(event.target);
+    if (target === null || target.dataset["railItem"] === this.dragItem) {
+      this.dragItem = undefined;
+      return;
+    }
+
+    const targetId = target.dataset["railItem"];
+    if (targetId === undefined || !isReorderableItem(targetId)) {
+      this.dragItem = undefined;
+      return;
+    }
+
+    const current = [...this.railOrder];
+    const fromIndex = current.indexOf(this.dragItem);
+    const toIndex = current.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1) {
+      this.dragItem = undefined;
+      return;
+    }
+
+    current.splice(fromIndex, 1);
+    current.splice(toIndex, 0, this.dragItem);
+    this.railOrder = current;
+    this.onRailOrderChange?.(current);
+    this.dragItem = undefined;
   };
 
-  private readonly openInfo = (): void => {
-    this.onOpenInfo?.();
-  };
+  private resolveDragTarget(target: EventTarget | null): HTMLElement | null {
+    if (target === null || !(target instanceof HTMLElement)) return null;
+    const el = target.closest("[data-rail-item]");
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  // -- Button rendering --
+
+  /** Returns drag attributes for reorderable items only (info is fixed). */
+  private dndProps(item: ReorderableRailItem) {
+    return {
+      draggable: "true",
+      "data-rail-item": item,
+    };
+  }
+
+  private renderReorderableButton(item: ReorderableRailItem): TemplateResult {
+    switch (item) {
+      case "terminal": return this.renderTerminalButton();
+      case "theme": return this.renderThemeButton();
+      case "system-prompt": return this.renderSystemPromptButton();
+      case "history": return this.renderHistoryButton();
+    }
+  }
+
+  private renderTerminalButton(): TemplateResult {
+    const p = this.dndProps("terminal");
+    const badge = this.terminalCount > 0 ? this.terminalCount : undefined;
+    const badgeLabel = badge === undefined ? "" : `${String(badge)} active terminal${badge === 1 ? "" : "s"}`;
+    return html`
+      <button
+        type="button"
+        class="icon-button terminal-button"
+        title="Terminal"
+        aria-label=${`Open terminal${badgeLabel === "" ? "" : `, ${badgeLabel}`}`}
+        @click=${this.openTerminal}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("terminal", event); }}
+        @dragend=${() => { this.onDragEnd("terminal"); }}
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <rect x="3" y="5" width="18" height="14" rx="2"/>
+          <path d="m7 10 3 3-3 3"/>
+          <path d="M12 16h5"/>
+        </svg>
+        ${badge === undefined ? nothing : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
+      </button>
+    `;
+  }
+
+  private renderThemeButton(): TemplateResult {
+    const p = this.dndProps("theme");
+    return html`
+      <button
+        type="button"
+        class="icon-button theme-button"
+        title="Theme"
+        aria-label="Open theme picker"
+        @click=${this.openTheme}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("theme", event); }}
+        @dragend=${() => { this.onDragEnd("theme"); }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5Z"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  private renderSystemPromptButton(): TemplateResult {
+    const p = this.dndProps("system-prompt");
+    return html`
+      <button
+        type="button"
+        class="icon-button system-prompt-button"
+        title="System prompt"
+        aria-label="Open system prompt"
+        ?disabled=${!this.systemPromptEnabled}
+        @click=${this.openSystemPrompt}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("system-prompt", event); }}
+        @dragend=${() => { this.onDragEnd("system-prompt"); }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="8" y1="13" x2="16" y2="13"/>
+          <line x1="8" y1="17" x2="13" y2="17"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  private renderHistoryButton(): TemplateResult {
+    const p = this.dndProps("history");
+    return html`
+      <button
+        type="button"
+        class="icon-button history-button"
+        title="Full history"
+        aria-label="Open full history"
+        ?disabled=${!this.historyEnabled}
+        @click=${this.openHistory}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("history", event); }}
+        @dragend=${() => { this.onDragEnd("history"); }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>
+          <path d="M3 3v5h5"/>
+          <path d="M12 7v5l3 2"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  private renderInfoButton(): TemplateResult {
+    return html`
+      <button
+        type="button"
+        class="icon-button info-button"
+        title="System Info"
+        aria-label="Open system info"
+        @click=${this.openInfo}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <rect x="2" y="3" width="20" height="14" rx="2"/>
+          <path d="M8 21h8"/>
+          <path d="M12 17v4"/>
+        </svg>
+      </button>
+    `;
+  }
 
   override render() {
     const isDesktop = this.desktopMedia?.matches ?? true;
     if (!isDesktop) return html``;
 
-    const badge = this.terminalCount > 0 ? this.terminalCount : undefined;
-    const badgeLabel = badge === undefined ? "" : `${String(badge)} active terminal${badge === 1 ? "" : "s"}`;
+    const order = this.railOrder.length === 0 ? [...DEFAULT_RAIL_ORDER] : this.railOrder;
     return html`
-      <nav class="rail" aria-label="Activity rail">
-        <button
-          type="button"
-          class="icon-button"
-          title="Terminal"
-          aria-label=${`Open terminal${badgeLabel === "" ? "" : `, ${badgeLabel}`}` }
-          @click=${this.openTerminal}
-        >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true" focusable="false">
-            <rect x="3" y="5" width="18" height="14" rx="2"/>
-            <path d="m7 10 3 3-3 3"/>
-            <path d="M12 16h5"/>
-          </svg>
-          ${badge === undefined ? null : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
-        </button>
-        <button
-          type="button"
-          class="icon-button theme-button"
-          title="Theme"
-          aria-label="Open theme picker"
-          @click=${this.openTheme}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true" focusable="false">
-            <path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5Z"/>
-          </svg>
-        </button>
-        <button
-          type="button"
-          class="icon-button system-prompt-button"
-          title="System prompt"
-          aria-label="Open system prompt"
-          ?disabled=${!this.systemPromptEnabled}
-          @click=${this.openSystemPrompt}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true" focusable="false">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="8" y1="13" x2="16" y2="13"/>
-            <line x1="8" y1="17" x2="13" y2="17"/>
-          </svg>
-        </button>
-        <button
-          type="button"
-          class="icon-button history-button"
-          title="Full history"
-          aria-label="Open full history"
-          ?disabled=${!this.historyEnabled}
-          @click=${this.openHistory}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true" focusable="false">
-            <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>
-            <path d="M3 3v5h5"/>
-            <path d="M12 7v5l3 2"/>
-          </svg>
-        </button>
+      <nav
+        class="rail"
+        aria-label="Activity rail"
+        @dragover=${this.onRailDragOver}
+        @drop=${this.onRailDrop}
+      >
+        ${order.map((item) => this.renderReorderableButton(item))}
         <div class="rail-spacer"></div>
-        <button
-          type="button"
-          class="icon-button info-button"
-          title="System Info"
-          aria-label="Open system info"
-          @click=${this.openInfo}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true" focusable="false">
-            <rect x="2" y="3" width="20" height="14" rx="2"/>
-            <path d="M8 21h8"/>
-            <path d="M12 17v4"/>
-          </svg>
-        </button>
+        ${this.renderInfoButton()}
       </nav>
     `;
   }
@@ -176,6 +317,7 @@ export class ActivityRail extends LitElement {
       background: var(--pi-surface);
       color: var(--pi-muted);
       cursor: pointer;
+      transition: opacity 0.15s ease, box-shadow 0.15s ease;
     }
     .rail-badge {
       position: absolute;
@@ -201,6 +343,10 @@ export class ActivityRail extends LitElement {
     .icon-button:focus-visible {
       outline: 2px solid var(--pi-accent);
       outline-offset: 2px;
+    }
+    .icon-button.dragging { opacity: 0.4; }
+    .icon-button.drag-over {
+      box-shadow: 0 -2px 0 0 var(--pi-accent);
     }
     .rail-spacer { flex: 1 1 auto; min-height: 0; }
     .info-button { margin-bottom: 12px; }
