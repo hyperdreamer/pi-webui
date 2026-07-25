@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { SessionController } from "./sessionController";
-import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, runPendingAnimationFrames, status, workspace, type AppState, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
+import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, runPendingAnimationFrames, status, workspace, type AppState, type MessagePage, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
 
 describe("SessionController live events", () => {
   it("coalesces rapid status updates into a single state write per frame", () => {
@@ -80,6 +80,67 @@ describe("SessionController live events", () => {
 
     expect(state.sessionStatuses[oldSession.id]?.messageCount).toBe(8);
     expect(state.status?.messageCount).toBe(8);
+  });
+
+  it("refreshes message history after a turn ends so message actions do not require a page reload", async () => {
+    const initialHistory: MessagePage = {
+      messages: [
+        { role: "user", content: "Start here" },
+        { role: "assistant", content: "First answer" },
+      ],
+      start: 0,
+      total: 2,
+    };
+    const authoritativeHistory: MessagePage = {
+      messages: [
+        ...initialHistory.messages,
+        {
+          role: "user",
+          content: "Revise this",
+          entryId: "user-entry-2",
+          previousAssistantEntryId: "assistant-entry-1",
+          canFork: true,
+        },
+      ],
+      start: 0,
+      total: 3,
+    };
+    const socket = new EmitSocket();
+    let messageCalls = 0;
+    const messages = vi.fn<typeof defaultApi.messages>(() => {
+      messageCalls += 1;
+      return Promise.resolve(messageCalls === 1 ? initialHistory : authoritativeHistory);
+    });
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages,
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+
+    socket.emit({ type: "message.append", message: { role: "user", content: "Revise this" } });
+    expect(state.messages.at(-1)).toEqual({ role: "user", parts: [{ type: "text", text: "Revise this" }] });
+
+    socket.emit({ type: "agent.end" });
+
+    await vi.waitFor(() => { expect(messages).toHaveBeenCalledTimes(2); });
+    expect(state.messages.at(-1)).toEqual({
+      role: "user",
+      parts: [{ type: "text", text: "Revise this" }],
+      entryId: "user-entry-2",
+      previousAssistantEntryId: "assistant-entry-1",
+      canFork: true,
+    });
   });
 
   it("clears stale active activity when an idle status arrives", () => {

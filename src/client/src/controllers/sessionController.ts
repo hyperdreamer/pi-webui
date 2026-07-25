@@ -1391,6 +1391,12 @@ export class SessionController {
     } else if (event.type === "session.name") {
       this.applySessionName(event.sessionId, event.name);
     }
+    if (event.type === "agent.end") {
+      // Live prompt events contain message content but not session-entry IDs.
+      // Reconcile once the turn is durable so history actions become available
+      // without requiring the user to reload the browser.
+      void this.refreshSelectedSession();
+    }
   }
 
   private queueTranscriptEvent(event: SessionUiEvent): void {
