@@ -21,9 +21,10 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, System prompt, Full history, and system info icon buttons on desktop", () => {
+    it("renders the rail with terminal, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
+      expect(railText(rail)).toContain("Open theme picker");
       expect(railText(rail)).toContain("Open system prompt");
       expect(railText(rail)).toContain("Open full history");
       expect(railText(rail)).toContain("Open system info");
@@ -57,6 +58,17 @@ describe("ActivityRail", () => {
       expect(onOpenTerminal).not.toHaveBeenCalled();
       handler(new Event("click"));
       expect(onOpenTerminal).toHaveBeenCalledOnce();
+    });
+
+    it("opens the theme picker when its icon is clicked", () => {
+      const rail = createRail();
+      const onOpenTheme = vi.fn();
+      rail.onOpenTheme = onOpenTheme;
+
+      const handler = templateEventHandlerAfterMarker(rail.render(), "theme-button");
+      handler(new Event("click"));
+
+      expect(onOpenTheme).toHaveBeenCalledOnce();
     });
 
     it("opens the System prompt when its left-rail icon is clicked", () => {

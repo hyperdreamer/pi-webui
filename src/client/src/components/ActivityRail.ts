@@ -6,6 +6,7 @@ const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
 @customElement("activity-rail")
 export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenTerminal?: () => void;
+  @property({ attribute: false }) onOpenTheme?: () => void;
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
   @property({ attribute: false }) onOpenHistory?: () => void;
   @property({ attribute: false }) onOpenInfo?: () => void;
@@ -37,6 +38,10 @@ export class ActivityRail extends LitElement {
 
   private readonly openTerminal = (): void => {
     this.onOpenTerminal?.();
+  };
+
+  private readonly openTheme = (): void => {
+    this.onOpenTheme?.();
   };
 
   private readonly openSystemPrompt = (): void => {
@@ -74,6 +79,19 @@ export class ActivityRail extends LitElement {
             <path d="M12 16h5"/>
           </svg>
           ${badge === undefined ? null : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
+        </button>
+        <button
+          type="button"
+          class="icon-button theme-button"
+          title="Theme"
+          aria-label="Open theme picker"
+          @click=${this.openTheme}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true" focusable="false">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
         </button>
         <button
           type="button"

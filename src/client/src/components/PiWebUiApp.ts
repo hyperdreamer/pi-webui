@@ -2356,6 +2356,10 @@ export class PiWebUiApp extends LitElement {
     this.terminalModalOpen = true;
   };
 
+  private readonly handleOpenThemeFromRail = (): void => {
+    this.openThemeDialog();
+  };
+
   private readonly handleCloseTerminalModal = (): void => {
     this.finishTerminalModalPointerInteraction();
     this.terminalModalOpen = false;
@@ -2632,6 +2636,7 @@ export class PiWebUiApp extends LitElement {
         <aside id="navigation-panel">
           <activity-rail
             .onOpenTerminal=${this.handleOpenTerminalFromRail}
+            .onOpenTheme=${this.handleOpenThemeFromRail}
             .terminalCount=${this.state.activeTerminalCount}
             .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
             .onOpenSystemPrompt=${() => {
