@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { evaluateBrowserRemoteCapability, type BrowserPrincipal } from "./browserCapabilities.js";
+import { evaluateBrowserRemoteCapability, unavailableBrowserRemoteCapability, type BrowserPrincipal } from "./browserCapabilities.js";
 import { unavailableBrowserRuntimeReadiness, type BrowserRuntimeClient } from "./browserRuntime.js";
 
 /**
@@ -22,22 +22,30 @@ export interface BrowserCapabilityRouteDependencies {
  */
 export function registerLocalBrowserCapabilityRoutes(app: FastifyInstance, deps: BrowserCapabilityRouteDependencies): void {
   app.get("/api/machines/local/browser/capabilities", async (request) => {
-    const principal = await principalFor(request, deps.principalProvider);
-    if (principal === undefined) return evaluateBrowserRemoteCapability(undefined, unavailableBrowserRuntimeReadiness());
+    const principal = await resolveBrowserPrincipal(request, deps.principalProvider);
+    if (principal.status === "unavailable") return unavailableBrowserRemoteCapability();
+    if (principal.status === "absent") return evaluateBrowserRemoteCapability(undefined, unavailableBrowserRuntimeReadiness());
 
     try {
-      return evaluateBrowserRemoteCapability(principal, await deps.runtime.readiness());
+      return evaluateBrowserRemoteCapability(principal.value, await deps.runtime.readiness());
     } catch {
-      return evaluateBrowserRemoteCapability(principal, unavailableBrowserRuntimeReadiness());
+      return evaluateBrowserRemoteCapability(principal.value, unavailableBrowserRuntimeReadiness());
     }
   });
 }
 
-async function principalFor(request: FastifyRequest, provider: BrowserPrincipalProvider | undefined): Promise<BrowserPrincipal | undefined> {
-  if (provider === undefined) return undefined;
+type BrowserPrincipalResolution =
+  | { status: "available"; value: BrowserPrincipal }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
+async function resolveBrowserPrincipal(request: FastifyRequest, provider: BrowserPrincipalProvider | undefined): Promise<BrowserPrincipalResolution> {
+  if (provider === undefined) return { status: "absent" };
   try {
-    return await provider.principalFor(request);
+    const principal = await provider.principalFor(request);
+    return principal === undefined ? { status: "absent" } : { status: "available", value: principal };
   } catch {
-    return undefined;
+    request.log.warn({ dependency: "browser-principal-provider" }, "browser principal provider unavailable");
+    return { status: "unavailable" };
   }
 }

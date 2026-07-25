@@ -43,7 +43,7 @@ export interface BrowserRemoteCapabilityUnavailable {
 export function evaluateBrowserRemoteCapability(principal: BrowserPrincipal | undefined, readiness: BrowserRuntimeReadiness): BrowserRemoteCapability {
   if (!hasTrustedPrincipal(principal)) return unavailable("BROWSER_AUTH_REQUIRED", false);
   if (!principal.permissions.includes("browser.use")) return unavailable("BROWSER_FORBIDDEN", false);
-  if (!hasSafeRuntime(readiness)) return unavailable("BROWSER_UNAVAILABLE", true);
+  if (!hasSafeRuntime(readiness)) return unavailableBrowserRemoteCapability();
 
   return {
     available: true,
@@ -96,6 +96,10 @@ function hasBoundedLimits(limits: unknown): boolean {
 
 function isPositiveIntegerAtMost(value: number, maximum: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && value <= maximum;
+}
+
+export function unavailableBrowserRemoteCapability(): BrowserRemoteCapabilityUnavailable {
+  return unavailable("BROWSER_UNAVAILABLE", true);
 }
 
 function unavailable(code: BrowserAvailabilityCode, retryable: boolean): BrowserRemoteCapabilityUnavailable {

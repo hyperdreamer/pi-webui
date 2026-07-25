@@ -26,6 +26,15 @@ describe("browser egress policy", () => {
     expect(evaluateBrowserNavigation(url, publicWeb)).toEqual({ allowed: false, reason });
   });
 
+  it.each([
+    "64:ff9b::c0a8:1",
+    "64:ff9b::a9fe:a9fe",
+    "::ffff:0:c0a8:1",
+    "::ffff:0:a9fe:a9fe",
+  ])("rejects a transition-form literal that embeds a non-public IPv4 address: %s", (address) => {
+    expect(evaluateBrowserNavigation(`https://[${address}]/`, publicWeb)).toEqual({ allowed: false, reason: "non-public-host" });
+  });
+
   it("fails closed when a policy has an unknown mode", () => {
     const malformed = { ...publicWeb };
     Reflect.set(malformed, "mode", "private-network");
@@ -122,7 +131,22 @@ describe("public address classifier", () => {
     expect(isPublicInternetAddress(address)).toBe(false);
   });
 
-  it.each(["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"])("accepts public address %s", (address) => {
+  it.each([
+    ["well-known NAT64 carrying a public IPv4 address", "64:ff9b::5db8:d822"],
+    ["IPv4-translated IPv6 carrying a public IPv4 address", "::ffff:0:5db8:d822"],
+    ["ordinary public IPv4", "93.184.216.34"],
+    ["ordinary public IPv6", "2606:2800:220:1:248:1893:25c8:1946"],
+  ] as const)("accepts %s (%s)", (_description, address) => {
     expect(isPublicInternetAddress(address)).toBe(true);
+  });
+
+  it.each([
+    ["well-known NAT64 carrying RFC1918 IPv4", "64:ff9b::c0a8:1"],
+    ["well-known NAT64 carrying the cloud-metadata IPv4 range", "64:ff9b::a9fe:a9fe"],
+    ["IPv4-translated IPv6 carrying RFC1918 IPv4", "::ffff:0:c0a8:1"],
+    ["IPv4-translated IPv6 carrying the cloud-metadata IPv4 range", "::ffff:0:a9fe:a9fe"],
+    ["an unsupported prefix in the IPv4-IPv6 translation allocation", "64:ff9b:2::5db8:d822"],
+  ] as const)("rejects %s (%s)", (_description, address) => {
+    expect(isPublicInternetAddress(address)).toBe(false);
   });
 });

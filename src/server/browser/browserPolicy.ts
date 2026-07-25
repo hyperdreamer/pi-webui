@@ -236,13 +236,13 @@ function isIpv4Prefix(value: number, prefix: number, bits: number): boolean {
 function isPublicIpv6(value: bigint): boolean {
   const embeddedIpv4 = embeddedIpv4Address(value);
   if (embeddedIpv4 !== undefined) return isPublicIpv4(integerToIpv4(embeddedIpv4));
+  if (isIpv6Prefix(value, IPV4_IPV6_TRANSLATION_ALLOCATION.prefix, IPV4_IPV6_TRANSLATION_ALLOCATION.bits)) return false;
   return !NON_PUBLIC_IPV6_PREFIXES.some(({ prefix, bits }) => isIpv6Prefix(value, prefix, bits));
 }
 
 function embeddedIpv4Address(value: bigint): number | undefined {
-  const low32 = Number(value & 0xffff_ffffn);
-  if (value >> 32n === 0n || value >> 32n === 0xffffn) return low32;
-  return undefined;
+  if (!IPV4_EMBEDDED_IPV6_PREFIXES.some(({ prefix, bits }) => isIpv6Prefix(value, prefix, bits))) return undefined;
+  return Number(value & 0xffff_ffffn);
 }
 
 function integerToIpv4(value: number): string {
@@ -287,11 +287,21 @@ function parseIpv4Octets(address: string): [number, number, number, number] | un
   return [first, second, third, fourth];
 }
 
+const IPV4_EMBEDDED_IPV6_PREFIXES = [
+  ipv6Prefix("::", 96), // IPv4-compatible
+  ipv6Prefix("::ffff:0:0", 96), // IPv4-mapped
+  ipv6Prefix("::ffff:0:0:0", 96), // IPv4-translated
+  ipv6Prefix("64:ff9b::", 96), // well-known NAT64
+];
+
+// Only the well-known /96 translation prefix is understood by this pure
+// classifier. Other addresses in the IANA translation allocation fail closed.
+const IPV4_IPV6_TRANSLATION_ALLOCATION = ipv6Prefix("64:ff9b::", 32);
+
 const NON_PUBLIC_IPV6_PREFIXES = [
   ipv6Prefix("::", 128),
   ipv6Prefix("::1", 128),
   ipv6Prefix("100::", 64), // discard-only
-  ipv6Prefix("64:ff9b:1::", 48), // locally assigned NAT64
   ipv6Prefix("2001:2::", 48), // benchmarking
   ipv6Prefix("2001:10::", 28), // ORCHID
   ipv6Prefix("2001:db8::", 32), // documentation

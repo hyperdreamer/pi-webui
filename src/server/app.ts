@@ -161,6 +161,10 @@ async function withProfileDependency<T>(reply: FastifyReply, operation: () => Pr
   }
 }
 
+function isApiPath(requestUrl: string): boolean {
+  return requestUrl === "/api" || requestUrl.startsWith("/api/") || requestUrl.startsWith("/api?");
+}
+
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: deps.logger ?? true, ...(deps.bodyLimit === undefined ? {} : { bodyLimit: deps.bodyLimit }) });
   // Vite proxies development API requests here, while production and machine-scoped
@@ -262,7 +266,10 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const clientDist = deps.clientDist ?? (existsSync(packagedClientDist) ? packagedClientDist : join(process.cwd(), "dist", "client"));
   if (clientDist !== false && existsSync(clientDist)) {
     await app.register(fastifyStatic, { root: clientDist });
-    app.setNotFoundHandler((_request, reply) => reply.sendFile("index.html"));
+    app.setNotFoundHandler((request, reply) => {
+      if (isApiPath(request.url)) return reply.code(404).send({ error: "API route not found" });
+      return reply.sendFile("index.html");
+    });
   }
 
   return app;

@@ -42,6 +42,35 @@ describe("local browser capability route", () => {
     expect(readiness).not.toHaveBeenCalled();
   });
 
+  it("reports authentication absence when the trusted identity adapter has no principal", async () => {
+    const readiness = vi.fn<BrowserRuntimeClient["readiness"]>();
+    const app = registerRoute({
+      runtime: { readiness },
+      principalProvider: { principalFor: () => undefined },
+    });
+
+    const response = await app.inject({ method: "GET", url: "/api/machines/local/browser/capabilities" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ available: false, code: "BROWSER_AUTH_REQUIRED", retryable: false });
+    expect(readiness).not.toHaveBeenCalled();
+  });
+
+  it("reports a retryable unavailable capability when the trusted identity adapter fails", async () => {
+    const readiness = vi.fn<BrowserRuntimeClient["readiness"]>();
+    const app = registerRoute({
+      runtime: { readiness },
+      principalProvider: { principalFor: () => Promise.reject(new Error("identity adapter unavailable")) },
+    });
+
+    const response = await app.inject({ method: "GET", url: "/api/machines/local/browser/capabilities" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ available: false, code: "BROWSER_UNAVAILABLE", retryable: true });
+    expect(response.body).not.toContain("identity adapter unavailable");
+    expect(readiness).not.toHaveBeenCalled();
+  });
+
   it("returns a redacted capability only after a trusted principal and safe runtime readiness", async () => {
     const app = registerRoute({
       runtime: { readiness: () => Promise.resolve(readyRuntime()) },
