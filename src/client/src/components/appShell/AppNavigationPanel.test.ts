@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Machine } from "../../api";
-import { templateValueAfterMarker } from "../../templateInspection.testSupport";
+import { templateText, templateValueAfterMarker } from "../../templateInspection.testSupport";
 import { AppNavigationPanel, NAVIGATION_RESOURCE_UNDERBAR_ITEMS, navigationResourceUnderbarItemIsEnabled, shouldShowMachinesSection } from "./AppNavigationPanel";
+
+describe("app-navigation-panel wordmark", () => {
+  it("renders a large pi symbol beside the WebUI name", () => {
+    const markup = templateText(new AppNavigationPanel().render());
+
+    expect(markup).toContain('class="brand" aria-label="Pi WebUI"');
+    expect(markup).toContain('class="brand-symbol" aria-hidden="true">π</span>');
+    expect(markup).toContain(">WebUI</span>");
+    expect(markup).not.toContain(">PI WEBUI<");
+    expect(AppNavigationPanel.styles.cssText).toMatch(/\.brand-symbol\s*\{[^}]*font-size:\s*28px;/);
+  });
+});
 
 describe("app-navigation-panel resource underbar", () => {
   it("defines the static Models, Skills, and Plugins controls in display order", () => {

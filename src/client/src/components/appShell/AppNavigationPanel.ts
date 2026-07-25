@@ -110,7 +110,7 @@ export class AppNavigationPanel extends LitElement {
   override render() {
     return html`
       <header>
-        <strong>PI WEBUI</strong>
+        <strong class="brand" aria-label="Pi WebUI"><span class="brand-symbol" aria-hidden="true">π</span><span>WebUI</span></strong>
         ${shouldShowMachinesSection(this.machines) ? html`
           <machine-switcher
             .machines=${this.machines}
@@ -248,6 +248,8 @@ export class AppNavigationPanel extends LitElement {
     :host([compact]) { flex: 1 1 auto; }
     header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-bottom: 1px solid var(--pi-border); }
     header strong { flex: 0 0 auto; }
+    .brand { display: inline-flex; align-items: center; gap: 5px; }
+    .brand-symbol { font-size: 28px; font-weight: 700; line-height: 1; }
     machine-switcher { flex: 1 1 auto; min-width: 0; }
     :host([compact]) header { display: none; }
     .header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
