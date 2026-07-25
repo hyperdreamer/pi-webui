@@ -82,6 +82,8 @@ import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocu
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import "./ActivityRail";
+import "./BrowserPanel";
+import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ActivityRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
 
 
@@ -284,6 +286,7 @@ export class PiWebUiApp extends LitElement {
   @state() private skillsConfigDialogOpen = false;
   @state() private pluginsConfigDialogOpen = false;
   @state() private systemPromptDialogOpen = false;
+  @state() private browserPanelOpen = false;
   @state() private terminalModalOpen = false;
   @state() private terminalModalBounds: TerminalModalBounds | undefined;
   private terminalModalPointerInteraction: TerminalModalPointerInteraction | undefined;
@@ -292,6 +295,7 @@ export class PiWebUiApp extends LitElement {
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
   @state() private terminalTabHidden = readTerminalTabHidden();
   @state() private infoTabHidden = readInfoTabHidden();
+  @state() private railOrder: ActivityRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -411,6 +415,7 @@ export class PiWebUiApp extends LitElement {
       || this.state.thinkingDialog !== undefined
       || this.state.themeDialog !== undefined
       || this.state.authDialog !== undefined
+      || this.browserPanelOpen
       || this.terminalModalOpen;
   }
 
@@ -2356,8 +2361,21 @@ export class PiWebUiApp extends LitElement {
     this.terminalModalOpen = true;
   };
 
+  private readonly handleOpenBrowserFromRail = (): void => {
+    this.browserPanelOpen = true;
+  };
+
+  private readonly handleCloseBrowserPanel = (): void => {
+    this.browserPanelOpen = false;
+  };
+
   private readonly handleOpenThemeFromRail = (): void => {
     this.openThemeDialog();
+  };
+
+  private readonly handleRailOrderChange = (order: ActivityRailItem[]): void => {
+    this.railOrder = order;
+    writeRailOrder(order);
   };
 
   private readonly handleCloseTerminalModal = (): void => {
@@ -2636,6 +2654,7 @@ export class PiWebUiApp extends LitElement {
         <aside id="navigation-panel">
           <activity-rail
             .onOpenTerminal=${this.handleOpenTerminalFromRail}
+            .onOpenBrowser=${this.handleOpenBrowserFromRail}
             .onOpenTheme=${this.handleOpenThemeFromRail}
             .terminalCount=${this.state.activeTerminalCount}
             .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
@@ -2645,6 +2664,8 @@ export class PiWebUiApp extends LitElement {
             .historyEnabled=${this.canOpenSessionHistory()}
             .onOpenHistory=${() => { this.openSessionHistory(); }}
             .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
+            .railOrder=${this.railOrder}
+            .onRailOrderChange=${this.handleRailOrderChange}
           ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
@@ -2678,6 +2699,7 @@ export class PiWebUiApp extends LitElement {
         ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
+        ${this.browserPanelOpen ? html`<browser-panel .onClose=${this.handleCloseBrowserPanel}></browser-panel>` : null}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
