@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ActivityRail } from "./ActivityRail";
-import { templateEventHandlerAfterMarker, templateText, templateClickHandlerForText } from "../templateInspection.testSupport";
+import { templateEventHandlerAfterMarker, templateStrings, templateText, templateClickHandlerForText, templateValueAfterMarker } from "../templateInspection.testSupport";
 
 describe("ActivityRail", () => {
   function createRail(terminalCount = 0, systemPromptEnabled = false) {
@@ -21,10 +21,11 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal and System prompt icon buttons on desktop", () => {
+    it("renders the rail with terminal, System prompt, and Full history icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
       expect(railText(rail)).toContain("Open system prompt");
+      expect(railText(rail)).toContain("Open full history");
     });
 
     it("does not render rail content when viewport is below 1181px", () => {
@@ -70,6 +71,27 @@ describe("ActivityRail", () => {
       expect(onOpenSystemPrompt).toHaveBeenCalledOnce();
     });
 
+    it("disables Full history until a persisted session is selected", () => {
+      const rail = createRail();
+      expect(templateValueAfterMarker(rail.render(), "history-button")).toBe(true);
+
+      rail.historyEnabled = true;
+      expect(templateValueAfterMarker(rail.render(), "history-button")).toBe(false);
+    });
+
+    it("opens Full history when its enabled left-rail icon is clicked", () => {
+      const rail = createRail();
+      const onOpenHistory = vi.fn();
+      rail.historyEnabled = true;
+      rail.onOpenHistory = onOpenHistory;
+
+      expect(railText(rail)).toContain("Open full history");
+      const handler = templateEventHandlerAfterMarker(rail.render(), "history-button");
+      handler(new Event("click"));
+
+      expect(onOpenHistory).toHaveBeenCalledOnce();
+    });
+
     it("is safe to click when no callback is provided", () => {
       const rail = createRail();
       const handler = templateClickHandlerForText(rail.render(), "Open terminal");
@@ -102,11 +124,13 @@ describe("ActivityRail", () => {
   describe("icon SVG", () => {
     it("marks the icon as hidden from assistive technology", () => {
       const rail = createRail();
-      const result = rail.render();
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- accessing Lit private template shape
-      const strings = Reflect.get(result, "strings") as readonly string[];
-      const svgString = strings.join("");
+      const svgString = templateStrings(rail.render()).join("");
       expect(svgString).toContain("aria-hidden");
+    });
+
+    it("preserves the original System prompt document icon geometry", () => {
+      const svgString = templateStrings(createRail().render()).join("");
+      expect(svgString).toContain("M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z");
     });
   });
 });

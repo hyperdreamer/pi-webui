@@ -54,6 +54,13 @@ describe("federated route contract", () => {
     expect(FEDERATED_WEBSOCKET_ROUTES.some((path) => path.includes("tree"))).toBe(false);
   });
 
+  it("allowlists read-only full-history exports for remote machines", () => {
+    expect(FEDERATED_HTTP_ROUTES.find((route) => route.path === "/sessions/:sessionId/export")).toEqual({
+      method: "GET",
+      path: "/sessions/:sessionId/export",
+    });
+  });
+
   it("covers machine-scoped client HTTP calls with remote proxy routes", async () => {
     const fetchMock = vi.fn<FetchLike>(() => Promise.resolve(jsonResponse({})));
     vi.stubGlobal("fetch", fetchMock);

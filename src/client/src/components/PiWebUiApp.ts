@@ -55,6 +55,7 @@ import "./ProjectList";
 import "./WorkspaceList";
 import { unreadSessionCount } from "./SessionList";
 import "./SessionCleanupDialog";
+import "./SessionHistoryWindow";
 import "./SessionTreeNavigator";
 import "./ChatView";
 import type { ChatView } from "./ChatView";
@@ -105,6 +106,11 @@ interface SessionCleanupDialogState {
   loading?: boolean | undefined;
   running?: boolean | undefined;
   error?: string | undefined;
+}
+
+interface SessionHistoryWindowState {
+  machineId: string;
+  session: SessionInfo;
 }
 
 interface TerminalModalPointerInteraction {
@@ -272,6 +278,7 @@ export class PiWebUiApp extends LitElement {
   @state() private activeThemeId: QualifiedContributionId = CLASSIC_THEME_ID;
   @state() private isRefreshingApp = false;
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
+  @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
   @state() private modelsConfigDialogOpen = false;
   @state() private skillsConfigDialogOpen = false;
@@ -389,6 +396,7 @@ export class PiWebUiApp extends LitElement {
   private isChatObscured(): boolean {
     return this.settingsSection !== undefined
       || this.sessionCleanupDialog !== undefined
+      || this.historyWindow !== undefined
       || this.modelsConfigDialogOpen
       || (this.skillsConfigDialogOpen && this.state.selectedWorkspace !== undefined)
       || (this.pluginsConfigDialogOpen && this.state.selectedWorkspace !== undefined)
@@ -1461,6 +1469,17 @@ export class PiWebUiApp extends LitElement {
         .onCancelKeyboardNavigation=${() => { void this.focusChatComposer(); }}
       ></app-navigation-panel>
     `;
+  }
+
+  private canOpenSessionHistory(): boolean {
+    const session = this.state.selectedSession;
+    return session !== undefined && session.persisted !== false && session.path !== "";
+  }
+
+  private openSessionHistory(): void {
+    const session = this.state.selectedSession;
+    if (session === undefined || !this.canOpenSessionHistory()) return;
+    this.historyWindow = { machineId: selectedMachineId(this.state), session };
   }
 
   private openNavigationSection(section: NavigationSection): void {
@@ -2594,6 +2613,8 @@ export class PiWebUiApp extends LitElement {
             .onOpenSystemPrompt=${() => {
               if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
             }}
+            .historyEnabled=${this.canOpenSessionHistory()}
+            .onOpenHistory=${() => { this.openSessionHistory(); }}
           ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
@@ -2617,6 +2638,7 @@ export class PiWebUiApp extends LitElement {
         ${this.renderWorkspacePanel()}
         ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
         ${this.renderSessionTreeNavigator(state)}
+        ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
         ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}

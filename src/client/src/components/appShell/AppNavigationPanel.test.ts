@@ -10,6 +10,7 @@ describe("app-navigation-panel resource underbar", () => {
       { id: "skills", label: "Skills" },
       { id: "plugins", label: "Plugins" },
     ]);
+    expect(AppNavigationPanel.styles.cssText).toMatch(/grid-template-columns:\s*repeat\(3,/);
   });
 
   it("keeps the resource underbar pinned when Sessions is collapsed", () => {
@@ -23,6 +24,7 @@ describe("app-navigation-panel resource underbar", () => {
     expect(navigationResourceUnderbarItemIsEnabled("plugins", true)).toBe(true);
     expect(navigationResourceUnderbarItemIsEnabled("plugins", false)).toBe(false);
   });
+
 });
 
 describe("app-navigation-panel project creation", () => {

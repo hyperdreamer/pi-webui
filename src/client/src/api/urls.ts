@@ -29,6 +29,14 @@ export function messagePath(session: SessionLookup, options?: { limit?: number; 
   return `api/machines/${encodeURIComponent(machineId)}/sessions/${encodeURIComponent(sessionId(session))}/messages${query === "" ? "" : `?${query}`}`;
 }
 
+export function sessionHistoryPath(session: SessionLookup, machineId = "local"): string {
+  const params = new URLSearchParams();
+  const cwd = sessionCwd(session);
+  if (cwd !== undefined && cwd !== "") params.set("cwd", cwd);
+  const query = params.toString();
+  return `api/machines/${encodeURIComponent(machineId)}/sessions/${encodeURIComponent(sessionId(session))}/export${query === "" ? "" : `?${query}`}`;
+}
+
 export function workspaceFileWriteUrl(projectId: string, workspaceId: string, path: string, options?: { createDirs?: boolean; overwrite?: boolean; machineId?: string }): string {
   const params = new URLSearchParams({ path });
   if (options?.createDirs === false) params.set("createDirs", "false");

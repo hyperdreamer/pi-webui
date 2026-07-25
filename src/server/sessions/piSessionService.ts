@@ -22,6 +22,7 @@ import {
 import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionStatus, ClientSessionSystemPrompt, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
 import { projectBrowserMessage } from "../browserMessageProjection.js";
 import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
+import { exportSessionHistoryHtml } from "./sessionHistoryExport.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import { BUILTIN_COMMANDS } from "./builtinCommands.js";
 import { SessionCommandService } from "./sessionCommandService.js";
@@ -1381,6 +1382,10 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
+  async exportHistory(ref: PiSessionLookup): Promise<string> {
+    return exportSessionHistoryHtml(await this.sessionFileForHistory(ref));
+  }
+
   async messages(ref: PiSessionLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage> {
     const session = await this.getOrOpen(ref);
     return pageMessagesAtSafeBoundary(historyMessages(session), page);
@@ -2237,6 +2242,24 @@ export class PiSessionService implements SessionRouteService {
 
   private async getOrOpen(ref: PiSessionLookup): Promise<PiAgentSession> {
     return (await this.getActive(ref)).runtime.session;
+  }
+
+  private async sessionFileForHistory(ref: PiSessionLookup): Promise<string> {
+    const active = this.activeForLookup(ref);
+    if (active !== undefined) {
+      const sessionFile = active.runtime.session.sessionFile;
+      if (sessionFile === undefined || sessionFile === "") throw new Error("Session is not persisted");
+      return sessionFile;
+    }
+
+    const archived = await this.getArchived(ref);
+    if (archived?.archivePath !== undefined && archived.archivePath !== "") return archived.archivePath;
+
+    const match = isPiSessionRef(ref)
+      ? (await this.sessionManager.list(ref.cwd)).find((session) => session.id === ref.id || session.id.startsWith(ref.id))
+      : (await this.sessionManager.listAll?.() ?? []).find((session) => session.id === ref || session.id.startsWith(ref));
+    if (match === undefined || match.path === "") throw new Error("Session not found");
+    return match.path;
   }
 
   private async getActive(ref: PiSessionLookup, options: Pick<CreateSessionRuntimeOptions, "notificationGeneration"> = {}): Promise<ActiveSession<PiSessionRuntime>> {

@@ -42,6 +42,7 @@ export type SessionRouteLookup = string | SessionRouteRef;
 export interface SessionRouteService {
   list(cwd: string): Promise<ClientSession[]>;
   start(cwd: string): Promise<ClientSession>;
+  exportHistory(ref: SessionRouteLookup): Promise<string>;
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;
   systemPrompt(ref: SessionRouteLookup): Promise<ClientSessionSystemPrompt>;

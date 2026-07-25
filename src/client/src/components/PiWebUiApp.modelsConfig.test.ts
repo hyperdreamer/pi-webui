@@ -40,6 +40,43 @@ describe("PiWebUiApp navigation actions", () => {
     expect(Reflect.get(app, "modelsConfigDialogOpen")).toBe(true);
   });
 
+  it("opens Full history for the selected persisted session inside the application", () => {
+    const app = createApp();
+    setAppState(app, {
+      ...initialAppState(),
+      selectedMachine: {
+        id: "remote-a",
+        name: "Remote build host",
+        kind: "remote",
+        baseUrl: "https://remote.example.test/",
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+      selectedSession: {
+        id: "session-a",
+        cwd: "/work/project-a",
+        path: "/sessions/session-a.jsonl",
+        persisted: true,
+        created: "2026-06-04T00:00:00.000Z",
+        modified: "2026-06-04T00:00:00.000Z",
+        messageCount: 1,
+        firstMessage: "Show the complete conversation",
+      },
+    });
+
+    const rendered = renderApp(app);
+    expect(templateStrings(rendered).join("")).toMatch(/<activity-rail[\s\S]*?\.onOpenHistory=/);
+    expect(templateValueAfterMarker(rendered, ".historyEnabled=")).toBe(true);
+    templateCallbackAfterMarker(rendered, ".onOpenHistory=")();
+
+    expect(Reflect.get(app, "historyWindow")).toMatchObject({
+      machineId: "remote-a",
+      session: { id: "session-a", cwd: "/work/project-a" },
+    });
+    expect(isChatObscured(app)).toBe(true);
+    expect(templateValueAfterMarker(renderApp(app), "<session-history-window")).toBe("remote-a");
+  });
+
   it("opens Skills configuration for the selected workspace and obscures chat", () => {
     const app = createApp();
     setAppState(app, {

@@ -7,14 +7,25 @@ export interface SessionProxyDaemon {
   connectWebSocket(path: string): WebSocket;
 }
 
+const FORWARDED_RESPONSE_HEADERS = [
+  "content-type",
+  "cache-control",
+  "content-disposition",
+  "content-security-policy",
+  "x-content-type-options",
+] as const;
+
 export function registerSessionProxyRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
   const proxy = async (request: { method: string; url: string; body?: unknown }, reply: FastifyReply) => {
     try {
       const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body);
       reply.code(upstream.statusCode);
-      const contentType = upstream.headers["content-type"];
-      if (contentType !== undefined && contentType !== "") reply.header("content-type", contentType);
-      return upstream.body !== "" ? parseJson(upstream.body) : undefined;
+      forwardResponseHeaders(reply, upstream.headers);
+      if (upstream.body === "") return await reply.send();
+      const body = isJsonContentType(upstream.headers["content-type"])
+        ? parseJson(upstream.body)
+        : upstream.body;
+      return await reply.send(body);
     } catch (error) {
       requestFailed(reply, error);
       return undefined;
@@ -54,6 +65,17 @@ function stripPrefix(url: string, prefix: string): string {
   const query = url.slice(path.length);
   const stripped = path.startsWith(prefix) ? `${path.slice(prefix.length)}${query}` : url;
   return stripped === "" ? "/" : stripped;
+}
+
+function forwardResponseHeaders(reply: FastifyReply, headers: Record<string, string>): void {
+  for (const name of FORWARDED_RESPONSE_HEADERS) {
+    const value = headers[name];
+    if (value !== undefined && value !== "") reply.header(name, value);
+  }
+}
+
+function isJsonContentType(contentType: string | undefined): boolean {
+  return contentType?.toLowerCase().includes("application/json") === true;
 }
 
 function parseJson(text: string): unknown {

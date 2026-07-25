@@ -685,6 +685,30 @@ describe("session routes", () => {
     }
   });
 
+  it("serves a browser-safe full-history HTML document for a cwd-scoped session", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const requestCwd = resolve("/repo");
+      const response = await routeApp.inject({ method: "GET", url: `/sessions/session-1/export?cwd=${encodeURIComponent(requestCwd)}` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/html");
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["content-security-policy"]).toContain("sandbox allow-scripts");
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+      expect(response.body).toContain("<title>Full history</title>");
+      expect(routeService.historyExportCalls).toEqual([{ id: "session-1", cwd: requestCwd }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("rejects malformed bulk mutation bodies before calling the service", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
@@ -726,6 +750,7 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly bulkArchiveCalls: SessionBulkMutationRef[][] = [];
   readonly bulkDeleteCalls: SessionBulkMutationRef[][] = [];
   readonly navigateTreeCalls: { lookup: SessionRouteLookup; request: SessionTreeNavigateRequest }[] = [];
+  readonly historyExportCalls: SessionRouteLookup[] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
 
@@ -826,6 +851,11 @@ class CapturingRouteSessionService implements SessionRouteService {
 
   messages(): Promise<unknown[] | MessagePage> {
     return Promise.resolve(this.messagesResponse);
+  }
+
+  exportHistory(lookup: SessionRouteLookup): Promise<string> {
+    this.historyExportCalls.push(lookup);
+    return Promise.resolve("<!doctype html><title>Full history</title>");
   }
 
   status(lookup: SessionRouteLookup) {

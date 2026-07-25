@@ -114,6 +114,30 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("forwards full-history HTML and its browser-safety headers without JSON parsing", async () => {
+    const history = "<!doctype html><title>Full history</title>";
+    daemon.respondWith({
+      statusCode: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "content-security-policy": "sandbox allow-scripts",
+        "x-content-type-options": "nosniff",
+      },
+      body: history,
+    });
+
+    const response = await app.inject({ method: "GET", url: `/api/machines/local/sessions/session-1/export?cwd=${encodeURIComponent("/repo")}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["content-security-policy"]).toBe("sandbox allow-scripts");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.body).toBe(history);
+    expect(daemon.requests).toEqual([{ method: "GET", path: "/sessions/session-1/export?cwd=%2Frepo", body: undefined }]);
+  });
+
   it("forwards empty upstream responses without parsing a body", async () => {
     daemon.respondWith({ statusCode: 204, headers: {}, body: "" });
 

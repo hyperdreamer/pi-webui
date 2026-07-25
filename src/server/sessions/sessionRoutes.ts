@@ -34,6 +34,7 @@ const MAX_NOTIFICATION_SESSION_ID_LENGTH = 512;
 const MAX_NOTIFICATION_CWD_LENGTH = 32 * 1024;
 const MAX_NOTIFICATION_DAEMON_ID_LENGTH = 512;
 const MAX_NOTIFICATION_ID_LENGTH = 1024;
+const SESSION_HISTORY_CONTENT_SECURITY_POLICY = "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; sandbox allow-scripts";
 
 export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRouteService, eventHub: SessionEventHub, prefix = ""): void {
   app.get<{ Querystring: SessionQuery }>(`${prefix}/sessions`, async (request, reply) => {
@@ -155,6 +156,20 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
       });
     } catch (error) {
       return reply.code(notificationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/export`, async (request, reply) => {
+    try {
+      const history = await sessions.exportHistory(sessionLookupFromQuery(request.params.sessionId, request.query));
+      return await reply
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .header("Content-Security-Policy", SESSION_HISTORY_CONTENT_SECURITY_POLICY)
+        .header("X-Content-Type-Options", "nosniff")
+        .send(history);
+    } catch (error) {
+      return reply.code(404).send({ error: errorMessage(error) });
     }
   });
 
