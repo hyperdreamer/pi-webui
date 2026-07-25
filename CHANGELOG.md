@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0
+
+### Patch Changes
+
+- 7e79d3e: Display chat skill cards with a blue visual treatment.
+- d530da5: Move System Info into the reorderable Activity Rail and keep Settings pinned at the bottom for consistent access.
+- 16780cd: Clarify Browser as a lightweight embedded viewer and add a fail-closed remote-browser capability foundation. Arbitrary-site remote browsing remains unavailable until its isolated runtime security prerequisites are deployed.
+- 98e139d: Add a destructive "Force Cleanup" button to the Clean up sessions dialog that permanently deletes all archived sessions regardless of age or cleanup settings, with a clear warning before execution.
+- 3098d6a: Add **Edit from here** and **New session** actions to user messages, so you can revise a prior prompt in place or start an independent session from it.
+
 ## 1.6.0
 
 ### Patch Changes
