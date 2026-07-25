@@ -1253,13 +1253,16 @@ export interface SystemMemoryInfo {
   usagePercent: number;
 }
 
-export interface SystemNetworkInfo {
+export interface SystemNetworkMetrics {
+  downloadSpeedBytesPerSecond?: number;
+  uploadSpeedBytesPerSecond?: number;
+}
+
+export interface SystemNetworkInfo extends SystemNetworkMetrics {
   hostname: string;
   publicIpv4?: string;
   publicIpv6?: string;
   localIpv4Addresses: string[];
-  downloadSpeedBytesPerSecond?: number;
-  uploadSpeedBytesPerSecond?: number;
 }
 
 export interface SystemOsInfo {
@@ -1267,6 +1270,12 @@ export interface SystemOsInfo {
   release: string;
   arch: string;
   uptimeSeconds: number;
+}
+
+export interface SystemMetricsResponse {
+  generatedAt: string;
+  memory: SystemMemoryInfo;
+  network: SystemNetworkMetrics;
 }
 
 export interface SystemInfoResponse {

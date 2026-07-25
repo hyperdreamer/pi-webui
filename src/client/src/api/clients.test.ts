@@ -59,6 +59,19 @@ describe("machine-scoped runtime API", () => {
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/api/machines/remote%20a/pi-webui/status");
   });
 
+  it("reads uncached dynamic system metrics through the gateway route", async () => {
+    const fetchMock = stubJsonFetch({
+      generatedAt: "2026-03-10T12:00:00.000Z",
+      memory: { totalBytes: 1_000, usedBytes: 750, freeBytes: 250, usagePercent: 75 },
+      network: { downloadSpeedBytesPerSecond: 1_500_000, uploadSpeedBytesPerSecond: 250_000 },
+    });
+    await piWebUiApi.systemMetrics("remote a");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/api/machines/remote%20a/pi-webui/system-metrics");
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
+  });
+
   it("requests an uncached update check through the local status route", async () => {
     const fetchMock = stubJsonFetch(piWebUiStatusResponse());
 

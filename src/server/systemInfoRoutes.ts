@@ -13,7 +13,7 @@ import {
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
-import type { PiWebUiRuntimeComponent, SystemInfoResponse } from "../shared/apiTypes.js";
+import type { PiWebUiRuntimeComponent, SystemInfoResponse, SystemMetricsResponse } from "../shared/apiTypes.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,25 +26,37 @@ const PUBLIC_IP_TIMEOUT_MS = 4000;
 
 export interface SystemInfoRouteDependencies {
   piWebUiRuntime?: () => Promise<{ components: { web: PiWebUiRuntimeComponent; sessiond: PiWebUiRuntimeComponent } }>;
+  collectDynamicSystemMetrics?: () => Promise<SystemMetricsResponse>;
 }
 
 export function registerSystemInfoRoutes(app: FastifyInstance, prefix: string, deps: SystemInfoRouteDependencies = {}): void {
+  const collectMetrics = deps.collectDynamicSystemMetrics ?? collectDynamicSystemMetrics;
   app.get(`${prefix}/system-info`, async (_request, reply) => {
     try {
-      return await collectSystemInfo(deps);
+      return await collectSystemInfo(deps, collectMetrics);
+    } catch (error) {
+      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.get(`${prefix}/system-metrics`, async (_request, reply) => {
+    try {
+      return await collectMetrics();
     } catch (error) {
       return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 }
 
-async function collectSystemInfo(deps: SystemInfoRouteDependencies = {}): Promise<SystemInfoResponse> {
-  const [gpu, publicIpv4, publicIpv6, versionInfo, networkSpeed] = await Promise.all([
+async function collectSystemInfo(
+  deps: SystemInfoRouteDependencies,
+  collectMetrics: () => Promise<SystemMetricsResponse>,
+): Promise<SystemInfoResponse> {
+  const [gpu, publicIpv4, publicIpv6, versionInfo, metrics] = await Promise.all([
     collectGpuInfo(),
     fetchPublicIpv4(),
     fetchPublicIpv6().catch(() => undefined),
     collectVersionInfo(deps),
-    measureNetworkSpeed(),
+    collectMetrics(),
   ]);
 
   return {
@@ -52,8 +64,8 @@ async function collectSystemInfo(deps: SystemInfoRouteDependencies = {}): Promis
     os: collectOsInfo(),
     cpu: collectCpuInfo(),
     ...(gpu === undefined ? {} : { gpu }),
-    memory: collectMemoryInfo(),
-    network: collectNetworkInfo(publicIpv4, publicIpv6, networkSpeed),
+    memory: metrics.memory,
+    network: collectNetworkInfo(publicIpv4, publicIpv6, metrics.network),
     ...(versionInfo.piWebUiVersion === undefined ? {} : { piWebUiVersion: versionInfo.piWebUiVersion }),
     ...(versionInfo.piVersion === undefined ? {} : { piVersion: versionInfo.piVersion }),
   };
@@ -170,6 +182,15 @@ function collectMemoryInfo(): SystemInfoResponse["memory"] {
   return { totalBytes, usedBytes, freeBytes, usagePercent };
 }
 
+async function collectDynamicSystemMetrics(): Promise<SystemMetricsResponse> {
+  const speeds = await measureNetworkSpeed();
+  return {
+    generatedAt: new Date().toISOString(),
+    memory: collectMemoryInfo(),
+    network: collectNetworkMetrics(speeds),
+  };
+}
+
 async function fetchPublicIpv4(): Promise<string | undefined> {
   for (const service of PUBLIC_IPV4_SERVICES) {
     try {
@@ -211,10 +232,15 @@ function isValidIpv6(value: string): boolean {
   return /^[0-9a-fA-F:]+$/.test(value) && value.includes(":");
 }
 
+interface NetworkSpeedMeasurements {
+  downloadBytesPerSecond?: number;
+  uploadBytesPerSecond?: number;
+}
+
 function collectNetworkInfo(
   publicIpv4: string | undefined,
   publicIpv6: string | undefined,
-  speeds: { downloadBytesPerSecond?: number; uploadBytesPerSecond?: number },
+  metrics: SystemMetricsResponse["network"],
 ): SystemInfoResponse["network"] {
   const localIpv4Addresses: string[] = [];
   const interfaces = networkInterfaces();
@@ -233,6 +259,12 @@ function collectNetworkInfo(
     ...(publicIpv4 === undefined ? {} : { publicIpv4 }),
     ...(publicIpv6 === undefined ? {} : { publicIpv6 }),
     localIpv4Addresses,
+    ...metrics,
+  };
+}
+
+function collectNetworkMetrics(speeds: NetworkSpeedMeasurements): SystemMetricsResponse["network"] {
+  return {
     ...(speeds.downloadBytesPerSecond === undefined ? {} : { downloadSpeedBytesPerSecond: speeds.downloadBytesPerSecond }),
     ...(speeds.uploadBytesPerSecond === undefined ? {} : { uploadSpeedBytesPerSecond: speeds.uploadBytesPerSecond }),
   };
@@ -276,7 +308,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-async function measureNetworkSpeed(): Promise<{ downloadBytesPerSecond?: number; uploadBytesPerSecond?: number }> {
+async function measureNetworkSpeed(): Promise<NetworkSpeedMeasurements> {
   const first = readNetDevSnapshot();
   if (first === undefined) return {};
   const startedAt = Date.now();

@@ -1,5 +1,35 @@
-import { describe, expect, it } from "vitest";
-import { parseNetDevSnapshot } from "./systemInfoRoutes";
+import Fastify, { type FastifyInstance } from "fastify";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseNetDevSnapshot, registerSystemInfoRoutes, type SystemInfoRouteDependencies } from "./systemInfoRoutes";
+
+let app: FastifyInstance;
+
+beforeEach(() => {
+  app = Fastify({ logger: false });
+});
+
+afterEach(async () => {
+  await app.close();
+});
+
+describe("system metrics route", () => {
+  it("returns lightweight memory and network metrics without a full system snapshot", async () => {
+    const metrics = {
+      generatedAt: "2026-03-10T12:00:00.000Z",
+      memory: { totalBytes: 1_000, usedBytes: 750, freeBytes: 250, usagePercent: 75 },
+      network: { downloadSpeedBytesPerSecond: 1_500_000, uploadSpeedBytesPerSecond: 250_000 },
+    };
+    const collectDynamicSystemMetrics = vi.fn(() => Promise.resolve(metrics));
+    const dependencies: SystemInfoRouteDependencies & { collectDynamicSystemMetrics: () => Promise<typeof metrics> } = { collectDynamicSystemMetrics };
+    registerSystemInfoRoutes(app, "/api/pi-webui", dependencies);
+
+    const response = await app.inject({ method: "GET", url: "/api/pi-webui/system-metrics" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(metrics);
+    expect(collectDynamicSystemMetrics).toHaveBeenCalledOnce();
+  });
+});
 
 describe("parseNetDevSnapshot", () => {
   it("aggregates received and transmitted bytes across non-loopback interfaces", () => {

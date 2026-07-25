@@ -1,8 +1,10 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { piWebUiApi, type SystemInfoResponse } from "../api";
+import { piWebUiApi, type SystemInfoResponse, type SystemMetricsResponse } from "../api";
 import type { WorkspacePanelContext } from "../plugins/types";
 import { workspacePanelStyles } from "./shared";
+
+const DYNAMIC_METRICS_REFRESH_MS = 2_000;
 
 @customElement("workspace-info-panel")
 export class WorkspaceInfoPanel extends LitElement {
@@ -11,36 +13,101 @@ export class WorkspaceInfoPanel extends LitElement {
   @state() private loading = false;
   @state() private error = "";
 
-  private machineId = "local";
+  private machineId: string | undefined;
+  private dynamicMetricsTimer: number | undefined;
+  private dynamicMetricsPollingMachineId: string | undefined;
+  private dynamicMetricsRequest = 0;
+  private dynamicMetricsRefreshInFlight = false;
 
   protected override willUpdate(changedProperties: PropertyValues<this>): void {
-    if (changedProperties.has("context")) {
-      const context = this.context;
-      if (context !== undefined) {
-        this.machineId = context.machine.id;
-        void this.loadSystemInfo();
-      }
+    if (!changedProperties.has("context")) return;
+    const machineId = this.context?.machine.id;
+    if (machineId === undefined) {
+      this.stopDynamicMetricsPolling();
+      this.machineId = undefined;
+      return;
     }
+    if (machineId === this.machineId) return;
+    this.stopDynamicMetricsPolling();
+    this.machineId = machineId;
+    void this.loadSystemInfo(machineId);
   }
 
-  private async loadSystemInfo(): Promise<void> {
+  private async loadSystemInfo(machineId = this.machineId): Promise<void> {
+    if (machineId === undefined) return;
     this.loading = true;
     this.error = "";
     try {
-      const sysInfo = await piWebUiApi.systemInfo(this.machineId);
-      // Only apply if still on the same machine
-      if (this.context === undefined || this.context.machine.id === this.machineId) {
+      const sysInfo = await piWebUiApi.systemInfo(machineId);
+      if (this.isCurrentMachine(machineId)) {
         this.systemInfo = sysInfo;
+        if (this.isConnected) this.startDynamicMetricsPolling();
       }
     } catch (err) {
-      if (this.context === undefined || this.context.machine.id === this.machineId) {
-        this.error = err instanceof Error ? err.message : String(err);
-      }
+      if (this.isCurrentMachine(machineId)) this.error = err instanceof Error ? err.message : String(err);
     } finally {
-      if (this.context === undefined || this.context.machine.id === this.machineId) {
-        this.loading = false;
-      }
+      if (this.isCurrentMachine(machineId)) this.loading = false;
     }
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.startDynamicMetricsPolling();
+  }
+
+  override disconnectedCallback(): void {
+    this.stopDynamicMetricsPolling();
+    super.disconnectedCallback();
+  }
+
+  private startDynamicMetricsPolling(): void {
+    const machineId = this.machineId;
+    if (machineId === undefined || this.systemInfo === undefined || this.dynamicMetricsTimer !== undefined) return;
+    this.dynamicMetricsPollingMachineId = machineId;
+    this.dynamicMetricsTimer = window.setInterval(() => { void this.refreshDynamicMetrics(machineId); }, DYNAMIC_METRICS_REFRESH_MS);
+  }
+
+  private stopDynamicMetricsPolling(): void {
+    if (this.dynamicMetricsTimer !== undefined) window.clearInterval(this.dynamicMetricsTimer);
+    this.dynamicMetricsTimer = undefined;
+    this.dynamicMetricsPollingMachineId = undefined;
+    this.dynamicMetricsRequest += 1;
+    this.dynamicMetricsRefreshInFlight = false;
+  }
+
+  private async refreshDynamicMetrics(machineId: string): Promise<void> {
+    if (this.loading || this.error !== "" || this.dynamicMetricsRefreshInFlight || this.dynamicMetricsPollingMachineId !== machineId) return;
+    this.dynamicMetricsRefreshInFlight = true;
+    const request = ++this.dynamicMetricsRequest;
+    try {
+      const metrics = await piWebUiApi.systemMetrics(machineId);
+      if (!this.isCurrentDynamicMetricsRequest(machineId, request)) return;
+      this.applyDynamicMetrics(metrics);
+    } catch {
+      // Keep the last successful readings; the next periodic request retries.
+    } finally {
+      if (request === this.dynamicMetricsRequest) this.dynamicMetricsRefreshInFlight = false;
+    }
+  }
+
+  private isCurrentDynamicMetricsRequest(machineId: string, request: number): boolean {
+    return request === this.dynamicMetricsRequest
+      && this.dynamicMetricsPollingMachineId === machineId
+      && this.isCurrentMachine(machineId);
+  }
+
+  private applyDynamicMetrics(metrics: SystemMetricsResponse): void {
+    const systemInfo = this.systemInfo;
+    if (systemInfo === undefined) return;
+    this.systemInfo = {
+      ...systemInfo,
+      memory: metrics.memory,
+      network: { ...systemInfo.network, ...metrics.network },
+    };
+  }
+
+  private isCurrentMachine(machineId: string): boolean {
+    return this.machineId === machineId && this.context?.machine.id === machineId;
   }
 
   override render(): TemplateResult {
@@ -223,12 +290,12 @@ export class WorkspaceInfoPanel extends LitElement {
               <td class="info-value">${net.hostname}</td>
             </tr>
             <tr>
-              <td class="info-label"><span class="network-speed-arrow download" aria-hidden="true">↓</span> Download</td>
-              <td class="info-value">${formatTransferRate(net.downloadSpeedBytesPerSecond)}</td>
+              <td class="info-label">Download</td>
+              <td class="info-value">${formatTransferRate(net.downloadSpeedBytesPerSecond)}<span class="network-speed-arrow download" aria-hidden="true">↓</span></td>
             </tr>
             <tr>
-              <td class="info-label"><span class="network-speed-arrow upload" aria-hidden="true">↑</span> Upload</td>
-              <td class="info-value">${formatTransferRate(net.uploadSpeedBytesPerSecond)}</td>
+              <td class="info-label">Upload</td>
+              <td class="info-value">${formatTransferRate(net.uploadSpeedBytesPerSecond)}<span class="network-speed-arrow upload" aria-hidden="true">↑</span></td>
             </tr>
             ${net.publicIpv4 === undefined ? null : html`
               <tr>
@@ -274,7 +341,7 @@ export class WorkspaceInfoPanel extends LitElement {
       .info-table td { padding: 3px 0; vertical-align: top; }
       .info-label { width: 110px; color: var(--pi-muted); font-size: 12px; white-space: nowrap; }
       .info-value { min-width: 0; overflow-wrap: anywhere; color: var(--pi-text); }
-      .network-speed-arrow { display: inline-block; width: 1em; font-weight: 700; }
+      .network-speed-arrow { display: inline-block; width: 1em; margin-left: 6px; font-weight: 700; }
       .network-speed-arrow.download { color: var(--pi-accent); }
       .network-speed-arrow.upload { color: var(--pi-success); }
       .info-value code.ip-address {

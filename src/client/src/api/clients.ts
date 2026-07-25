@@ -70,6 +70,7 @@ import {
   parseWorkspace,
   parseWorkspaceActivityResponse,
   parseSystemInfoResponse,
+  parseSystemMetricsResponse,
 } from "./parsers";
 import { machineGitDiffPath, messagePath } from "./urls";
 
@@ -130,6 +131,7 @@ export const piWebUiApi = {
   checkForUpdates: (machineId = "local") => request(`${piWebUiStatusPath(machineId)}?refresh=1`, parsePiWebUiStatusResponse, { cache: "no-store" }),
   piWebUiRuntime: () => request("api/pi-webui/runtime", parsePiWebUiRuntimeResponse),
   systemInfo: (machineId = "local") => request(`${machinePrefix(machineId)}/pi-webui/system-info`, parseSystemInfoResponse),
+  systemMetrics: (machineId = "local") => request(`${machinePrefix(machineId)}/pi-webui/system-metrics`, parseSystemMetricsResponse, { cache: "no-store" }),
 };
 
 export const machinesApi = {

@@ -44,6 +44,13 @@ describe("federated route contract", () => {
     expect(FEDERATED_WEBSOCKET_ROUTES.some((path) => path.includes("unread"))).toBe(false);
   });
 
+  it("allowlists full and dynamic system information routes", () => {
+    expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.startsWith("/pi-webui/system-"))).toEqual([
+      { method: "GET", path: "/pi-webui/system-info" },
+      { method: "GET", path: "/pi-webui/system-metrics" },
+    ]);
+  });
+
   it("allowlists session tree navigation with a long model-operation timeout and no new WebSocket", () => {
     expect(FEDERATED_HTTP_ROUTES.find((route) => route.path === "/sessions/:sessionId/tree/navigate")).toEqual({
       method: "POST",
@@ -75,6 +82,8 @@ describe("federated route contract", () => {
     await Promise.all([
       ignoreParseFailure(piWebUiApi.piWebUiStatus(machineId)),
       ignoreParseFailure(piWebUiApi.checkForUpdates(machineId)),
+      ignoreParseFailure(piWebUiApi.systemInfo(machineId)),
+      ignoreParseFailure(piWebUiApi.systemMetrics(machineId)),
       ignoreParseFailure(configApi.config(machineId)),
       ignoreParseFailure(configApi.saveConfig({ spawnSessions: true }, machineId)),
       ignoreParseFailure(modelsConfigApi.discover({ providerName: "custom", provider: { api: "openai-completions", baseUrl: "https://models.example.test/v1", apiKey: "$MODEL_API_KEY" } }, machineId)),
