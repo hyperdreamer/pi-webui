@@ -1,6 +1,6 @@
 import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
 import { initialAppState, type AppState } from "../appState";
@@ -10,6 +10,7 @@ import { ActivityController } from "../controllers/activityController";
 import { AuthController } from "../controllers/authController";
 import { FileExplorerController } from "../controllers/fileExplorerController";
 import { GitController } from "../controllers/gitController";
+import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
@@ -83,6 +84,7 @@ import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import "./ActivityRail";
 import "./BrowserPanel";
+import "./GitUpdateManagerPanel";
 import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ReorderableRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
 
@@ -287,6 +289,7 @@ export class PiWebUiApp extends LitElement {
   @state() private pluginsConfigDialogOpen = false;
   @state() private systemPromptDialogOpen = false;
   @state() private browserPanelOpen = false;
+  @state() private gitUpdateManagerPanelOpen = false;
   @state() private terminalModalOpen = false;
   @state() private terminalModalBounds: TerminalModalBounds | undefined;
   private terminalModalPointerInteraction: TerminalModalPointerInteraction | undefined;
@@ -416,6 +419,7 @@ export class PiWebUiApp extends LitElement {
       || this.state.themeDialog !== undefined
       || this.state.authDialog !== undefined
       || this.browserPanelOpen
+      || this.gitUpdateManagerPanelOpen
       || this.terminalModalOpen;
   }
 
@@ -2370,6 +2374,21 @@ export class PiWebUiApp extends LitElement {
     this.browserPanelOpen = false;
   };
 
+  private readonly handleOpenGitUpdateManagerFromRail = (): void => {
+    if (this.state.selectedWorkspace === undefined) return;
+    this.gitUpdateManagerPanelOpen = true;
+  };
+
+  private readonly handleCloseGitUpdateManagerPanel = (): void => {
+    this.gitUpdateManagerPanelOpen = false;
+  };
+
+  private applyGitUpdateManagerStatus(workspace: Workspace, machineId: string, gitStatus: GitStatusResponse): void {
+    const selectedWorkspace = this.state.selectedWorkspace;
+    if (selectedMachineId(this.state) !== machineId || selectedWorkspace?.id !== workspace.id || selectedWorkspace.projectId !== workspace.projectId) return;
+    this.setState({ gitStatus, gitStale: false });
+  }
+
   private readonly handleOpenThemeFromRail = (): void => {
     this.openThemeDialog();
   };
@@ -2650,14 +2669,17 @@ export class PiWebUiApp extends LitElement {
 
   override render() {
     const state = this.state;
+    const gitUpdateManagerWorkspace = this.gitUpdateManagerPanelOpen ? state.selectedWorkspace : undefined;
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <aside id="navigation-panel">
           <activity-rail
             .onOpenTerminal=${this.handleOpenTerminalFromRail}
             .onOpenBrowser=${this.handleOpenBrowserFromRail}
+            .onOpenGitUpdateManager=${this.handleOpenGitUpdateManagerFromRail}
             .onOpenTheme=${this.handleOpenThemeFromRail}
             .terminalCount=${this.state.activeTerminalCount}
+            .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
             .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
             .onOpenSystemPrompt=${() => {
               if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
@@ -2701,6 +2723,7 @@ export class PiWebUiApp extends LitElement {
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
         ${this.browserPanelOpen ? html`<browser-panel .onClose=${this.handleCloseBrowserPanel}></browser-panel>` : null}
+        ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>

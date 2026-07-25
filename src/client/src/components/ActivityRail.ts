@@ -3,7 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
 
 const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
-const REORDERABLE_IDS: readonly string[] = ["terminal", "browser", "theme", "system-prompt", "history"];
+const REORDERABLE_IDS: readonly string[] = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history"];
 
 function isReorderableItem(value: string): value is ReorderableRailItem {
   return REORDERABLE_IDS.includes(value);
@@ -13,11 +13,13 @@ function isReorderableItem(value: string): value is ReorderableRailItem {
 export class ActivityRail extends LitElement {
   @property({ attribute: false }) onOpenTerminal?: () => void;
   @property({ attribute: false }) onOpenBrowser?: () => void;
+  @property({ attribute: false }) onOpenGitUpdateManager?: () => void;
   @property({ attribute: false }) onOpenTheme?: () => void;
   @property({ attribute: false }) onOpenSystemPrompt?: () => void;
   @property({ attribute: false }) onOpenHistory?: () => void;
   @property({ attribute: false }) onOpenInfo?: () => void;
   @property({ type: Number }) terminalCount = 0;
+  @property({ type: Number }) gitUpdateManagerCount = 0;
   @property({ type: Boolean }) systemPromptEnabled = false;
   @property({ type: Boolean }) historyEnabled = false;
   @property({ attribute: false }) railOrder: ReorderableRailItem[] = [...DEFAULT_RAIL_ORDER];
@@ -51,6 +53,7 @@ export class ActivityRail extends LitElement {
 
   private readonly openTerminal = (): void => { this.onOpenTerminal?.(); };
   private readonly openBrowser = (): void => { this.onOpenBrowser?.(); };
+  private readonly openGitUpdateManager = (): void => { this.onOpenGitUpdateManager?.(); };
   private readonly openTheme = (): void => { this.onOpenTheme?.(); };
   private readonly openSystemPrompt = (): void => { this.onOpenSystemPrompt?.(); };
   private readonly openHistory = (): void => { this.onOpenHistory?.(); };
@@ -141,6 +144,7 @@ export class ActivityRail extends LitElement {
     switch (item) {
       case "terminal": return this.renderTerminalButton();
       case "browser": return this.renderBrowserButton();
+      case "git-update-manager": return this.renderGitUpdateManagerButton();
       case "theme": return this.renderThemeButton();
       case "system-prompt": return this.renderSystemPromptButton();
       case "history": return this.renderHistoryButton();
@@ -197,6 +201,36 @@ export class ActivityRail extends LitElement {
           <path d="M12 3a14 14 0 0 1 0 18"/>
           <path d="M12 3a14 14 0 0 0 0 18"/>
         </svg>
+      </button>
+    `;
+  }
+
+  private renderGitUpdateManagerButton(): TemplateResult {
+    const p = this.dndProps("git-update-manager");
+    const badge = this.gitUpdateManagerCount > 0 ? this.gitUpdateManagerCount : undefined;
+    const badgeLabel = badge === undefined ? "" : `${String(badge)} changed file${badge === 1 ? "" : "s"}`;
+    return html`
+      <button
+        type="button"
+        class="icon-button git-update-manager-button"
+        title="Git Update Manager"
+        aria-label=${`Open Git Update Manager${badgeLabel === "" ? "" : `, ${badgeLabel}`}`}
+        @click=${this.openGitUpdateManager}
+        draggable=${p.draggable}
+        data-rail-item=${p["data-rail-item"]}
+        @dragstart=${(event: DragEvent) => { this.onDragStart("git-update-manager", event); }}
+        @dragend=${() => { this.onDragEnd("git-update-manager"); }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <circle cx="6" cy="5" r="2"/>
+          <circle cx="18" cy="7" r="2"/>
+          <circle cx="18" cy="19" r="2"/>
+          <path d="M6 7v8a4 4 0 0 0 4 4h6"/>
+          <path d="M10 5h6"/>
+        </svg>
+        ${badge === undefined ? nothing : html`<span class="rail-badge" aria-hidden="true">${badge}</span>`}
       </button>
     `;
   }

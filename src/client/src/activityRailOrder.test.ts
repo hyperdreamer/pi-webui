@@ -27,16 +27,23 @@ describe("activityRailOrder", () => {
     });
 
     it("returns a valid stored order", () => {
-      const order: ReorderableRailItem[] = ["history", "theme", "terminal", "browser", "system-prompt"];
+      const order: ReorderableRailItem[] = ["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(order));
       expect(readRailOrder()).toEqual(order);
     });
 
-    it("adds Browser to a valid saved order from before Browser existed", () => {
+    it("replaces the legacy File Manager identifier with Git Update Manager", () => {
+      const legacyOrder = ["history", "theme", "terminal", "browser", "file-manager", "system-prompt"];
+      storage.setItem("pi-webui:activity-rail-order", JSON.stringify(legacyOrder));
+
+      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]);
+    });
+
+    it("adds Browser and Git Update Manager to a valid saved order from before either existed", () => {
       const legacyOrder = ["history", "theme", "terminal", "system-prompt"];
       storage.setItem("pi-webui:activity-rail-order", JSON.stringify(legacyOrder));
 
-      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "system-prompt"]);
+      expect(readRailOrder()).toEqual(["history", "theme", "terminal", "browser", "git-update-manager", "system-prompt"]);
     });
 
     it("returns undefined for invalid JSON", () => {
@@ -77,7 +84,7 @@ describe("activityRailOrder", () => {
 
   describe("writeRailOrder", () => {
     it("persists the order to localStorage", () => {
-      const order: ReorderableRailItem[] = ["history", "system-prompt", "theme", "terminal", "browser"];
+      const order: ReorderableRailItem[] = ["history", "system-prompt", "theme", "git-update-manager", "terminal", "browser"];
       writeRailOrder(order);
       const stored = storage.getItem("pi-webui:activity-rail-order");
       expect(stored).not.toBeNull();
@@ -96,15 +103,16 @@ describe("activityRailOrder", () => {
   });
 
   describe("constants", () => {
-    it("DEFAULT_RAIL_ORDER contains exactly 5 reorderable items", () => {
-      expect(DEFAULT_RAIL_ORDER).toHaveLength(5);
+    it("DEFAULT_RAIL_ORDER contains exactly 6 reorderable items", () => {
+      expect(DEFAULT_RAIL_ORDER).toHaveLength(6);
       const itemSet = new Set(DEFAULT_RAIL_ORDER);
       expect(itemSet.has("terminal")).toBe(true);
       expect(itemSet.has("browser")).toBe(true);
+      expect(itemSet.has("git-update-manager")).toBe(true);
       expect(itemSet.has("theme")).toBe(true);
       expect(itemSet.has("system-prompt")).toBe(true);
       expect(itemSet.has("history")).toBe(true);
-      expect(itemSet.size).toBe(5);
+      expect(itemSet.size).toBe(6);
     });
   });
 });

@@ -1,18 +1,20 @@
 /**
  * Stable identifiers for Activity Rail icons.
  *
- * The Browser joins the reorderable tools. The "info" icon remains pinned at
- * the bottom, separated by a spacer.
+ * The Browser and Git Update Manager join the reorderable tools. The "info"
+ * icon remains pinned at the bottom, separated by a spacer.
  */
-export type ReorderableRailItem = "terminal" | "browser" | "theme" | "system-prompt" | "history";
+export type ReorderableRailItem = "terminal" | "browser" | "git-update-manager" | "theme" | "system-prompt" | "history";
 
 const REORDERABLE_ITEMS: readonly ReorderableRailItem[] = [
   "terminal",
   "browser",
+  "git-update-manager",
   "theme",
   "system-prompt",
   "history",
 ];
+const LEGACY_FILE_MANAGER_ITEM = "file-manager";
 
 export const DEFAULT_RAIL_ORDER: readonly ReorderableRailItem[] = [...REORDERABLE_ITEMS];
 
@@ -31,21 +33,26 @@ function normalizeRailOrder(value: unknown): ReorderableRailItem[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const result: ReorderableRailItem[] = [];
   const seen = new Set<ReorderableRailItem>();
-  for (const item of value) {
-    if (typeof item !== "string" || !isReorderableItem(item) || seen.has(item)) return undefined;
+  for (const rawItem of value) {
+    if (typeof rawItem !== "string") return undefined;
+    const item = rawItem === LEGACY_FILE_MANAGER_ITEM ? "git-update-manager" : rawItem;
+    if (!isReorderableItem(item) || seen.has(item)) return undefined;
     seen.add(item);
     result.push(item);
   }
 
   if (result.length === REORDERABLE_ITEMS.length) return result;
-  if (result.length !== REORDERABLE_ITEMS.length - 1 || seen.has("browser")) return undefined;
 
-  const terminalIndex = result.indexOf("terminal");
-  return [
-    ...result.slice(0, terminalIndex + 1),
-    "browser",
-    ...result.slice(terminalIndex + 1),
-  ];
+  const migrated = [...result];
+  if (!seen.has("browser")) {
+    const terminalIndex = migrated.indexOf("terminal");
+    migrated.splice(terminalIndex + 1, 0, "browser");
+  }
+  if (!seen.has("git-update-manager")) {
+    const browserIndex = migrated.indexOf("browser");
+    migrated.splice(browserIndex + 1, 0, "git-update-manager");
+  }
+  return migrated.length === REORDERABLE_ITEMS.length ? migrated : undefined;
 }
 
 export function readRailOrder(): ReorderableRailItem[] | undefined {

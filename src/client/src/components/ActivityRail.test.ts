@@ -22,9 +22,10 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, Browser, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
+    it("renders the rail with terminal, Browser, Git Update Manager, theme, System prompt, Full history, and system info icon buttons on desktop", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
+      expect(railText(rail)).toContain("Open Git Update Manager");
       expect(railText(rail)).toContain("Open browser");
       expect(railText(rail)).toContain("Open theme picker");
       expect(railText(rail)).toContain("Open system prompt");
@@ -60,6 +61,24 @@ describe("ActivityRail", () => {
       handler(new Event("click"));
 
       expect(onOpenBrowser).toHaveBeenCalledOnce();
+    });
+
+    it("opens Git Update Manager from its activity-rail icon", () => {
+      const rail = createRail();
+      const onOpenGitUpdateManager = vi.fn();
+      rail.onOpenGitUpdateManager = onOpenGitUpdateManager;
+
+      const handler = templateEventHandlerAfterMarker(rail.render(), "git-update-manager-button");
+      handler(new Event("click"));
+
+      expect(onOpenGitUpdateManager).toHaveBeenCalledOnce();
+    });
+
+    it("shows the Git Update Manager changed-file badge", () => {
+      const rail = createRail();
+      rail.gitUpdateManagerCount = 3;
+
+      expect(railText(rail)).toContain("3 changed files");
     });
 
     it("calls onOpenTerminal callback when clicked", () => {
@@ -177,28 +196,32 @@ describe("ActivityRail", () => {
       const text = railText(rail);
       const terminalPos = text.indexOf("Open terminal");
       const browserPos = text.indexOf("Open browser");
+      const gitUpdateManagerPos = text.indexOf("Open Git Update Manager");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
       const historyPos = text.indexOf("Open full history");
-      // Default order: terminal, Browser, theme, system-prompt, history (info fixed at bottom)
+      // Default order: terminal, Browser, Git Update Manager, theme, system-prompt, history (info fixed at bottom)
       expect(terminalPos).toBeLessThan(browserPos);
-      expect(browserPos).toBeLessThan(themePos);
+      expect(browserPos).toBeLessThan(gitUpdateManagerPos);
+      expect(gitUpdateManagerPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
       expect(spPos).toBeLessThan(historyPos);
     });
 
     it("renders reorderable buttons in a custom railOrder", () => {
       const rail = createRail();
-      const customOrder: ReorderableRailItem[] = ["history", "browser", "terminal", "theme", "system-prompt"];
+      const customOrder: ReorderableRailItem[] = ["history", "browser", "git-update-manager", "terminal", "theme", "system-prompt"];
       rail.railOrder = customOrder;
       const text = railText(rail);
       const historyPos = text.indexOf("Open full history");
       const browserPos = text.indexOf("Open browser");
+      const gitUpdateManagerPos = text.indexOf("Open Git Update Manager");
       const terminalPos = text.indexOf("Open terminal");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
       expect(historyPos).toBeLessThan(browserPos);
-      expect(browserPos).toBeLessThan(terminalPos);
+      expect(browserPos).toBeLessThan(gitUpdateManagerPos);
+      expect(gitUpdateManagerPos).toBeLessThan(terminalPos);
       expect(terminalPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
     });
@@ -212,7 +235,7 @@ describe("ActivityRail", () => {
 
     it("always renders the info button last, after a spacer", () => {
       const rail = createRail();
-      rail.railOrder = ["terminal", "browser", "theme", "system-prompt", "history"];
+      rail.railOrder = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history"];
       const text = railText(rail);
       const historyPos = text.indexOf("Open full history");
       const infoPos = text.indexOf("Open system info");
@@ -220,7 +243,7 @@ describe("ActivityRail", () => {
       expect(historyPos).toBeLessThan(infoPos);
 
       // Swap order: info should still be last.
-      rail.railOrder = ["history", "system-prompt", "theme", "browser", "terminal"];
+      rail.railOrder = ["history", "system-prompt", "theme", "git-update-manager", "browser", "terminal"];
       const text2 = railText(rail);
       const terminalPos2 = text2.indexOf("Open terminal");
       const infoPos2 = text2.indexOf("Open system info");
@@ -239,7 +262,7 @@ describe("ActivityRail", () => {
 
     it("reorderable buttons have dragstart and dragend handlers", () => {
       const rail = createRail();
-      const markers = ["terminal-button", "browser-button", "theme-button", "system-prompt-button", "history-button"];
+      const markers = ["terminal-button", "browser-button", "git-update-manager-button", "theme-button", "system-prompt-button", "history-button"];
       for (const marker of markers) {
         const dragStart = templateEventHandlerAfterMarker(rail.render(), marker);
         expect(typeof dragStart).toBe("function");
@@ -257,9 +280,10 @@ describe("ActivityRail", () => {
 
     it("exposes railOrder and onRailOrderChange for parent wiring", () => {
       const rail = createRail();
-      expect(rail.railOrder).toHaveLength(5);
+      expect(rail.railOrder).toHaveLength(6);
       expect(rail.railOrder).toContain("terminal");
       expect(rail.railOrder).toContain("browser");
+      expect(rail.railOrder).toContain("git-update-manager");
       // info is NOT in railOrder (it's always fixed).
       expect(rail.railOrder).not.toContain("info");
 
