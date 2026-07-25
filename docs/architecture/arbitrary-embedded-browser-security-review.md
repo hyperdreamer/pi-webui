@@ -190,3 +190,101 @@ The existing Changeset is appropriate for the implementation/user-facing clarifi
 **Security-report decision:** fail pending M1 and m1 remediation. No security approval for QA is granted.
 
 **Next permitted PM action:** return this stable target **directly to the Programmer, bypassing Team Leader**, for a narrow security-remediation change covering M1 and m1 plus focused literal/DNS/timeout regression tests. The Programmer must not enable a runtime, add browser controls/federation, or alter `sessiond` ownership as part of that correction. After a new stable remediation commit, PM may arrange a fresh Security Auditor review; QA is not permitted until that review passes.
+
+---
+
+## Fresh Security re-review — remediation `8081d2e21678d58ce00b09b691129905bcb9d173`
+
+### Review record
+
+| Field | Value |
+| --- | --- |
+| Active phase | Security & Vulnerability Auditor — fresh re-review after direct security remediation |
+| Security-audit base | `0dc44f45aba10e267c37903d14aec60861bbe3d9` — `docs(security): audit fail-closed browser foundation` |
+| Stable remediation target | `8081d2e21678d58ce00b09b691129905bcb9d173` — `fix(browser): harden IPv6 and DNS egress policy` |
+| Range reviewed | Direct parent range `0dc44f45aba10e267c37903d14aec60861bbe3d9..8081d2e21678d58ce00b09b691129905bcb9d173`; only `src/server/browser/browserPolicy.ts` and `src/server/browser/browserPolicy.test.ts` changed. |
+| Inputs | Accepted [`arbitrary-embedded-browser.md`](arbitrary-embedded-browser.md), the preserved failed report above, remediation diff/source/tests, default runtime/federation/session boundaries, manifest/lockfile status, and user-facing Browser claims. |
+| Auditor modifications | This report only. No production or test implementation, runtime owner, `sessiond`, manifest, lockfile, Changeset, or `CHANGELOG.md` file was modified. |
+
+## Security Scan Report: **PASS**
+
+The prior **M1** and **m1** findings are resolved in the reviewed remediation range. The IPv6 classifier is now a conservative public-native-GUA allowlist with explicit, payload-checked exceptions; policy compilation, DNS cardinality, deadline/cancellation, timer cleanup, and failure handling are bounded and deterministic. The shipping default remains unavailable: this target starts no browser runtime and creates no browser-control, proxy, federation, or session-runtime path.
+
+This result does **not** treat the pure TypeScript policy as a network boundary. `browserPolicy.ts:168-171` continues to require connection-time interception, an enforced network boundary, and a concurrency budget for a future runtime. The accepted architecture's layered egress enforcement remains mandatory before any browser capability can advertise availability.
+
+### Prior finding outcomes
+
+#### M1 — IPv6 public-address classification: **pass**
+
+`src/server/browser/browserPolicy.ts:373-450` now:
+
+- permits native IPv6 only from `2000::/3`, then rejects IETF/special-purpose, documentation, 6to4, and AS112 ranges;
+- rejects non-GUA/unallocated forms such as `4000::/3`, site-local, ULA, link-local, multicast, Teredo, ORCHIDv2, 6to4, and unsupported NAT64/translation forms;
+- recognizes only four exact IPv4-embedded prefixes (`::/96`, IPv4-mapped, IPv4-translated, and well-known `64:ff9b::/96`) and applies the existing public-IPv4 classifier to each low 32-bit payload; and
+- fails closed for malformed/unknown textual addresses because Node `isIP()` gates the custom IPv6 parser at `:196-202`.
+
+Independent literal and controlled-resolver probes confirmed matching allow/deny decisions for public native GUA, site-local, non-GUA/unallocated, Teredo, ORCHIDv2, 6to4, locally assigned/unsupported NAT64, well-known NAT64 with public versus RFC1918 payloads, and IPv4-compatible/mapped/translated public versus loopback/metadata payloads. WHATWG URL canonicalization also rejected dotted/alternate loopback spellings (`2130706433`, octal/hex dotted forms, and short dotted forms) and dotted IPv4-mapped/NAT64 private forms. No probe allowed a denied destination through either literal or controlled-DNS evaluation.
+
+#### m1 — Policy/resolver resource bounds and fail-closed behavior: **pass**
+
+`src/server/browser/browserPolicy.ts:98-126,173-263` now compiles and freezes trusted policy once, caps raw domain and port list cardinality at 64 and 16 respectively, rejects invalid/uncompiled policy objects, caps DNS answers at 16 before iterating them, and rejects any non-public answer. The resolver has a 2-second default and a 10-second hard maximum; invalid deadlines (`0`, over-limit, `NaN`, or infinity) fail closed before invoking the resolver.
+
+Independent deterministic timer probes verified that a never-settling resolver receives an abort signal and a deadline, returns generic `dns-unavailable` after expiry, and leaves zero pending timers. A successful resolution also clears its timer. A resolver error is mapped to the same generic denial; resolver exception text is not included in the policy decision. A caller can select only a bounded test seam deadline, not disable or extend it beyond the hard maximum. The pure module has no current production caller; any future browser runtime must still own resolver implementation limits and concurrency budgets rather than accepting caller-controlled timeouts.
+
+### New line-specific findings
+
+| Category | Findings |
+| --- | --- |
+| Blocker | None. |
+| Major | None. |
+| Minor | None. |
+| Nit | None. |
+
+## Default posture and boundary regression assessment
+
+- The remediation range changes neither `src/server/index.ts`, `src/server/app.ts`, `src/server/sessiond.ts`, machine proxy/client code, shared federation allowlists, client API construction, user-facing FAQ/Changeset, nor dependency files. `git diff --name-status` for those boundaries is empty.
+- `src/server/index.ts` still calls `buildApp()` without a browser runtime or trusted browser-principal provider. `src/server/app.ts:183,238-240` therefore supplies the side-effect-free unavailable runtime and omits an identity provider. Independent Fastify injection returned `BROWSER_AUTH_REQUIRED` for the only local capability-discovery route, while local browser session controls and remote browser capability discovery returned JSON 404s. No CORS allow-origin header was emitted for an untrusted Origin.
+- `src/server/browser/browserRuntime.ts:43-57` remains readiness-only and unavailable by default. No Chromium/browserd/CDP/control listener, browser WebSocket/session route, raw external fetch, private-network setting, proxy/header rewrite, destination-cookie forwarding, or browser federation route was added. `FEDERATED_HTTP_ROUTES` and `FEDERATED_WEBSOCKET_ROUTES` contain no browser route; the existing machine-client `authorization`/`cookie` filtering remains unchanged.
+- The current Browser panel is still the pre-existing sandboxed, `no-referrer` user-browser iframe and accurately says remote mode is unavailable. `docs/faq.html:141-149` and `.changeset/fail-closed-browser-foundation.md` accurately describe it as a lightweight embedded viewer, not a native remote browser or server-side proxy. No user-facing claim promises framing bypass, header rewriting, or arbitrary-site remote browsing.
+- No `sessiond` source, protocol, ownership, or lifecycle path changed. A session-daemon restart is neither required nor performed.
+
+## Static analysis, secrets, and dependency review
+
+### Changed-code SAST and secrets review
+
+A manual changed-code SAST search over the exact target/base diff found no added process launch, Chromium/browserd import, raw outbound transport (`fetch`, `http`/`https` request, socket/WebSocket), Fastify browser-control route, proxy, redirect/header rewrite, cookie/authorization forwarding, or secret-bearing assignment. The changed production module is a pure parser/classifier/resolver-preflight seam; it makes no network request itself.
+
+`semgrep`, `gitleaks`, `trivy`, `osv-scanner`, and `grype` were unavailable on `PATH`, so no clean result is claimed from those specialized tools. This is a scan limitation. Manual diff inspection, TypeScript checks, ESLint, Knip, focused tests, full verification, and npm's advisory audit were run instead.
+
+### Manifest/lockfile and dependency audit
+
+- No manifest or lockfile changed in `0dc44f45aba10e267c37903d14aec60861bbe3d9..8081d2e21678d58ce00b09b691129905bcb9d173`; no browser automation/runtime dependency was introduced.
+- `npm audit --omit=dev --json` exited `0`: **0 production vulnerabilities** across 160 production dependencies.
+- `npm audit --json` exited `1` with three transitive vulnerable-package entries outside the production-only audit: `brace-expansion` has two high DoS advisories (GHSA-3jxr-9vmj-r5cp and GHSA-mh99-v99m-4gvg), `postcss` has one high source-map path disclosure (GHSA-r28c-9q8g-f849), and `protobufjs` has one moderate parser DoS (GHSA-j3f2-48v5-ccww). The full development tree is therefore not clean. These are pre-existing in this unchanged dependency graph and do not block this focused remediation's production security decision; track their upgrade separately before a broader release.
+
+## Verification evidence
+
+Every isolated shell command was prefixed with `source yesconda`.
+
+| Check | Result |
+| --- | --- |
+| `git diff --check 0dc44f45aba10e267c37903d14aec60861bbe3d9 8081d2e21678d58ce00b09b691129905bcb9d173` | Passed; no whitespace errors. |
+| Focused browser policy/capability/panel tests | Passed: 5 files, 112 tests. |
+| Direct TypeScript IPv6 literal/resolver and ambiguous-URL probes | Passed: all required deny cases were denied on classifier, literal, and resolver paths; public native GUA and explicitly modeled public-IPv4 payload exceptions allowed. |
+| Direct deterministic resolver probes | Passed: oversized answer denied; never-settling resolver aborted with generic denial and timer cleanup; successful result cleanup verified; invalid deadline values invoked no resolver and denied. |
+| Direct default `buildApp()` route injection | Passed: default capability is unavailable, browser sessions/remote capability are absent JSON 404s, and no permissive CORS header was present. |
+| `npm run typecheck` and focused ESLint over the two remediation files | Passed. |
+| `npm run verify` | Passed: typecheck, lint, Knip, and Vitest; 268 files passed, 2,080 tests passed, 2 skipped. |
+| Production dependency audit | Passed: `npm audit --omit=dev --json` found 0 production vulnerabilities. |
+| Full dependency audit | Not clean, pre-existing advisory limitation recorded above; npm exit 1. |
+| Static changed-diff searches and manual inspection | Passed for the reviewed scope; specialized scanner availability limitation recorded above. |
+
+The report is repository-only architecture/security documentation outside the package `files` allowlist. Per the request and Changeset policy, no Changeset was added and `CHANGELOG.md` was not edited.
+
+## Completion and permitted handoff
+
+**Completion status:** `pass`
+
+**Security-report decision:** **PASS** — M1 and m1 are resolved; no new Blocker, Major, Minor, or Nit finding was identified in the target/base range.
+
+**Next permitted PM action:** PM may arrange QA. This Security Auditor review does not merge, push, approve/perform QA, release, deploy, publish, alter runtime ownership, or change `sessiond`.
