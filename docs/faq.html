@@ -138,10 +138,15 @@
                 panel is open; page zoom is remembered in this browser.
               </p>
               <p>
-                Browser is a lightweight embedded viewer, not a native browser or a server-side proxy. It accepts
-                <code>http://</code> and <code>https://</code> addresses and renders them in a sandboxed, no-referrer
-                frame. Pages that send frame-protection headers can refuse to load, and an HTTPS PI WEBUI deployment may
-                have its browser block an HTTP page as mixed content.
+                Browser is a lightweight embedded viewer, not a native browser or a server-side proxy. The panel labels
+                this mode explicitly. It accepts <code>http://</code> and <code>https://</code> addresses and renders
+                them in a sandboxed, no-referrer frame. Pages that send frame-protection headers can refuse to load, and
+                an HTTPS PI WEBUI deployment may have its browser block an HTTP page as mixed content.
+              </p>
+              <p>
+                PI WEBUI does not currently ship a remote arbitrary-site browser runtime. No setting rewrites page
+                headers or turns this viewer into a proxy, so use a normal browser for sites that block framing or require
+                local-browser capabilities.
               </p>
               <p>
                 The address field tracks pages opened from the Browser controls. For privacy and browser security, PI

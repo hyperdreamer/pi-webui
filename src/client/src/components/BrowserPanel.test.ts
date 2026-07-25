@@ -67,6 +67,14 @@ describe("BrowserPanel", () => {
     expect(templateText(renderEmbeddedPage(panel))).toContain('referrerpolicy="no-referrer"');
   });
 
+  it("labels the iframe mode as a lightweight embedded viewer", () => {
+    const panel = createPanel();
+
+    expect(templateText(panel.render())).toContain("Lightweight embedded viewer");
+    expect(templateText(panel.render())).toContain("Pages that block framing may not load.");
+    expect(templateText(panel.render())).toContain("Remote browser mode is unavailable in this installation.");
+  });
+
   it("navigates the active tab when the address form is submitted", () => {
     const panel = createPanel();
     Reflect.set(panel, "address", "example.com/docs");

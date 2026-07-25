@@ -111,6 +111,7 @@ export class BrowserPanel extends LitElement {
               <button type="submit" class="navigate-button">Go</button>
               <button type="button" class="reload-button" @click=${this.reloadActiveTab} aria-label="Reload page" title="Reload page">↻</button>
             </form>
+            <p class="browser-mode-notice">Lightweight embedded viewer. Remote browser mode is unavailable in this installation. Pages that block framing may not load.</p>
             ${this.addressError === "" ? null : html`<p class="address-error" role="alert">${this.addressError}</p>`}
           </div>
           <div class="browser-page-viewport" role="tabpanel" aria-label="Browser page">
@@ -357,6 +358,7 @@ export class BrowserPanel extends LitElement {
     .address-form input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; font: inherit; }
     .navigate-button, .reload-button { flex: 0 0 auto; border-radius: 7px; padding: 7px 9px; font: inherit; }
     .reload-button { width: 34px; padding: 0; font-size: 17px; }
+    .browser-mode-notice { margin: -2px 10px 8px; color: var(--pi-muted); font-size: 12px; }
     .address-error { margin: 0; padding: 0 10px 8px; color: var(--pi-danger); font-size: 12px; }
     .browser-page-viewport { min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
     .browser-page-scale { width: calc(100% / var(--browser-page-zoom)); height: calc(100% / var(--browser-page-zoom)); transform: scale(var(--browser-page-zoom)); transform-origin: top left; }

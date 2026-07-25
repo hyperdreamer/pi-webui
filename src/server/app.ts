@@ -38,6 +38,8 @@ import { MachineService } from "./machines/machineService.js";
 import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
+import { registerLocalBrowserCapabilityRoutes, type BrowserPrincipalProvider } from "./browser/browserCapabilityRoutes.js";
+import { unavailableBrowserRuntime, type BrowserRuntimeClient } from "./browser/browserRuntime.js";
 import type { Project, Workspace } from "./types.js";
 
 export interface AppDependencies {
@@ -51,6 +53,10 @@ export interface AppDependencies {
   piPackagePlugins?: PiPackagePluginsConfigService;
   piWebUiStatusCache?: PiWebUiStatusCache;
   config?: PiWebUiConfigService;
+  /** Optional isolated browserd adapter. Omitted deployments fail closed. */
+  browserRuntime?: BrowserRuntimeClient;
+  /** Trusted server-side identity adapter for browser requests. */
+  browserPrincipalProvider?: BrowserPrincipalProvider;
   clientDist?: string | false;
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
@@ -170,6 +176,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const workspaces = deps.workspaces ?? new WorkspaceService();
   const configService = deps.config ?? createFilePiWebUiConfigService();
   const readConfig = () => readEffectiveConfig(configService);
+  const browserRuntime = deps.browserRuntime ?? unavailableBrowserRuntime();
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const agentProfileProvider = deps.agentProfileProvider ?? new SessionDaemonActiveAgentProfileProvider(sessionDaemon);
   const piWebUiPlugins = deps.piWebUiPlugins ?? new PiWebUiPluginService({
@@ -224,6 +231,10 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerMachineRoutes(app, machines);
   registerMachinePluginProxyRoutes(app, machines);
+  registerLocalBrowserCapabilityRoutes(app, {
+    runtime: browserRuntime,
+    ...(deps.browserPrincipalProvider === undefined ? {} : { principalProvider: deps.browserPrincipalProvider }),
+  });
 
   registerLocalProjectRoutes(app, projects, workspaces, "/api", { config: configService });
   registerLocalProjectRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
