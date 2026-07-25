@@ -87,6 +87,20 @@ describe("groupChatMessages", () => {
     ]);
   });
 
+  it("preserves user history-action metadata on readable messages", () => {
+    const message: ChatLine = {
+      role: "user",
+      parts: [{ type: "text", text: "Revise this" }],
+      entryId: "user-entry-2",
+      previousAssistantEntryId: "assistant-entry-1",
+      canFork: true,
+    };
+
+    expect(groupChatMessages([message])).toEqual([
+      { kind: "message", index: 0, message },
+    ]);
+  });
+
   it("treats compaction and branch summaries as grouped events", () => {
     const messages: ChatLine[] = [
       { ...text("assistant", "summary"), source: "compaction" },

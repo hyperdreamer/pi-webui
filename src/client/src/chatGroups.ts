@@ -26,11 +26,17 @@ export function groupChatMessages(messages: ChatLine[], indexOffset = 0): ChatGr
 
     const absoluteIndex = indexOffset + index;
     const metadata = { ...(message.source === undefined ? {} : { source: message.source }), ...(message.meta === undefined ? {} : { meta: message.meta }) };
+    const readableMetadata = {
+      ...metadata,
+      ...(message.entryId === undefined ? {} : { entryId: message.entryId }),
+      ...(message.previousAssistantEntryId === undefined ? {} : { previousAssistantEntryId: message.previousAssistantEntryId }),
+      ...(message.canFork === undefined ? {} : { canFork: message.canFork }),
+    };
     if (technicalParts.length) pushEvent({ role: message.role, parts: technicalParts, ...metadata }, absoluteIndex);
     if (readableParts.length) {
       flushEvents();
       const role = readableParts.every((part) => part.type === "skillRead") ? "skill" : message.role;
-      const readableMessage = { role, parts: readableParts, ...metadata };
+      const readableMessage = { role, parts: readableParts, ...readableMetadata };
       if (isToolImageMessage(readableMessage)) {
         const toolName = toolNameFromParts(technicalParts);
         groups.push({ kind: "tool-image", message: readableMessage, index: absoluteIndex, ...(toolName === undefined ? {} : { toolName }) });
