@@ -294,6 +294,7 @@ export class PiWebUiApp extends LitElement {
   @state() private gitUpdateManagerPanelOpen = false;
   @state() private terminalModalOpen = false;
   @state() private terminalModalBounds: TerminalModalBounds | undefined;
+  @state() private terminalModalMaximized = false;
   private terminalModalPointerInteraction: TerminalModalPointerInteraction | undefined;
   private readonly initialTerminalModalPreferences = readTerminalModalPreferences();
   @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
@@ -2430,6 +2431,11 @@ export class PiWebUiApp extends LitElement {
     this.terminalModalOpen = false;
   };
 
+  private readonly toggleTerminalModalMaximized = (): void => {
+    this.finishTerminalModalPointerInteraction();
+    this.terminalModalMaximized = !this.terminalModalMaximized;
+  };
+
   private readonly handleTerminalModalMovePointerDown = (event: TerminalModalPointerEvent): void => {
     this.startTerminalModalPointerInteraction("move", event);
   };
@@ -2461,7 +2467,7 @@ export class PiWebUiApp extends LitElement {
   };
 
   private startTerminalModalPointerInteraction(operation: TerminalModalPointerInteraction["operation"], event: TerminalModalPointerEvent): void {
-    if (event.button !== 0) return;
+    if (this.terminalModalMaximized || event.button !== 0) return;
     const target = event.currentTarget;
     if (!(target instanceof HTMLElement)) return;
     const frame = target.closest(".terminal-modal-frame");
@@ -2493,7 +2499,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private terminalModalFrameStyle(): string {
-    const bounds = this.terminalModalBounds;
+    const bounds = this.terminalModalMaximized ? undefined : this.terminalModalBounds;
     const geometry = bounds === undefined ? "" : `; left: ${String(bounds.left)}px; top: ${String(bounds.top)}px; width: ${String(bounds.width)}px; height: ${String(bounds.height)}px`;
     return `--terminal-modal-opacity: ${String(this.terminalModalOpacity)}%${geometry};`;
   }
@@ -2671,7 +2677,12 @@ export class PiWebUiApp extends LitElement {
         @click=${(event: MouseEvent) => { if (event.target === event.currentTarget) this.handleCloseTerminalModal(); }}
         @keydown=${(event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); this.handleCloseTerminalModal(); } }}
       >
-        <div class=${this.terminalModalBounds === undefined ? "terminal-modal-frame" : "terminal-modal-frame terminal-modal-frame-positioned"} style=${this.terminalModalFrameStyle()}>
+        <div
+          class=${this.terminalModalMaximized
+            ? "terminal-modal-frame terminal-modal-frame-maximized"
+            : this.terminalModalBounds === undefined ? "terminal-modal-frame" : "terminal-modal-frame terminal-modal-frame-positioned"}
+          style=${this.terminalModalFrameStyle()}
+        >
           <header class="terminal-modal-header">
             <span
               class="terminal-modal-drag-handle"
@@ -2690,6 +2701,29 @@ export class PiWebUiApp extends LitElement {
               <span class="terminal-modal-font-size">${this.terminalModalOpacity}%</span>
               <button type="button" class="terminal-modal-font-btn" @click=${() => { this.adjustTerminalOpacity(5); }} aria-label="Decrease transparency">●</button>
             </span>
+            <span
+              class="terminal-modal-drag-spacer"
+              aria-hidden="true"
+              @pointerdown=${this.handleTerminalModalMovePointerDown}
+              @pointermove=${this.handleTerminalModalPointerMove}
+              @pointerup=${this.handleTerminalModalPointerUp}
+              @pointercancel=${this.handleTerminalModalPointerCancel}
+            ></span>
+            <button
+              type="button"
+              class="terminal-modal-maximize"
+              @click=${this.toggleTerminalModalMaximized}
+              aria-label=${this.terminalModalMaximized ? "Restore terminal window" : "Maximize terminal window"}
+              title=${this.terminalModalMaximized ? "Restore terminal window" : "Maximize terminal window"}
+            >
+              <svg class="terminal-modal-maximize-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect class=${this.terminalModalMaximized ? "terminal-modal-maximize-icon-hidden" : ""} x="5" y="5" width="14" height="14" rx="1"></rect>
+                <g class=${this.terminalModalMaximized ? "" : "terminal-modal-maximize-icon-hidden"}>
+                  <rect x="8" y="4" width="12" height="12" rx="1"></rect>
+                  <rect x="4" y="8" width="12" height="12" rx="1"></rect>
+                </g>
+              </svg>
+            </button>
             <button type="button" class="terminal-modal-close" @click=${this.handleCloseTerminalModal} aria-label="Close terminal">×</button>
           </header>
           <div class="terminal-modal-body">

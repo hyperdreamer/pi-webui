@@ -224,11 +224,18 @@ export const appStyles = css`
     -webkit-backdrop-filter: blur(12px);
   }
   .terminal-modal-frame-positioned { position: fixed; }
+  .terminal-modal-frame-maximized {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+  }
   .terminal-modal-header {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 8px;
     padding: 10px 14px;
     border-bottom: 1px solid var(--pi-border);
@@ -238,7 +245,7 @@ export const appStyles = css`
     font-weight: 600;
   }
   .terminal-modal-drag-handle {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     align-self: stretch;
     min-width: 0;
     display: flex;
@@ -278,7 +285,15 @@ export const appStyles = css`
     font-size: 12px;
     font-weight: 400;
   }
-  .terminal-modal-close {
+  .terminal-modal-drag-spacer {
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 0;
+    cursor: move;
+    touch-action: none;
+  }
+  .terminal-modal-maximize, .terminal-modal-close {
+    flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
     width: 28px;
@@ -288,10 +303,20 @@ export const appStyles = css`
     border-radius: 6px;
     background: color-mix(in srgb, var(--pi-bg) var(--terminal-modal-opacity), transparent);
     color: var(--pi-muted);
-    font-size: 18px;
     cursor: pointer;
   }
-  .terminal-modal-close:hover {
+  .terminal-modal-maximize-icon {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .terminal-modal-maximize-icon-hidden { display: none; }
+  .terminal-modal-close { font-size: 18px; }
+  .terminal-modal-maximize:hover, .terminal-modal-close:hover {
     background: color-mix(in srgb, var(--pi-surface-hover) var(--terminal-modal-opacity), transparent);
     color: var(--pi-text);
   }
@@ -306,6 +331,12 @@ export const appStyles = css`
     flex: 1 1 auto;
     min-height: 0;
   }
+  .terminal-modal-frame-maximized .terminal-modal-drag-handle,
+  .terminal-modal-frame-maximized .terminal-modal-drag-spacer {
+    cursor: default;
+    touch-action: auto;
+  }
+  .terminal-modal-frame-maximized .terminal-modal-resize-handle { display: none; }
   .terminal-modal-resize-handle {
     position: absolute;
     right: 0;

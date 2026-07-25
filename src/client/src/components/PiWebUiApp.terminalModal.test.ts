@@ -23,6 +23,30 @@ describe("PiWebUiApp terminal modal", () => {
     expect(harness.dragHandle.releasePointerCapture).toHaveBeenCalledWith(1);
   });
 
+  it("keeps the header area after the appearance controls draggable", () => {
+    const harness = createTerminalModalHarness();
+
+    dispatchPointerEvent(harness.dragSpacer, harness.movePointerDownFromSpacer, { pointerId: 3, clientX: 150, clientY: 130 });
+    dispatchPointerEvent(harness.dragSpacer, harness.pointerMove, { pointerId: 3, clientX: 1_000, clientY: -100 });
+
+    expect(terminalModalBounds(harness.app)).toEqual({ left: 584, top: 16, width: 400, height: 300 });
+  });
+
+  it("maximizes and restores the terminal window without losing its regular bounds", () => {
+    const app = createApp();
+    const regularBounds = { left: 100, top: 120, width: 400, height: 300 };
+    Reflect.set(app, "terminalModalBounds", regularBounds);
+    const toggleMaximize = templatePointerHandlerAfterMarker(renderTerminalModal(app), 'class="terminal-modal-maximize"');
+
+    toggleMaximize(new Event("click"));
+    expect(terminalModalMaximized(app)).toBe(true);
+    expect(terminalModalBounds(app)).toEqual(regularBounds);
+
+    toggleMaximize(new Event("click"));
+    expect(terminalModalMaximized(app)).toBe(false);
+    expect(terminalModalBounds(app)).toEqual(regularBounds);
+  });
+
   it("resizes the sidebar terminal window through its lower-right drag control", () => {
     const harness = createTerminalModalHarness();
 
@@ -45,8 +69,10 @@ interface PointerEventInput {
 interface TerminalModalHarness {
   app: PiWebUiApp;
   dragHandle: FakeTerminalModalElement;
+  dragSpacer: FakeTerminalModalElement;
   resizeHandle: FakeTerminalModalElement;
   movePointerDown: PointerEventHandler;
+  movePointerDownFromSpacer: PointerEventHandler;
   resizePointerDown: PointerEventHandler;
   pointerMove: PointerEventHandler;
   pointerUp: PointerEventHandler;
@@ -88,14 +114,17 @@ function createTerminalModalHarness(): TerminalModalHarness {
   const app = createApp();
   const frame = new FakeTerminalModalElement();
   const dragHandle = new FakeTerminalModalElement(frame);
+  const dragSpacer = new FakeTerminalModalElement(frame);
   const resizeHandle = new FakeTerminalModalElement(frame);
   vi.stubGlobal("HTMLElement", FakeTerminalModalElement);
   const modal = renderTerminalModal(app);
   return {
     app,
     dragHandle,
+    dragSpacer,
     resizeHandle,
     movePointerDown: templateEventHandlerNearMarker(modal, 'class="terminal-modal-drag-handle"'),
+    movePointerDownFromSpacer: templatePointerHandlerAfterMarker(modal, 'class="terminal-modal-drag-spacer"'),
     resizePointerDown: templateEventHandlerNearMarker(modal, 'class="terminal-modal-resize-handle"'),
     pointerMove: templatePointerHandlerAfterMarker(modal, "@pointermove="),
     pointerUp: templatePointerHandlerAfterMarker(modal, "@pointerup="),
@@ -120,6 +149,10 @@ function renderTerminalModal(app: PiWebUiApp): TemplateResult {
 
 function terminalModalBounds(app: PiWebUiApp): unknown {
   return Reflect.get(app, "terminalModalBounds");
+}
+
+function terminalModalMaximized(app: PiWebUiApp): unknown {
+  return Reflect.get(app, "terminalModalMaximized");
 }
 
 function templatePointerHandlerAfterMarker(template: TemplateResult, marker: string): PointerEventHandler {

@@ -681,10 +681,18 @@ export class TerminalPanel extends LitElement {
           ${this.renderCopyModeToggle()}
           ${this.renderSoftKeysToggle()}
           ${this.terminals.map((terminal) => html`
-            <button class=${this.selectedId === terminal.id ? "selected" : ""} @click=${() => { this.selectTerminal(terminal.id); }}>
-              <span>${terminal.name}${terminal.exited ? " · exited" : ""}</span>
-              <small @click=${(event: Event) => { void this.closeTerminal(terminal.id, event); }}>×</small>
-            </button>
+            <span class=${this.selectedId === terminal.id ? "terminal-tab selected" : "terminal-tab"}>
+              <button type="button" class="terminal-tab-select" @click=${() => { this.selectTerminal(terminal.id); }}>
+                <span>${terminal.name}${terminal.exited ? " · exited" : ""}</span>
+              </button>
+              <button
+                type="button"
+                class="terminal-tab-close"
+                aria-label=${`Close ${terminal.name}`}
+                title=${`Close ${terminal.name}`}
+                @click=${(event: Event) => { void this.closeTerminal(terminal.id, event); }}
+              >×</button>
+            </span>
           `)}
           <button class="new" ?disabled=${this.workspace === undefined} @click=${() => { void this.startTerminal(); }}>+ Shell</button>
         </div>
@@ -704,7 +712,7 @@ export class TerminalPanel extends LitElement {
     :host { flex: 1 1 auto; min-height: 0; display: flex; }
     .terminal-shell { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: transparent; }
     .terminal-tabs { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--pi-border-muted); background: color-mix(in srgb, var(--pi-bg) var(--pi-terminal-ui-opacity, 100%), transparent); overflow: auto; }
-    .terminal-tabs > button { box-sizing: border-box; height: 30px; line-height: 16px; }
+    .terminal-tabs > button, .terminal-tab > button { box-sizing: border-box; height: 30px; line-height: 16px; }
     /* Desktop xterm already has mouse selection and hardware keys; keep touch controls to touch/narrow layouts. */
     .copy-mode-toggle, .soft-keys-toggle, terminal-soft-keys { display: none; }
     .copy-mode-toggle.selected { display: inline-flex; }
@@ -715,12 +723,17 @@ export class TerminalPanel extends LitElement {
     button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 180px; border: 1px solid var(--pi-border); border-radius: 7px; background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-text); padding: 5px 7px; cursor: pointer; }
     button:hover { background: color-mix(in srgb, var(--pi-surface-hover) var(--pi-terminal-ui-opacity, 100%), transparent); }
     button.selected { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-selection-bg) var(--pi-terminal-ui-opacity, 100%), transparent); }
+    .terminal-tab { flex: 0 0 auto; display: inline-flex; min-width: 0; max-width: 180px; height: 30px; overflow: hidden; border: 1px solid var(--pi-border); border-radius: 7px; background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); }
+    .terminal-tab:hover { background: color-mix(in srgb, var(--pi-surface-hover) var(--pi-terminal-ui-opacity, 100%), transparent); }
+    .terminal-tab.selected { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-selection-bg) var(--pi-terminal-ui-opacity, 100%), transparent); }
+    .terminal-tab-select { flex: 1 1 auto; max-width: none; border: 0; border-radius: 0; background: transparent; }
+    .terminal-tab-select:hover { background: transparent; }
+    .terminal-tab-close { flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-left: 1px solid var(--pi-border); border-radius: 0; background: transparent; color: var(--pi-muted); font-size: 18px; line-height: 1; }
+    .terminal-tab-close:hover { background: color-mix(in srgb, var(--pi-surface-hover) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-danger); }
     button.new { flex: 0 0 auto; color: var(--pi-muted); }
     .soft-keys-toggle { flex: 0 0 auto; }
     .soft-keys-toggle .keyboard-icon { display: block; flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
     button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    button small { color: var(--pi-muted); font-size: 14px; line-height: 1; }
-    button small:hover { color: var(--pi-danger); }
     button.danger { color: var(--pi-danger); }
     button:disabled { opacity: .5; cursor: not-allowed; }
     .command-run-notice { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--pi-border-muted); background: color-mix(in srgb, var(--pi-surface) var(--pi-terminal-ui-opacity, 100%), transparent); color: var(--pi-text); }
