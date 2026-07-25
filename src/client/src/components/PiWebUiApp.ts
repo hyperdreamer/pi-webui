@@ -1400,6 +1400,7 @@ export class PiWebUiApp extends LitElement {
       <app-navigation-panel
         .machines=${this.state.machines}
         .selectedMachine=${this.state.selectedMachine}
+        .version=${this.state.piWebUiStatus?.components.web.runtimeVersion}
         .machineStatuses=${this.state.machineStatuses}
         .machineActivities=${this.state.machineActivities}
         .machinesCollapsed=${this.navigationSections.isCollapsed("machines")}

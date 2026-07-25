@@ -41,6 +41,7 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) deletingWorkspaceIds: string[] = [];
   @property({ attribute: false }) workspaceLabelItems: (workspace: Workspace) => WorkspaceLabelItem[] = () => [];
+  @property({ type: String }) version: string | undefined;
   @property({ attribute: false }) refreshControl: unknown;
   @property({ type: Boolean, reflect: true }) collapsible = false;
   @property({ type: Boolean, reflect: true }) compact = false;
@@ -108,9 +109,10 @@ export class AppNavigationPanel extends LitElement {
   }
 
   override render() {
+    const version = this.version;
     return html`
       <header>
-        <strong class="brand" aria-label="Pi WebUI"><span class="brand-symbol" aria-hidden="true">π</span><span>WebUI</span></strong>
+        <strong class="brand" aria-label=${version === undefined ? "Pi WebUI" : `Pi WebUI version ${version}`}><span class="brand-symbol" aria-hidden="true">π</span><span>WebUI</span>${version === undefined ? null : html`<span class="brand-version">v${version}</span>`}</strong>
         ${shouldShowMachinesSection(this.machines) ? html`
           <machine-switcher
             .machines=${this.machines}
@@ -250,6 +252,7 @@ export class AppNavigationPanel extends LitElement {
     header strong { flex: 0 0 auto; }
     .brand { display: inline-flex; align-items: center; gap: 5px; }
     .brand-symbol { font-size: 28px; font-weight: 700; line-height: 1; }
+    .brand-version { color: var(--pi-muted); font-size: 12px; font-weight: 500; line-height: 1; }
     machine-switcher { flex: 1 1 auto; min-width: 0; }
     :host([compact]) header { display: none; }
     .header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }

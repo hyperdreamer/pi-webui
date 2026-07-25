@@ -5,13 +5,28 @@ import { AppNavigationPanel, NAVIGATION_RESOURCE_UNDERBAR_ITEMS, navigationResou
 
 describe("app-navigation-panel wordmark", () => {
   it("renders a large pi symbol beside the WebUI name", () => {
-    const markup = templateText(new AppNavigationPanel().render());
+    const rendered = new AppNavigationPanel().render();
+    const markup = templateText(rendered);
 
-    expect(markup).toContain('class="brand" aria-label="Pi WebUI"');
+    expect(templateValueAfterMarker(rendered, 'class="brand" aria-label=')).toBe("Pi WebUI");
     expect(markup).toContain('class="brand-symbol" aria-hidden="true">π</span>');
     expect(markup).toContain(">WebUI</span>");
     expect(markup).not.toContain(">PI WEBUI<");
     expect(AppNavigationPanel.styles.cssText).toMatch(/\.brand-symbol\s*\{[^}]*font-size:\s*28px;/);
+  });
+
+  it("renders the current version beside the WebUI name", () => {
+    const panel = new AppNavigationPanel();
+    panel.version = "1.5.1";
+
+    const rendered = panel.render();
+    const markup = templateText(rendered);
+    const nameIndex = markup.indexOf(">WebUI</span>");
+    const versionIndex = markup.indexOf('class="brand-version">v1.5.1</span>');
+
+    expect(templateValueAfterMarker(rendered, 'class="brand" aria-label=')).toBe("Pi WebUI version 1.5.1");
+    expect(versionIndex).toBeGreaterThan(nameIndex);
+    expect(AppNavigationPanel.styles.cssText).toMatch(/\.brand-version\s*\{[^}]*font-size:\s*12px;/);
   });
 });
 
