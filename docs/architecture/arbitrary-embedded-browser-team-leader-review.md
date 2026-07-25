@@ -111,3 +111,74 @@ This particular target is nevertheless **not eligible to merge**. M1 leaves the 
 **Completion status: fail**
 
 **Next permitted action for PM:** return the target to the Programmer for review-fix iteration 1/3, limited to M1, M2, and m1 remediation plus focused regression tests. Do not merge or schedule Security Auditor review until a new stable implementation commit passes Team Leader re-review.
+
+## Re-review — 2026-07-25 (Programmer remediation round 1/3)
+
+### Re-review record
+
+| Field | Value |
+| --- | --- |
+| Active phase | Team Leader / Code Review — re-review after Programmer remediation round 1/3 |
+| Architecture base | `85840ca918ee37869ac3793b302b81ee5ac70b84` — `docs(architecture): design arbitrary-site browser service` |
+| Original implementation baseline | `16780cd1a6de5598cca422bde7f3c504c62cb338` — `feat(browser): add fail-closed remote browser foundation` |
+| Prior Team Leader review report | `e4cf2a7622de422b5794f9ee9756b5e13a5a9556` — `docs(review): assess fail-closed browser foundation` |
+| Remediation target reviewed | `d211d179c3506e60a917cfe166c860cd5d8a610d` — `fix(browser): harden fail-closed capability boundaries` |
+| Branch/worktree reviewed | `agent/browser-connection-fix` at `/data/home/guest/Development/pi-webui-browser-connection-fix` |
+| Review-fix iteration | 1 of 3 — remediation accepted; no round 2 is required |
+
+### Prior-finding outcomes
+
+#### M1 — IPv6/IPv4-transition address classification
+
+**Outcome: pass — resolved.** `src/server/browser/browserPolicy.ts:239-299` now recognizes IPv4-compatible, IPv4-mapped, IPv4-translated, and well-known NAT64 `/96` forms before applying the existing IPv4 public-address classifier to their low 32 bits. It also fails closed for other addresses under `64:ff9b::/32`, rather than treating an unsupported translation prefix as native public IPv6.
+
+Independent literal and resolver-path probes confirmed that all of the following are rejected as non-public: `64:ff9b::c0a8:1`, `64:ff9b::a9fe:a9fe`, `::ffff:0:c0a8:1`, `::ffff:0:a9fe:a9fe`, and unsupported `64:ff9b:1::5db8:d822` / `64:ff9b:2::5db8:d822` forms. Dotted IPv4 spellings of the NAT64 and translated metadata/private forms were also rejected. The classifier still accepts well-known NAT64 and IPv4-translated forms carrying `93.184.216.34`, plus ordinary public native IPv6 such as `2001:4860:4860::8888` and `2606:2800:220:1:248:1893:25c8:1946`.
+
+This remains deliberately a pure classification layer, not a claim of sufficient network enforcement: `browserPolicy.ts:54-57` says it neither fetches nor proxies a destination, and `browserRuntime.ts:26` continues to require connection-time network-boundary enforcement. The architecture's Chromium interception and authoritative egress-boundary requirements remain unchanged; no browser runtime is enabled by this target.
+
+#### M2 — Static-client fallback and absent browser API routes
+
+**Outcome: pass — resolved.** `src/server/app.ts:164-165,269-272` reserves the server-side `/api` namespace for JSON 404s before the SPA fallback. Under normal `buildApp()` static-client hosting, unmatched `/api`, `/api?probe=1`, `/api/unknown`, absent remote capability discovery, and absent local browser session controls returned HTTP 404 with `application/json` and `{"error":"API route not found"}`. The registered local capability route remained JSON HTTP 200 and was not intercepted.
+
+The non-API SPA fallback remains intact: an independently probed nested client path (`/browser/nested/path?tab=1`) returned the static `index.html`, while `/apiary` remained a non-API fallback path. No client URL construction or reverse-proxy-prefix behavior changed in this remediation.
+
+#### m1 — Trusted principal absence versus provider failure
+
+**Outcome: pass — resolved.** `src/server/browser/browserCapabilityRoutes.ts:25-51` uses an explicit principal-resolution state. An absent provider/principal produces non-retryable `BROWSER_AUTH_REQUIRED`; a throwing provider produces retryable `BROWSER_UNAVAILABLE`. Independent route injection with a provider error containing a sentinel secret confirmed a 200 unavailable capability response without the secret, zero calls to runtime readiness, and no possibility of advertising the browser capability from that failure path. The route logs only the generic dependency-unavailable event at the server boundary.
+
+### Scope, regression, and documentation assessment
+
+- The remediation diff is limited to the prior M1/M2/m1 browser-capability policy, route, app-fallback, and focused-test files. Inspection of the original implementation, remediation diff, `src/server/index.ts`, `src/server/sessiond.ts`, `src/shared/federatedRoutes.ts`, and machine proxy/client boundaries found no URL proxy, header rewrite, cookie exposure, Chromium launch, browser control/session or WebSocket route, remote federation route, private-network access path, or `sessiond` ownership/protocol change.
+- The only browser endpoint remains local capability discovery. `buildApp()` still defaults to the side-effect-free unavailable runtime and has no trusted principal provider. The existing browser panel remains the sandboxed, no-referrer iframe viewer; its availability notice and `docs/faq.html` correctly say that remote arbitrary-site browsing is unavailable and headers are not rewritten.
+- The architecture document still requires layered connection-time and network-boundary enforcement. The existing package Changeset remains appropriate for the bounded user-visible clarification; no `CHANGELOG.md` edit is appropriate. This Team Leader report is repository-only architecture documentation and does not require a Changeset.
+
+### New findings
+
+| Category | New line-specific findings |
+| --- | --- |
+| Blocker | None. |
+| Major | None. |
+| Minor | None. |
+| Nit | None. |
+
+### Checks run
+
+| Check | Result |
+| --- | --- |
+| Review of the original implementation, prior review report, architecture document, and remediation diff | Completed. |
+| `git diff --check 16780cd1a6de5598cca422bde7f3c504c62cb338 d211d179c3506e60a917cfe166c860cd5d8a610d` and `git diff --check e4cf2a7622de422b5794f9ee9756b5e13a5a9556 d211d179c3506e60a917cfe166c860cd5d8a610d` | Passed; no whitespace errors. |
+| Focused tests: `npm test -- --run src/server/browser/browserPolicy.test.ts src/server/browser/browserCapabilities.test.ts src/server/browser/browserCapabilityRoutes.test.ts src/server/app.browserCapabilities.test.ts` | Passed: 4 files, 65 tests. |
+| Independent policy and egress probes using `node --import tsx --input-type=module` | Passed: transition literals and controlled-DNS results above were rejected or allowed according to the resolved M1 policy. |
+| Independent static-client `buildApp()` injection probes | Passed: API JSON 404s, registered capability behavior, non-API fallback, and nested SPA path behavior matched the M2 contract. |
+| Independent absent-principal/provider-error route-injection probe | Passed: the two outcomes are distinguishable, provider failure is retryable/unavailable, runtime readiness was not called, and the sentinel exception text was absent from the response. |
+| `npm run typecheck` | Passed. |
+| Focused ESLint over changed TypeScript source and tests | Passed. |
+| Changed-path, federation/proxy, browser-runtime, and sessiond inspection | Passed for the bounded scope; no prohibited capability was added. |
+
+## Re-review decision and permitted handoff
+
+**Merge status: true**
+
+**Completion status: pass**
+
+**Next permitted action for PM:** hand off the approved remediation target to the Security Auditor for the required security review. This approval makes the target eligible for that gate only; do not merge or advance QA, documentation, release, deployment, or runtime-ownership work from this review.
