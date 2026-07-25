@@ -456,7 +456,7 @@ export const listStyles = css`
 `;
 
 export const chatStyles = css`
-  :host { position: relative; z-index: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; color: var(--pi-text); font: 14px system-ui, sans-serif; }
+  :host { --pi-skill: light-dark(#0969da, #58a6ff); --pi-skill-border: light-dark(#0969da, #1f6feb); --pi-skill-surface: light-dark(#ddf4ff, #0d2847); position: relative; z-index: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; color: var(--pi-text); font: 14px system-ui, sans-serif; }
   .chat-wrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
   .top-notices { box-sizing: border-box; flex: 0 0 auto; max-height: 40%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-bottom: 1px solid var(--pi-border); background: var(--pi-bg-overlay); }
   .session-warnings { flex: 0 1 auto; display: grid; gap: 8px; max-height: 50%; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 10px 16px; border-bottom: 1px solid var(--pi-border-muted); }
@@ -553,7 +553,7 @@ export const chatStyles = css`
   .msg.tool-execution-shell { padding: 0; border: 0; background: transparent; color: var(--pi-text); }
   .msg.system { color: var(--pi-danger); }
   .msg.bash { border-color: var(--pi-success); background: var(--pi-success-bg); }
-  .msg.skill { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
+  .msg.skill { border-color: var(--pi-skill-border); background: var(--pi-skill-surface); }
   .msg.event-group { padding: 0; border-color: var(--pi-border); background: var(--pi-bg); color: var(--pi-muted); }
   .msg.event-group.live { border-color: var(--pi-success-border); background: var(--pi-success-bg); }
   .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
@@ -600,7 +600,7 @@ export const chatStyles = css`
   .msg.user > .msg-header .label { color: var(--pi-accent); }
   .msg.tool > .msg-header { border-bottom-color: color-mix(in srgb, var(--pi-warning-border) 35%, transparent); background: var(--pi-warning-surface); }
   .msg.bash > .msg-header { border-bottom-color: color-mix(in srgb, var(--pi-success) 35%, transparent); background: var(--pi-success-bg); }
-  .msg.skill > .msg-header { border-bottom-color: color-mix(in srgb, var(--pi-purple-border) 35%, transparent); background: var(--pi-purple-surface); }
+  .msg.skill > .msg-header { border-bottom-color: color-mix(in srgb, var(--pi-skill-border) 35%, transparent); background: var(--pi-skill-surface); }
   .group-msg > .msg-header { position: sticky; top: -26px; z-index: 4; margin: -10px 0 8px; padding: 7px 0 6px; border-bottom: 1px solid color-mix(in srgb, var(--pi-border-muted) 35%, transparent); background: var(--pi-bg); }
   .msg-header-trailing { min-width: 0; flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
   .msg-actions { flex: 0 0 auto; display: inline-flex; gap: 6px; opacity: 0; transition: opacity .12s ease; }
@@ -634,7 +634,7 @@ export const chatStyles = css`
   .part:is(details) { border-top: 1px solid var(--pi-border); padding-top: 8px; }
   .part > formatted-text { display: block; max-width: 100%; min-width: 0; overflow: visible; }
   .skill-invocation, .skill-read { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); padding: 8px 10px; }
-  .skill-invocation > summary, .skill-read > strong { color: var(--pi-purple); }
+  .skill-invocation > summary, .skill-read > strong { color: var(--pi-skill); }
   .skill-invocation > small, .skill-read > small { display: block; margin: 6px 0 0; color: var(--pi-muted); }
   summary { cursor: pointer; color: var(--pi-muted); }
   pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; direction: ltr; text-align: left; unicode-bidi: isolate; }
