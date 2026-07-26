@@ -13,6 +13,8 @@ export interface AppState {
   projects: Project[];
   workspaces: Workspace[];
   sessions: SessionInfo[];
+  /** Session records across the selected project's known workspaces, used only for cross-workspace hierarchy display. */
+  projectSessions: SessionInfo[];
   messages: ChatLine[];
   messagePageStart: number;
   messagePageEnd: number;
@@ -81,6 +83,7 @@ export type AuthDialogState =
 
 export type WorkspaceScopedStateReset = Pick<AppState,
   | "sessions"
+  | "projectSessions"
   | "clientQueuedSessionMessages"
   | "startingSessionCount"
   | "isLoadingSessions"
@@ -103,6 +106,7 @@ export type WorkspaceScopedStateReset = Pick<AppState,
 export function resetWorkspaceScopedState(): WorkspaceScopedStateReset {
   return {
     sessions: [],
+    projectSessions: [],
     clientQueuedSessionMessages: {},
     startingSessionCount: 0,
     isLoadingSessions: false,
@@ -133,6 +137,7 @@ export function initialAppState(): AppState {
     projects: [],
     workspaces: [],
     sessions: [],
+    projectSessions: [],
     messages: [],
     messagePageStart: 0,
     messagePageEnd: 0,

@@ -173,6 +173,7 @@ describe("SessionController live events", () => {
       ...initialAppState(),
       selectedSession: oldSession,
       sessions: [oldSession],
+      projectSessions: [oldSession],
     };
     const controller = new SessionController(
       () => state,
@@ -186,6 +187,7 @@ describe("SessionController live events", () => {
     controller.flushPendingUpdates();
 
     expect(state.sessions[0]?.messageCount).toBe(3);
+    expect(state.projectSessions[0]?.messageCount).toBe(3);
     expect(state.selectedSession?.messageCount).toBe(3);
   });
 
@@ -203,6 +205,36 @@ describe("SessionController live events", () => {
     controller.applyGlobalEvent({ type: "session.created", session: spawned });
 
     expect(state.sessions.map((session) => session.id)).toEqual(["spawned-session", "old-session"]);
+  });
+
+  it("adds a created session from another project workspace to the hierarchy catalog", () => {
+    const featureWorkspace = { ...workspace, id: "workspace-feature", path: "/repo-feature", label: "feature" };
+    let state: AppState = {
+      ...initialAppState(),
+      selectedWorkspace: workspace,
+      workspaces: [workspace, featureWorkspace],
+      sessions: [oldSession],
+      projectSessions: [oldSession],
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { socket: new FakeSocket() },
+    );
+    const child: SessionInfo = {
+      ...oldSession,
+      id: "child-session",
+      path: "/tmp/child-session.jsonl",
+      cwd: featureWorkspace.path,
+      parentSessionPath: oldSession.path,
+    };
+
+    controller.applyGlobalEvent({ type: "session.created", session: child });
+
+    expect(state.sessions).toEqual([oldSession]);
+    expect(state.projectSessions).toEqual([child, oldSession]);
   });
 
   it("ignores a created session for a different workspace or a duplicate id", () => {

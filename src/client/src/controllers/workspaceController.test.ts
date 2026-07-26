@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
 import type { Project, SessionInfo, Workspace } from "../api";
 import { InMemoryWorkspaceSelectionMemory } from "./workspaceSelection";
@@ -48,7 +48,62 @@ describe("WorkspaceController", () => {
     expect(state.isLoadingSessions).toBe(false);
     expect(state.sessions).toEqual([]);
   });
+
+  it("loads related sessions from the selected project's other workspaces", async () => {
+    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
+    const main = workspace(project, "workspace-1", "/workspace");
+    const feature = workspace(project, "workspace-feature", "/workspace-feature");
+    const mainSession = session("parent", main.path);
+    const featureSession = session("child", feature.path, { parentSessionPath: mainSession.path });
+    let state: AppState = { ...initialAppState(), projects: [project], selectedProject: project, workspaces: [main, feature] };
+    const sessions: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> = {
+      clearActiveSession: () => undefined,
+      preferredSession: () => undefined,
+      selectSession: () => Promise.resolve(),
+    };
+    const sessionsApi = vi.fn((cwd: string) => Promise.resolve(cwd === main.path ? [mainSession] : [featureSession]));
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      sessions,
+      new InMemoryWorkspaceSelectionMemory(),
+      { api: { workspaces: () => Promise.resolve([]), sessions: sessionsApi } },
+    );
+
+    await controller.selectWorkspace(main);
+
+    await vi.waitFor(() => {
+      expect(state.projectSessions).toEqual([mainSession, featureSession]);
+    });
+    expect(sessionsApi).toHaveBeenCalledWith(feature.path, "local");
+  });
 });
+
+function workspace(project: Project, id: string, path: string): Workspace {
+  return {
+    id,
+    projectId: project.id,
+    path,
+    label: id,
+    isMain: path === project.path,
+    isGitRepo: false,
+    isGitWorktree: false,
+  };
+}
+
+function session(id: string, cwd: string, overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    id,
+    path: `/sessions/${id}.jsonl`,
+    cwd,
+    created: "2026-06-09T00:00:00.000Z",
+    modified: "2026-06-09T00:00:00.000Z",
+    messageCount: 1,
+    firstMessage: id,
+    ...overrides,
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

@@ -1450,6 +1450,7 @@ export class PiWebUiApp extends LitElement {
         .selectedWorkspace=${this.state.selectedWorkspace}
         .deletingWorkspaceIds=${pendingWorkspaceDeletionIds(this.state.workspaceDeletionRuns)}
         .sessions=${this.state.sessions}
+        .projectSessions=${this.state.projectSessions}
         .sessionStatuses=${this.state.sessionStatuses}
         .sessionActivities=${this.state.sessionActivities}
         .sendingPrompts=${this.state.sendingPrompts}
@@ -1490,7 +1491,7 @@ export class PiWebUiApp extends LitElement {
         .onDeleteWorkspace=${(workspace: Workspace) => { void this.deleteWorkspace(workspace); }}
         .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
         .onStartSession=${() => this.startSessionFromNavigation()}
-        .onSelectSession=${(session: SessionInfo) => this.selectNavigationItem("sessions", "chat", () => this.sessions.selectSession(session))}
+        .onSelectSession=${(session: SessionInfo) => this.selectNavigationItem("sessions", "chat", () => this.selectSessionFromNavigation(session))}
         .onRenameSessionStart=${() => { this.cancelPendingNavigationSelection(); }}
         .onRenameSession=${(session: SessionInfo, name: string) => this.sessions.renameSession(session, name)}
         .onArchiveSession=${(session: SessionInfo) => this.sessions.archiveSession(session)}
@@ -1541,6 +1542,19 @@ export class PiWebUiApp extends LitElement {
 
     if (!isCurrentSelection()) return;
     await this.focusNavigationTarget(nextTarget);
+  }
+
+  private async selectSessionFromNavigation(session: SessionInfo): Promise<void> {
+    if (this.state.selectedWorkspace?.path === session.cwd) {
+      await this.sessions.selectSession(session);
+      return;
+    }
+    const workspace = this.state.workspaces.find((candidate) => candidate.path === session.cwd);
+    if (workspace === undefined) {
+      this.setState({ error: "The session's workspace is no longer available." });
+      return;
+    }
+    await this.workspaces.selectWorkspace(workspace, { sessionId: session.id });
   }
 
   private async startSessionFromNavigation(): Promise<void> {

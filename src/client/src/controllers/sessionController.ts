@@ -1088,9 +1088,11 @@ export class SessionController {
   }
 
   private replaceSession(session: SessionInfo) {
-    const current = this.getState().selectedSession;
+    const state = this.getState();
+    const current = state.selectedSession;
     this.setState({
-      sessions: this.getState().sessions.map((candidate) => candidate.id === session.id ? session : candidate),
+      sessions: state.sessions.map((candidate) => candidate.id === session.id ? session : candidate),
+      projectSessions: state.projectSessions.map((candidate) => candidate.id === session.id ? session : candidate),
       selectedSession: current?.id === session.id ? session : current,
     });
   }
@@ -1303,17 +1305,26 @@ export class SessionController {
 
   private applyCreatedSession(session: SessionInfo) {
     const state = this.getState();
-    // Only surface sessions for the workspace currently in view; others are
-    // picked up when their workspace is opened. Skip if already present (e.g.
-    // the optimistic insert from startSession in this same tab).
-    if (state.selectedWorkspace?.path !== session.cwd) return;
-    if (state.sessions.some((candidate) => candidate.id === session.id)) return;
+    const belongsToSelectedProject = state.selectedWorkspace?.path === session.cwd || state.workspaces.some((workspace) => workspace.path === session.cwd);
+    const projectSessions = belongsToSelectedProject ? prependOrReplaceSession(state.projectSessions, session) : state.projectSessions;
+    // Only surface sessions for the workspace currently in view; cross-workspace
+    // records still join the project catalog so they can appear beneath a local
+    // parent without replacing the workspace's actionable session list.
+    if (state.selectedWorkspace?.path !== session.cwd) {
+      if (projectSessions !== state.projectSessions) this.setState({ projectSessions });
+      return;
+    }
+    if (state.sessions.some((candidate) => candidate.id === session.id)) {
+      if (projectSessions !== state.projectSessions) this.setState({ projectSessions });
+      return;
+    }
     const machineId = selectedMachineId(state);
     if (this.hasPendingStartFor(session.cwd, machineId)) {
       this.suppressedCreatedSessions.set(session.id, { session, machineId });
+      if (projectSessions !== state.projectSessions) this.setState({ projectSessions });
       return;
     }
-    this.setState({ sessions: [session, ...state.sessions] });
+    this.setState({ sessions: [session, ...state.sessions], projectSessions });
   }
 
   private applyActivity(activity: SessionActivity) {
@@ -1344,8 +1355,10 @@ export class SessionController {
       return next;
     };
     const selectedSession = this.getState().selectedSession;
+    const state = this.getState();
     this.setState({
-      sessions: this.getState().sessions.map(rename),
+      sessions: state.sessions.map(rename),
+      projectSessions: state.projectSessions.map(rename),
       selectedSession: selectedSession === undefined ? undefined : rename(selectedSession),
     });
   }
@@ -1490,6 +1503,12 @@ function moveRecordKey<T>(record: Record<string, T>, fromKey: string, toKey: str
   return { ...omitKey(record, fromKey), [toKey]: value };
 }
 
+function prependOrReplaceSession(sessions: SessionInfo[], session: SessionInfo): SessionInfo[] {
+  const existing = sessions.find((candidate) => candidate.id === session.id || candidate.path === session.path);
+  if (existing === session) return sessions;
+  return [session, ...sessions.filter((candidate) => candidate.id !== session.id && candidate.path !== session.path)];
+}
+
 function replacePendingSessionInList(sessions: readonly SessionInfo[], pendingSessionId: string, resolvedSession: SessionInfo): SessionInfo[] {
   const next: SessionInfo[] = [];
   let inserted = false;
@@ -1620,12 +1639,16 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function sessionMessageCountPatch(state: AppState, sessionId: string, messageCount: number | undefined): Pick<Partial<AppState>, "sessions" | "selectedSession"> {
+function sessionMessageCountPatch(state: AppState, sessionId: string, messageCount: number | undefined): Pick<Partial<AppState>, "sessions" | "projectSessions" | "selectedSession"> {
   if (messageCount === undefined) return {};
 
   const sessionsChanged = state.sessions.some((session) => session.id === sessionId && session.messageCount !== messageCount);
   const sessions = sessionsChanged
     ? state.sessions.map((session) => session.id === sessionId ? { ...session, messageCount } : session)
+    : undefined;
+  const projectSessionsChanged = state.projectSessions.some((session) => session.id === sessionId && session.messageCount !== messageCount);
+  const projectSessions = projectSessionsChanged
+    ? state.projectSessions.map((session) => session.id === sessionId ? { ...session, messageCount } : session)
     : undefined;
   const selectedSession = state.selectedSession?.id === sessionId && state.selectedSession.messageCount !== messageCount
     ? { ...state.selectedSession, messageCount }
@@ -1633,6 +1656,7 @@ function sessionMessageCountPatch(state: AppState, sessionId: string, messageCou
 
   return {
     ...(sessions === undefined ? {} : { sessions }),
+    ...(projectSessions === undefined ? {} : { projectSessions }),
     ...(selectedSession !== state.selectedSession ? { selectedSession } : {}),
   };
 }
