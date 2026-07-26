@@ -6,6 +6,7 @@ import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
+import { displayedProjects } from "./projectListProjection";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -20,6 +21,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onClose?: (project: Project) => void;
   @property({ attribute: false }) onAdd?: () => void;
+  @property({ attribute: false }) onOpenExpanded?: (restoreFocus: () => void) => void;
   @property({ attribute: false }) onToggleCollapsed?: () => void;
   @property({ attribute: false }) onFocusPreviousSection?: () => void | Promise<void>;
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
@@ -70,6 +72,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       <section>
         <h2>
           ${this.renderHeading()}
+          ${this.renderExpandedBrowserButton()}
           ${this.collapsed ? null : this.renderSearchButton()}
           ${this.renderAddButton()}
         </h2>
@@ -130,6 +133,22 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
     `;
   }
 
+  private renderExpandedBrowserButton() {
+    return html`
+      <button type="button" class="section-expand-button" title="Open expanded project browser" aria-label="Open expanded project browser" @click=${(event: MouseEvent) => { this.openExpandedBrowser(event); }}>
+        ${svg`<svg class="section-expand-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 3H3v6M15 3h6v6M21 15v6h-6M9 21H3v-6"></path></svg>`}
+      </button>
+    `;
+  }
+
+  private openExpandedBrowser(event: MouseEvent): void {
+    event.stopPropagation();
+    const launcher = event.currentTarget;
+    this.onOpenExpanded?.(() => {
+      if (launcher instanceof HTMLButtonElement) launcher.focus();
+    });
+  }
+
   private renderSearchInput() {
     return html`
       <div class="project-search">
@@ -181,43 +200,14 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   static override styles = [
     listStyles,
     css`
-      .section-search-button { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; }
-      .section-search-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+      .section-search-button, .section-expand-button { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; }
+      .section-search-icon, .section-expand-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
       .project-search { flex: 0 0 auto; margin: 0 0 6px; }
       .project-search-input { box-sizing: border-box; width: 100%; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-text); padding: 6px 8px; font: inherit; }
       .project-search-input:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
       .project-search-empty { margin: 6px 0; color: var(--pi-muted); }
     `,
   ];
-}
-
-export function filterProjects(projects: readonly Project[], queryText: string): Project[] {
-  const query = queryText.trim().toLowerCase();
-  if (query === "") return [...projects];
-  return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(query));
-}
-
-export function prioritizeActiveProjects(
-  projects: readonly Project[],
-  workspacesByProjectId: Record<string, Workspace[]>,
-  activities: Record<string, WorkspaceActivity>,
-): Project[] {
-  const activeProjects: Project[] = [];
-  const inactiveProjects: Project[] = [];
-  for (const project of projects) {
-    const indicator = projectActivityIndicator(project, workspacesByProjectId[project.id] ?? [], activities);
-    (indicator === undefined ? inactiveProjects : activeProjects).push(project);
-  }
-  return [...activeProjects, ...inactiveProjects];
-}
-
-export function displayedProjects(
-  projects: readonly Project[],
-  queryText: string,
-  workspacesByProjectId: Record<string, Workspace[]>,
-  activities: Record<string, WorkspaceActivity>,
-): Project[] {
-  return prioritizeActiveProjects(filterProjects(projects, queryText), workspacesByProjectId, activities);
 }
 
 export function shouldCloseProjectMenuForOrderChange(projectId: string, previousProjects: readonly Project[], currentProjects: readonly Project[]): boolean {

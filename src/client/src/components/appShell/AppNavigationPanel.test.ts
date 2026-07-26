@@ -70,6 +70,23 @@ describe("app-navigation-panel project creation", () => {
   });
 });
 
+describe("app-navigation-panel expanded project browser", () => {
+  // The Node test environment has no DOM harness, so inspect the custom-element
+  // callback boundary rather than testing Lit internals or layout.
+  it("forwards the expanded project browser action from ProjectList", () => {
+    const panel = new AppNavigationPanel();
+    const onOpenProjectBrowser = vi.fn();
+    panel.onOpenProjectBrowser = onOpenProjectBrowser;
+    const onOpenExpanded = projectBrowserOpenCallback(templateValueAfterMarker(panel.render(), ".onOpenExpanded="));
+    const restoreFocus = () => undefined;
+
+    onOpenExpanded(restoreFocus);
+
+    expect(onOpenProjectBrowser).toHaveBeenCalledOnce();
+    expect(onOpenProjectBrowser).toHaveBeenCalledWith(restoreFocus);
+  });
+});
+
 describe("shouldShowMachinesSection", () => {
   it("hides machine navigation when there is no machine choice", () => {
     expect(shouldShowMachinesSection([])).toBe(false);
@@ -80,6 +97,17 @@ describe("shouldShowMachinesSection", () => {
     expect(shouldShowMachinesSection([machine("local"), machine("remote-a")])).toBe(true);
   });
 });
+
+type ProjectBrowserOpenCallback = (restoreFocus: () => void) => void;
+
+function projectBrowserOpenCallback(value: unknown): ProjectBrowserOpenCallback {
+  if (!isProjectBrowserOpenCallback(value)) throw new Error("Expected expanded project browser callback");
+  return value;
+}
+
+function isProjectBrowserOpenCallback(value: unknown): value is ProjectBrowserOpenCallback {
+  return typeof value === "function";
+}
 
 function isCallback(value: unknown): value is () => void {
   return typeof value === "function";

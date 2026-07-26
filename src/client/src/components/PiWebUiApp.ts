@@ -53,6 +53,7 @@ import { isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorksp
 import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
 import "./MachineList";
 import "./ProjectList";
+import "./ProjectBrowserDialog";
 import "./WorkspaceList";
 import { unreadSessionCount } from "./SessionList";
 import "./SessionCleanupDialog";
@@ -286,6 +287,8 @@ export class PiWebUiApp extends LitElement {
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
   @state() private modelsConfigDialogOpen = false;
+  @state() private projectBrowserOpen = false;
+  private projectBrowserRestoreFocus: (() => void) | undefined;
   @state() private skillsConfigDialogOpen = false;
   @state() private pluginsConfigDialogOpen = false;
   @state() private systemPromptDialogOpen = false;
@@ -411,6 +414,7 @@ export class PiWebUiApp extends LitElement {
       || (this.pluginsConfigDialogOpen && this.state.selectedWorkspace !== undefined)
       || (this.systemPromptDialogOpen && this.state.selectedSession !== undefined)
       || this.state.actionPaletteOpen
+      || this.projectBrowserOpen
       || this.state.projectDialogOpen
       || this.state.machineDialogOpen
       || this.state.commandDialog !== undefined
@@ -1480,6 +1484,7 @@ export class PiWebUiApp extends LitElement {
         }}
         .onToggleProjects=${() => { this.navigationSections.toggle("projects"); }}
         .onAddProject=${() => { this.openProjectDialog(); }}
+        .onOpenProjectBrowser=${(restoreFocus: () => void) => { this.openProjectBrowser(restoreFocus); }}
         .onToggleWorkspaces=${() => { this.navigationSections.toggle("workspaces"); }}
         .onToggleSessions=${() => { this.navigationSections.toggle("sessions"); }}
         .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project))}
@@ -2138,6 +2143,28 @@ export class PiWebUiApp extends LitElement {
       this.setState({ error: "Workspace deletion failed. See terminal output." });
       this.updateWorkspaceDeletionPolling();
     }
+  }
+
+  private openProjectBrowser(restoreFocus: () => void): void {
+    this.projectBrowserRestoreFocus = restoreFocus;
+    this.projectBrowserOpen = true;
+  }
+
+  private closeProjectBrowser(options: { restoreFocus?: boolean } = {}): void {
+    const restoreFocus = options.restoreFocus === true ? this.projectBrowserRestoreFocus : undefined;
+    this.projectBrowserRestoreFocus = undefined;
+    this.projectBrowserOpen = false;
+    if (restoreFocus !== undefined) void this.updateComplete.then(() => { restoreFocus(); });
+  }
+
+  private selectProjectFromBrowser(project: Project): void {
+    this.closeProjectBrowser();
+    void this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project));
+  }
+
+  private addProjectFromBrowser(): void {
+    this.closeProjectBrowser();
+    this.openProjectDialog();
   }
 
   private openProjectDialog(): void {
@@ -2823,6 +2850,16 @@ export class PiWebUiApp extends LitElement {
         ${this.renderWorkspacePanel()}
         ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
         ${this.renderSessionTreeNavigator(state)}
+        ${this.projectBrowserOpen ? html`<project-browser-dialog
+          .projects=${state.projects}
+          .selected=${state.selectedProject}
+          .activities=${state.workspaceActivities}
+          .workspacesByProjectId=${state.workspacesByProjectId}
+          .onSelect=${(project: Project) => { this.selectProjectFromBrowser(project); }}
+          .onClose=${() => { this.closeProjectBrowser({ restoreFocus: true }); }}
+          .onAdd=${() => { this.addProjectFromBrowser(); }}
+          .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+        ></project-browser-dialog>` : null}
         ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
