@@ -5,7 +5,7 @@ import { isCachedNewSessionInfo } from "../cachedNewSessions";
 import { shortSessionId } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
-import { actionMenuPanelStyle } from "./actionMenu";
+import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator, type ActivityIndicatorKind } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard, isFromInteractiveElement } from "./selectableRow";
@@ -84,18 +84,18 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @state() private renameInputValue = "";
   @state() private foldedSessionPaths: ReadonlySet<string> = new Set();
 
-  private readonly onDocumentClick = (event: MouseEvent) => {
-    if (event.composedPath().includes(this)) return;
+  private readonly onDocumentClick = (event: Event) => {
+    if (isClickWithinActionMenu(event, this.renderRoot)) return;
     this.openMenuSessionId = undefined;
   };
 
   override connectedCallback(): void {
     super.connectedCallback();
-    document.addEventListener("click", this.onDocumentClick);
+    document.addEventListener("click", this.onDocumentClick, true);
   }
 
   override disconnectedCallback(): void {
-    document.removeEventListener("click", this.onDocumentClick);
+    document.removeEventListener("click", this.onDocumentClick, true);
     super.disconnectedCallback();
   }
 

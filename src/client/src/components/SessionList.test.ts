@@ -3,6 +3,7 @@ import type { SessionInfo, SessionStatus } from "../api";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { templateEventHandlerAfterMarker } from "../templateInspection.testSupport";
+import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, unreadSessionCount } from "./SessionList";
 
 describe("sessionRowActivityKind", () => {
@@ -44,6 +45,17 @@ describe("unreadSessionCount", () => {
     expect(unreadSessionCount([current, archived, cached], unreadIds, {
       statuses: { [current.id]: sessionStatus(current.id, { isStreaming: true }) },
     })).toBe(0);
+  });
+});
+
+describe("session action menu dismissal", () => {
+  it("closes an open menu when another part of the session list is clicked", () => {
+    const list = new SessionList();
+    Reflect.set(list, "openMenuSessionId", "open-menu");
+
+    clickOutsideActionMenu(list);
+
+    expect(Reflect.get(list, "openMenuSessionId")).toBeUndefined();
   });
 });
 

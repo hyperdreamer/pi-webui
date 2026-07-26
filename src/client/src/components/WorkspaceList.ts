@@ -3,7 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import type { Workspace, WorkspaceActivity } from "../api";
 import type { WorkspaceLabelItem } from "../plugins/types";
 import { workspaceActivityFor, workspaceActivityIndicator } from "../workspaceActivity";
-import { actionMenuPanelStyle } from "./actionMenu";
+import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
@@ -28,18 +28,18 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   @state() private openMenuWorkspaceId: string | undefined;
   @state() private menuStyle = "";
 
-  private readonly onDocumentClick = (event: MouseEvent) => {
-    if (event.composedPath().includes(this)) return;
+  private readonly onDocumentClick = (event: Event) => {
+    if (isClickWithinActionMenu(event, this.renderRoot)) return;
     this.openMenuWorkspaceId = undefined;
   };
 
   override connectedCallback(): void {
     super.connectedCallback();
-    document.addEventListener("click", this.onDocumentClick);
+    document.addEventListener("click", this.onDocumentClick, true);
   }
 
   override disconnectedCallback(): void {
-    document.removeEventListener("click", this.onDocumentClick);
+    document.removeEventListener("click", this.onDocumentClick, true);
     super.disconnectedCallback();
   }
 

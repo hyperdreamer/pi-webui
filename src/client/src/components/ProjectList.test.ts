@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { filterProjects, ProjectList } from "./ProjectList";
 
 const projects: Project[] = [
@@ -12,6 +13,17 @@ const projects: Project[] = [
 describe("project filtering", () => {
   it("matches project names and paths regardless of query casing", () => {
     expect(filterProjects(projects, "  CLIENT  ").map((project) => project.id)).toEqual(["client", "docs"]);
+  });
+});
+
+describe("project action menu dismissal", () => {
+  it("closes an open menu when another part of the project list is clicked", () => {
+    const list = new ProjectList();
+    Reflect.set(list, "openMenuProjectId", "open-menu");
+
+    clickOutsideActionMenu(list);
+
+    expect(Reflect.get(list, "openMenuProjectId")).toBeUndefined();
   });
 });
 

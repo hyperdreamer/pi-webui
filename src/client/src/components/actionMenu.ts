@@ -12,6 +12,13 @@ interface ActionMenuPanelStyleOptions {
   constrainTo?: "host" | "viewport";
 }
 
+export function isClickWithinActionMenu(event: Event, renderRoot: EventTarget): boolean {
+  return event.composedPath().some((target) => {
+    if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
+    return target.getRootNode() === renderRoot && target.closest(".action-menu") !== null;
+  });
+}
+
 export function actionMenuPanelStyle(target: EventTarget | null, options: ActionMenuPanelStyleOptions = {}): string {
   if (typeof HTMLElement === "undefined" || typeof window === "undefined" || !(target instanceof HTMLElement)) return "";
   const trigger = target.getBoundingClientRect();
