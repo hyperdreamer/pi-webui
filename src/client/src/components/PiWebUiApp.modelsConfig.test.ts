@@ -1,15 +1,23 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
+import type { Project } from "../api";
 import { initialAppState, type AppState } from "../appState";
-// Template inspection is proportionate here: this test targets the callback
-// boundary between the navigation custom element and the application shell.
-import { templateStrings, templateValueAfterMarker } from "../templateInspection.testSupport";
+// Template inspection is proportionate here: these tests target custom-element
+// callback boundaries between the navigation, overlays, and application shell.
+import { isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const project: Project = {
+  id: "project-a",
+  name: "Project A",
+  path: "/work/project-a",
+  createdAt: "2026-07-26T00:00:00.000Z",
+};
 
 describe("PiWebUiApp navigation actions", () => {
   it("opens the project dialog from the Projects section add control", () => {
@@ -20,6 +28,69 @@ describe("PiWebUiApp navigation actions", () => {
     expect(Reflect.get(app, "state")).toMatchObject({ projectDialogOpen: true });
     expect(isChatObscured(app)).toBe(true);
   });
+
+  it("opens the expanded project browser and marks chat as obscured", () => {
+    const app = createApp();
+    const restoreFocus = vi.fn();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenProjectBrowser=",
+    ));
+
+    open(restoreFocus);
+
+    expect(Reflect.get(app, "projectBrowserOpen")).toBe(true);
+    expect(isChatObscured(app)).toBe(true);
+    expect(templateStrings(projectBrowserDialogTemplate(app)).join("")).toContain("<project-browser-dialog");
+  });
+
+  it("restores launcher focus when the expanded project browser is dismissed", async () => {
+    const app = createApp();
+    const restoreFocus = vi.fn();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenProjectBrowser=",
+    ));
+    open(restoreFocus);
+    // Detached Lit elements do not settle updateComplete in this Node runner;
+    // model the post-render promise to verify the focus-restoration boundary.
+    Object.defineProperty(app, "updateComplete", { configurable: true, value: Promise.resolve(true) });
+
+    templateCallbackAfterMarker(projectBrowserDialogTemplate(app), ".onClose=")();
+    await app.updateComplete;
+
+    expect(Reflect.get(app, "projectBrowserOpen")).toBe(false);
+    expect(restoreFocus).toHaveBeenCalledOnce();
+  });
+
+  it("closes the expanded project browser and opens the project dialog from Add", () => {
+    const app = createApp();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenProjectBrowser=",
+    ));
+    open(vi.fn());
+
+    templateCallbackAfterMarker(projectBrowserDialogTemplate(app), ".onAdd=")();
+
+    expect(Reflect.get(app, "projectBrowserOpen")).toBe(false);
+    expect(Reflect.get(app, "state")).toMatchObject({ projectDialogOpen: true });
+  });
+
+  it("closes the expanded project browser before selecting a project through navigation", () => {
+    const app = createApp();
+    Reflect.set(app, "projectBrowserOpen", true);
+    const selectNavigationItem = vi.fn(() => {
+      expect(Reflect.get(app, "projectBrowserOpen")).toBe(false);
+      return Promise.resolve();
+    });
+    if (!Reflect.set(app, "selectNavigationItem", selectNavigationItem)) throw new Error("Could not replace PiWebUiApp.selectNavigationItem");
+
+    selectProjectFromBrowser(app, project);
+
+    expect(selectNavigationItem).toHaveBeenCalledOnce();
+  });
+
   it("opens models configuration from the navigation underbar for the selected machine", () => {
     const app = createApp();
     setAppState(app, {
@@ -209,6 +280,8 @@ type RenderNavigationPanel = (this: PiWebUiApp) => TemplateResult;
 type RenderApp = (this: PiWebUiApp) => TemplateResult;
 type IsChatObscured = (this: PiWebUiApp) => boolean;
 type NavigationCallback = () => void;
+type ProjectBrowserOpenCallback = (restoreFocus: () => void) => void;
+type ProjectBrowserSelection = (this: PiWebUiApp, project: Project) => void;
 
 function createApp(): PiWebUiApp {
   const storage = {
@@ -238,6 +311,29 @@ function renderApp(app: PiWebUiApp): TemplateResult {
   return method.call(app);
 }
 
+function projectBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
+  const template = findTemplateContaining(renderApp(app), "<project-browser-dialog");
+  if (template === undefined) throw new Error("PiWebUiApp did not render project-browser-dialog");
+  return template;
+}
+
+function findTemplateContaining(value: unknown, marker: string): TemplateResult | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const template = findTemplateContaining(item, marker);
+      if (template !== undefined) return template;
+    }
+    return undefined;
+  }
+  if (!isTemplateResult(value)) return undefined;
+  if (templateStrings(value).some((part) => part.includes(marker))) return value;
+  for (const child of templateValues(value)) {
+    const template = findTemplateContaining(child, marker);
+    if (template !== undefined) return template;
+  }
+  return undefined;
+}
+
 function templateCallbackAfterMarker(template: TemplateResult, marker: string): NavigationCallback {
   const value = templateValueAfterMarker(template, marker);
   if (!isNavigationCallback(value)) throw new Error(`Expected callback after ${marker}`);
@@ -250,6 +346,12 @@ function isChatObscured(app: PiWebUiApp): boolean {
   return method.call(app);
 }
 
+function selectProjectFromBrowser(app: PiWebUiApp, projectToSelect: Project): void {
+  const method: unknown = Reflect.get(app, "selectProjectFromBrowser");
+  if (!isProjectBrowserSelection(method)) throw new Error("PiWebUiApp.selectProjectFromBrowser is not callable");
+  method.call(app, projectToSelect);
+}
+
 function isRenderNavigationPanel(value: unknown): value is RenderNavigationPanel {
   return typeof value === "function";
 }
@@ -259,6 +361,19 @@ function isRenderApp(value: unknown): value is RenderApp {
 }
 
 function isNavigationCallback(value: unknown): value is NavigationCallback {
+  return typeof value === "function";
+}
+
+function projectBrowserOpenCallback(value: unknown): ProjectBrowserOpenCallback {
+  if (!isProjectBrowserOpenCallback(value)) throw new Error("Expected expanded project browser callback");
+  return value;
+}
+
+function isProjectBrowserOpenCallback(value: unknown): value is ProjectBrowserOpenCallback {
+  return typeof value === "function";
+}
+
+function isProjectBrowserSelection(value: unknown): value is ProjectBrowserSelection {
   return typeof value === "function";
 }
 

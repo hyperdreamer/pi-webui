@@ -66,6 +66,21 @@ describe("project search interaction", () => {
   });
 });
 
+describe("expanded project browser interaction", () => {
+  // The Node test environment has no DOM harness, so inspect the stable
+  // accessible button marker to narrowly exercise Lit's click wiring.
+  it("forwards the expanded project browser action from the Projects heading", () => {
+    const list = new ProjectList();
+    list.collapsed = true;
+    const onOpenExpanded = vi.fn();
+    list.onOpenExpanded = onOpenExpanded;
+
+    templateEventHandlerNearMarker(list.render(), 'aria-label="Open expanded project browser"')(new Event("click"));
+
+    expect(onOpenExpanded).toHaveBeenCalledOnce();
+  });
+});
+
 describe("project creation interaction", () => {
   // The Node test environment has no DOM harness, so inspect the stable
   // accessible button marker to narrowly exercise Lit's click wiring.
