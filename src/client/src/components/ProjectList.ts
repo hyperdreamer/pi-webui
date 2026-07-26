@@ -1,4 +1,5 @@
 import { LitElement, css, html, svg, type PropertyValues } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
@@ -45,6 +46,16 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
 
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) this.openMenuProjectId = undefined;
+    if (this.openMenuProjectId !== undefined && (changed.has("projects") || changed.has("activities") || changed.has("workspacesByProjectId"))) {
+      const previousProjects = changed.get("projects") ?? this.projects;
+      const previousWorkspacesByProjectId = changed.get("workspacesByProjectId") ?? this.workspacesByProjectId;
+      const previousActivities = changed.get("activities") ?? this.activities;
+      if (shouldCloseProjectMenuForOrderChange(
+        this.openMenuProjectId,
+        displayedProjects(previousProjects, this.searchQuery, previousWorkspacesByProjectId, previousActivities),
+        displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities),
+      )) this.openMenuProjectId = undefined;
+    }
     if (changed.has("collapsed") && this.collapsed) this.openMenuProjectId = undefined;
   }
 
@@ -54,7 +65,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
-    const projects = filterProjects(this.projects, this.searchQuery);
+    const projects = displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities);
     return html`
       <section>
         <h2>
@@ -65,7 +76,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         ${this.collapsed ? null : html`
           ${this.searchOpen ? this.renderSearchInput() : null}
           <div class="list-body">
-            ${projects.map((project) => html`
+            ${repeat(projects, (project) => project.id, (project) => html`
               <div
                 class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
                 tabindex="0"
@@ -184,4 +195,33 @@ export function filterProjects(projects: readonly Project[], queryText: string):
   const query = queryText.trim().toLowerCase();
   if (query === "") return [...projects];
   return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(query));
+}
+
+export function prioritizeActiveProjects(
+  projects: readonly Project[],
+  workspacesByProjectId: Record<string, Workspace[]>,
+  activities: Record<string, WorkspaceActivity>,
+): Project[] {
+  const activeProjects: Project[] = [];
+  const inactiveProjects: Project[] = [];
+  for (const project of projects) {
+    const indicator = projectActivityIndicator(project, workspacesByProjectId[project.id] ?? [], activities);
+    (indicator === undefined ? inactiveProjects : activeProjects).push(project);
+  }
+  return [...activeProjects, ...inactiveProjects];
+}
+
+export function displayedProjects(
+  projects: readonly Project[],
+  queryText: string,
+  workspacesByProjectId: Record<string, Workspace[]>,
+  activities: Record<string, WorkspaceActivity>,
+): Project[] {
+  return prioritizeActiveProjects(filterProjects(projects, queryText), workspacesByProjectId, activities);
+}
+
+export function shouldCloseProjectMenuForOrderChange(projectId: string, previousProjects: readonly Project[], currentProjects: readonly Project[]): boolean {
+  const previousIndex = previousProjects.findIndex((project) => project.id === projectId);
+  const currentIndex = currentProjects.findIndex((project) => project.id === projectId);
+  return previousIndex !== currentIndex;
 }
