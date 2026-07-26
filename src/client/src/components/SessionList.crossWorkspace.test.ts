@@ -8,10 +8,11 @@ describe("cross-workspace session rows", () => {
     expect(sessionListStyles()).toMatch(/\.action-row\.external-session \.action-name\s*\{[^}]*color:\s*var\(--pi-accent\);/);
   });
 
-  it("styles parent families with a rectangular frame", () => {
+  it("styles parent families with a solid red rectangular frame", () => {
     const styles = sessionListStyles();
 
-    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid #000;/);
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-danger\);/);
+    expect(styles).not.toContain(".session-family-frame::before");
     expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border-radius:\s*10px;/);
   });
 
