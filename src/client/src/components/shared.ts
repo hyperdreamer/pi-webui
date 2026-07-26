@@ -896,6 +896,8 @@ export const promptEditorStyles = css`
   .compact-status { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--pi-muted); font-size: 12px; flex: 1 1 0; }
   .compact-status > button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .select-model { max-width: min(42vw, 320px); }
+  .compact-button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; }
+  .compact-button .prompt-action-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   .icon-button { flex: 0 0 auto; display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; }
   .icon-button .prompt-action-icon, .icon-button .prompt-thinking-gauge { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   .icon-button .prompt-action-icon-filled { fill: currentColor; stroke: none; }

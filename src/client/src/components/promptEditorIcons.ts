@@ -13,6 +13,17 @@ export function renderAttachIcon(): TemplateResult {
   `;
 }
 
+export function renderCompactIcon(): TemplateResult {
+  return svg`
+    <svg class="prompt-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <polyline points="4 14 10 14 10 20"></polyline>
+      <polyline points="20 10 14 10 14 4"></polyline>
+      <line x1="10" y1="14" x2="3" y2="21"></line>
+      <line x1="21" y1="3" x2="14" y2="10"></line>
+    </svg>
+  `;
+}
+
 export function renderSendIcon(): TemplateResult {
   return svg`
     <svg class="prompt-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

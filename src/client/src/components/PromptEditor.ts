@@ -15,7 +15,7 @@ import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
 import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPreferences";
 import { createMobilePromptEnterMedia, readPromptEnterPreference, shouldSendPromptOnEnterShortcut, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
 import { promptEditorStyles, type CompletionItem } from "./shared";
-import { renderAttachIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
+import { renderAttachIcon, renderCompactIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
 import "./AutocompleteMenu";
 
@@ -39,6 +39,7 @@ export class PromptEditor extends LitElement {
   @property({ attribute: false }) onStop?: () => void;
   @property({ attribute: false }) onSelectModel?: () => void;
   @property({ attribute: false }) onSelectThinking?: () => void;
+  @property({ attribute: false }) onCompact?: () => void;
   /** Show model and thinking controls before a session exists (for the starter screen). */
   @property({ type: Boolean }) showSessionConfiguration = false;
   /** Persisted defaults shown by the starter before it has a session status. */
@@ -111,6 +112,9 @@ export class PromptEditor extends LitElement {
     const shellMode = shellInputMode !== undefined;
     const queuesInput = this.canSteer || this.isCompacting;
     const busy = this.disabled || this.sending;
+    // Manual compaction aborts current work. Keep it beside Queue, but do not
+    // permit it while the session exposes a stop action.
+    const compactDisabled = busy || this.canSteer || this.isCompacting || this.canStop;
     return html`
       <footer class=${shellMode ? "shell-mode" : ""} @paste=${(event: ClipboardEvent) => { void this.handlePaste(event); }} @dragover=${(event: DragEvent) => { this.handleDragOver(event); }} @drop=${(event: DragEvent) => { void this.handleDrop(event); }}>
         <div class="editor-wrap">
@@ -124,6 +128,7 @@ export class PromptEditor extends LitElement {
         </div>
         <div class="actions">
           ${this.renderCompactStatus()}
+          ${this.onCompact === undefined ? null : html`<button class="compact-button" ?disabled=${compactDisabled} title="Compact context" aria-label="Compact context" @click=${() => this.onCompact?.()}>${renderCompactIcon()}<span>Compact</span></button>`}
           <button class="icon-button send-button" ?disabled=${busy} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} aria-label=${queuesInput ? "Queue message" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? renderQueueIcon() : renderSendIcon()}</button>
           ${this.canSteer && !this.isCompacting ? html`<button class="icon-button steer-button" ?disabled=${busy} title="Steer the current response before the next model call" aria-label="Steer current response" @click=${() => { this.send("steer"); }}>${renderSteerIcon()}</button>` : null}
           <button class="icon-button stop-button" ?disabled=${this.disabled || !this.canStop} title=${this.canStop ? "Stop current work and clear queued messages" : "Nothing running"} aria-label="Stop current work" @click=${() => this.onStop?.()}>${renderStopIcon()}</button>

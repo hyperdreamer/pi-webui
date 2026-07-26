@@ -85,8 +85,31 @@ describe("PiWebUiApp queued-message clear wiring", () => {
   });
 });
 
+describe("PiWebUiApp manual compaction wiring", () => {
+  it("runs the compact command and retains its control while a session is active", () => {
+    const app = createApp();
+    const controller = appSessionController(app);
+    const runCommand = vi.spyOn(controller, "runCommand").mockResolvedValue(undefined);
+    const idleState = { ...stateWithRuntime(undefined), status: idleStatus() };
+    setAppState(app, idleState);
+
+    // This verifies the app-to-composer callback boundary without mounting a DOM.
+    const onCompact = templateCompactCallback(renderApp(app));
+    onCompact();
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand).toHaveBeenCalledWith("/compact");
+
+    setAppState(app, { ...idleState, status: queuedStatus() });
+
+    expect(templateCompactCallback(renderApp(app))).toBe(onCompact);
+  });
+});
+
 type RenderChatView = (this: PiWebUiApp, state: AppState, session: SessionInfo) => TemplateResult;
+type RenderApp = (this: PiWebUiApp) => TemplateResult;
 type ClearServerQueueCallback = () => void;
+type CompactCallback = () => void;
 type EditFromHereCallback = (assistantEntryId: string, editorText: string) => void | Promise<void>;
 type ForkFromHereCallback = (userEntryId: string) => void | Promise<void>;
 
@@ -96,8 +119,10 @@ function createApp(): PiWebUiApp {
     setItem: () => undefined,
     removeItem: () => undefined,
   };
-  vi.stubGlobal("window", { location: { search: "" }, localStorage: storage });
-  return new PiWebUiApp();
+  vi.stubGlobal("window", { location: { search: "" }, localStorage: storage, innerWidth: 1280 });
+  const app = new PiWebUiApp();
+  if (!Reflect.set(app, "getBoundingClientRect", () => ({ width: 1280 }))) throw new Error("Could not stub PiWebUiApp bounds");
+  return app;
 }
 
 function stateWithRuntime(runtime: MachineRuntime | undefined): AppState {
@@ -124,12 +149,21 @@ function runtimeWithCapabilities(capabilities: NonNullable<MachineRuntime["capab
 
 function queuedStatus(): SessionStatus {
   return {
-    sessionId: "session-1",
+    ...idleStatus(),
     isStreaming: true,
-    isCompacting: false,
-    isBashRunning: false,
     pendingMessageCount: 1,
     queuedMessages: [{ kind: "followUp", text: "queued" }],
+  };
+}
+
+function idleStatus(): SessionStatus {
+  return {
+    sessionId: "session-1",
+    isStreaming: false,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: 0,
+    queuedMessages: [],
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     cost: 0,
   };
@@ -153,7 +187,17 @@ function renderChatView(app: PiWebUiApp, state: AppState): TemplateResult {
   return method.call(app, state, session);
 }
 
+function renderApp(app: PiWebUiApp): TemplateResult {
+  const method: unknown = Reflect.get(app, "render");
+  if (!isRenderApp(method)) throw new Error("PiWebUiApp.render is not callable");
+  return method.call(app);
+}
+
 function isRenderChatView(value: unknown): value is RenderChatView {
+  return typeof value === "function";
+}
+
+function isRenderApp(value: unknown): value is RenderApp {
   return typeof value === "function";
 }
 
@@ -164,6 +208,16 @@ function templateCallbackAfterMarker(template: TemplateResult, marker: string): 
 }
 
 function isClearServerQueueCallback(value: unknown): value is ClearServerQueueCallback {
+  return typeof value === "function";
+}
+
+function templateCompactCallback(template: TemplateResult): CompactCallback {
+  const value = templateValueAfterMarker(template, ".onCompact=");
+  if (!isCompactCallback(value)) throw new Error("Expected compact callback");
+  return value;
+}
+
+function isCompactCallback(value: unknown): value is CompactCallback {
   return typeof value === "function";
 }
 
