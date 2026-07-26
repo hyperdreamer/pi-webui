@@ -67,6 +67,33 @@ describe("session rename interaction", () => {
   });
 });
 
+describe("pinned session interaction", () => {
+  it("enlarges the pinned star and gives it a button surface on hover", () => {
+    const styles = sessionListStyles();
+
+    expect(styles).toMatch(/\.pinned-star:hover\s*\{[^}]*background:\s*var\(--pi-surface\);/);
+    expect(styles).toMatch(/\.pinned-star:hover\s*\{[^}]*box-shadow:\s*0 0 0 1px var\(--pi-border\);/);
+    expect(styles).toMatch(/\.pinned-star:hover\s*\{[^}]*transform:\s*scale\(1\.25\);/);
+  });
+
+  // This narrowly checks Lit event wiring. The Node-based test environment has
+  // no DOM harness, while the observable callback proves the user interaction.
+  it("shows an unpin hint and unpins a session when its pinned star is clicked", () => {
+    const list = new SessionList();
+    const target = session("pinned", { pinned: true });
+    list.sessions = [target];
+    const onUnpin = vi.fn();
+    list.onUnpin = onUnpin;
+    const event = new Event("click");
+    const stopPropagation = vi.spyOn(event, "stopPropagation");
+
+    templateEventHandlerAfterMarker(list.render(), 'title="Click to unpin session"')(event);
+
+    expect(onUnpin).toHaveBeenCalledWith(target);
+    expect(stopPropagation).toHaveBeenCalledOnce();
+  });
+});
+
 describe("session action eligibility", () => {
   it("requires a persisted server signal before archiving when persistence is authoritative", () => {
     const authoritative = { authoritative: true };
@@ -145,6 +172,12 @@ function renameKeydownEvent(value: string): Event {
   Object.defineProperty(event, "key", { value: "Enter" });
   Object.defineProperty(event, "currentTarget", { value: { value } });
   return event;
+}
+
+function sessionListStyles(): string {
+  const styles = SessionList.styles;
+  const styleResults = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
 }
 
 function sessionStatus(sessionId: string, overrides: Partial<SessionStatus> = {}): SessionStatus {
