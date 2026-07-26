@@ -1,7 +1,7 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { isTemplateResult, templateClickHandlerForText, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 
 afterEach(() => {
@@ -238,6 +238,115 @@ describe("ProjectBrowserDialog", () => {
     dialog.projects = projects.filter((project) => project.id === "server");
 
     invokeReflectedVoidMethod(dialog, "updated", new Map([["projects", projects]]));
+
+    expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
+  });
+
+  it("closes an open action menu when a same-index owner moves in visible project order", () => {
+    const firstProject: Project = { ...serverProject, id: "first", path: "/projects/first" };
+    const ownerProject: Project = { ...clientProject, id: "owner", path: "/projects/owner" };
+    const lastProject: Project = { ...serverProject, id: "last", path: "/projects/last" };
+    const previousProjects = [firstProject, ownerProject, lastProject];
+    const currentProjects = [lastProject, ownerProject, firstProject];
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = previousProjects;
+    Reflect.set(dialog, "openMenuProjectId", ownerProject.id);
+    dialog.projects = currentProjects;
+
+    invokeReflectedVoidMethod(dialog, "updated", new Map([["projects", previousProjects]]));
+
+    expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
+  });
+
+  it("closes an open action menu when an activity update changes visible project order", () => {
+    const previousActivities = {};
+    const currentActivities = {
+      [clientProject.path]: { cwd: clientProject.path, hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-26T01:00:00.000Z" },
+    };
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = projects;
+    dialog.activities = previousActivities;
+    Reflect.set(dialog, "openMenuProjectId", clientProject.id);
+    dialog.activities = currentActivities;
+
+    invokeReflectedVoidMethod(dialog, "updated", new Map([["activities", previousActivities]]));
+
+    expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
+  });
+
+  it("closes an open action menu when a workspace update changes visible project order", () => {
+    const activeWorktree = {
+      id: "client-worktree",
+      projectId: clientProject.id,
+      path: "/tmp/client-worktree",
+      label: "client-worktree",
+      isMain: false,
+      isGitRepo: true,
+      isGitWorktree: true,
+    };
+    const activities = {
+      [activeWorktree.path]: { cwd: activeWorktree.path, hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-26T01:00:00.000Z" },
+    };
+    const previousWorkspacesByProjectId = {};
+    const currentWorkspacesByProjectId = { [clientProject.id]: [activeWorktree] };
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = projects;
+    dialog.activities = activities;
+    dialog.workspacesByProjectId = previousWorkspacesByProjectId;
+    Reflect.set(dialog, "openMenuProjectId", clientProject.id);
+    dialog.workspacesByProjectId = currentWorkspacesByProjectId;
+
+    invokeReflectedVoidMethod(dialog, "updated", new Map([["workspacesByProjectId", previousWorkspacesByProjectId]]));
+
+    expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
+  });
+
+  it("keeps an open action menu when projection-input updates preserve visible project order", () => {
+    const previousProjects = projects;
+    const currentProjects = projects.map((project) => ({ ...project, name: `${project.name} updated` }));
+    const previousActivities = {
+      [clientProject.path]: { cwd: clientProject.path, hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-26T01:00:00.000Z" },
+    };
+    const currentActivities = {
+      [clientProject.path]: { cwd: clientProject.path, hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-26T02:00:00.000Z" },
+    };
+    const previousWorkspacesByProjectId = {};
+    const currentWorkspacesByProjectId = {
+      [serverProject.id]: [{
+        id: "server-worktree",
+        projectId: serverProject.id,
+        path: "/tmp/server-worktree",
+        label: "server-worktree",
+        isMain: false,
+        isGitRepo: true,
+        isGitWorktree: true,
+      }],
+    };
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = previousProjects;
+    dialog.activities = previousActivities;
+    dialog.workspacesByProjectId = previousWorkspacesByProjectId;
+    Reflect.set(dialog, "openMenuProjectId", clientProject.id);
+    dialog.projects = currentProjects;
+    dialog.activities = currentActivities;
+    dialog.workspacesByProjectId = currentWorkspacesByProjectId;
+
+    invokeReflectedVoidMethod(dialog, "updated", new Map([
+      ["projects", previousProjects],
+      ["activities", previousActivities],
+      ["workspacesByProjectId", previousWorkspacesByProjectId],
+    ]));
+
+    expect(Reflect.get(dialog, "openMenuProjectId")).toBe(clientProject.id);
+  });
+
+  it("closes an open action menu when the result area scrolls", () => {
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = projects;
+    Reflect.set(dialog, "openMenuProjectId", clientProject.id);
+
+    // Node tests cannot mount Lit, so inspect the stable result-area scroll wiring.
+    templateEventHandlerAfterMarker(dialog.render(), '<div class="result-area"')(new Event("scroll"));
 
     expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
   });

@@ -46,7 +46,17 @@ export class ProjectBrowserDialog extends LitElement {
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) {
       this.openMenuProjectId = undefined;
+      return;
     }
+    if (this.openMenuProjectId === undefined || (!changed.has("projects") && !changed.has("activities") && !changed.has("workspacesByProjectId"))) return;
+
+    const previousProjects = changed.get("projects") ?? this.projects;
+    const previousActivities = changed.get("activities") ?? this.activities;
+    const previousWorkspacesByProjectId = changed.get("workspacesByProjectId") ?? this.workspacesByProjectId;
+    if (visibleProjectOrderChanged(
+      displayedProjects(previousProjects, this.searchQuery, previousWorkspacesByProjectId, previousActivities),
+      this.visibleProjects,
+    )) this.openMenuProjectId = undefined;
   }
 
   private get visibleProjects(): Project[] {
@@ -94,7 +104,7 @@ export class ProjectBrowserDialog extends LitElement {
               .value=${this.searchQuery}
               @input=${(event: Event) => { this.handleSearchInput(event); }}
             >
-            <div class="result-area">
+            <div class="result-area" @scroll=${() => { this.openMenuProjectId = undefined; }}>
               ${this.renderResults()}
             </div>
           </div>
@@ -272,4 +282,9 @@ export class ProjectBrowserDialog extends LitElement {
       .dialog-body { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
     }
   `;
+}
+
+function visibleProjectOrderChanged(previousProjects: readonly Project[], currentProjects: readonly Project[]): boolean {
+  return previousProjects.length !== currentProjects.length
+    || previousProjects.some((project, index) => project.id !== currentProjects[index]?.id);
 }
