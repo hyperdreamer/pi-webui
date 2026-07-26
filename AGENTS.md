@@ -15,6 +15,12 @@ Changes to the web/API/UI side generally only require the `pi-webui-ui-dev.servi
 
 Publishing to npm is allowed through the standard GitHub Actions release workflow. Use `.agents/skills/npm-release-via-github-actions/SKILL.md` for the full release process. Do not run `npm publish` locally; always route publishing through GitHub Releases triggering the publish workflow.
 
+## Security-audit exception policy
+
+[`IGNORED.md`](IGNORED.md) is the canonical project policy and register for a narrowly scoped upstream-only, non-bundled dependency-audit exception. A Security Auditor may mark a security gate as **pass with documented exception** only after verifying every condition in that file and the PM records approval and evidence in the release handoff.
+
+The exception never applies to secrets, PI WEBUI source findings, direct or production dependency findings, dependency-path changes introduced by the release candidate, or findings not specifically registered in `IGNORED.md`. It does not waive the upstream Pi package's security obligations. Do not create a GitHub Release or publish to npm until the Security Auditor has recorded this evidence and the PM has approved the documented exception.
+
 ## Documentation boundaries
 
 `README.md` is a concise landing page and quick start. Keep it focused on what PI WEBUI is, basic requirements, the shortest supported install path, essential commands, the core model, and links to detailed documentation.
