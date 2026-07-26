@@ -131,17 +131,21 @@ describe("ProjectBrowserDialog", () => {
     expect(stopPropagation).toHaveBeenCalledOnce();
   });
 
-  it("closes when the backdrop is activated", () => {
+  it("prevents focus transfer and closes for a physical backdrop mousedown", () => {
     const dialog = new ProjectBrowserDialog();
     const onClose = vi.fn();
+    const preventDefault = vi.fn();
     dialog.onClose = onClose;
-    const backdrop = {};
-
-    invokeReflectedVoidMethod(dialog, "handleBackdropMouseDown", {
+    const backdrop = new EventTarget();
+    const event = {
       target: backdrop,
       currentTarget: backdrop,
-    });
+      preventDefault,
+    } satisfies Pick<MouseEvent, "target" | "currentTarget" | "preventDefault">;
 
+    invokeReflectedVoidMethod(dialog, "handleBackdropMouseDown", event);
+
+    expect(preventDefault).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
   });
 

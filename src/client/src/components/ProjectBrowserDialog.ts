@@ -158,7 +158,9 @@ export class ProjectBrowserDialog extends LitElement {
   }
 
   private handleBackdropMouseDown(event: MouseEvent): void {
-    if (event.target === event.currentTarget) this.close();
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    this.close();
   }
 
   private handleDialogKeyDown(event: KeyboardEvent): void {
