@@ -77,6 +77,22 @@ describe("PiWebUiApp navigation actions", () => {
     expect(Reflect.get(app, "state")).toMatchObject({ projectDialogOpen: true });
   });
 
+  it("does not restore launcher focus when Add replaces the expanded project browser", async () => {
+    const app = createApp();
+    const restoreFocus = vi.fn();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenProjectBrowser=",
+    ));
+    open(restoreFocus);
+    Object.defineProperty(app, "updateComplete", { configurable: true, value: Promise.resolve(true) });
+
+    templateCallbackAfterMarker(projectBrowserDialogTemplate(app), ".onAdd=")();
+    await app.updateComplete;
+
+    expect(restoreFocus).not.toHaveBeenCalled();
+  });
+
   it("closes the expanded project browser before selecting a project through navigation", () => {
     const app = createApp();
     Reflect.set(app, "projectBrowserOpen", true);
@@ -88,6 +104,25 @@ describe("PiWebUiApp navigation actions", () => {
 
     selectProjectFromBrowser(app, project);
 
+    expect(selectNavigationItem).toHaveBeenCalledOnce();
+  });
+
+  it("does not restore launcher focus when project selection replaces the expanded project browser", async () => {
+    const app = createApp();
+    const restoreFocus = vi.fn();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenProjectBrowser=",
+    ));
+    open(restoreFocus);
+    Object.defineProperty(app, "updateComplete", { configurable: true, value: Promise.resolve(true) });
+    const selectNavigationItem = vi.fn(() => Promise.resolve());
+    if (!Reflect.set(app, "selectNavigationItem", selectNavigationItem)) throw new Error("Could not replace PiWebUiApp.selectNavigationItem");
+
+    projectBrowserDialogSelectionCallback(templateValueAfterMarker(projectBrowserDialogTemplate(app), ".onSelect="))(project);
+    await app.updateComplete;
+
+    expect(restoreFocus).not.toHaveBeenCalled();
     expect(selectNavigationItem).toHaveBeenCalledOnce();
   });
 
@@ -281,6 +316,7 @@ type RenderApp = (this: PiWebUiApp) => TemplateResult;
 type IsChatObscured = (this: PiWebUiApp) => boolean;
 type NavigationCallback = () => void;
 type ProjectBrowserOpenCallback = (restoreFocus: () => void) => void;
+type ProjectBrowserDialogSelectionCallback = (project: Project) => void;
 type ProjectBrowserSelection = (this: PiWebUiApp, project: Project) => void;
 
 function createApp(): PiWebUiApp {
@@ -370,6 +406,15 @@ function projectBrowserOpenCallback(value: unknown): ProjectBrowserOpenCallback 
 }
 
 function isProjectBrowserOpenCallback(value: unknown): value is ProjectBrowserOpenCallback {
+  return typeof value === "function";
+}
+
+function projectBrowserDialogSelectionCallback(value: unknown): ProjectBrowserDialogSelectionCallback {
+  if (!isProjectBrowserDialogSelectionCallback(value)) throw new Error("Expected expanded project browser selection callback");
+  return value;
+}
+
+function isProjectBrowserDialogSelectionCallback(value: unknown): value is ProjectBrowserDialogSelectionCallback {
   return typeof value === "function";
 }
 

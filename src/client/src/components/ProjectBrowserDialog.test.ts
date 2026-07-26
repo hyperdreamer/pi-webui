@@ -1,8 +1,12 @@
 import type { TemplateResult } from "lit";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
 import { isTemplateResult, templateClickHandlerForText, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const serverProject: Project = { id: "server", name: "Server Console", path: "/very/long/path/to/server-console", createdAt: "2026-07-26T00:00:00.000Z" };
 const clientProject: Project = { id: "client", name: "Client App", path: "/very/long/path/to/client-app", createdAt: "2026-07-26T00:00:00.000Z" };
@@ -157,6 +161,51 @@ describe("ProjectBrowserDialog", () => {
     templateClickHandlerForText(dialog.render(), "Add project")(new Event("click"));
 
     expect(onAdd).toHaveBeenCalledOnce();
+  });
+
+  it("does not delegate Close when the exact confirmation is cancelled", () => {
+    const dialog = new ProjectBrowserDialog();
+    const confirm = vi.fn(() => false);
+    const onCloseProject = vi.fn();
+    dialog.projects = projects;
+    dialog.onCloseProject = onCloseProject;
+    vi.stubGlobal("confirm", confirm);
+
+    invokeReflectedVoidMethod(dialog, "closeProject", clientProject);
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith("Close Client App?\n\nThis only removes it from PI WEBUI; it will not change the project folder.");
+    expect(onCloseProject).not.toHaveBeenCalled();
+  });
+
+  it("delegates Close with the live project only after the exact confirmation is accepted", () => {
+    const dialog = new ProjectBrowserDialog();
+    const confirm = vi.fn(() => true);
+    const onCloseProject = vi.fn();
+    dialog.projects = projects;
+    dialog.onCloseProject = onCloseProject;
+    vi.stubGlobal("confirm", confirm);
+
+    invokeReflectedVoidMethod(dialog, "closeProject", clientProject);
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith("Close Client App?\n\nThis only removes it from PI WEBUI; it will not change the project folder.");
+    expect(onCloseProject).toHaveBeenCalledOnce();
+    expect(onCloseProject).toHaveBeenCalledWith(clientProject);
+  });
+
+  it("does not confirm or delegate a direct Close for a stale project", () => {
+    const dialog = new ProjectBrowserDialog();
+    const confirm = vi.fn(() => true);
+    const onCloseProject = vi.fn();
+    dialog.projects = [serverProject];
+    dialog.onCloseProject = onCloseProject;
+    vi.stubGlobal("confirm", confirm);
+
+    invokeReflectedVoidMethod(dialog, "closeProject", clientProject);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onCloseProject).not.toHaveBeenCalled();
   });
 
   it("renders modal semantics and a labelled close control", () => {
