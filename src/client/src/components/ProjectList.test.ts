@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Project } from "../api";
+import type { Project, WorkspaceActivity } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
-import { filterProjects, ProjectList } from "./ProjectList";
+import { filterProjects, prioritizeActiveProjects, ProjectList } from "./ProjectList";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
@@ -13,6 +13,26 @@ const projects: Project[] = [
 describe("project filtering", () => {
   it("matches project names and paths regardless of query casing", () => {
     expect(filterProjects(projects, "  CLIENT  ").map((project) => project.id)).toEqual(["client", "docs"]);
+  });
+});
+
+describe("project activity ordering", () => {
+  it("puts projects with live session or terminal activity first without mutating their existing order", () => {
+    const projectsToOrder: Project[] = [
+      { id: "idle-first", name: "Idle first", path: "/work/idle-first", createdAt: "2026-07-24T00:00:00.000Z" },
+      { id: "session-active", name: "Session active", path: "/work/session-active", createdAt: "2026-07-24T00:00:00.000Z" },
+      { id: "idle-second", name: "Idle second", path: "/work/idle-second", createdAt: "2026-07-24T00:00:00.000Z" },
+      { id: "terminal-active", name: "Terminal active", path: "/work/terminal-active", createdAt: "2026-07-24T00:00:00.000Z" },
+    ];
+    const activities: Record<string, WorkspaceActivity> = {
+      "/work/session-active": { cwd: "/work/session-active", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-24T01:00:00.000Z" },
+      "/work/terminal-active": { cwd: "/work/terminal-active", hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-24T01:00:00.000Z" },
+    };
+
+    const orderedProjects = prioritizeActiveProjects(projectsToOrder, {}, activities);
+
+    expect(orderedProjects.map((project) => project.id)).toEqual(["session-active", "terminal-active", "idle-first", "idle-second"]);
+    expect(projectsToOrder.map((project) => project.id)).toEqual(["idle-first", "session-active", "idle-second", "terminal-active"]);
   });
 });
 

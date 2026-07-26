@@ -54,7 +54,11 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
-    const projects = filterProjects(this.projects, this.searchQuery);
+    const projects = prioritizeActiveProjects(
+      filterProjects(this.projects, this.searchQuery),
+      this.workspacesByProjectId,
+      this.activities,
+    );
     return html`
       <section>
         <h2>
@@ -184,4 +188,18 @@ export function filterProjects(projects: readonly Project[], queryText: string):
   const query = queryText.trim().toLowerCase();
   if (query === "") return [...projects];
   return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(query));
+}
+
+export function prioritizeActiveProjects(
+  projects: readonly Project[],
+  workspacesByProjectId: Record<string, Workspace[]>,
+  activities: Record<string, WorkspaceActivity>,
+): Project[] {
+  const activeProjects: Project[] = [];
+  const inactiveProjects: Project[] = [];
+  for (const project of projects) {
+    const indicator = projectActivityIndicator(project, workspacesByProjectId[project.id] ?? [], activities);
+    (indicator === undefined ? inactiveProjects : activeProjects).push(project);
+  }
+  return [...activeProjects, ...inactiveProjects];
 }
