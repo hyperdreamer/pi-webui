@@ -27,6 +27,19 @@ describe("project identity", () => {
     });
   });
 
+  it("keeps the embedded Pi SDK dependencies aligned with its supported peer series", () => {
+    expect(packageManifest.devDependencies).toMatchObject({
+      "@earendil-works/pi-agent-core": "^0.82.1",
+      "@earendil-works/pi-ai": "^0.82.1",
+      "@earendil-works/pi-coding-agent": "^0.82.1",
+    });
+    expect(packageManifest.peerDependencies).toMatchObject({
+      "@earendil-works/pi-agent-core": ">=0.82.1 <0.83",
+      "@earendil-works/pi-ai": ">=0.82.1 <0.83",
+      "@earendil-works/pi-coding-agent": ">=0.82.1 <0.83",
+    });
+  });
+
   it("uses PI WEBUI plugin and extension paths", () => {
     expect(existsSync(join(repositoryRoot, "pi-webui-plugins"))).toBe(true);
     const legacyPluginDirectory = ["pi", "web-plugins"].join("-");

@@ -12,9 +12,9 @@ afterEach(async () => {
 });
 
 describe("ModelsConfigService", () => {
-  it("persists models.json and reloads the daemon model runtime", async () => {
+  it("persists models.json and refreshes the daemon model runtime without a catalog lookup", async () => {
     const agentDir = await temporaryAgentDir();
-    const modelRuntime = { reloadConfig: vi.fn().mockResolvedValue(undefined) };
+    const modelRuntime = { refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }) };
     const models = new ModelsConfigService({ agentDir, modelRuntime });
     const config = {
       providers: {
@@ -28,7 +28,7 @@ describe("ModelsConfigService", () => {
     await expect(models.save(config)).resolves.toEqual({ success: true });
 
     await expect(readFile(join(agentDir, "models.json"), "utf8")).resolves.toBe(`${JSON.stringify(config, null, 2)}\n`);
-    expect(modelRuntime.reloadConfig).toHaveBeenCalledOnce();
+    expect(modelRuntime.refresh).toHaveBeenCalledExactlyOnceWith({ allowNetwork: false });
   });
 
   it("discovers Google provider models with normalized IDs", async () => {

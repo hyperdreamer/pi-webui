@@ -15,7 +15,7 @@ describe("SessionDefaultsService", () => {
       models: [{ provider: model.provider, id: model.id }],
       thinkingLevels: ["off", "low", "high"],
     });
-    expect(harness.modelRuntime.reloadConfig).toHaveBeenCalledOnce();
+    expect(harness.modelRuntime.refresh).toHaveBeenCalledExactlyOnceWith({ allowNetwork: false });
     expect(harness.settings.flush).not.toHaveBeenCalled();
   });
 
@@ -94,7 +94,7 @@ function createHarness(input: {
     flush: vi.fn(() => Promise.resolve()),
   };
   const modelRuntime = {
-    reloadConfig: vi.fn(() => Promise.resolve()),
+    refresh: vi.fn(() => Promise.resolve({ aborted: false, errors: new Map() })),
     getAvailableSnapshot: () => input.models ?? [input.model],
   };
   const service = new SessionDefaultsService({

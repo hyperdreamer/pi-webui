@@ -3,12 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, type AuthPrompt, type Credential } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthFlowState } from "../../shared/apiTypes.js";
 import { AuthService, createModelRuntimeForAgentDir, type AuthChange, type AuthServiceLogger } from "./authService.js";
 import { OAuthLoginFlowService } from "./oauthLoginFlowService.js";
 
 const tempDirs: string[] = [];
+
+beforeEach(() => {
+  vi.stubEnv("PI_OFFLINE", "1");
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -18,16 +22,22 @@ afterEach(async () => {
 describe("AuthService", () => {
   it("saves API keys and emits a global auth change after the runtime refreshes", async () => {
     const { auth, runtime, credentials, changes } = await createAuthService();
-    const reloadConfig = vi.spyOn(runtime, "reloadConfig").mockResolvedValue(undefined);
     const refresh = vi.spyOn(runtime, "refresh");
+    const catalogFetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Catalog network access is disabled in this test"));
 
-    await expect(auth.saveApiKey("anthropic", "sk-test")).resolves.toEqual({ accepted: true });
+    try {
+      await expect(auth.saveApiKey("anthropic", "sk-test")).resolves.toEqual({ accepted: true });
 
-    await expect(credentials.read("anthropic")).resolves.toEqual({ type: "api_key", key: "sk-test" });
-    expect(reloadConfig).toHaveBeenCalledOnce();
-    expect(refresh).toHaveBeenCalledOnce();
-    expect(changes).toEqual([{}]);
-    auth.dispose();
+      await expect(credentials.read("anthropic")).resolves.toEqual({ type: "api_key", key: "sk-test" });
+      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(refresh).toHaveBeenNthCalledWith(1, { allowNetwork: false });
+      expect(refresh).toHaveBeenNthCalledWith(2, { allowNetwork: false });
+      expect(catalogFetch).not.toHaveBeenCalled();
+      expect(changes).toEqual([{}]);
+    } finally {
+      catalogFetch.mockRestore();
+      auth.dispose();
+    }
   });
 
   it("logs out providers and emits the removed provider id after the runtime refreshes", async () => {
@@ -323,7 +333,7 @@ describe("AuthService", () => {
     auth.dispose();
   });
 
-  it("reloads models.json before enumerating and validating OAuth providers", async () => {
+  it("refreshes models.json before enumerating and validating OAuth providers", async () => {
     const agentDir = await tempAgentDir();
     const modelsPath = join(agentDir, "models.json");
     const runtime = await ModelRuntime.create({
@@ -376,14 +386,16 @@ describe("AuthService", () => {
       expires: Date.now() + 60_000,
     };
     vi.spyOn(provider.auth.oauth, "login").mockResolvedValue(credential);
-    vi.spyOn(runtime, "reloadConfig").mockResolvedValue(undefined);
     const refreshStarted = deferred<undefined>();
     const finishRefresh = deferred<undefined>();
-    const refresh = vi.spyOn(runtime, "refresh").mockImplementation(async () => {
-      refreshStarted.resolve(undefined);
-      await finishRefresh.promise;
-      return { aborted: false, errors: new Map() };
-    });
+    const refresh = vi.spyOn(runtime, "refresh")
+      .mockResolvedValueOnce({ aborted: false, errors: new Map() })
+      .mockImplementationOnce(async (options) => {
+        expect(options).toEqual({ allowNetwork: false });
+        refreshStarted.resolve(undefined);
+        await finishRefresh.promise;
+        return { aborted: false, errors: new Map() };
+      });
 
     const state = await auth.startOAuthLogin(provider.id);
     await refreshStarted.promise;
@@ -399,7 +411,9 @@ describe("AuthService", () => {
     expect(auth.oauthFlow(state.flowId)).not.toHaveProperty("error");
     await expect(credentials.read(provider.id)).resolves.toEqual(credential);
     expect(changes).toEqual([{}]);
-    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenNthCalledWith(1, { allowNetwork: false });
+    expect(refresh).toHaveBeenNthCalledWith(2, { allowNetwork: false });
     auth.dispose();
   });
 

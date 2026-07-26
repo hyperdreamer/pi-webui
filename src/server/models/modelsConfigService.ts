@@ -9,11 +9,11 @@ const MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
 
 type ModelConnectionRuntime = Pick<ModelRuntime, "getError" | "getModel" | "getAuth" | "completeSimple">;
 type ModelConnectionRuntimeFactory = (options: { modelsPath: string; authPath: string }) => Promise<ModelConnectionRuntime>;
-type ModelsReloadRuntime = Pick<ModelRuntime, "reloadConfig">;
+type ModelsReloadRuntime = Pick<ModelRuntime, "refresh">;
 
 export interface ModelsConfigServiceDependencies {
   agentDir: string;
-  /** The daemon's shared runtime, reloaded after a successful models.json save. */
+  /** The daemon's shared runtime, refreshed from models.json after a successful save. */
   modelRuntime?: ModelsReloadRuntime;
   createConnectionRuntime?: ModelConnectionRuntimeFactory;
 }
@@ -49,7 +49,7 @@ export class ModelsConfigService {
     const document = parseModelsConfigDocument(value);
     await mkdir(dirname(this.modelsPath), { recursive: true });
     await writeFile(this.modelsPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
-    await this.modelRuntime?.reloadConfig();
+    await this.modelRuntime?.refresh({ allowNetwork: false });
     return { success: true };
   }
 

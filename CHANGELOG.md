@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1
+
+### Patch Changes
+
+- Update the embedded Pi runtime and supported Pi Coding Agent range to 0.82.1.
+
 ## 1.8.0
 
 ### Patch Changes

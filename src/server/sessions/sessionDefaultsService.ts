@@ -15,7 +15,7 @@ interface SessionDefaultsSettings {
 }
 
 export interface SessionDefaultsModelRuntime {
-  reloadConfig(): Promise<void>;
+  refresh(options?: { allowNetwork?: boolean }): Promise<unknown>;
   getAvailableSnapshot(): readonly DefaultModel[];
 }
 
@@ -76,7 +76,7 @@ export class SessionDefaultsService {
   }
 
   private async availableModels(): Promise<DefaultModel[]> {
-    await this.deps.modelRuntime.reloadConfig();
+    await this.deps.modelRuntime.refresh({ allowNetwork: false });
     return [...this.deps.modelRuntime.getAvailableSnapshot()];
   }
 

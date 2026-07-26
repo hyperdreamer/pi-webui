@@ -358,13 +358,13 @@ export interface PiAgentSession {
   setSessionName(name: string): void;
   /**
    * Narrow re-expression of `AgentSession.agent` (an `@earendil-works/pi-agent-core`
-   * `Agent`), exposing only `streamFn` — the resolved-auth/headers/retry "call this
+   * `Agent`), exposing only `streamFunction` — the resolved-auth/headers/retry "call this
    * model" function pi's own compaction/branch-summarization code uses internally.
    * Lets callers (e.g. session title generation) issue one-off model calls without
    * depending on pi-ai's deprecated `/compat` provider registry or leaking the full
    * `Agent`/`AgentSession` surface.
    */
-  agent: { streamFn: StreamFn };
+  agent: { streamFunction: StreamFn };
 }
 
 export interface PiSessionRuntime {
@@ -1469,7 +1469,7 @@ export class PiSessionService implements SessionRouteService {
 
   async availableModels(ref: PiSessionLookup): Promise<ClientSessionModel[]> {
     const session = await this.getOrOpen(ref);
-    await session.modelRuntime.reloadConfig();
+    await session.modelRuntime.refresh({ allowNetwork: false });
     const models = session.scopedModels.length > 0
       ? session.scopedModels.map((scoped) => scoped.model)
       : session.modelRuntime.getAvailableSnapshot();
@@ -1480,7 +1480,7 @@ export class PiSessionService implements SessionRouteService {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
     this.assertTreeNavigationInactive(session, "change models");
-    await session.modelRuntime.reloadConfig();
+    await session.modelRuntime.refresh({ allowNetwork: false });
     this.assertTreeNavigationInactive(session, "change models");
     const candidates = session.scopedModels.length > 0
       ? session.scopedModels.map((scoped) => scoped.model)
@@ -2905,7 +2905,7 @@ export class PiSessionService implements SessionRouteService {
     const model = session.model;
     if (model === undefined) return;
 
-    void generateShortSessionName(session.agent.streamFn, model, firstMessage).then((name) => {
+    void generateShortSessionName(session.agent.streamFunction, model, firstMessage).then((name) => {
       this.applyGeneratedSessionName(session, name ?? fallbackSessionName(firstMessage));
     }).catch(() => {
       this.applyGeneratedSessionName(session, fallbackSessionName(firstMessage));
