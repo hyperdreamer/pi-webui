@@ -17,3 +17,6 @@ dist/
 
 # Local generated CodeGraph index.
 .codegraph/
+
+# Isolated local feature worktrees.
+.worktrees/
