@@ -6,6 +6,7 @@ import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
+import { displayedProjects } from "./projectListProjection";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -189,35 +190,6 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       .project-search-empty { margin: 6px 0; color: var(--pi-muted); }
     `,
   ];
-}
-
-export function filterProjects(projects: readonly Project[], queryText: string): Project[] {
-  const query = queryText.trim().toLowerCase();
-  if (query === "") return [...projects];
-  return projects.filter((project) => `${project.name} ${project.path}`.toLowerCase().includes(query));
-}
-
-export function prioritizeActiveProjects(
-  projects: readonly Project[],
-  workspacesByProjectId: Record<string, Workspace[]>,
-  activities: Record<string, WorkspaceActivity>,
-): Project[] {
-  const activeProjects: Project[] = [];
-  const inactiveProjects: Project[] = [];
-  for (const project of projects) {
-    const indicator = projectActivityIndicator(project, workspacesByProjectId[project.id] ?? [], activities);
-    (indicator === undefined ? inactiveProjects : activeProjects).push(project);
-  }
-  return [...activeProjects, ...inactiveProjects];
-}
-
-export function displayedProjects(
-  projects: readonly Project[],
-  queryText: string,
-  workspacesByProjectId: Record<string, Workspace[]>,
-  activities: Record<string, WorkspaceActivity>,
-): Project[] {
-  return prioritizeActiveProjects(filterProjects(projects, queryText), workspacesByProjectId, activities);
 }
 
 export function shouldCloseProjectMenuForOrderChange(projectId: string, previousProjects: readonly Project[], currentProjects: readonly Project[]): boolean {

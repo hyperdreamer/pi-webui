@@ -1,59 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Project, Workspace, WorkspaceActivity } from "../api";
+import type { Project, WorkspaceActivity } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
-import { displayedProjects, filterProjects, prioritizeActiveProjects, ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
+import { ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
+import { displayedProjects } from "./projectListProjection";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
   { id: "client", name: "Client App", path: "/work/client-app", createdAt: "2026-07-24T00:00:00.000Z" },
   { id: "docs", name: "Documentation", path: "/work/client-guides", createdAt: "2026-07-24T00:00:00.000Z" },
 ];
-
-describe("project filtering", () => {
-  it("matches project names and paths regardless of query casing", () => {
-    expect(filterProjects(projects, "  CLIENT  ").map((project) => project.id)).toEqual(["client", "docs"]);
-  });
-});
-
-describe("project activity ordering", () => {
-  it("puts projects with live session or terminal activity first without mutating their existing order", () => {
-    const projectsToOrder: Project[] = [
-      { id: "idle-first", name: "Idle first", path: "/work/idle-first", createdAt: "2026-07-24T00:00:00.000Z" },
-      { id: "session-active", name: "Session active", path: "/work/session-active", createdAt: "2026-07-24T00:00:00.000Z" },
-      { id: "idle-second", name: "Idle second", path: "/work/idle-second", createdAt: "2026-07-24T00:00:00.000Z" },
-      { id: "terminal-active", name: "Terminal active", path: "/work/terminal-active", createdAt: "2026-07-24T00:00:00.000Z" },
-    ];
-    const activities: Record<string, WorkspaceActivity> = {
-      "/work/session-active": { cwd: "/work/session-active", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-24T01:00:00.000Z" },
-      "/work/terminal-active": { cwd: "/work/terminal-active", hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-24T01:00:00.000Z" },
-    };
-
-    const orderedProjects = prioritizeActiveProjects(projectsToOrder, {}, activities);
-
-    expect(orderedProjects.map((project) => project.id)).toEqual(["session-active", "terminal-active", "idle-first", "idle-second"]);
-    expect(projectsToOrder.map((project) => project.id)).toEqual(["idle-first", "session-active", "idle-second", "terminal-active"]);
-  });
-
-  it("prioritizes visible projects with activity from a known worktree", () => {
-    const worktree: Workspace = {
-      id: "docs-feature",
-      projectId: "docs",
-      path: "/tmp/client-guides-feature",
-      label: "docs-feature",
-      isMain: false,
-      isGitRepo: true,
-      isGitWorktree: true,
-    };
-    const activities: Record<string, WorkspaceActivity> = {
-      [worktree.path]: { cwd: worktree.path, hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-24T01:00:00.000Z" },
-    };
-
-    const orderedProjects = displayedProjects(projects, "client", { docs: [worktree] }, activities);
-
-    expect(orderedProjects.map((project) => project.id)).toEqual(["docs", "client"]);
-  });
-});
 
 describe("project action menu dismissal", () => {
   it("closes an open menu when another part of the project list is clicked", () => {
