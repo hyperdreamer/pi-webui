@@ -91,7 +91,6 @@
             <strong>Questions</strong>
             <a href="#is-this-linux-only">What platforms are supported?</a>
             <a href="#is-pi-webui-a-web-ui">Is PI WEBUI a Pi web UI?</a>
-            <a href="#embedded-browser">How does the embedded Browser work?</a>
             <a href="#git-update-manager">How do I review Git changes?</a>
             <a href="#tools-are-not-found">Tools are failing / node not found</a>
             <a href="#doctor-fails">What does doctor check?</a>
@@ -127,41 +126,6 @@
                 Yes. PI WEBUI is a web UI for Pi Coding Agent that runs and supervises persistent sessions from a browser.
                 Unlike simple session viewers, PI WEBUI is built around real server-side workspaces, long-running session
                 daemons, git worktrees, remote machines, terminals, files, and multi-device supervision.
-              </p>
-            </article>
-
-            <article id="embedded-browser" class="faq-item">
-              <h2>How does the embedded Browser work?</h2>
-              <p>
-                On desktop, select the globe <strong>Browser</strong> icon in the Activity Rail. The panel has tabs, an
-                address bar, reload control, page-zoom controls, a draggable title bar, and a lower-right resize handle.
-                Use <strong>+</strong> to open a tab and its <strong>×</strong> control to close it. Tabs last while the
-                panel is open; page zoom is remembered in this browser.
-              </p>
-              <p>
-                Browser is a lightweight embedded viewer, not a native browser or a server-side proxy. The panel labels
-                this mode explicitly. It accepts <code>http://</code> and <code>https://</code> addresses and renders
-                them in a sandboxed, no-referrer frame. Pages whose <code>X-Frame-Options</code> or
-                <code>Content-Security-Policy: frame-ancestors</code> policy disallows framing can refuse to load, and an
-                HTTPS PI WEBUI deployment may have its browser block an HTTP page as mixed content.
-              </p>
-              <p>
-                Remote browser mode is unavailable in this installation by design. PI WEBUI does not start a remote
-                Chromium runtime or <code>browserd</code>, and it provides no remote browser controls or pixel stream.
-                There is no remote site-login session or PI WEBUI-managed destination-cookie storage. The iframe remains
-                subject to the normal cookie policy of the user's browser; PI WEBUI does not proxy, inspect, or rewrite
-                those cookies.
-              </p>
-              <p>
-                No setting rewrites page headers or turns this viewer into a proxy. A future remote-browser mode would
-                require an authenticated principal, an isolated sandboxed browser runtime with a private control channel,
-                and enforced public-web egress. Those security prerequisites are not deployed or configurable today, so
-                use a normal browser for sites that block framing or require local-browser capabilities.
-              </p>
-              <p>
-                The address field tracks pages opened from the Browser controls. For privacy and browser security, PI
-                WEBUI cannot inspect a different-origin page, so following links within an external page may not update
-                the displayed address. Use the address field or a new tab to navigate directly when needed.
               </p>
             </article>
 
