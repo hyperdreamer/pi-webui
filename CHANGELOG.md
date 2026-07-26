@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.0
+
+### Patch Changes
+
+- 07e39e1: Show projects with live session or terminal activity first in the Projects list.
+- b9f3560: Add an expanded Projects browser with full paths and live filtering.
+- 84ad204: Remove the Browser Activity Rail panel and browser API. Use a normal browser for web browsing.
+
 ## 1.8.1
 
 ### Patch Changes
