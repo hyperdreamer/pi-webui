@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Project, WorkspaceActivity } from "../api";
+import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
-import { filterProjects, prioritizeActiveProjects, ProjectList } from "./ProjectList";
+import { filterProjects, prioritizeActiveProjects, ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
@@ -34,6 +34,26 @@ describe("project activity ordering", () => {
     expect(orderedProjects.map((project) => project.id)).toEqual(["session-active", "terminal-active", "idle-first", "idle-second"]);
     expect(projectsToOrder.map((project) => project.id)).toEqual(["idle-first", "session-active", "idle-second", "terminal-active"]);
   });
+
+  it("prioritizes visible projects with activity from a known worktree", () => {
+    const worktree: Workspace = {
+      id: "docs-feature",
+      projectId: "docs",
+      path: "/tmp/client-guides-feature",
+      label: "docs-feature",
+      isMain: false,
+      isGitRepo: true,
+      isGitWorktree: true,
+    };
+    const activities: Record<string, WorkspaceActivity> = {
+      [worktree.path]: { cwd: worktree.path, hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-24T01:00:00.000Z" },
+    };
+
+    const visibleProjects = filterProjects(projects, "client");
+    const orderedProjects = prioritizeActiveProjects(visibleProjects, { docs: [worktree] }, activities);
+
+    expect(orderedProjects.map((project) => project.id)).toEqual(["docs", "client"]);
+  });
 });
 
 describe("project action menu dismissal", () => {
@@ -44,6 +64,15 @@ describe("project action menu dismissal", () => {
     clickOutsideActionMenu(list);
 
     expect(Reflect.get(list, "openMenuProjectId")).toBeUndefined();
+  });
+
+  it("closes an open menu only when activity ordering moves its project", () => {
+    const nextActivities: Record<string, WorkspaceActivity> = {
+      "/work/client-app": { cwd: "/work/client-app", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-24T01:00:00.000Z" },
+    };
+
+    expect(shouldCloseProjectMenuForOrderChange("server", projects, {}, {}, projects, {}, nextActivities)).toBe(true);
+    expect(shouldCloseProjectMenuForOrderChange("docs", projects, {}, {}, projects, {}, nextActivities)).toBe(false);
   });
 });
 
