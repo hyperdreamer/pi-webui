@@ -52,12 +52,8 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       const previousActivities = changed.get("activities") ?? this.activities;
       if (shouldCloseProjectMenuForOrderChange(
         this.openMenuProjectId,
-        previousProjects,
-        previousWorkspacesByProjectId,
-        previousActivities,
-        this.projects,
-        this.workspacesByProjectId,
-        this.activities,
+        displayedProjects(previousProjects, this.searchQuery, previousWorkspacesByProjectId, previousActivities),
+        displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities),
       )) this.openMenuProjectId = undefined;
     }
     if (changed.has("collapsed") && this.collapsed) this.openMenuProjectId = undefined;
@@ -69,11 +65,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
-    const projects = prioritizeActiveProjects(
-      filterProjects(this.projects, this.searchQuery),
-      this.workspacesByProjectId,
-      this.activities,
-    );
+    const projects = displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities);
     return html`
       <section>
         <h2>
@@ -219,16 +211,17 @@ export function prioritizeActiveProjects(
   return [...activeProjects, ...inactiveProjects];
 }
 
-export function shouldCloseProjectMenuForOrderChange(
-  projectId: string,
-  previousProjects: readonly Project[],
-  previousWorkspacesByProjectId: Record<string, Workspace[]>,
-  previousActivities: Record<string, WorkspaceActivity>,
-  currentProjects: readonly Project[],
-  currentWorkspacesByProjectId: Record<string, Workspace[]>,
-  currentActivities: Record<string, WorkspaceActivity>,
-): boolean {
-  const previousIndex = prioritizeActiveProjects(previousProjects, previousWorkspacesByProjectId, previousActivities).findIndex((project) => project.id === projectId);
-  const currentIndex = prioritizeActiveProjects(currentProjects, currentWorkspacesByProjectId, currentActivities).findIndex((project) => project.id === projectId);
+export function displayedProjects(
+  projects: readonly Project[],
+  queryText: string,
+  workspacesByProjectId: Record<string, Workspace[]>,
+  activities: Record<string, WorkspaceActivity>,
+): Project[] {
+  return prioritizeActiveProjects(filterProjects(projects, queryText), workspacesByProjectId, activities);
+}
+
+export function shouldCloseProjectMenuForOrderChange(projectId: string, previousProjects: readonly Project[], currentProjects: readonly Project[]): boolean {
+  const previousIndex = previousProjects.findIndex((project) => project.id === projectId);
+  const currentIndex = currentProjects.findIndex((project) => project.id === projectId);
   return previousIndex !== currentIndex;
 }

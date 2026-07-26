@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
-import { filterProjects, prioritizeActiveProjects, ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
+import { displayedProjects, filterProjects, prioritizeActiveProjects, ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
@@ -49,8 +49,7 @@ describe("project activity ordering", () => {
       [worktree.path]: { cwd: worktree.path, hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-24T01:00:00.000Z" },
     };
 
-    const visibleProjects = filterProjects(projects, "client");
-    const orderedProjects = prioritizeActiveProjects(visibleProjects, { docs: [worktree] }, activities);
+    const orderedProjects = displayedProjects(projects, "client", { docs: [worktree] }, activities);
 
     expect(orderedProjects.map((project) => project.id)).toEqual(["docs", "client"]);
   });
@@ -71,8 +70,28 @@ describe("project action menu dismissal", () => {
       "/work/client-app": { cwd: "/work/client-app", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-24T01:00:00.000Z" },
     };
 
-    expect(shouldCloseProjectMenuForOrderChange("server", projects, {}, {}, projects, {}, nextActivities)).toBe(true);
-    expect(shouldCloseProjectMenuForOrderChange("docs", projects, {}, {}, projects, {}, nextActivities)).toBe(false);
+    expect(shouldCloseProjectMenuForOrderChange(
+      "server",
+      displayedProjects(projects, "", {}, {}),
+      displayedProjects(projects, "", {}, nextActivities),
+    )).toBe(true);
+    expect(shouldCloseProjectMenuForOrderChange(
+      "docs",
+      displayedProjects(projects, "", {}, {}),
+      displayedProjects(projects, "", {}, nextActivities),
+    )).toBe(false);
+  });
+
+  it("keeps an open menu when hidden project activity does not move its visible row", () => {
+    const nextActivities: Record<string, WorkspaceActivity> = {
+      "/work/client-app": { cwd: "/work/client-app", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-07-24T01:00:00.000Z" },
+    };
+
+    expect(shouldCloseProjectMenuForOrderChange(
+      "server",
+      displayedProjects(projects, "server", {}, {}),
+      displayedProjects(projects, "server", {}, nextActivities),
+    )).toBe(false);
   });
 });
 
