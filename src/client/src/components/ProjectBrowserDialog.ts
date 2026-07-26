@@ -1,4 +1,5 @@
 import { LitElement, css, html, type PropertyValues, type TemplateResult } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
@@ -78,7 +79,9 @@ export class ProjectBrowserDialog extends LitElement {
             <h1 id="project-browser-title">Projects</h1>
             <div class="header-actions">
               <button class="add-button" type="button" @click=${() => { this.onAdd?.(); }}>Add project</button>
-              <button class="close-button" type="button" title="Close expanded project browser" aria-label="Close expanded project browser" @click=${() => { this.close(); }}><span aria-hidden="true">×</span></button>
+              <button class="close-button" type="button" title="Close expanded project browser" aria-label="Close expanded project browser" @click=${() => { this.close(); }}>
+                <svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"></path></svg>
+              </button>
             </div>
           </header>
           <div class="dialog-body">
@@ -115,7 +118,7 @@ export class ProjectBrowserDialog extends LitElement {
 
     return html`
       <div class="project-list">
-        ${projects.map((project) => html`
+        ${repeat(projects, (project) => project.id, (project) => html`
           <div
             class=${`project-row action-row ${this.selected?.id === project.id ? "selected" : ""}`}
             tabindex="0"
@@ -129,7 +132,9 @@ export class ProjectBrowserDialog extends LitElement {
               ${this.renderActivity(project)}
             </div>
             <div class="action-menu">
-              <button class="action-menu-toggle" type="button" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
+              <button class="action-menu-toggle" type="button" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>
+                <svg class="action-menu-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg>
+              </button>
               ${this.openMenuProjectId === project.id ? html`
                 <div class="action-menu-panel" style=${this.menuStyle}>
                   <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
@@ -227,12 +232,13 @@ export class ProjectBrowserDialog extends LitElement {
     button:focus-visible, input:focus-visible, .project-row:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
     .add-button { border-color: var(--pi-accent); background: var(--pi-accent); color: var(--pi-bg); font-weight: 700; }
     .add-button:hover { background: var(--pi-accent); filter: brightness(1.08); }
-    .close-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; color: var(--pi-muted); font-size: 25px; line-height: 1; }
+    .close-button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; color: var(--pi-muted); }
+    .close-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
     .close-button:hover { color: var(--pi-text); }
     .dialog-body { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 7px; padding: 16px; }
     .search-label { font-weight: 700; }
     .project-browser-search { width: 100%; min-width: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 8px 10px; font: inherit; }
-    .result-area { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+    .result-area { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     .project-list { display: grid; gap: 8px; }
     .project-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; cursor: pointer; }
     .project-main { position: relative; min-width: 0; display: grid; gap: 3px; border: 1px solid var(--pi-border); border-radius: 8px 0 0 8px; background: var(--pi-surface); padding: 9px 28px 9px 11px; }
@@ -246,7 +252,8 @@ export class ProjectBrowserDialog extends LitElement {
     .activity-indicator.session { border-radius: 50%; background: var(--pi-success); }
     .activity-indicator.terminal { border-radius: 2px; background: var(--pi-accent); }
     .action-menu { position: relative; }
-    .action-menu-toggle { display: grid; place-items: center; width: 36px; height: 100%; min-height: 100%; border-left: 0; border-radius: 0 8px 8px 0; padding: 0; color: var(--pi-muted); font-size: 18px; }
+    .action-menu-toggle { display: grid; place-items: center; width: 36px; height: 100%; min-height: 100%; border-left: 0; border-radius: 0 8px 8px 0; padding: 0; color: var(--pi-muted); }
+    .action-menu-icon { width: 18px; height: 18px; }
     .action-menu-toggle:hover { color: var(--pi-text); }
     .action-menu-panel { position: fixed; z-index: 70; min-width: min(120px, calc(100vw - 16px)); max-width: calc(100vw - 16px); overflow: auto; padding: 4px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); box-shadow: 0 8px 24px var(--pi-shadow); overflow-wrap: anywhere; }
     .action-menu-panel button { display: block; width: 100%; border: 0; background: transparent; text-align: left; white-space: normal; overflow-wrap: anywhere; }

@@ -1,17 +1,49 @@
+import type { TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { templateClickHandlerForText, templateText } from "../templateInspection.testSupport";
+import { isTemplateResult, templateClickHandlerForText, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 
-const projects: Project[] = [
-  { id: "server", name: "Server Console", path: "/very/long/path/to/server-console", createdAt: "2026-07-26T00:00:00.000Z" },
-  { id: "client", name: "Client App", path: "/very/long/path/to/client-app", createdAt: "2026-07-26T00:00:00.000Z" },
-];
+const serverProject: Project = { id: "server", name: "Server Console", path: "/very/long/path/to/server-console", createdAt: "2026-07-26T00:00:00.000Z" };
+const clientProject: Project = { id: "client", name: "Client App", path: "/very/long/path/to/client-app", createdAt: "2026-07-26T00:00:00.000Z" };
+const projects = [serverProject, clientProject];
 
-function invokeReflectedVoidMethod(target: object, name: string, ...args: unknown[]): void {
+function invokeReflectedMethod(target: object, name: string, ...args: unknown[]): unknown {
   const method: unknown = Reflect.get(target, name);
   if (typeof method !== "function") throw new Error(`Expected ProjectBrowserDialog.${name}`);
-  Reflect.apply(method, target, args);
+  return Reflect.apply(method, target, args);
+}
+
+function invokeReflectedVoidMethod(target: object, name: string, ...args: unknown[]): void {
+  void invokeReflectedMethod(target, name, ...args);
+}
+
+/**
+ * Node-based component tests cannot mount Lit's keyed DOM. Inspect the repeat
+ * directive at the rendering boundary to lock down its stable row identity.
+ */
+function isProjectRowsRepeatValues(value: unknown): value is readonly [
+  readonly unknown[],
+  (project: Project) => TemplateResult,
+  (project: Project) => TemplateResult,
+] {
+  return Array.isArray(value) && Array.isArray(value[0]) && typeof value[1] === "function" && typeof value[2] === "function";
+}
+
+function projectRowsRepeatDirective(dialog: ProjectBrowserDialog): {
+  items: readonly unknown[];
+  key: (project: Project) => unknown;
+  render: (project: Project) => TemplateResult;
+} {
+  const rendered = invokeReflectedMethod(dialog, "renderResults");
+  if (!isTemplateResult(rendered)) throw new Error("Expected ProjectBrowserDialog.renderResults to return a TemplateResult");
+
+  const directive = templateValueAfterMarker(rendered, '<div class="project-list">');
+  if (typeof directive !== "object" || directive === null) throw new Error("Expected project rows to use Lit repeat");
+  const values: unknown = Reflect.get(directive, "values");
+  if (!isProjectRowsRepeatValues(values)) throw new Error("Expected project rows to use Lit repeat with items, key, and template callbacks");
+
+  return { items: values[0], key: values[1], render: values[2] };
 }
 
 function clickEvent(path: EventTarget[]): Event {
@@ -26,11 +58,40 @@ describe("ProjectBrowserDialog", () => {
     dialog.projects = projects;
     Reflect.set(dialog, "searchQuery", "CLIENT");
 
-    const rendered = templateText(dialog.render());
+    const rows = projectRowsRepeatDirective(dialog);
+    const rendered = templateText(rows.render(clientProject));
+    expect(rows.items).toEqual([clientProject]);
     expect(rendered).toContain("Client App");
     expect(rendered).toContain("/very/long/path/to/client-app");
     expect(rendered).not.toContain("Server Console");
     expect(ProjectBrowserDialog.styles.cssText).toMatch(/\.project-path\s*\{[^}]*overflow-wrap:\s*anywhere;/);
+  });
+
+  it("keys project rows by their stable project id", () => {
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = projects;
+
+    const { key } = projectRowsRepeatDirective(dialog);
+
+    expect(key(serverProject)).toBe("server");
+    expect(key(clientProject)).toBe("client");
+  });
+
+  it("keeps the result area vertically scrollable without horizontal scrolling", () => {
+    expect(ProjectBrowserDialog.styles.cssText).toMatch(/\.result-area\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
+  });
+
+  it("renders inline SVG icons for the close and action-menu controls", () => {
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = projects;
+
+    const dialogMarkup = templateText(dialog.render());
+    const rowMarkup = templateText(projectRowsRepeatDirective(dialog).render(serverProject));
+
+    expect(dialogMarkup).toContain('<svg class="close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">');
+    expect(dialogMarkup).not.toContain("×");
+    expect(rowMarkup).toContain('<svg class="action-menu-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"');
+    expect(rowMarkup).not.toContain("⋯");
   });
 
   it("delegates a selected row through the supplied callback", () => {
@@ -39,9 +100,9 @@ describe("ProjectBrowserDialog", () => {
     const onSelect = vi.fn();
     dialog.onSelect = onSelect;
 
-    templateClickHandlerForText(dialog.render(), "Client App")(clickEvent([]));
+    templateClickHandlerForText(projectRowsRepeatDirective(dialog).render(clientProject), "Client App")(clickEvent([]));
 
-    expect(onSelect).toHaveBeenCalledWith(projects[1]);
+    expect(onSelect).toHaveBeenCalledWith(clientProject);
   });
 
   it("renders an empty search message when no project matches", () => {
