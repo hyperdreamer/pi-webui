@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.0
+
+### Patch Changes
+
+- 5dc391f: Add a Compact control to the chat composer for manually summarizing session context.
+- ff56a22: Allow pinned sessions to be unpinned directly from their star icon, with a button-like enlarged hover state and unpin hint.
+- 0b8fe92: Group related sessions across project workspaces, with expandable parent rows and direct navigation to linked workspaces.
+- 922e7d5: Dismiss session, project, and workspace action menus when clicking elsewhere in their lists.
+- e7878a8: Refresh System Info memory and network rates independently while the Info tab is active, improve rate display, and avoid reloading unchanged machines.
+- 67fbb2e: Place terminal modal appearance controls beside the Terminal title.
+- 67fbb2e: Add maximize and restore controls to the terminal window.
+- 67fbb2e: Make terminal shell close controls easier to target and accessible by keyboard.
+
 ## 1.7.0
 
 ### Patch Changes
