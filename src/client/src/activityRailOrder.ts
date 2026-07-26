@@ -1,14 +1,8 @@
-/**
- * Stable identifiers for Activity Rail icons.
- *
- * The Browser and Git Update Manager join the reorderable tools. The
- * "settings" icon remains pinned at the bottom, separated by a spacer.
- */
-export type ReorderableRailItem = "terminal" | "browser" | "git-update-manager" | "theme" | "system-prompt" | "history" | "info";
+/** Stable identifiers for reorderable Activity Rail icons. */
+export type ReorderableRailItem = "terminal" | "git-update-manager" | "theme" | "system-prompt" | "history" | "info";
 
 const REORDERABLE_ITEMS: readonly ReorderableRailItem[] = [
   "terminal",
-  "browser",
   "git-update-manager",
   "theme",
   "system-prompt",
@@ -16,6 +10,7 @@ const REORDERABLE_ITEMS: readonly ReorderableRailItem[] = [
   "info",
 ];
 const LEGACY_FILE_MANAGER_ITEM = "file-manager";
+const REMOVED_BROWSER_ITEM = "browser";
 
 export const DEFAULT_RAIL_ORDER: readonly ReorderableRailItem[] = [...REORDERABLE_ITEMS];
 
@@ -37,6 +32,7 @@ function normalizeRailOrder(value: unknown): ReorderableRailItem[] | undefined {
   for (const rawItem of value) {
     if (typeof rawItem !== "string") return undefined;
     const item = rawItem === LEGACY_FILE_MANAGER_ITEM ? "git-update-manager" : rawItem;
+    if (item === REMOVED_BROWSER_ITEM) continue;
     if (!isReorderableItem(item) || seen.has(item)) return undefined;
     seen.add(item);
     result.push(item);
@@ -45,13 +41,9 @@ function normalizeRailOrder(value: unknown): ReorderableRailItem[] | undefined {
   if (result.length === REORDERABLE_ITEMS.length) return result;
 
   const migrated = [...result];
-  if (!seen.has("browser")) {
-    const terminalIndex = migrated.indexOf("terminal");
-    migrated.splice(terminalIndex + 1, 0, "browser");
-  }
   if (!seen.has("git-update-manager")) {
-    const browserIndex = migrated.indexOf("browser");
-    migrated.splice(browserIndex + 1, 0, "git-update-manager");
+    const terminalIndex = migrated.indexOf("terminal");
+    migrated.splice(terminalIndex + 1, 0, "git-update-manager");
   }
   if (!seen.has("info")) {
     migrated.push("info");

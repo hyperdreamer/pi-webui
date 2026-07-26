@@ -22,11 +22,11 @@ describe("ActivityRail", () => {
   }
 
   describe("desktop rendering", () => {
-    it("renders the rail with terminal, Browser, Git Update Manager, theme, System prompt, Full history, system info, and settings icon buttons on desktop", () => {
+    it("renders the rail without a Browser control", () => {
       const rail = createRail();
       expect(railText(rail)).toContain("Open terminal");
       expect(railText(rail)).toContain("Open Git Update Manager");
-      expect(railText(rail)).toContain("Open browser");
+      expect(railText(rail)).not.toContain("Open browser");
       expect(railText(rail)).toContain("Open theme picker");
       expect(railText(rail)).toContain("Open system prompt");
       expect(railText(rail)).toContain("Open full history");
@@ -52,16 +52,11 @@ describe("ActivityRail", () => {
       expect(railText(rail)).toContain("Open terminal");
     });
 
-    it("opens the embedded browser from its activity-rail icon", () => {
+    it("does not expose a Browser callback or activity-rail icon", () => {
       const rail = createRail();
-      const onOpenBrowser = vi.fn();
-      rail.onOpenBrowser = onOpenBrowser;
 
-      expect(railText(rail)).toContain("Open browser");
-      const handler = templateEventHandlerAfterMarker(rail.render(), "browser-button");
-      handler(new Event("click"));
-
-      expect(onOpenBrowser).toHaveBeenCalledOnce();
+      expect("onOpenBrowser" in rail).toBe(false);
+      expect(railText(rail)).not.toContain("Open browser");
     });
 
     it("opens Git Update Manager from its activity-rail icon", () => {
@@ -203,40 +198,37 @@ describe("ActivityRail", () => {
   });
 
   describe("rail order", () => {
-    it("renders reorderable buttons in the default order", () => {
+    it("renders non-browser reorderable buttons in the default order", () => {
       const rail = createRail();
       const text = railText(rail);
       const terminalPos = text.indexOf("Open terminal");
-      const browserPos = text.indexOf("Open browser");
       const gitUpdateManagerPos = text.indexOf("Open Git Update Manager");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
       const historyPos = text.indexOf("Open full history");
       const infoPos = text.indexOf("Open system info");
-      // Default order: terminal, Browser, Git Update Manager, theme, system-prompt, history, info (settings fixed at bottom)
-      expect(terminalPos).toBeLessThan(browserPos);
-      expect(browserPos).toBeLessThan(gitUpdateManagerPos);
+      expect(text).not.toContain("Open browser");
+      expect(terminalPos).toBeLessThan(gitUpdateManagerPos);
       expect(gitUpdateManagerPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
       expect(spPos).toBeLessThan(historyPos);
       expect(historyPos).toBeLessThan(infoPos);
     });
 
-    it("renders reorderable buttons in a custom railOrder", () => {
+    it("renders non-browser reorderable buttons in a custom railOrder", () => {
       const rail = createRail();
-      const customOrder: ReorderableRailItem[] = ["info", "history", "browser", "git-update-manager", "terminal", "theme", "system-prompt"];
+      const customOrder: ReorderableRailItem[] = ["info", "history", "git-update-manager", "terminal", "theme", "system-prompt"];
       rail.railOrder = customOrder;
       const text = railText(rail);
       const infoPos = text.indexOf("Open system info");
       const historyPos = text.indexOf("Open full history");
-      const browserPos = text.indexOf("Open browser");
       const gitUpdateManagerPos = text.indexOf("Open Git Update Manager");
       const terminalPos = text.indexOf("Open terminal");
       const themePos = text.indexOf("Open theme picker");
       const spPos = text.indexOf("Open system prompt");
+      expect(text).not.toContain("Open browser");
       expect(infoPos).toBeLessThan(historyPos);
-      expect(historyPos).toBeLessThan(browserPos);
-      expect(browserPos).toBeLessThan(gitUpdateManagerPos);
+      expect(historyPos).toBeLessThan(gitUpdateManagerPos);
       expect(gitUpdateManagerPos).toBeLessThan(terminalPos);
       expect(terminalPos).toBeLessThan(themePos);
       expect(themePos).toBeLessThan(spPos);
@@ -251,7 +243,7 @@ describe("ActivityRail", () => {
 
     it("always renders the settings button last, after a spacer", () => {
       const rail = createRail();
-      rail.railOrder = ["terminal", "browser", "git-update-manager", "theme", "system-prompt", "history", "info"];
+      rail.railOrder = ["terminal", "git-update-manager", "theme", "system-prompt", "history", "info"];
       const text = railText(rail);
       const lastReorderablePos = text.indexOf("Open system info");
       const settingsPos = text.indexOf("Open settings");
@@ -259,7 +251,7 @@ describe("ActivityRail", () => {
       expect(lastReorderablePos).toBeLessThan(settingsPos);
 
       // Swap order: settings should still be last.
-      rail.railOrder = ["info", "history", "system-prompt", "theme", "git-update-manager", "browser", "terminal"];
+      rail.railOrder = ["info", "history", "system-prompt", "theme", "git-update-manager", "terminal"];
       const text2 = railText(rail);
       const terminalPos2 = text2.indexOf("Open terminal");
       const settingsPos2 = text2.indexOf("Open settings");
@@ -278,7 +270,7 @@ describe("ActivityRail", () => {
 
     it("reorderable buttons have dragstart and dragend handlers", () => {
       const rail = createRail();
-      const markers = ["terminal-button", "browser-button", "git-update-manager-button", "theme-button", "system-prompt-button", "history-button", "info-button"];
+      const markers = ["terminal-button", "git-update-manager-button", "theme-button", "system-prompt-button", "history-button", "info-button"];
       for (const marker of markers) {
         const dragStart = templateEventHandlerAfterMarker(rail.render(), marker);
         expect(typeof dragStart).toBe("function");
@@ -298,9 +290,9 @@ describe("ActivityRail", () => {
 
     it("exposes railOrder and onRailOrderChange for parent wiring", () => {
       const rail = createRail();
-      expect(rail.railOrder).toHaveLength(7);
+      expect(rail.railOrder).toHaveLength(6);
       expect(rail.railOrder).toContain("terminal");
-      expect(rail.railOrder).toContain("browser");
+      expect(rail.railOrder).not.toContain("browser");
       expect(rail.railOrder).toContain("git-update-manager");
       // info IS now in railOrder (it is reorderable).
       expect(rail.railOrder).toContain("info");
