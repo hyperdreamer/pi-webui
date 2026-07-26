@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Project, WorkspaceActivity } from "../api";
+import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { displayedProjects, filterProjects, prioritizeActiveProjects } from "./projectListProjection";
 
 const projects: Project[] = [
@@ -28,5 +28,22 @@ describe("project list projection", () => {
     };
 
     expect(displayedProjects(projects, "client", {}, activities).map((project) => project.id)).toEqual(["docs", "client"]);
+  });
+
+  it("prioritizes visible projects with activity from a known worktree", () => {
+    const worktree: Workspace = {
+      id: "docs-feature",
+      projectId: "docs",
+      path: "/tmp/client-guides-feature",
+      label: "docs-feature",
+      isMain: false,
+      isGitRepo: true,
+      isGitWorktree: true,
+    };
+    const activities: Record<string, WorkspaceActivity> = {
+      [worktree.path]: { cwd: worktree.path, hasSessionActivity: false, hasTerminalActivity: true, updatedAt: "2026-07-26T01:00:00.000Z" },
+    };
+
+    expect(displayedProjects(projects, "client", { docs: [worktree] }, activities).map((project) => project.id)).toEqual(["docs", "client"]);
   });
 });
