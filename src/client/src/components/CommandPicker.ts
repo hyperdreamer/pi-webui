@@ -26,13 +26,7 @@ export class CommandPicker extends LitElement {
           </header>
           ${this.searchable ? html`<input placeholder="Search" .value=${this.query} @input=${(event: Event) => { this.handleSearchInput(event); }} @keydown=${(event: KeyboardEvent) => { this.handleKeyDown(event); }}>` : null}
           <div class="options" @keydown=${(event: KeyboardEvent) => { this.handleKeyDown(event); }} tabindex="0">
-            ${options.map((option, index) => html`
-              <button class=${index === this.selectedIndex ? "selected" : ""} ${scrollWhenSelected(index === this.selectedIndex, option.value)} @click=${() => this.onPick?.(option.value)}>
-                <span>${option.label}</span>
-                ${option.description !== undefined && option.description !== "" ? html`<small>${option.description}</small>` : null}
-              </button>
-            `)}
-            ${options.length === 0 ? html`<div class="empty">No matching options</div>` : null}
+            ${options.length === 0 ? html`<div class="empty">No matching options</div>` : this.renderGroupedOptions(options)}
           </div>
         </section>
       </div>
@@ -61,6 +55,33 @@ export class CommandPicker extends LitElement {
     const query = this.query.trim().toLowerCase();
     if (query === "") return this.options;
     return this.options.filter((option) => `${option.label} ${option.description ?? ""} ${option.value}`.toLowerCase().includes(query));
+  }
+
+  private renderGroupedOptions(options: CommandOption[]) {
+    const groups: { group: string | undefined; items: { option: CommandOption; index: number }[] }[] = [];
+    for (const [i, option] of options.entries()) {
+      const last = groups[groups.length - 1];
+      if (last !== undefined && last.group === option.group) {
+        last.items.push({ option, index: i });
+      } else {
+        groups.push({ group: option.group, items: [{ option, index: i }] });
+      }
+    }
+    return groups.map((group) => {
+      const labelled = group.group !== undefined && group.group !== "";
+      const header = labelled
+        ? html`<div class="group-header">${group.group}</div>`
+        : null;
+      return html`
+        ${header}
+        ${group.items.map(({ option, index }) => html`
+          <button class="${index === this.selectedIndex ? "selected" : ""}${labelled ? " grouped" : ""}" ${scrollWhenSelected(index === this.selectedIndex, option.value)} @click=${() => this.onPick?.(option.value)}>
+            <span>${option.label}</span>
+            ${option.description !== undefined && option.description !== "" ? html`<small>${option.description}</small>` : null}
+          </button>
+        `)}
+      `;
+    });
   }
 
   private handleKeyDown(event: KeyboardEvent) {

@@ -1103,6 +1103,8 @@ export interface CommandOption {
   value: string;
   label: string;
   description?: string;
+  /** When set, options with the same group are rendered together under a group header. */
+  group?: string;
 }
 
 export type SessionTreeNodeKind =

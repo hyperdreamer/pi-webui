@@ -858,7 +858,9 @@ export const commandPickerStyles = css`
   input:focus { border-color: var(--pi-accent); }
   .options button { display: block; width: 100%; padding: 10px 12px; border-bottom: 1px solid var(--pi-border-muted); text-align: left; }
   .options button.selected, .options button:hover { background: var(--pi-selection-bg); }
+  .options button.grouped { padding-left: 24px; }
   small { display: block; margin-top: 4px; color: var(--pi-muted); }
+  .group-header { position: sticky; top: 0; z-index: 1; padding: 7px 12px; background: var(--pi-surface); border-bottom: 1px solid var(--pi-border-muted); color: var(--pi-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .empty { padding: 24px; color: var(--pi-muted); text-align: center; }
 `;
 

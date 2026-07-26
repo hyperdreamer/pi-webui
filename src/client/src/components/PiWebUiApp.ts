@@ -2175,15 +2175,25 @@ export class PiWebUiApp extends LitElement {
     const models = await this.sessions.listModels();
     const currentProvider = this.state.status?.model?.provider;
     const currentId = this.state.status?.model?.id;
+    const sorted = [...models].sort((a, b) => {
+      const providerA = a.provider ?? "";
+      const providerB = b.provider ?? "";
+      if (providerA !== providerB) return providerA.localeCompare(providerB);
+      return (a.id ?? "").localeCompare(b.id ?? "");
+    });
     this.setState({
       modelDialog: {
         title: "Select Model",
         ...(currentProvider !== undefined && currentId !== undefined ? { selectedValue: `${currentProvider}/${currentId}` } : {}),
-        options: models.map((model) => {
+        options: sorted.map((model) => {
           const provider = model.provider ?? "";
           const id = model.id ?? "";
           const isCurrent = provider === currentProvider && id === currentId;
-          return { value: `${provider}/${id}`, label: `${id}${isCurrent ? " ✓ current" : ""}`, description: provider };
+          return {
+            value: `${provider}/${id}`,
+            label: id + (isCurrent ? " ✓ current" : ""),
+            ...(provider === "" ? {} : { group: provider }),
+          };
         }),
       },
     });
@@ -2201,16 +2211,26 @@ export class PiWebUiApp extends LitElement {
     if (defaults === undefined) return;
     const currentProvider = defaults.model?.provider;
     const currentId = defaults.model?.id;
+    const sorted = [...defaults.models].sort((a, b) => {
+      const providerA = a.provider ?? "";
+      const providerB = b.provider ?? "";
+      if (providerA !== providerB) return providerA.localeCompare(providerB);
+      return (a.id ?? "").localeCompare(b.id ?? "");
+    });
     this.setState({
       modelDialog: {
         title: "Select Default Model",
         source: "starter",
         ...(currentProvider !== undefined && currentId !== undefined ? { selectedValue: `${currentProvider}/${currentId}` } : {}),
-        options: defaults.models.map((model) => {
+        options: sorted.map((model) => {
           const provider = model.provider ?? "";
           const id = model.id ?? "";
           const isCurrent = provider === currentProvider && id === currentId;
-          return { value: `${provider}/${id}`, label: `${id}${isCurrent ? " ✓ current" : ""}`, description: provider };
+          return {
+            value: `${provider}/${id}`,
+            label: id + (isCurrent ? " ✓ current" : ""),
+            ...(provider === "" ? {} : { group: provider }),
+          };
         }),
       },
     });
