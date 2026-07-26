@@ -27,7 +27,9 @@ records the approval and evidence in the release handoff:
 6. The release candidate contains no secrets, application SAST findings, or
    other dependency vulnerabilities. This exception is never a substitute for
    those checks.
-7. The auditor records the commands, results, package provenance, review date,
+7. The registered exception is within its stated expiry date. An expired entry
+   fails the security gate until a new documented policy review renews it.
+8. The auditor records the commands, results, package provenance, review date,
    and expiry in the release handoff. The PM explicitly approves the exception
    before QA may begin.
 
