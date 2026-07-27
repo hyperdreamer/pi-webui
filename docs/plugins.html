@@ -263,8 +263,10 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
               <p>
                 The tab shows independently collapsible <strong>Global memory</strong> and
                 <strong>Project-specific memory</strong> groups. Project-specific memory contains entries only for the
-                selected workspace project. When source data is empty, missing, or unavailable, the affected scope shows
-                its own empty or unavailable state.
+                selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable
+                project-specific request displays a scoped <strong>Project-specific unavailable</strong> state while
+                <strong>Global memory</strong> remains available. A failed global-memory request is presented as a panel-level
+                retryable error.
               </p>
               <ul>
                 <li>Plugin id: <code>workspace-memory</code></li>

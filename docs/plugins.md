@@ -206,7 +206,7 @@ Built-in plugins can be managed from **Settings → PI WEBUI plugins** or with t
 **Plugin id:** `workspace-memory`
 **What it does:** adds a read-only **Memory** workspace tab. It reads `pi-hermes-memory`-compatible data through PI WEBUI and never writes, creates, edits, or deletes memories.
 
-The tab shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. When source data is empty, missing, or unavailable, the affected scope shows its own empty or unavailable state.
+The tab shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable project-specific request displays a scoped **Project-specific unavailable** state while **Global memory** remains available. A failed global-memory request is presented as a panel-level retryable error.
 
 Memory is bundled with PI WEBUI and enabled by default. To disable it, use **Settings → PI WEBUI plugins** or set:
 
