@@ -14,11 +14,13 @@ const plugin: PiWebUiPlugin = {
             id: "workspace.memory",
             title: "Memory",
             icon: svg`
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.38-1 1.72V8h2a2 2 0 0 1 2 2v2h1.72a2 2 0 0 1 0 4H17v2a2 2 0 0 1-2 2h-2v1.72a2 2 0 0 1-4 0V20H7a2 2 0 0 1-2-2v-2H3.28a2 2 0 0 1 0-4H5v-2a2 2 0 0 1 2-2h2V5.72A2 2 0 0 1 12 2Z"></path>
-                <circle cx="8" cy="14" r="1"></circle>
-                <circle cx="16" cy="14" r="1"></circle>
-                <path d="M12 17v2"></path>
+              <svg data-icon="brain" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 18V5"></path>
+                <path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"></path>
+                <path d="M17.6 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.6 1.5"></path>
+                <path d="M17.6 17.5A3 3 0 1 1 12 19a3 3 0 1 1-5.6-1.5"></path>
+                <path d="M17.6 6.5a3 3 0 0 1 1.4 5.5 3 3 0 0 1-1.4 5.5"></path>
+                <path d="M6.4 17.5A3 3 0 0 1 5 12a3 3 0 0 1 1.4-5.5"></path>
               </svg>
             `,
             order: 50,

@@ -19,8 +19,22 @@ describe("pi-webui workspace-memory plugin", () => {
     // Non-browser test stub.  Lit's TemplateResult cannot be constructed in
     // a plain Node environment, so we provide callable stubs that return a
     // dummy value and cast the context shape once.
-    function stubTag(_strings: TemplateStringsArray, ..._values: unknown[]): unknown {
-      return { _$: "stub", strings: _strings, values: _values };
+    function stubTag(strings: TemplateStringsArray, ...values: unknown[]) {
+      return { _$: "stub", strings, values };
+    }
+
+    function getStubbedTemplateMarkup(template: unknown): string {
+      if (
+        typeof template !== "object" ||
+        template === null ||
+        !("strings" in template) ||
+        !Array.isArray(template.strings) ||
+        !template.strings.every((part) => typeof part === "string")
+      ) {
+        throw new Error("Expected a stubbed SVG template");
+      }
+
+      return template.strings.join("");
     }
 
     /* eslint-disable @typescript-eslint/consistent-type-assertions --
@@ -55,9 +69,12 @@ describe("pi-webui workspace-memory plugin", () => {
       expect(result.contributions.workspacePanels?.[0]?.order).toBe(50);
     });
 
-    it("panel has an SVG icon", () => {
+    it("panel has an outlined brain SVG icon without robot eyes", () => {
       const icon = result.contributions.workspacePanels?.[0]?.icon;
-      expect(icon).toBeDefined();
+      const markup = getStubbedTemplateMarkup(icon);
+
+      expect(markup).toContain('data-icon="brain"');
+      expect(markup).not.toContain("<circle");
     });
 
     it("panel has a render function", () => {
