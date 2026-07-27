@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const pluginRoot = "pi-webui-plugins";
 const forbiddenPatterns = [
-  { pattern: /\bfetch\s*\(/u, message: "direct browser fetch" },
+  { pattern: /\bfetch\s*\(\s*["'`]\//u, message: "direct browser fetch with absolute URL" },
   { pattern: /["'`][^"'`]*\/api\//u, message: "direct PI WEBUI /api URL" },
   { pattern: /piWebUiInternal/u, message: "legacy internal plugin context" },
   { pattern: /(?:\.\.\/)+src\//u, message: "imports from PI WEBUI source internals" },

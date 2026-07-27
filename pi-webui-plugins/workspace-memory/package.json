@@ -1,0 +1,9 @@
+{
+  "name": "@pi-webui/workspace-memory-plugin",
+  "private": true,
+  "piWebUi": {
+    "plugins": [
+      { "id": "workspace-memory", "module": "pi-webui-plugin.js" }
+    ]
+  }
+}
