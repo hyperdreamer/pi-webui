@@ -13,5 +13,7 @@
     "extensions/**/*.ts",
     "pi-webui-plugins/**/*.ts"
   ],
-  "ignoreExportsUsedInFile": true
+  "ignoreExportsUsedInFile": true,
+  "ignoreDependencies": ["tsx"],
+  "ignoreBinaries": ["tsx", "vite", "tsc", "knip", "eslint", "vitest", "changeset"]
 }
