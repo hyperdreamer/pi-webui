@@ -1,6 +1,28 @@
 import type { ModelsConfigDocument, ModelsConfigModel, ModelsConfigProvider } from "../../api";
 
 export const MODEL_API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
+
+interface ModelApiOptionState {
+  api: (typeof MODEL_API_OPTIONS)[number];
+  selected: boolean;
+}
+
+/**
+ * Keep selection on each option so a freshly mounted select can resolve it
+ * after Lit inserts the dynamic option list.
+ */
+export function modelApiOptionStates(selectedApi: string | undefined): readonly ModelApiOptionState[] {
+  return MODEL_API_OPTIONS.map((api) => ({ api, selected: api === selectedApi }));
+}
+
+/** Preserve the configured model selection while Lit mounts fetched options. */
+export function modelIdOptionStates<T extends { id: string }>(
+  candidates: readonly T[],
+  selectedModelId: string,
+): readonly { candidate: T; selected: boolean }[] {
+  return candidates.map((candidate) => ({ candidate, selected: candidate.id === selectedModelId }));
+}
+
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];

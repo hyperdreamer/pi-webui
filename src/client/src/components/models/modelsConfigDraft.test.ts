@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ModelsConfigDocument } from "../../api";
 import {
+  MODEL_API_OPTIONS,
   addCustomProvider,
   addModel,
+  modelApiOptionStates,
+  modelIdOptionStates,
   removeModel,
   renameProvider,
   setThinkingLevelMapEntry,
@@ -28,6 +31,28 @@ describe("modelsConfigDraft", () => {
         "new-provider-1": { api: "openai-completions" },
       },
     });
+  });
+
+  it("marks the configured API format for option-level selection", () => {
+    expect(modelApiOptionStates("anthropic-messages")).toEqual([
+      { api: "openai-completions", selected: false },
+      { api: "openai-responses", selected: false },
+      { api: "anthropic-messages", selected: true },
+      { api: "google-generative-ai", selected: false },
+    ]);
+    expect(modelApiOptionStates(undefined)).toEqual(MODEL_API_OPTIONS.map((api) => ({ api, selected: false })));
+  });
+
+  it("marks the configured fetched model ID for option-level selection", () => {
+    const candidates = [
+      { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "claude-opus-5", name: "Claude Opus 5" },
+    ];
+
+    expect(modelIdOptionStates(candidates, "claude-opus-5")).toEqual([
+      { candidate: candidates[0], selected: false },
+      { candidate: candidates[1], selected: true },
+    ]);
   });
 
   it("refuses a provider rename that would overwrite a different provider", () => {

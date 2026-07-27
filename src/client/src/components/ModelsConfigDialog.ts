@@ -10,10 +10,11 @@ import {
   type ModelsConfigProvider,
 } from "../api";
 import {
-  MODEL_API_OPTIONS,
   THINKING_LEVELS,
   addCustomProvider,
   addModel,
+  modelApiOptionStates,
+  modelIdOptionStates,
   removeModel,
   removeProvider,
   renameProvider,
@@ -216,6 +217,7 @@ export class ModelsConfigDialog extends LitElement {
   private renderProviderDetail(providerName: string, provider: ModelsConfigProvider): TemplateResult {
     const discovery = this.discoveredModels[providerName];
     const canDiscover = typeof provider.baseUrl === "string" && provider.baseUrl.trim() !== "";
+    const providerApi = provider.api ?? "openai-completions";
     return html`
       <div class="detail-content">
         <div class="detail-heading">
@@ -253,8 +255,8 @@ export class ModelsConfigDialog extends LitElement {
 
         <div class="field-stack">
           <label for="provider-api">API format</label>
-          <select id="provider-api" .value=${provider.api ?? "openai-completions"} @change=${(event: Event) => { this.replaceProvider(providerName, { ...provider, api: textValue(event) }); }}>
-            ${MODEL_API_OPTIONS.map((api) => html`<option value=${api}>${api}</option>`)}
+          <select id="provider-api" .value=${providerApi} @change=${(event: Event) => { this.replaceProvider(providerName, { ...provider, api: textValue(event) }); }}>
+            ${modelApiOptionStates(providerApi).map(({ api, selected }) => html`<option value=${api} .selected=${selected}>${api}</option>`)}
           </select>
         </div>
 
@@ -310,7 +312,7 @@ export class ModelsConfigDialog extends LitElement {
           <label for="model-api">API override</label>
           <select id="model-api" .value=${model.api ?? ""} @change=${(event: Event) => { this.replaceModel(providerName, index, { ...model, api: optionalText(textValue(event)) }); }}>
             <option value="">Inherit provider API</option>
-            ${MODEL_API_OPTIONS.map((api) => html`<option value=${api}>${api}</option>`)}
+            ${modelApiOptionStates(model.api).map(({ api, selected }) => html`<option value=${api} .selected=${selected}>${api}</option>`)}
           </select>
         </div>
 
@@ -387,7 +389,7 @@ export class ModelsConfigDialog extends LitElement {
         <label for="model-id">Model ID <span aria-hidden="true">*</span></label>
         <select id="model-id" class="mono" .value=${model.id} @change=${(event: Event) => { this.selectDiscoveredModel(providerName, index, textValue(event)); }}>
           ${model.id.trim() === "" ? html`<option value="" disabled>Select a model</option>` : null}
-          ${options.map((candidate) => html`<option value=${candidate.id}>${candidate.name === undefined ? candidate.id : `${candidate.name} (${candidate.id})`}</option>`)}
+          ${modelIdOptionStates(options, model.id).map(({ candidate, selected }) => html`<option value=${candidate.id} .selected=${selected}>${candidate.name === undefined ? candidate.id : `${candidate.name} (${candidate.id})`}</option>`)}
         </select>
       </div>
     `;
