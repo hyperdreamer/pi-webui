@@ -426,7 +426,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     hub.globalEvents.length = 0;
 
     await credentials.delete("anthropic");
-    await modelRuntime.refresh();
+    await modelRuntime.refresh({ allowNetwork: false });
     service.applyAuthChange({ removedProviderId: "anthropic" });
     service.applyAuthChange({ removedProviderId: "anthropic" });
 
@@ -435,10 +435,10 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     expect(hub.globalEvents.some((event) => event.type === "status.update" && event.status.sessionId === "auth-session")).toBe(true);
 
     await seedCredential(credentials, "anthropic", { type: "api_key", key: "sk-new" });
-    await modelRuntime.refresh();
+    await modelRuntime.refresh({ allowNetwork: false });
     service.applyAuthChange();
     await credentials.delete("anthropic");
-    await modelRuntime.refresh();
+    await modelRuntime.refresh({ allowNetwork: false });
     service.applyAuthChange({ removedProviderId: "anthropic" });
     expect(warningCount()).toBe(2);
 
