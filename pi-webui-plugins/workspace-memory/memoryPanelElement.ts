@@ -104,10 +104,11 @@ class PiWebUiMemoryPanel extends _BaseElement {
 
   /** Public setter for the workspace panel context. */
   set context(value: WorkspacePanelContext | undefined) {
-    if (this.contextValue === value) return;
+    const previousContext = this.contextValue;
+    this.contextValue = value;
+    if (isSameWorkspaceContext(previousContext, value)) return;
 
     this.loadController.invalidate();
-    this.contextValue = value;
     if (value === undefined) {
       this.state = { kind: "no-workspace" };
       this.render();
@@ -164,7 +165,10 @@ class PiWebUiMemoryPanel extends _BaseElement {
   }
 
   private isCurrentContext(context: WorkspacePanelContext, workspacePath: string): boolean {
-    return this.contextValue === context && this.contextValue.workspace.path === workspacePath;
+    const currentContext = this.contextValue;
+    return currentContext !== undefined
+      && hasSameWorkspaceIdentity(currentContext, context)
+      && currentContext.workspace.path === workspacePath;
   }
 
   private render(): void {
@@ -177,6 +181,20 @@ class PiWebUiMemoryPanel extends _BaseElement {
       void this.loadMemories();
     });
   }
+}
+
+function isSameWorkspaceContext(
+  left: WorkspacePanelContext | undefined,
+  right: WorkspacePanelContext | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return hasSameWorkspaceIdentity(left, right) && left.workspace.path === right.workspace.path;
+}
+
+function hasSameWorkspaceIdentity(left: WorkspacePanelContext, right: WorkspacePanelContext): boolean {
+  return left.machine.id === right.machine.id
+    && left.workspace.projectId === right.workspace.projectId
+    && left.workspace.id === right.workspace.id;
 }
 
 export function renderPanelState(state: MemoryPanelState): string {
