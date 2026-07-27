@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.1
+
+### Patch Changes
+
+- 29a7e94: Fix model discovery for Anthropic custom providers configured with root-style base URLs.
+- 6e89618: Preserve selected API formats and model IDs when switching between configuration views or after fetching a provider's model catalog.
+
 ## 1.9.0
 
 ### Patch Changes
