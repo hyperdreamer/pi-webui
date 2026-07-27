@@ -201,6 +201,23 @@ PI WEBUI ships core, discoverable plugins in the main `@hyperdreamer/pi-webui` n
 
 Built-in plugins can be managed from **Settings → PI WEBUI plugins** or with the top-level `plugins` config key.
 
+### Memory
+
+**Plugin id:** `workspace-memory`
+**What it does:** adds a read-only **Memory** workspace tab. It reads `pi-hermes-memory`-compatible data through PI WEBUI and never writes, creates, edits, or deletes memories.
+
+The tab shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. When source data is empty, missing, or unavailable, the affected scope shows its own empty or unavailable state.
+
+Memory is bundled with PI WEBUI and enabled by default. To disable it, use **Settings → PI WEBUI plugins** or set:
+
+```json
+{
+  "plugins": {
+    "workspace-memory": { "enabled": false }
+  }
+}
+```
+
 ### Updates
 
 **Plugin id:** `updates`

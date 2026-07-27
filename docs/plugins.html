@@ -254,6 +254,37 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
                 <code>plugins</code> config key.
               </p>
 
+              <h3>Memory</h3>
+              <p>
+                <strong>Memory</strong> adds a read-only <strong>Memory</strong> workspace tab. It reads
+                <code>pi-hermes-memory</code>-compatible data through PI WEBUI and never writes, creates, edits, or
+                deletes memories.
+              </p>
+              <p>
+                The tab shows independently collapsible <strong>Global memory</strong> and
+                <strong>Project-specific memory</strong> groups. Project-specific memory contains entries only for the
+                selected workspace project. When source data is empty, missing, or unavailable, the affected scope shows
+                its own empty or unavailable state.
+              </p>
+              <ul>
+                <li>Plugin id: <code>workspace-memory</code></li>
+              </ul>
+              <p>
+                Memory is bundled with PI WEBUI and enabled by default. To disable it, use
+                <strong>Settings → PI WEBUI plugins</strong> or set:
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Disable Memory</strong>
+                  <button class="copy-button" data-copy="#memory-disable">Copy</button>
+                </div>
+                <pre id="memory-disable"><code>{
+  "plugins": {
+    "workspace-memory": { "enabled": false }
+  }
+}</code></pre>
+              </div>
+
               <h3>Updates</h3>
               <p>
                 <strong>Updates</strong> adds a conditional <strong>Updates</strong> workspace tab with PI WEBUI update,
