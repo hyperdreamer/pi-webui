@@ -1,5 +1,6 @@
 import type { WorkspacePanelContext } from "@hyperdreamer/pi-webui/plugin-api";
 import { fetchGlobalMemories, fetchProjectMemories } from "./memoryClient.js";
+import { MemoryLoadController } from "./memoryLoadController.js";
 import type { MemoryEntry } from "./memoryData.js";
 
 export const memoryPanelTagName = "pi-webui-memory-panel";
@@ -7,8 +8,12 @@ export const memoryPanelTagName = "pi-webui-memory-panel";
 export type MemoryPanelState =
   | { kind: "no-workspace" }
   | { kind: "loading" }
-  | { kind: "empty" }
-  | { kind: "data"; entries: MemoryEntry[] }
+  | {
+      kind: "data";
+      globalEntries: MemoryEntry[];
+      projectEntries: MemoryEntry[];
+      projectUnavailableMessage?: string;
+    }
   | { kind: "error"; message: string };
 
 const CATEGORY_CLASS: Record<string, string> = {
@@ -90,6 +95,7 @@ class PiWebUiMemoryPanel extends _BaseElement {
   private contextValue: WorkspacePanelContext | undefined;
   private state: MemoryPanelState = { kind: "no-workspace" };
   private readonly root: ShadowRoot;
+  private readonly loadController = new MemoryLoadController({ fetchGlobalMemories, fetchProjectMemories });
 
   constructor() {
     super();
@@ -98,12 +104,17 @@ class PiWebUiMemoryPanel extends _BaseElement {
 
   /** Public setter for the workspace panel context. */
   set context(value: WorkspacePanelContext | undefined) {
-    const previousPath = this.contextValue?.workspace.path;
-    const nextPath = value?.workspace.path;
+    if (this.contextValue === value) return;
+
+    this.loadController.invalidate();
     this.contextValue = value;
-    if (previousPath !== nextPath) {
-      void this.loadMemories();
+    if (value === undefined) {
+      this.state = { kind: "no-workspace" };
+      this.render();
+      return;
     }
+
+    if (this.isConnected) void this.loadMemories();
   }
 
   /** Exposed for tests to inject state directly without network calls. */
@@ -119,38 +130,41 @@ class PiWebUiMemoryPanel extends _BaseElement {
     }
   }
 
+  disconnectedCallback(): void {
+    this.loadController.invalidate();
+  }
+
   private async loadMemories(): Promise<void> {
-    const ctx = this.contextValue;
-    if (ctx === undefined) {
+    const context = this.contextValue;
+    if (context === undefined) {
       this.state = { kind: "no-workspace" };
       this.render();
       return;
     }
 
+    const workspacePath = context.workspace.path;
     this.state = { kind: "loading" };
     this.render();
 
-    try {
-      const [globalEntries, projectEntries] = await Promise.all([
-        fetchGlobalMemories(),
-        fetchProjectMemories(ctx.workspace.path).catch((): MemoryEntry[] => []),
-      ]);
+    const result = await this.loadController.load(workspacePath);
+    if (result === undefined || !this.isCurrentContext(context, workspacePath)) return;
 
-      const entries = [...globalEntries, ...projectEntries];
-
-      if (entries.length === 0) {
-        this.state = { kind: "empty" };
-      } else {
-        this.state = { kind: "data", entries };
-      }
-    } catch (error) {
-      this.state = {
-        kind: "error",
-        message: error instanceof Error ? error.message : "Failed to load memories.",
-      };
-    }
+    this.state = result.kind === "global-error"
+      ? { kind: "error", message: result.message }
+      : {
+          kind: "data",
+          globalEntries: result.globalEntries,
+          projectEntries: result.projectEntries,
+          ...(result.projectUnavailableMessage === undefined
+            ? {}
+            : { projectUnavailableMessage: result.projectUnavailableMessage }),
+        };
     this.render();
-    ctx.host.requestRender();
+    context.host.requestRender();
+  }
+
+  private isCurrentContext(context: WorkspacePanelContext, workspacePath: string): boolean {
+    return this.contextValue === context && this.contextValue.workspace.path === workspacePath;
   }
 
   private render(): void {
@@ -165,32 +179,79 @@ class PiWebUiMemoryPanel extends _BaseElement {
   }
 }
 
-function renderPanelState(state: MemoryPanelState): string {
+export function renderPanelState(state: MemoryPanelState): string {
   switch (state.kind) {
     case "no-workspace":
       return `<section class="empty">Select a workspace.</section>`;
     case "loading":
       return `<section class="viewer"><div class="spinner">Loading memories\u2026</div></section>`;
-    case "empty":
-      return `<section class="viewer"><p class="muted">No memories found.</p></section>`;
     case "error":
       return `<section class="viewer">
         <div class="status error">${escapeHtml(state.message)}</div>
         <button class="secondary" data-retry style="margin-top:10px">Retry</button>
       </section>`;
     case "data":
-      return `<section class="toolbar"><strong>Memory</strong><span class="muted">${String(state.entries.length)} ${state.entries.length === 1 ? "entry" : "entries"}</span></section>
-      <section class="viewer">${state.entries.map((entry) => renderEntryHtml(entry)).join("")}</section>`;
+      return `<section class="viewer">
+        ${renderMemoryGroupHtml({
+          title: "Global memory",
+          entries: state.globalEntries,
+          emptyMessage: "No global memories found.",
+        })}
+        ${renderMemoryGroupHtml({
+          title: "Project-specific memory",
+          entries: state.projectEntries,
+          emptyMessage: "No project-specific memories found.",
+          ...(state.projectUnavailableMessage === undefined
+            ? {}
+            : { unavailableMessage: state.projectUnavailableMessage }),
+        })}
+      </section>`;
   }
+}
+
+interface MemoryGroupRenderOptions {
+  readonly title: string;
+  readonly entries: MemoryEntry[];
+  readonly emptyMessage: string;
+  readonly unavailableMessage?: string;
+}
+
+function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
+  const unavailable = options.unavailableMessage !== undefined;
+  const count = `${String(options.entries.length)} ${options.entries.length === 1 ? "entry" : "entries"}`;
+  const body = unavailable
+    ? `<p class="memory-group-message unavailable">${escapeHtml(options.unavailableMessage)}</p>`
+    : options.entries.length === 0
+      ? `<p class="memory-group-message">${escapeHtml(options.emptyMessage)}</p>`
+      : options.entries.map((entry) => renderEntryHtml(entry)).join("");
+
+  return `
+    <details class="memory-group" open>
+      <summary>
+        <span class="memory-group-title">${escapeHtml(options.title)}</span>
+        <span class="${unavailable ? "memory-group-status unavailable" : "memory-group-count"}">${unavailable ? "Unavailable" : count}</span>
+      </summary>
+      <div class="memory-group-body">${body}</div>
+    </details>
+  `;
 }
 
 function panelStyles(): string {
   return `
     <style>
       :host { display: contents; }
-      .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--pi-border-muted); }
       .viewer { box-sizing: border-box; min-height: 0; overflow: auto; padding: 12px; }
       .empty { padding: 16px; color: var(--pi-muted); }
+      .memory-group { border: 1px solid var(--pi-border); border-radius: 8px; margin-bottom: 10px; }
+      .memory-group:last-child { margin-bottom: 0; }
+      .memory-group[open] { background: var(--pi-surface); }
+      .memory-group summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; cursor: pointer; }
+      .memory-group-title { font-weight: 600; }
+      .memory-group-count, .memory-group-status { color: var(--pi-muted); font-size: 12px; white-space: nowrap; }
+      .memory-group-status.unavailable { color: var(--pi-danger); }
+      .memory-group-body { padding: 0 12px 12px; }
+      .memory-group-message { margin: 0; color: var(--pi-muted); }
+      .memory-group-message.unavailable { color: var(--pi-danger); }
       .muted { color: var(--pi-muted); }
       .spinner { display: flex; align-items: center; gap: 8px; color: var(--pi-muted); }
       .spinner::before { content: ""; display: inline-block; width: 16px; height: 16px; border: 2px solid var(--pi-border); border-top-color: var(--pi-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
