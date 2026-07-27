@@ -185,7 +185,8 @@ async function createConnectionRuntimeForProfile(options: { modelsPath: string; 
 
 function modelDiscoveryEndpoint(baseUrl: string | undefined, api: string | undefined, apiKey: string | undefined): URL {
   if (baseUrl === undefined) throw new Error("baseUrl is required");
-  const endpoint = new URL("models", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const endpointPath = api === "anthropic-messages" ? "v1/models" : "models";
+  const endpoint = new URL(endpointPath, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
   if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") throw new Error("Provider base URL must use HTTP or HTTPS");
   if (api === "google-generative-ai") {
     if (apiKey === undefined || apiKey === "") throw new Error("No API key found for Google model discovery");

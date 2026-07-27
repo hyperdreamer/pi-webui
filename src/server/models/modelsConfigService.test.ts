@@ -56,6 +56,74 @@ describe("ModelsConfigService", () => {
     expect(new Headers(options?.headers).get("authorization")).toBeNull();
   });
 
+  it.each([
+    ["https://www.rightapi.ai/claude-aws", "https://www.rightapi.ai/claude-aws/v1/models"],
+    ["https://www.rightapi.ai/claude-aws/", "https://www.rightapi.ai/claude-aws/v1/models"],
+  ])("discovers Anthropic provider models from root base URL %s", async (baseUrl, expectedUrl) => {
+    const agentDir = await temporaryAgentDir();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: "claude-test", name: "Claude Test" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const models = new ModelsConfigService({
+      agentDir,
+      createConnectionRuntime: () => Promise.resolve(discoveryRuntime("anthropic-key", { "x-tenant": "anthropic-default" })),
+    });
+
+    await expect(discoverModels(models, {
+      providerName: "anthropic-custom",
+      provider: {
+        api: "anthropic-messages",
+        baseUrl,
+      },
+    })).resolves.toEqual({ models: [{ id: "claude-test", name: "Claude Test" }] });
+
+    const [url, options] = fetchMock.mock.calls[0] ?? [];
+    expect(fetchUrl(url)).toBe(expectedUrl);
+    const headers = new Headers(options?.headers);
+    expect(headers.get("x-api-key")).toBe("anthropic-key");
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(headers.get("x-tenant")).toBe("anthropic-default");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "configured addition and override",
+      configuredHeaders: { "x-tenant": "anthropic-tenant", "x-api-key": "configured-key", "anthropic-version": "2024-01-01" },
+      expectedHeaders: { "x-tenant": "anthropic-tenant", "x-api-key": "configured-key", "anthropic-version": "2024-01-01" },
+    },
+    {
+      name: "configured suppression",
+      configuredHeaders: { "x-tenant": "anthropic-tenant", "x-api-key": null, "anthropic-version": null },
+      expectedHeaders: { "x-tenant": "anthropic-tenant", "x-api-key": null, "anthropic-version": null },
+    },
+  ])("preserves Anthropic discovery header precedence for $name", async ({ configuredHeaders, expectedHeaders }) => {
+    const agentDir = await temporaryAgentDir();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: "claude-test", name: "Claude Test" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const models = new ModelsConfigService({
+      agentDir,
+      createConnectionRuntime: () => Promise.resolve(discoveryRuntime("anthropic-key", configuredHeaders)),
+    });
+
+    await expect(discoverModels(models, {
+      providerName: "anthropic-custom",
+      provider: {
+        api: "anthropic-messages",
+        baseUrl: "https://www.rightapi.ai/claude-aws",
+      },
+    })).resolves.toEqual({ models: [{ id: "claude-test", name: "Claude Test" }] });
+
+    const [, options] = fetchMock.mock.calls[0] ?? [];
+    const headers = new Headers(options?.headers);
+    expect(headers.get("x-tenant")).toBe(expectedHeaders["x-tenant"]);
+    expect(headers.get("x-api-key")).toBe(expectedHeaders["x-api-key"]);
+    expect(headers.get("anthropic-version")).toBe(expectedHeaders["anthropic-version"]);
+  });
+
   it("discovers OpenAI-compatible provider models with resolved credentials", async () => {
     const agentDir = await temporaryAgentDir();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
@@ -119,7 +187,7 @@ function isDiscoverModels(value: unknown): value is DiscoverModels {
   return typeof value === "function";
 }
 
-function discoveryRuntime(apiKey: string, headers?: Record<string, string>) {
+function discoveryRuntime(apiKey: string, headers?: Record<string, string | null>) {
   return {
     getError: () => undefined,
     getModel: () => undefined,
