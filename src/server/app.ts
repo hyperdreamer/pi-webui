@@ -35,6 +35,7 @@ import {
   type ActiveAgentProfileProvider,
 } from "./activeAgentProfileProvider.js";
 import { MachineService } from "./machines/machineService.js";
+import { registerMemoryRoutes } from "./memory/memoryRoutes.js";
 import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
@@ -225,6 +226,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const invalidatingConfigService = invalidatePiWebUiStatusOnWrite(configService, piWebUiStatusCache);
   registerConfigRoutes(app, invalidatingConfigService);
   registerLocalMachineConfigRoutes(app, invalidatingConfigService);
+
+  registerMemoryRoutes(app, agentProfileProvider, "/api");
+  registerMemoryRoutes(app, agentProfileProvider, "/api/machines/local");
 
   registerMachineRoutes(app, machines);
   registerMachinePluginProxyRoutes(app, machines);

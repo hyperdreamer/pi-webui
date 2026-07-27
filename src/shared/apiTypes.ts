@@ -1280,6 +1280,19 @@ export interface SystemMetricsResponse {
   network: SystemNetworkMetrics;
 }
 
+export interface MemoryEntry {
+  id: string;
+  content: string;
+  category?: string;
+  created?: string;
+  last?: string;
+  failureReason?: string;
+}
+
+export interface MemoryEntriesResponse {
+  entries: MemoryEntry[];
+}
+
 export interface SystemInfoResponse {
   generatedAt: string;
   os: SystemOsInfo;
