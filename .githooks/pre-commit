@@ -2,4 +2,5 @@
 set -eu
 
 echo "Running pre-commit checks: npm run verify:staged"
+unset $(git rev-parse --local-env-vars)
 npm run verify:staged
