@@ -297,20 +297,30 @@ export class WorkspaceInfoPanel extends LitElement {
               <td class="info-label">Upload</td>
               <td class="info-value">${formatTransferRate(net.uploadSpeedBytesPerSecond)}<span class="network-speed-arrow upload" aria-hidden="true">↑</span></td>
             </tr>
-            ${net.publicIpv4 === undefined ? null : html`
-              <tr>
-                <td class="info-label">Public IPv4</td>
-                <td class="info-value">${net.publicIpv4}</td>
-              </tr>
-            `}
-            ${net.publicIpv6 === undefined ? null : html`
-              <tr>
-                <td class="info-label">Public IPv6</td>
-                <td class="info-value"><code class="ip-address">${net.publicIpv6}</code></td>
-              </tr>
-            `}
           </tbody>
         </table>
+        ${net.publicIpv4 === undefined ? null : html`
+          <h4 class="info-subheading">Public IPv4 Addresses</h4>
+          <table class="info-table">
+            <tbody>
+              <tr>
+                <td class="info-label">WAN</td>
+                <td class="info-value"><code class="ip-address">${net.publicIpv4}</code></td>
+              </tr>
+            </tbody>
+          </table>
+        `}
+        ${net.publicIpv6 === undefined ? null : html`
+          <h4 class="info-subheading">Public IPv6 Addresses</h4>
+          <table class="info-table">
+            <tbody>
+              <tr>
+                <td class="info-label">WAN</td>
+                <td class="info-value"><code class="ip-address">${net.publicIpv6}</code></td>
+              </tr>
+            </tbody>
+          </table>
+        `}
         ${net.localIpv4Addresses.length === 0 ? null : html`
           <h4 class="info-subheading">Local IPv4 Addresses</h4>
           <table class="info-table">

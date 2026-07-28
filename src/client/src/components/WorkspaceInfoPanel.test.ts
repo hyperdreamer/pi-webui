@@ -38,6 +38,75 @@ describe("WorkspaceInfoPanel", () => {
     expect(styles).toContain(".network-speed-arrow { display: inline-block; width: 1em; margin-left: 6px; font-weight: 700; }");
   });
 
+  it("renders public IPv4 and IPv6 addresses in separate WAN subsections", () => {
+    const panel = new WorkspaceInfoPanel();
+    const systemInfo = systemInfoWithTransferRates();
+    Object.assign(panel, {
+      systemInfo: {
+        ...systemInfo,
+        network: {
+          ...systemInfo.network,
+          publicIpv4: "198.51.100.44",
+          publicIpv6: "2001:db8::44",
+          localIpv4Addresses: ["192.0.2.44"],
+        },
+      },
+    });
+
+    const text = templateText(panel.render());
+
+    expect(text).toContain("Public IPv4 Addresses");
+    expect(text).toContain("Public IPv6 Addresses");
+    expect(text.match(/<td class="info-label">WAN<\/td>/g) ?? []).toHaveLength(2);
+    expect(text).toMatch(
+      /<h4 class="info-subheading">Public IPv4 Addresses<\/h4>\s*<table class="info-table">\s*<tbody>\s*<tr>\s*<td class="info-label">WAN<\/td>\s*<td class="info-value"><code class="ip-address">198\.51\.100\.44<\/code><\/td>\s*<\/tr>\s*<\/tbody>\s*<\/table>/,
+    );
+    expect(text).toMatch(
+      /<h4 class="info-subheading">Public IPv6 Addresses<\/h4>\s*<table class="info-table">\s*<tbody>\s*<tr>\s*<td class="info-label">WAN<\/td>\s*<td class="info-value"><code class="ip-address">2001:db8::44<\/code><\/td>\s*<\/tr>\s*<\/tbody>\s*<\/table>/,
+    );
+    expect(text).toMatch(
+      /<h4 class="info-subheading">Local IPv4 Addresses<\/h4>\s*<table class="info-table">\s*<tbody>\s*<tr>\s*<td class="info-label">LAN<\/td>\s*<td class="info-value"><code class="ip-address">192\.0\.2\.44<\/code><\/td>\s*<\/tr>\s*<\/tbody>\s*<\/table>/,
+    );
+    expect(text).not.toContain('<td class="info-label">Public IPv4</td>');
+    expect(text).not.toContain('<td class="info-label">Public IPv6</td>');
+  });
+
+  it("renders public IPv4 and IPv6 subsections independently", () => {
+    const ipv4OnlyPanel = new WorkspaceInfoPanel();
+    const ipv4OnlySystemInfo = systemInfoWithTransferRates();
+    Object.assign(ipv4OnlyPanel, {
+      systemInfo: {
+        ...ipv4OnlySystemInfo,
+        network: { ...ipv4OnlySystemInfo.network, publicIpv4: "198.51.100.45" },
+      },
+    });
+
+    const ipv4OnlyText = templateText(ipv4OnlyPanel.render());
+
+    expect(ipv4OnlyText).toContain("Public IPv4 Addresses");
+    expect(ipv4OnlyText).not.toContain("Public IPv6 Addresses");
+    expect(ipv4OnlyText).toMatch(
+      /<h4 class="info-subheading">Public IPv4 Addresses<\/h4>\s*<table class="info-table">\s*<tbody>\s*<tr>\s*<td class="info-label">WAN<\/td>\s*<td class="info-value"><code class="ip-address">198\.51\.100\.45<\/code><\/td>\s*<\/tr>\s*<\/tbody>\s*<\/table>/,
+    );
+
+    const ipv6OnlyPanel = new WorkspaceInfoPanel();
+    const ipv6OnlySystemInfo = systemInfoWithTransferRates();
+    Object.assign(ipv6OnlyPanel, {
+      systemInfo: {
+        ...ipv6OnlySystemInfo,
+        network: { ...ipv6OnlySystemInfo.network, publicIpv6: "2001:db8::45" },
+      },
+    });
+
+    const ipv6OnlyText = templateText(ipv6OnlyPanel.render());
+
+    expect(ipv6OnlyText).toContain("Public IPv6 Addresses");
+    expect(ipv6OnlyText).not.toContain("Public IPv4 Addresses");
+    expect(ipv6OnlyText).toMatch(
+      /<h4 class="info-subheading">Public IPv6 Addresses<\/h4>\s*<table class="info-table">\s*<tbody>\s*<tr>\s*<td class="info-label">WAN<\/td>\s*<td class="info-value"><code class="ip-address">2001:db8::45<\/code><\/td>\s*<\/tr>\s*<\/tbody>\s*<\/table>/,
+    );
+  });
+
   it("polls dynamic memory and network metrics without overlapping requests", async () => {
     const panel = new WorkspaceInfoPanel();
     const initial = systemInfoWithTransferRates();
