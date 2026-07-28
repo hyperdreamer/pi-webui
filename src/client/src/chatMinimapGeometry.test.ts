@@ -22,10 +22,17 @@ describe("computeMinimapViewport", () => {
     ).toEqual({ scrollRatio: 0, viewportRatio: 1, visible: false });
   });
 
-  it("returns visible:false when overflow is 20 px or less", () => {
+  it("returns visible:true when overflow is 20 px or less", () => {
+    const result = computeMinimapViewport({ scrollHeight: 620, clientHeight: 600, scrollTop: 0 });
+    expect(result.scrollRatio).toBe(0);
+    expect(result.viewportRatio).toBeCloseTo(600 / 620, 4);
+    expect(result.visible).toBe(true);
+  });
+
+  it("returns visible:true with full viewport when content fits entirely in view", () => {
     expect(
-      computeMinimapViewport({ scrollHeight: 620, clientHeight: 600, scrollTop: 0 }),
-    ).toEqual({ scrollRatio: 0, viewportRatio: 1, visible: false });
+      computeMinimapViewport({ scrollHeight: 500, clientHeight: 600, scrollTop: 0 }),
+    ).toEqual({ scrollRatio: 0, viewportRatio: 1, visible: true });
   });
 
   it("returns visible:true when overflow exceeds 20 px", () => {

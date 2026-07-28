@@ -551,7 +551,7 @@ export class ChatView extends LitElement {
     return html`
       ${this.renderTopNotices()}
       ${this.renderNotificationLiveRegions()}
-      <div class="chat-wrap" style=${this._minimapViewport.visible ? "--pi-minimap-right:36px" : ""}>
+      <div class="chat-wrap" style=${(this._minimapViewport.visible && this.messages.length > 0 && this.messageTotal > 0) ? "--pi-minimap-right:36px" : ""}>
         ${this.renderConversationRail()}
         <div class="chat" @scroll=${() => { this.onScroll(); }} @wheel=${(event: WheelEvent) => { this.onWheel(event); }} @touchstart=${(event: TouchEvent) => { this.onTouchStart(event); }} @touchmove=${(event: TouchEvent) => { this.onTouchMove(event); }}>
           ${this.renderHistoryBoundary()}

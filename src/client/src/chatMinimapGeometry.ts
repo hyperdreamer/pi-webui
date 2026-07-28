@@ -40,10 +40,7 @@ export function computeMinimapViewport(metrics: MinimapMetrics): MinimapViewport
     return { scrollRatio: 0, viewportRatio: 1, visible: false };
   }
   const scrollable = scrollHeight - clientHeight;
-  if (scrollable <= 20) {
-    return { scrollRatio: 0, viewportRatio: 1, visible: false };
-  }
-  const scrollRatio = clampRatio(scrollTop / scrollable);
+  const scrollRatio = scrollable > 0 ? clampRatio(scrollTop / scrollable) : 0;
   const viewportRatio = clampRatio(clientHeight / scrollHeight);
   return { scrollRatio, viewportRatio, visible: true };
 }
