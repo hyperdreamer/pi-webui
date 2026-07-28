@@ -244,8 +244,9 @@ function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
       : options.entries.map((entry) => renderEntryHtml(entry)).join("");
 
   return `
-    <details class="memory-group" open>
+    <details class="memory-group">
       <summary>
+        <svg class="memory-group-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"></path></svg>
         <span class="memory-group-title">${escapeHtml(options.title)}</span>
         <span class="${unavailable ? "memory-group-status unavailable" : "memory-group-count"}">${unavailable ? "Unavailable" : count}</span>
       </summary>
@@ -263,9 +264,13 @@ function panelStyles(): string {
       .memory-group { border: 1px solid var(--pi-border); border-radius: 8px; margin-bottom: 10px; }
       .memory-group:last-child { margin-bottom: 0; }
       .memory-group[open] { background: var(--pi-surface); }
-      .memory-group summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; cursor: pointer; }
-      .memory-group-title { font-weight: 600; }
-      .memory-group-count, .memory-group-status { color: var(--pi-muted); font-size: 12px; white-space: nowrap; }
+      .memory-group summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; list-style: none; }
+      .memory-group summary::-webkit-details-marker { display: none; }
+      .memory-group summary::marker { content: ""; }
+      .memory-group-chevron { flex: 0 0 auto; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; color: var(--pi-muted); pointer-events: none; transition: transform 0.15s ease; }
+      .memory-group[open] .memory-group-chevron { transform: rotate(90deg); }
+      .memory-group-title { flex: 1 1 auto; min-width: 0; font-weight: 600; }
+      .memory-group-count, .memory-group-status { flex: 0 0 auto; color: var(--pi-muted); font-size: 12px; white-space: nowrap; }
       .memory-group-status.unavailable { color: var(--pi-danger); }
       .memory-group-body { padding: 0 12px 12px; }
       .memory-group-message { margin: 0; color: var(--pi-muted); }

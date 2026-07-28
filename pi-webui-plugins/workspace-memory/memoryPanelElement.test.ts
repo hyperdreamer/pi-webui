@@ -115,7 +115,7 @@ describe("memory panel element", () => {
   });
 
   describe("renderPanelState", () => {
-    it("renders exactly two initially open scope groups with separated entries and counts", () => {
+    it("renders two initially collapsed scope groups with decorative disclosure chevrons, separated entries, and counts", () => {
       const html = renderPanelState({
         kind: "data",
         globalEntries: [{ id: "global", content: "Global-only memory" }],
@@ -126,7 +126,12 @@ describe("memory panel element", () => {
       });
 
       const groups = memoryGroups(html);
+      const chevron = '<svg class="memory-group-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"></path></svg>';
       expect(groups).toHaveLength(2);
+      expect(html).not.toContain('<details class="memory-group" open>');
+      for (const group of groups) {
+        expect(groupSummary(group).split(chevron)).toHaveLength(2);
+      }
 
       const globalGroup = groupWithTitle(groups, "Global memory");
       expect(globalGroup).toContain("1 entry");
@@ -241,13 +246,20 @@ describe("memory panel element", () => {
 });
 
 function memoryGroups(html: string): string[] {
-  return html.split('<details class="memory-group" open>').slice(1);
+  return html.split('<details class="memory-group">').slice(1);
 }
 
 function groupWithTitle(groups: string[], title: string): string {
   const group = groups.find((candidate) => candidate.includes(title));
   if (group === undefined) throw new Error(`Memory group not found: ${title}`);
   return group;
+}
+
+function groupSummary(group: string): string {
+  const summaryStart = group.indexOf("<summary>");
+  const summaryEnd = group.indexOf("</summary>");
+  if (summaryStart === -1 || summaryEnd === -1) throw new Error("Memory group summary not found");
+  return group.slice(summaryStart, summaryEnd + "</summary>".length);
 }
 
 interface Deferred<T> {
