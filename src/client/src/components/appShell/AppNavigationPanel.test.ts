@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Machine } from "../../api";
-import { templateText, templateValueAfterMarker } from "../../templateInspection.testSupport";
+import { templateText, templateValueAfterMarker, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { AppNavigationPanel, NAVIGATION_RESOURCE_UNDERBAR_ITEMS, navigationResourceUnderbarItemIsEnabled, shouldShowMachinesSection } from "./AppNavigationPanel";
 
 describe("app-navigation-panel wordmark", () => {
@@ -84,6 +84,24 @@ describe("app-navigation-panel expanded project browser", () => {
 
     expect(onOpenProjectBrowser).toHaveBeenCalledOnce();
     expect(onOpenProjectBrowser).toHaveBeenCalledWith(restoreFocus);
+  });
+});
+
+describe("app-navigation-panel expanded session browser", () => {
+  // The Node test environment has no DOM harness, so inspect the custom-element
+  // callback boundary rather than testing Lit internals or layout.
+  it("forwards the expanded session browser action only when the project-scoped callback is available", () => {
+    const panel = new AppNavigationPanel();
+    const onOpenSessionBrowser = vi.fn();
+    panel.onOpenSessionBrowser = onOpenSessionBrowser;
+    const callbacks = templateValuesAfterMarker(panel.render(), ".onOpenExpanded=");
+    const onOpenExpanded = projectBrowserOpenCallback(callbacks.at(-1));
+    const restoreFocus = () => undefined;
+
+    onOpenExpanded(restoreFocus);
+
+    expect(onOpenSessionBrowser).toHaveBeenCalledOnce();
+    expect(onOpenSessionBrowser).toHaveBeenCalledWith(restoreFocus);
   });
 });
 

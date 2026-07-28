@@ -44,6 +44,33 @@ describe("PiWebUiApp navigation actions", () => {
     expect(templateStrings(projectBrowserDialogTemplate(app)).join("")).toContain("<project-browser-dialog");
   });
 
+  it("opens a project-scoped session browser with the selected project's catalog", () => {
+    const app = createApp();
+    const projectSession = {
+      id: "session-a",
+      cwd: project.path,
+      path: "/sessions/session-a.jsonl",
+      created: "2026-07-29T00:00:00.000Z",
+      modified: "2026-07-29T00:00:00.000Z",
+      messageCount: 1,
+      firstMessage: "Review status",
+    };
+    setAppState(app, { ...initialAppState(), selectedProject: project, projectSessions: [projectSession] });
+    const restoreFocus = vi.fn();
+    const open = projectBrowserOpenCallback(templateValueAfterMarker(
+      renderNavigationPanel(app),
+      ".onOpenSessionBrowser=",
+    ));
+
+    open(restoreFocus);
+
+    expect(Reflect.get(app, "sessionBrowserOpen")).toBe(true);
+    expect(isChatObscured(app)).toBe(true);
+    const dialog = sessionBrowserDialogTemplate(app);
+    expect(templateValueAfterMarker(dialog, ".projectName=")).toBe("Project A");
+    expect(templateValueAfterMarker(dialog, ".sessions=")).toEqual([projectSession]);
+  });
+
   it("restores launcher focus when the expanded project browser is dismissed", async () => {
     const app = createApp();
     const restoreFocus = vi.fn();
@@ -350,6 +377,12 @@ function renderApp(app: PiWebUiApp): TemplateResult {
 function projectBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
   const template = findTemplateContaining(renderApp(app), "<project-browser-dialog");
   if (template === undefined) throw new Error("PiWebUiApp did not render project-browser-dialog");
+  return template;
+}
+
+function sessionBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
+  const template = findTemplateContaining(renderApp(app), "<session-browser-dialog");
+  if (template === undefined) throw new Error("PiWebUiApp did not render session-browser-dialog");
   return template;
 }
 

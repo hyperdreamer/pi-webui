@@ -459,7 +459,8 @@ export const listStyles = css`
   .tree-marker { color: var(--pi-dim); margin-right: 5px; }
   .badge { display: inline-block; margin-left: 5px; border: 1px solid var(--pi-border); border-radius: 999px; color: var(--pi-muted); padding: 0 5px; font-size: 11px; font-weight: 400; }
   .action-activity { position: absolute; top: 5px; right: 6px; z-index: 1; display: grid; place-items: center; width: 10px; height: 10px; }
-  .action-activity .activity-indicator { margin: 0; vertical-align: 0; }
+  .action-activities { position: absolute; top: 5px; right: 6px; z-index: 1; display: inline-flex; align-items: center; gap: 4px; min-height: 13px; }
+  .action-activity .activity-indicator, .action-activities .activity-indicator { margin: 0; vertical-align: 0; }
   .activity-indicator { display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--pi-success); animation: pulse 1s ease-in-out infinite; vertical-align: 1px; }
   .activity-indicator.session { border-radius: 50%; background: var(--pi-success); }
   .activity-indicator.terminal { border-radius: 2px; background: var(--pi-accent); }
@@ -467,6 +468,12 @@ export const listStyles = css`
   .activity-indicator.sending { border-radius: 50%; background: var(--pi-warning); }
   /* Unread is a stable state, not ongoing work: keep it static and accent-colored. */
   .activity-indicator.unread { border-radius: 50%; background: var(--pi-accent); animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--pi-accent) 20%, transparent); }
+  /* A blue ring, rather than another dot, makes delegated work distinguishable without color. */
+  .activity-indicator.descendant { display: inline-grid; place-items: center; width: 13px; height: 13px; border: 2px solid light-dark(#0969da, #58a6ff); border-radius: 50%; background: transparent; color: light-dark(#0969da, #58a6ff); animation: none; }
+  .activity-indicator.attention { display: inline-grid; place-items: center; width: 12px; height: 12px; border-radius: 3px; background: var(--pi-danger); color: var(--pi-bg); animation: none; transform: rotate(45deg); }
+  .activity-indicator-count { font-size: 8px; font-weight: 800; line-height: 1; transform: none; }
+  .activity-indicator.attention .activity-indicator-count { transform: rotate(-45deg); }
+  @media (prefers-reduced-motion: reduce) { .activity-indicator { animation: none; } }
   .action-menu { position: relative; align-self: stretch; }
   .action-menu-toggle { display: grid; place-items: center; height: 100%; min-width: 32px; padding: 0; color: var(--pi-muted); border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
   .action-menu-toggle:hover { color: var(--pi-text); background: var(--pi-surface-hover); }

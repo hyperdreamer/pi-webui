@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { templateEventHandlerAfterMarker, templateEventHandlerAfterValue } from "../templateInspection.testSupport";
+import { templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, sessionRowsForSessionList, unreadSessionCount } from "./SessionList";
 
@@ -34,6 +34,21 @@ describe("sessionRowActivityKind", () => {
   });
 });
 
+describe("session tree activity presentation", () => {
+  it("renders a distinct descendant-work badge on an idle parent", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const list = new SessionList();
+    list.sessions = [parent, child];
+    list.statuses = { [child.id]: sessionStatus(child.id, { isStreaming: true }) };
+
+    const rendered = templateText(list.render());
+
+    expect(rendered).toContain("1 subsession working");
+    expect(rendered).toContain("activity-indicator descendant");
+  });
+});
+
 describe("unreadSessionCount", () => {
   it("counts only current persisted sessions", () => {
     const current = session("current");
@@ -45,6 +60,20 @@ describe("unreadSessionCount", () => {
     expect(unreadSessionCount([current, archived, cached], unreadIds, {
       statuses: { [current.id]: sessionStatus(current.id, { isStreaming: true }) },
     })).toBe(0);
+  });
+});
+
+describe("expanded session browser interaction", () => {
+  // The Node test environment has no DOM harness, so inspect the stable
+  // accessible button marker to narrowly exercise Lit's click wiring.
+  it("forwards the project-scoped browser action from the Sessions heading", () => {
+    const list = new SessionList();
+    const onOpenExpanded = vi.fn();
+    list.onOpenExpanded = onOpenExpanded;
+
+    templateEventHandlerNearMarker(list.render(), 'aria-label="Open expanded session browser"')(new Event("click"));
+
+    expect(onOpenExpanded).toHaveBeenCalledOnce();
   });
 });
 

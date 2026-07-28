@@ -70,6 +70,7 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onToggleSessions?: () => void;
   @property({ attribute: false }) onAddProject?: () => void;
   @property({ attribute: false }) onOpenProjectBrowser?: (restoreFocus: () => void) => void;
+  @property({ attribute: false }) onOpenSessionBrowser?: (restoreFocus: () => void) => void;
   @property({ attribute: false }) onSelectProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onSelectWorkspace?: (workspace: Workspace) => void | Promise<void>;
@@ -201,6 +202,7 @@ export class AppNavigationPanel extends LitElement {
         .collapsible=${this.collapsible}
         .collapsed=${this.sessionsCollapsed}
         .onToggleCollapsed=${() => { this.onToggleSessions?.(); }}
+        .onOpenExpanded=${this.onOpenSessionBrowser === undefined ? undefined : (restoreFocus: () => void) => this.onOpenSessionBrowser?.(restoreFocus)}
         .onArchivedCollapsed=${() => this.onArchivedCollapsed?.()}
         .onStart=${() => this.onStartSession?.()}
         .onSelect=${(session: SessionInfo) => this.onSelectSession?.(session)}
