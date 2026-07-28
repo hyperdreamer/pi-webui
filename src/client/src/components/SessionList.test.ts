@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { templateEventHandlerAfterMarker } from "../templateInspection.testSupport";
+import { templateEventHandlerAfterMarker, templateEventHandlerAfterValue } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
-import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, unreadSessionCount } from "./SessionList";
+import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, sessionRowsForSessionList, unreadSessionCount } from "./SessionList";
 
 describe("sessionRowActivityKind", () => {
   const idle = sessionStatus("s");
@@ -157,6 +157,81 @@ describe("session action eligibility", () => {
   });
 });
 
+describe("linked session group disclosure", () => {
+  it("folds each linked parent family by default", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const grandchild = session("grandchild", { parentSessionPath: child.path });
+
+    expect(rowSummaries(sessionRowsForSessionList([parent, child, grandchild]))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+    ]);
+  });
+
+  it("returns locally expanded families to their default folded state after a workspace change", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const list = new SessionList();
+    list.sessions = [parent, child];
+    list.currentWorkspacePath = "/workspace";
+    Reflect.set(list, "expandedSessionPaths", new Set([parent.path]));
+
+    list.currentWorkspacePath = "/workspace-feature";
+    workspaceChanged(list, "/workspace");
+
+    expect(expandedSessionPaths(list)).toEqual(new Set());
+    expect(rowSummaries(sessionRowsForSessionList(list.sessions, { expandedSessionPaths: expandedSessionPaths(list) }))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+    ]);
+  });
+
+  // This narrowly checks Lit disclosure wiring. The Node-based test environment
+  // has no DOM harness; row output from the shared tree helper is the observable result.
+  it("expands a complete descendant tree and folds it again from its chevron", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const grandchild = session("grandchild", { parentSessionPath: child.path });
+    const list = new SessionList();
+    list.sessions = [parent, child, grandchild];
+
+    templateEventHandlerAfterValue(list.render(), "Expand parent", "@click")(new Event("click"));
+    expect(rowSummaries(sessionRowsForSessionList(list.sessions, { expandedSessionPaths: expandedSessionPaths(list) }))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+      { id: "child", depth: 1, hasMissingParent: false },
+      { id: "grandchild", depth: 2, hasMissingParent: false },
+    ]);
+
+    templateEventHandlerAfterValue(list.render(), "Collapse parent", "@click")(new Event("click"));
+    expect(rowSummaries(sessionRowsForSessionList(list.sessions, { expandedSessionPaths: expandedSessionPaths(list) }))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+    ]);
+  });
+
+  it("folds linked cross-workspace families by default", () => {
+    const parent = session("parent", { cwd: "/workspace" });
+    const child = session("child", { cwd: "/workspace-feature", parentSessionPath: parent.path });
+
+    expect(rowSummaries(sessionRowsForSessionList([parent, child], {
+      currentWorkspacePath: "/workspace",
+      knownWorkspacePaths: new Set(["/workspace", "/workspace-feature"]),
+    }))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+    ]);
+  });
+
+  it("automatically expands every ancestor of the selected descendant", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const grandchild = session("grandchild", { parentSessionPath: child.path });
+
+    expect(rowSummaries(sessionRowsForSessionList([parent, child, grandchild], { selectedSessionPath: grandchild.path }))).toEqual([
+      { id: "parent", depth: 0, hasMissingParent: false },
+      { id: "child", depth: 1, hasMissingParent: false },
+      { id: "grandchild", depth: 2, hasMissingParent: false },
+    ]);
+  });
+});
+
 describe("sessionRowsForCurrentTree", () => {
   it("keeps archived ancestors visible while they have unarchived descendants", () => {
     const parent = { ...session("parent"), archived: true, archivedAt: "2026-06-09T00:00:00.000Z" };
@@ -185,6 +260,26 @@ describe("sessionRowsForCurrentTree", () => {
     ]);
   });
 });
+
+function workspaceChanged(list: SessionList, previousWorkspacePath: string): void {
+  const updated: unknown = Reflect.get(SessionList.prototype, "updated");
+  if (!isSessionListUpdatedHook(updated)) throw new Error("Expected SessionList updated lifecycle hook");
+  Reflect.apply(updated, list, [new Map<string, unknown>([["currentWorkspacePath", previousWorkspacePath]])]);
+}
+
+function expandedSessionPaths(list: SessionList): ReadonlySet<string> {
+  const paths: unknown = Reflect.get(list, "expandedSessionPaths");
+  if (!isStringSet(paths)) throw new Error("Expected expanded session paths");
+  return paths;
+}
+
+function isSessionListUpdatedHook(value: unknown): value is (changed: Map<string, unknown>) => void {
+  return typeof value === "function";
+}
+
+function isStringSet(value: unknown): value is Set<string> {
+  return value instanceof Set && [...value].every((entry) => typeof entry === "string");
+}
 
 function rowSummaries(rows: ReturnType<typeof sessionRowsForCurrentTree>) {
   return rows.map((row) => ({ id: row.session.id, depth: row.depth, hasMissingParent: row.hasMissingParent }));

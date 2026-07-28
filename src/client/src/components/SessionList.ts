@@ -22,12 +22,18 @@ export interface SessionRow {
   hasMissingParent: boolean;
   external: boolean;
   hasChildren: boolean;
+  folded: boolean;
 }
 
 export interface SessionRowsOptions {
   currentWorkspacePath?: string;
   knownWorkspacePaths?: ReadonlySet<string>;
   foldedSessionPaths?: ReadonlySet<string>;
+}
+
+export interface SessionListRowsOptions extends Omit<SessionRowsOptions, "foldedSessionPaths"> {
+  expandedSessionPaths?: ReadonlySet<string>;
+  selectedSessionPath?: string;
 }
 
 type SessionSelectionScope = "current" | "archived";
@@ -82,7 +88,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @state() private selectedSessionIds: ReadonlySet<string> = new Set();
   @state() private renamingSessionId: string | undefined;
   @state() private renameInputValue = "";
-  @state() private foldedSessionPaths: ReadonlySet<string> = new Set();
+  @state() private expandedSessionPaths: ReadonlySet<string> = new Set();
 
   private readonly onDocumentClick = (event: Event) => {
     if (isClickWithinActionMenu(event, this.renderRoot)) return;
@@ -106,8 +112,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
       if (!this.sessions.some((session) => session.archived === true)) this.archivedExpanded = false;
       this.pruneSelectedSessionIds();
     }
-    if (changed.has("currentWorkspacePath")) this.foldedSessionPaths = new Set();
-    else if (changed.has("sessions") || changed.has("projectSessions")) this.pruneFoldedSessionPaths();
+    if (changed.has("currentWorkspacePath")) this.expandedSessionPaths = new Set();
+    else if (changed.has("sessions") || changed.has("projectSessions")) this.pruneExpandedSessionPaths();
     if (changed.has("collapsed") && this.collapsed) {
       this.openMenuSessionId = undefined;
       this.cancelSessionRename();
@@ -127,16 +133,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   override render() {
-    const currentWorkspacePath = this.currentWorkspacePath;
-    const knownWorkspacePaths = new Set(this.workspaces.map((workspace) => workspace.path));
-    if (currentWorkspacePath !== undefined) knownWorkspacePaths.add(currentWorkspacePath);
-    const sessionTreeSessions = [
-      ...this.sessions,
-      ...this.projectSessions.filter((session) => session.cwd !== currentWorkspacePath),
-    ];
-    const currentRows = sessionRowsForCurrentTree(sessionTreeSessions, {
-      ...(currentWorkspacePath === undefined ? {} : { currentWorkspacePath, knownWorkspacePaths }),
-      foldedSessionPaths: this.foldedSessionPaths,
+    const sessionTreeSessions = this.sessionTreeSessions();
+    const currentRows = sessionRowsForSessionList(sessionTreeSessions, {
+      ...this.currentSessionTreeOptions(),
+      expandedSessionPaths: this.expandedSessionPaths,
+      ...(this.selected === undefined ? {} : { selectedSessionPath: this.selected.path }),
     });
     const currentRowGroups = currentRows.reduce<SessionRow[][]>((groups, row) => {
       if (row.depth === 0) groups.push([row]);
@@ -427,16 +428,20 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   private renderSessionGroupToggle(row: SessionRow) {
     if (!row.hasChildren) return null;
-    const folded = this.foldedSessionPaths.has(row.session.path);
+    const { folded } = row;
     const action = folded ? "Expand" : "Collapse";
-    return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path); }}>${folded ? "▸" : "▾"}</button>`;
+    return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path, folded); }}>${folded ? "▸" : "▾"}</button>`;
   }
 
-  private toggleSessionGroup(path: string): void {
-    const next = new Set(this.foldedSessionPaths);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    this.foldedSessionPaths = next;
+  private toggleSessionGroup(path: string, folded: boolean): void {
+    const next = new Set(this.expandedSessionPaths);
+    if (folded) {
+      const rows = sessionRowsForCurrentTree(this.sessionTreeSessions(), this.currentSessionTreeOptions());
+      for (const groupPath of sessionGroupPaths(path, rows)) next.add(groupPath);
+    } else {
+      next.delete(path);
+    }
+    this.expandedSessionPaths = next;
   }
 
   private handleSessionKeydown(event: KeyboardEvent, session: SessionInfo, scope: SessionSelectionScope, external: boolean): void {
@@ -526,10 +531,24 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     return this.sessions.filter((session) => this.selectedSessionIds.has(session.id) && sessionSelectionScope(session) === scope);
   }
 
-  private pruneFoldedSessionPaths(): void {
+  private sessionTreeSessions(): SessionInfo[] {
+    return [
+      ...this.sessions,
+      ...this.projectSessions.filter((session) => session.cwd !== this.currentWorkspacePath),
+    ];
+  }
+
+  private currentSessionTreeOptions(): SessionRowsOptions {
+    if (this.currentWorkspacePath === undefined) return {};
+    const knownWorkspacePaths = new Set(this.workspaces.map((workspace) => workspace.path));
+    knownWorkspacePaths.add(this.currentWorkspacePath);
+    return { currentWorkspacePath: this.currentWorkspacePath, knownWorkspacePaths };
+  }
+
+  private pruneExpandedSessionPaths(): void {
     const existingPaths = new Set([...this.sessions, ...this.projectSessions].map((session) => session.path));
-    const next = new Set([...this.foldedSessionPaths].filter((path) => existingPaths.has(path)));
-    if (next.size !== this.foldedSessionPaths.size) this.foldedSessionPaths = next;
+    const next = new Set([...this.expandedSessionPaths].filter((path) => existingPaths.has(path)));
+    if (next.size !== this.expandedSessionPaths.size) this.expandedSessionPaths = next;
   }
 
   private pruneSelectedSessionIds(): void {
@@ -721,6 +740,52 @@ export function sessionRowsForCurrentTree(sessions: SessionInfo[], options: Sess
   return sessionRows(availableSessions.filter((session) => visiblePaths.has(session.path)), options);
 }
 
+export function sessionRowsForSessionList(sessions: SessionInfo[], options: SessionListRowsOptions = {}): SessionRow[] {
+  const { expandedSessionPaths, selectedSessionPath, ...treeOptions } = options;
+  const unfoldedRows = sessionRowsForCurrentTree(sessions, treeOptions);
+  const foldedSessionPaths = new Set(unfoldedRows.filter((row) => row.hasChildren).map((row) => row.session.path));
+  for (const path of expandedSessionPaths ?? []) foldedSessionPaths.delete(path);
+  for (const path of selectedSessionAncestorPaths(selectedSessionPath, unfoldedRows)) foldedSessionPaths.delete(path);
+  return sessionRowsForCurrentTree(sessions, { ...treeOptions, foldedSessionPaths });
+}
+
+function selectedSessionAncestorPaths(selectedSessionPath: string | undefined, rows: readonly SessionRow[]): Set<string> {
+  if (selectedSessionPath === undefined) return new Set();
+  const sessionsByPath = new Map(rows.map((row) => [row.session.path, row.session]));
+  const ancestorPaths = new Set<string>();
+  const seenPaths = new Set<string>([selectedSessionPath]);
+  let parentPath = sessionsByPath.get(selectedSessionPath)?.parentSessionPath;
+  while (parentPath !== undefined && !seenPaths.has(parentPath)) {
+    seenPaths.add(parentPath);
+    const parent = sessionsByPath.get(parentPath);
+    if (parent === undefined) break;
+    ancestorPaths.add(parentPath);
+    parentPath = parent.parentSessionPath;
+  }
+  return ancestorPaths;
+}
+
+function sessionGroupPaths(path: string, rows: readonly SessionRow[]): Set<string> {
+  const childrenByParentPath = new Map<string, string[]>();
+  for (const row of rows) {
+    const parentPath = row.session.parentSessionPath;
+    if (parentPath === undefined) continue;
+    const childPaths = childrenByParentPath.get(parentPath) ?? [];
+    childPaths.push(row.session.path);
+    childrenByParentPath.set(parentPath, childPaths);
+  }
+
+  const paths = new Set<string>();
+  const pendingPaths = [path];
+  while (pendingPaths.length > 0) {
+    const currentPath = pendingPaths.pop();
+    if (currentPath === undefined || paths.has(currentPath)) continue;
+    paths.add(currentPath);
+    pendingPaths.push(...(childrenByParentPath.get(currentPath) ?? []));
+  }
+  return paths;
+}
+
 function sessionRows(sessions: SessionInfo[], options: SessionRowsOptions = {}): SessionRow[] {
   const byPath = new Map(sessions.map((session) => [session.path, session]));
   const childrenByPath = sessionChildrenByParentPath(sessions, byPath);
@@ -737,14 +802,16 @@ function sessionRows(sessions: SessionInfo[], options: SessionRowsOptions = {}):
     if (stack.has(session.path)) return;
     const parentPath = session.parentSessionPath;
     const children = childrenByPath.get(session.path) ?? [];
+    const folded = options.foldedSessionPaths?.has(session.path) === true;
     rows.push({
       session,
       depth,
       hasMissingParent: parentPath !== undefined && !byPath.has(parentPath),
       external: options.currentWorkspacePath !== undefined && session.cwd !== options.currentWorkspacePath,
       hasChildren: children.length > 0,
+      folded,
     });
-    if (options.foldedSessionPaths?.has(session.path) === true) return;
+    if (folded) return;
     const nextStack = new Set(stack);
     nextStack.add(session.path);
     children.sort(compareSessionPinnedFirst);
