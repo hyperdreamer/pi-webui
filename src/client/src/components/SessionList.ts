@@ -4,7 +4,7 @@ import type { SessionActivity, SessionInfo, SessionStatus, Workspace } from "../
 import { sessionActivityIndicators, sessionRowActivityKind } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { sessionRows, sessionRowsForCurrentTree, type SessionRow } from "../sessionTreeRows";
+import { sessionRows, sessionRowsForCurrentTree, type SessionRow, type SessionRowsOptions } from "../sessionTreeRows";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicators } from "./activityBadge";
@@ -719,9 +719,30 @@ export function sessionRowsForSessionList(sessions: SessionInfo[], options: Sess
   return sessionRowsForCurrentTree(sessions, { ...treeOptions, foldedSessionPaths });
 }
 
+function sessionGroupPaths(path: string, rows: readonly SessionRow[]): Set<string> {
+  const childrenByParentPath = new Map<string, string[]>();
+  for (const row of rows) {
+    const parentPath = row.session.parentSessionPath;
+    if (parentPath === undefined) continue;
+    const childPaths = childrenByParentPath.get(parentPath) ?? [];
+    childPaths.push(row.session.path);
+    childrenByParentPath.set(parentPath, childPaths);
+  }
+
+  const paths = new Set<string>();
+  const pendingPaths = [path];
+  while (pendingPaths.length > 0) {
+    const currentPath = pendingPaths.pop();
+    if (currentPath === undefined || paths.has(currentPath)) continue;
+    paths.add(currentPath);
+    pendingPaths.push(...(childrenByParentPath.get(currentPath) ?? []));
+  }
+  return paths;
+}
+
 function selectedSessionAncestorPaths(selectedSessionPath: string | undefined, rows: readonly SessionRow[]): Set<string> {
   if (selectedSessionPath === undefined) return new Set();
-  const sessionsByPath = new Map(rows.map((row) => [row.session.path, row.session]));
+  const sessionsByPath = new Map(rows.map((row) => [row.session.path, row]));
   const ancestorPaths = new Set<string>();
   const seenPaths = new Set<string>([selectedSessionPath]);
   let parentPath = sessionsByPath.get(selectedSessionPath)?.session.parentSessionPath;
