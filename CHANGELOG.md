@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.202607.0
+
+### Patch Changes
+
+- 796b5a5: Improve the Memory workspace tab with a brain icon and collapsible global and project-specific memory groups.
+
 ## 1.9.1
 
 ### Patch Changes
