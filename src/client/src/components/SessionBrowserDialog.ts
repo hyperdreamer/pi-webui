@@ -1,10 +1,10 @@
 import { LitElement, css, html, type TemplateResult } from "lit";
-import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { SessionActivity, SessionInfo, SessionStatus } from "../api";
 import { sessionActivityIndicators } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
-import { sessionRowsForCurrentTree, type SessionRow } from "../sessionTreeRows";
+import { type SessionRow } from "../sessionTreeRows";
+import { sessionRowsForSessionList } from "./SessionList";
 import { renderActionActivityIndicators } from "./activityBadge";
 import { activateSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
@@ -22,6 +22,7 @@ export class SessionBrowserDialog extends LitElement {
   @property({ attribute: false }) onClose?: () => void;
 
   @state() private searchQuery = "";
+  @state() private expandedSessionPaths: ReadonlySet<string> = new Set();
   @query(".session-browser-search") private searchInput?: HTMLInputElement;
 
   override firstUpdated(): void {
@@ -65,16 +66,30 @@ export class SessionBrowserDialog extends LitElement {
     if (this.sessions.length === 0) return html`<p class="empty-state">No sessions in this project.</p>`;
     const rows = this.visibleRows;
     if (rows.length === 0) return html`<p class="empty-state">No matching sessions.</p>`;
+    const rowGroups = this.groupRows(rows);
     return html`
       <div class="session-list">
-        ${repeat(rows, (row) => row.session.path, (row) => this.renderSession(row))}
+        ${rowGroups.map((group) => group.length > 1 || group[0]?.hasChildren === true
+          ? html`<div class="session-family-frame">${group.map((row) => this.renderSession(row))}</div>`
+          : group.map((row) => this.renderSession(row)))}
       </div>
     `;
   }
 
   private get visibleRows(): SessionRow[] {
-    const rows = sessionRowsForCurrentTree(this.sessions);
+    const rows = sessionRowsForSessionList(this.sessions, {
+      expandedSessionPaths: this.expandedSessionPaths,
+      ...(this.selected === undefined ? {} : { selectedSessionPath: this.selected.path }),
+    });
     return filterSessionRows(rows, this.searchQuery);
+  }
+
+  private groupRows(rows: readonly SessionRow[]): SessionRow[][] {
+    return rows.reduce<SessionRow[][]>((groups, row) => {
+      if (row.depth === 0) groups.push([row]);
+      else groups.at(-1)?.push(row);
+      return groups;
+    }, []);
   }
 
   private renderSession(row: SessionRow): TemplateResult {
@@ -85,22 +100,37 @@ export class SessionBrowserDialog extends LitElement {
       sending: this.sending,
       unreadSessionIds: this.unreadSessionIds,
     });
+    const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div
         class=${`action-row session-browser-row ${this.selected?.id === session.id ? "selected" : ""}`}
-        style=${`--depth:${String(Math.min(row.depth, 4))}`}
+        style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.select(session); }); }}
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session); }}
       >
         <div class="action-main">
-          <span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>
+          <span class="action-name" dir="auto">${this.renderSessionGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>
           <small>${session.cwd} · ${String(session.messageCount)} messages</small>
           ${renderActionActivityIndicators(indicators)}
         </div>
       </div>
     `;
+  }
+
+  private renderSessionGroupToggle(row: SessionRow): TemplateResult | null {
+    if (!row.hasChildren) return null;
+    const { folded } = row;
+    const action = folded ? "Expand" : "Collapse";
+    return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path, folded); }}>${folded ? "▸" : "▾"}</button>`;
+  }
+
+  private toggleSessionGroup(path: string, folded: boolean): void {
+    const next = new Set(this.expandedSessionPaths);
+    if (folded) next.add(path);
+    else next.delete(path);
+    this.expandedSessionPaths = next;
   }
 
   private select(session: SessionInfo): void {
@@ -171,8 +201,15 @@ export class SessionBrowserDialog extends LitElement {
     .session-browser-search { width: 100%; min-width: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 8px 10px; font: inherit; }
     .result-area { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     .session-list { display: grid; gap: 2px; }
+    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .session-family-frame > .action-row { margin: 4px 0; }
+    .session-family-frame > .action-row:first-child { margin-top: 0; }
+    .session-family-frame > .action-row:last-child { margin-bottom: 0; }
     .session-browser-row { grid-template-columns: minmax(0, 1fr); }
     .session-browser-row .action-main { border-radius: 8px; padding-right: 56px; }
+    .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 18px; min-width: 18px; height: 18px; margin: 0 5px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; vertical-align: text-bottom; cursor: pointer; }
+    .session-group-toggle:hover { background: var(--pi-surface-hover); color: var(--pi-text); }
+    .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
     .empty-state { margin: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
 
     @media (max-width: 760px) {
