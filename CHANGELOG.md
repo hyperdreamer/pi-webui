@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.2
+
+### Patch Changes
+
+- f2cc3e4: Show the conversation minimap rail even when content fits in the viewport, so it remains visible at all times.
+
 ## 1.10.1
 
 ### Patch Changes
