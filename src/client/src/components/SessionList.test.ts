@@ -77,6 +77,23 @@ describe("session rename interaction", () => {
 
     expect(onRename).toHaveBeenCalledWith(target, "Renamed session");
   });
+
+  // This narrowly checks Lit event wiring. The Node-based test environment has
+  // no DOM harness, while the observable callback proves the user interaction.
+  it("opens a name editor from session actions", () => {
+    const list = new SessionList();
+    const target = session("rename", { name: "Existing session" });
+    list.sessions = [target];
+    const onRenameStart = vi.fn();
+    Reflect.set(list, "onRenameStart", onRenameStart);
+    Reflect.set(list, "openMenuSessionId", target.id);
+
+    templateEventHandlerAfterMarker(list.render(), 'title="Rename session"')(actionMenuButtonClickEvent());
+
+    expect(onRenameStart).toHaveBeenCalledWith(target);
+    expect(Reflect.get(list, "renamingSessionId")).toBe(target.id);
+    expect(Reflect.get(list, "openMenuSessionId")).toBeUndefined();
+  });
 });
 
 describe("pinned session interaction", () => {
@@ -176,6 +193,12 @@ function rowSummaries(rows: ReturnType<typeof sessionRowsForCurrentTree>) {
 function rowDoubleClickEvent(): Event {
   const event = new Event("dblclick", { cancelable: true });
   Object.defineProperty(event, "composedPath", { value: () => [] });
+  return event;
+}
+
+function actionMenuButtonClickEvent(): Event {
+  const event = new Event("click", { cancelable: true });
+  Object.defineProperty(event, "composedPath", { value: () => [{ matches: () => true }] });
   return event;
 }
 

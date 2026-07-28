@@ -294,6 +294,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const persistenceOptions = this.sessionPersistenceOptions();
     const canArchive = isArchivableSessionInfo(session, status, persistenceOptions);
     const canDeleteTransient = isTransientNewSessionInfo(session, status, persistenceOptions);
+    const canRename = this.canRenameSession(session, scope, row.external);
     const canReloadSession = canArchive && this.canReload;
     const workspace = row.external ? this.workspaces.find((candidate) => candidate.path === session.cwd) : undefined;
     const externalWorkspaceLabel = workspace === undefined ? undefined : workspace.branch ?? workspace.label;
@@ -321,6 +322,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
             <button class="action-menu-toggle" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
             ${this.openMenuSessionId === session.id ? html`
               <div class="action-menu-panel" style=${this.menuStyle}>
+                ${canRename ? html`<button title="Rename session" @click=${(event: MouseEvent) => { this.startSessionRenameFromMenu(event, session, scope, row.external); }}>Rename</button>` : null}
                 ${session.archived === true
                   ? html`
                     <button title="Restore session" @click=${() => { this.openMenuSessionId = undefined; this.onRestore?.(session); }}>Restore</button>
@@ -348,7 +350,24 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private startSessionRename(event: MouseEvent, session: SessionInfo, scope: SessionSelectionScope, external: boolean): void {
-    if (external || isFromInteractiveElement(event) || session.archived === true || this.selectionScopes.has(scope) || isTransientNewSessionInfo(session, this.statuses[session.id], this.sessionPersistenceOptions())) return;
+    if (isFromInteractiveElement(event) || !this.canRenameSession(session, scope, external)) return;
+    this.beginSessionRename(event, session);
+  }
+
+  private startSessionRenameFromMenu(event: MouseEvent, session: SessionInfo, scope: SessionSelectionScope, external: boolean): void {
+    if (!this.canRenameSession(session, scope, external)) return;
+    this.openMenuSessionId = undefined;
+    this.beginSessionRename(event, session);
+  }
+
+  private canRenameSession(session: SessionInfo, scope: SessionSelectionScope, external: boolean): boolean {
+    return !external
+      && session.archived !== true
+      && !this.selectionScopes.has(scope)
+      && !isTransientNewSessionInfo(session, this.statuses[session.id], this.sessionPersistenceOptions());
+  }
+
+  private beginSessionRename(event: MouseEvent, session: SessionInfo): void {
     this.onRenameStart?.(session);
     event.preventDefault();
     event.stopPropagation();
