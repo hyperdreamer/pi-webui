@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.1
+
+### Patch Changes
+
+- f7e3f52: Fold linked session groups by default while keeping the active session visible.
+- 11c0fe7: Start workspace-memory groups collapsed and show their disclosure state with chevrons.
+- a47be80: Add a Rename action to session action menus.
+- ecb9013: Add a project-scoped Sessions browser with distinct direct, descendant, and attention activity markers.
+- 67bdef8: Group public IPv4 and IPv6 addresses into WAN subsections in System Info.
+
 ## 1.10.0
 
 ### Patch Changes
