@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, sessionRowsForSessionList, unreadSessionCount } from "./SessionList";
 
@@ -289,6 +289,80 @@ describe("sessionRowsForCurrentTree", () => {
     ]);
   });
 });
+
+describe("session sidebar search and cleanup controls", () => {
+  it("opens and closes the inline search control, clearing its query on close", () => {
+    const list = new SessionList();
+    const openSearch = findOptionalTemplateEventHandlerNearMarker(list.render(), 'aria-controls="session-search"');
+    expect(openSearch).toBeTypeOf("function");
+    if (openSearch === undefined) throw new Error("Expected session search control");
+
+    openSearch(new Event("click"));
+    expect(templateText(list.render())).toContain('id="session-search"');
+    Reflect.set(list, "searchQuery", "release");
+
+    const closeSearch = findOptionalTemplateEventHandlerNearMarker(list.render(), 'aria-controls="session-search"');
+    expect(closeSearch).toBeTypeOf("function");
+    if (closeSearch === undefined) throw new Error("Expected session search close control");
+    closeSearch(new Event("click"));
+
+    expect(Reflect.get(list, "searchQuery")).toBe("");
+    expect(templateText(list.render())).not.toContain('id="session-search"');
+  });
+
+  it("shows matching folded descendants and archived results while searching", () => {
+    const parent = session("parent", { firstMessage: "Coordinate release" });
+    const child = session("child", { firstMessage: "Deploy documentation", parentSessionPath: parent.path });
+    const archived = session("archived", {
+      archived: true,
+      archivedAt: "2026-07-29T00:00:00.000Z",
+      firstMessage: "Deploy archived notes",
+    });
+    const list = new SessionList();
+    list.sessions = [parent, child, archived];
+    Reflect.set(list, "searchQuery", "deploy");
+
+    const renderedText = templateText(list.render());
+    expect(renderedText).toContain("Coordinate release");
+    expect(renderedText).toContain("Deploy documentation");
+    expect(renderedText).toContain("Deploy archived notes");
+    expect(renderedText).toContain("▾ Archived");
+  });
+
+  it("reports an empty result and clears an obsolete action menu when input changes", () => {
+    const list = new SessionList();
+    list.sessions = [session("existing")];
+    Reflect.set(list, "searchOpen", true);
+    Reflect.set(list, "openMenuSessionId", "existing");
+
+    templateEventHandlerAfterMarker(list.render(), 'id="session-search"')(searchInputEvent("missing"));
+
+    expect(Reflect.get(list, "openMenuSessionId")).toBeUndefined();
+    expect(templateText(list.render())).toContain("No matching sessions.");
+  });
+
+  it("keeps cleanup callable through a labelled icon-only broom button", () => {
+    const list = new SessionList();
+    list.canCleanup = true;
+    const onCleanup = vi.fn();
+    list.onCleanup = onCleanup;
+
+    templateEventHandlerAfterValue(list.render(), "Preview session cleanup", "@click")(new Event("click"));
+
+    expect(onCleanup).toHaveBeenCalledOnce();
+    expect(templateText(list.render())).toContain("cleanup-icon");
+    expect(templateText(list.render())).not.toContain(">Clean up</button>");
+
+    list.canCleanup = false;
+    expect(templateText(list.render())).toContain(list.cleanupUnavailableMessage);
+  });
+});
+
+function searchInputEvent(value: string): Event {
+  const event = new Event("input");
+  Object.defineProperty(event, "target", { value: { value } });
+  return event;
+}
 
 function workspaceChanged(list: SessionList, previousWorkspacePath: string): void {
   const updated: unknown = Reflect.get(SessionList.prototype, "updated");

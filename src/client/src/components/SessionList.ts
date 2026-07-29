@@ -1,9 +1,10 @@
 import { LitElement, css, html, svg, type PropertyValues } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property, query, state } from "lit/decorators.js";
 import type { SessionActivity, SessionInfo, SessionStatus, Workspace } from "../api";
 import { sessionActivityIndicators, sessionRowActivityKind } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
+import { filterSessionRows, hasSessionSearchQuery } from "../sessionSearch";
 import { sessionRows, sessionRowsForCurrentTree, type SessionRow, type SessionRowsOptions } from "../sessionTreeRows";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
@@ -75,6 +76,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @state() private renamingSessionId: string | undefined;
   @state() private renameInputValue = "";
   @state() private expandedSessionPaths: ReadonlySet<string> = new Set();
+  @query(".session-search-input") private searchInput?: HTMLInputElement;
+  @state() private searchOpen = false;
+  @state() private searchQuery = "";
 
   private readonly onDocumentClick = (event: Event) => {
     if (isClickWithinActionMenu(event, this.renderRoot)) return;
@@ -120,29 +124,37 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   override render() {
     const sessionTreeSessions = this.sessionTreeSessions();
-    const currentRows = sessionRowsForSessionList(sessionTreeSessions, {
-      ...this.currentSessionTreeOptions(),
+    const treeOptions = this.currentSessionTreeOptions();
+    const normalCurrentRows = sessionRowsForSessionList(sessionTreeSessions, {
+      ...treeOptions,
       expandedSessionPaths: this.expandedSessionPaths,
       ...(this.selected === undefined ? {} : { selectedSessionPath: this.selected.path }),
     });
+    const unfoldedCurrentRows = sessionRowsForCurrentTree(sessionTreeSessions, treeOptions);
+    const currentRowPaths = new Set(unfoldedCurrentRows.map((row) => row.session.path));
+    const allArchivedRows = sessionRows(this.sessions.filter((session) => session.archived === true && !currentRowPaths.has(session.path)));
+    const searchActive = hasSessionSearchQuery(this.searchQuery);
+    const currentRows = searchActive ? filterSessionRows(unfoldedCurrentRows, this.searchQuery) : normalCurrentRows;
+    const archivedRows = searchActive ? filterSessionRows(allArchivedRows, this.searchQuery) : allArchivedRows;
+    const currentSelectableSessions = selectableCurrentSessions(currentRows);
+    const unfilteredCurrentSelectableSessions = selectableCurrentSessions(normalCurrentRows);
+    const archivedVisible = this.archivedExpanded || (searchActive && archivedRows.length > 0);
     const currentRowGroups = currentRows.reduce<SessionRow[][]>((groups, row) => {
       if (row.depth === 0) groups.push([row]);
       else groups.at(-1)?.push(row);
       return groups;
     }, []);
-    const currentRowPaths = new Set(currentRows.map((row) => row.session.path));
-    const currentSelectableSessions = currentRows.filter((row) => !row.external).map((row) => row.session).filter((session) => sessionSelectionScope(session) === "current");
-    const archivedRows = sessionRows(this.sessions.filter((session) => session.archived === true && !currentRowPaths.has(session.path)));
     const descendantCounts = unarchivedDescendantCounts(this.sessions);
-    const unreadCount = unreadSessionCount(currentSelectableSessions, this.unreadSessionIds, {
+    const unreadCount = unreadSessionCount(unfilteredCurrentSelectableSessions, this.unreadSessionIds, {
       statuses: this.statuses,
       activities: this.activities,
       sending: this.sending,
     });
     return html`
       <section>
-        ${this.renderHeading(currentRows.length + archivedRows.length, currentSelectableSessions, unreadCount)}
+        ${this.renderHeading(normalCurrentRows.length + allArchivedRows.length, currentSelectableSessions, unreadCount)}
         ${this.collapsed ? null : html`
+          ${this.searchOpen ? this.renderSearchInput() : null}
           <div class="list-body">
             ${this.renderCurrentSelectionToolbar(currentSelectableSessions)}
             ${this.startingCount > 0 ? this.renderStartingSession() : null}
@@ -150,12 +162,15 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
               ? html`<div class="session-family-frame">${rows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current", sessionTreeSessions))}</div>`
               : rows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current", sessionTreeSessions)))}
             ${archivedRows.length > 0 ? html`
-              ${this.renderArchivedHeading(archivedRows.map((row) => row.session))}
-              ${this.archivedExpanded ? html`
+              ${this.renderArchivedHeading(archivedRows.map((row) => row.session), archivedVisible)}
+              ${archivedVisible ? html`
                 ${this.renderArchivedSelectionToolbar(archivedRows.map((row) => row.session))}
                 ${archivedRows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "archived", sessionTreeSessions))}
               ` : null}
             ` : null}
+            ${searchActive && currentRows.length === 0 && archivedRows.length === 0
+              ? html`<p class="session-search-empty">No matching sessions.</p>`
+              : null}
           </div>
         `}
       </section>
@@ -168,6 +183,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
         <h2>
           <span class="plain-heading">Sessions</span>
           ${this.renderExpandedBrowserButton()}
+          ${this.renderSearchButton()}
           ${this.renderCurrentSelectionButton(currentSessions)}
           ${this.renderUnreadCount(unreadCount)}
           ${this.renderCleanupButton()}
@@ -181,6 +197,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
       <h2>
         <button class="section-toggle" aria-expanded=${String(!this.collapsed)} @click=${() => { this.onToggleCollapsed?.(); }}><span class="section-title"><span class="section-name">${this.collapsed ? "▸" : "▾"} Sessions</span>${this.collapsed ? html`<small class="section-selected" dir="auto" title=${selectedTitle}>${selectedSummary}</small>` : null}</span></button>
         ${this.renderExpandedBrowserButton()}
+        ${this.renderSearchButton()}
         ${this.renderCurrentSelectionButton(currentSessions)}
         ${this.renderUnreadCount(unreadCount)}
         <small class="section-count">${sessionCount}</small>
@@ -213,6 +230,37 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     });
   }
 
+  private renderSearchButton() {
+    if (this.collapsed) return null;
+    const label = this.searchOpen ? "Close session search" : "Search sessions";
+    return html`
+      <button type="button" class="section-search-button" title=${label} aria-label=${label} aria-expanded=${String(this.searchOpen)} aria-controls="session-search" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionSearch(); }}>
+        ${svg`<svg class="section-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg>`}
+      </button>
+    `;
+  }
+
+  private renderSearchInput() {
+    return html`<div class="session-search"><input id="session-search" class="session-search-input" type="search" placeholder="Search sessions" aria-label="Search sessions" .value=${this.searchQuery} @input=${(event: Event) => { this.handleSearchInput(event); }}></div>`;
+  }
+
+  private toggleSessionSearch(): void {
+    this.searchOpen = !this.searchOpen;
+    if (!this.searchOpen) {
+      this.searchQuery = "";
+      return;
+    }
+    void this.updateComplete.then(() => {
+      if (this.searchOpen) this.searchInput?.focus();
+    });
+  }
+
+  private handleSearchInput(event: Event): void {
+    if (!hasStringValue(event.target)) return;
+    this.searchQuery = event.target.value;
+    this.openMenuSessionId = undefined;
+  }
+
   private renderCurrentSelectionButton(currentSessions: SessionInfo[]) {
     if (this.collapsed || currentSessions.length === 0) return null;
     const active = this.selectionScopes.has("current");
@@ -220,7 +268,10 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private renderCleanupButton() {
-    return html`<button class="cleanup-entry" title=${this.canCleanup ? "Preview session cleanup" : this.cleanupUnavailableMessage} @click=${(event: MouseEvent) => { event.stopPropagation(); this.onCleanup?.(); }}>Clean up</button>`;
+    const label = this.canCleanup ? "Preview session cleanup" : this.cleanupUnavailableMessage;
+    return html`<button type="button" class="cleanup-entry" title=${label} aria-label=${label} @click=${(event: MouseEvent) => { event.stopPropagation(); this.onCleanup?.(); }}>
+      ${svg`<svg class="cleanup-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14 5 5 5"></path><path d="M3 21h6l10-10-5-5L4 16l-1 5Z"></path><path d="m7 17 4 4"></path></svg>`}
+    </button>`;
   }
 
   private renderStartButton() {
@@ -240,12 +291,12 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     `;
   }
 
-  private renderArchivedHeading(archivedSessions: SessionInfo[]) {
+  private renderArchivedHeading(archivedSessions: SessionInfo[], expanded: boolean) {
     const active = this.selectionScopes.has("archived");
     return html`
       <h2 class="subheading">
-        <button class="section-toggle" aria-expanded=${String(this.archivedExpanded)} @click=${() => { this.toggleArchived(); }}><span>${this.archivedExpanded ? "▾" : "▸"} Archived</span></button>
-        ${this.archivedExpanded ? html`<button class="bulk-select-entry ${active ? "selected" : ""}" title=${active ? "Close archived session selection" : "Select archived sessions"} aria-label=${active ? "Close archived session selection" : "Select archived sessions"} aria-expanded=${String(active)} aria-pressed=${String(active)} @click=${() => { this.toggleSelection("archived", archivedSessions); }}>☑</button>` : null}
+        <button class="section-toggle" aria-expanded=${String(expanded)} @click=${() => { this.toggleArchived(); }}><span>${expanded ? "▾" : "▸"} Archived</span></button>
+        ${expanded ? html`<button class="bulk-select-entry ${active ? "selected" : ""}" title=${active ? "Close archived session selection" : "Select archived sessions"} aria-label=${active ? "Close archived session selection" : "Select archived sessions"} aria-expanded=${String(active)} aria-pressed=${String(active)} @click=${() => { this.toggleSelection("archived", archivedSessions); }}>☑</button>` : null}
         <small class="section-count">${archivedSessions.length}</small>
       </h2>
     `;
@@ -613,9 +664,12 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     h2 { min-height: 30px; }
     h2 > .section-count { flex: 0 0 auto; display: inline; color: var(--pi-muted); font-size: inherit; }
     h2 > .section-unread-count { flex: 0 0 auto; display: inline; color: var(--pi-accent); font-size: inherit; text-transform: none; }
-    .bulk-select-entry, .section-expand-button { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; font-size: 13px; line-height: 1; text-transform: none; }
-    .section-expand-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .cleanup-entry { flex: 0 0 auto; padding: 5px 7px; font-size: 12px; text-transform: none; }
+    .bulk-select-entry, .section-expand-button, .section-search-button, .cleanup-entry { box-sizing: border-box; flex: 0 0 auto; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; font-size: 13px; line-height: 1; text-transform: none; }
+    .section-expand-icon, .section-search-icon, .cleanup-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .session-search { flex: 0 0 auto; margin: 0 0 6px; }
+    .session-search-input { box-sizing: border-box; width: 100%; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-text); padding: 6px 8px; font: inherit; }
+    .session-search-input:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
+    .session-search-empty { margin: 6px 0; color: var(--pi-muted); }
     .bulk-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
     .bulk-row button { padding: 5px 7px; font-size: 12px; }
     .bulk-row small { display: inline; min-width: 0; color: var(--pi-muted); }
@@ -674,6 +728,13 @@ export function unreadSessionCount(
 
 function hasStringValue(target: EventTarget | null): target is EventTarget & { value: string } {
   return target !== null && "value" in target && typeof target.value === "string";
+}
+
+function selectableCurrentSessions(rows: readonly SessionRow[]): SessionInfo[] {
+  return rows
+    .filter((row) => !row.external)
+    .map((row) => row.session)
+    .filter((session) => sessionSelectionScope(session) === "current");
 }
 
 function sessionSelectionScope(session: SessionInfo): SessionSelectionScope {
