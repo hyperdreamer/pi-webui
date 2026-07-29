@@ -667,6 +667,7 @@ function createWorkspacePanelContext(machineId: string, prompt: WorkspacePanelCo
     onCancelWorkspaceUpload: vi.fn(),
     onClearWorkspaceUpload: vi.fn(),
     onRefreshGit: vi.fn(),
+    onRefreshMemory: vi.fn(),
     onSelectDiff: vi.fn(),
     onSelectTerminal: vi.fn(),
   };

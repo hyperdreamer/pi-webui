@@ -10,6 +10,7 @@ import { ActivityController } from "../controllers/activityController";
 import { AuthController } from "../controllers/authController";
 import { FileExplorerController } from "../controllers/fileExplorerController";
 import { GitController } from "../controllers/gitController";
+import { MemoryController } from "../controllers/memoryController";
 import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
@@ -238,6 +239,10 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
+  );
+  private readonly memory = new MemoryController(
+    () => this.state,
+    (patch) => { this.setState(patch); },
   );
   private readonly keyboard = new KeyboardShortcutDispatcher();
   private readonly realtime = new RealtimeSocket();
@@ -471,6 +476,7 @@ export class PiWebUiApp extends LitElement {
     this.realtime.close();
     this.closeMachineActivitySockets();
     this.git.dispose();
+    this.memory.dispose();
     if (this.piWebUiStatusTimer !== undefined) window.clearInterval(this.piWebUiStatusTimer);
     this.piWebUiStatusTimer = undefined;
     this.clearScheduledPiWebUiStatusRefresh();
@@ -999,7 +1005,11 @@ export class PiWebUiApp extends LitElement {
   }
 
   private handleWorkspaceChange(previous: AppState, next: AppState) {
-    if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) return;
+    const memoryScopeChanged = memoryPollingScopeChanged(previous, next);
+    if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) {
+      if (memoryScopeChanged) this.memory.updatePolling();
+      return;
+    }
     this.starterSessionDefaults = undefined;
     this.terminalAutoStartWorkspaceId = undefined;
     this.activeTerminalIds.clear();
@@ -1009,11 +1019,15 @@ export class PiWebUiApp extends LitElement {
       this.rememberCurrentMachineNavigation();
       this.writeSelectedTerminalToUrl(selectedTerminalId, { replace: true });
     }
-    if (next.selectedWorkspace === undefined) return;
+    if (next.selectedWorkspace === undefined) {
+      this.memory.updatePolling();
+      return;
+    }
     void this.refreshActiveTerminals(next.selectedWorkspace);
     void this.refreshWorkspaceDeletionRuns();
     this.refreshSelectedWorkspaceTool(next.workspaceTool);
     this.git.updatePolling();
+    this.memory.updatePolling();
   }
 
   private async loadStarterSessionDefaults(workspace: Workspace): Promise<void> {
@@ -1828,6 +1842,7 @@ export class PiWebUiApp extends LitElement {
         onCancelWorkspaceUpload: (batchId) => { this.files.cancelWorkspaceUpload(batchId); },
         onClearWorkspaceUpload: (batchId) => { this.files.clearWorkspaceUpload(batchId); },
         onRefreshGit: () => { void this.git.refreshGit(); },
+        onRefreshMemory: () => { void this.memory.refresh(); },
         onSelectDiff: (path: string) => { void this.git.selectDiff(path); },
         onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => { this.selectTerminal(terminalId, options); },
       }, createContext);
@@ -2934,6 +2949,13 @@ function unreadChatIdentity(machineId: string, session: Pick<SessionInfo, "id" |
 function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {
   const session = state.selectedSession;
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
+}
+
+function memoryPollingScopeChanged(previous: AppState, next: AppState): boolean {
+  return selectedMachineId(previous) !== selectedMachineId(next)
+    || previous.selectedProject?.id !== next.selectedProject?.id
+    || previous.selectedWorkspace?.id !== next.selectedWorkspace?.id
+    || previous.selectedWorkspace?.path !== next.selectedWorkspace?.path;
 }
 
 function machineUnreadInputsChanged(previous: AppState, next: AppState): boolean {
