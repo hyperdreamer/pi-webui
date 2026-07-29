@@ -5,10 +5,10 @@ import {
   truncateContent,
   renderEntryHtml,
   renderPanelState,
-  type MemoryPanelState,
+  memoryBadge,
+  isMemoryPanelVisible,
 } from "./memoryPanelElement.js";
 import type { MemoryEntry } from "./memoryData.js";
-import type { WorkspacePanelContext } from "@hyperdreamer/pi-webui/plugin-api";
 
 describe("memory panel element", () => {
   describe("category badge", () => {
@@ -205,20 +205,20 @@ describe("memory panel element", () => {
     });
   });
 
-  describe("MemoryPanelState type", () => {
-    it("accepts no-workspace state", () => {
-      const s: MemoryPanelState = { kind: "no-workspace" };
-      expect(s.kind).toBe("no-workspace");
-    });
-
+  describe("MemoryWorkspaceState type", () => {
     it("accepts loading state", () => {
-      const s: MemoryPanelState = { kind: "loading" };
+      const s = { kind: "loading" as const };
       expect(s.kind).toBe("loading");
     });
 
+    it("accepts unavailable state", () => {
+      const s = { kind: "unavailable" as const };
+      expect(s.kind).toBe("unavailable");
+    });
+
     it("accepts scoped data state", () => {
-      const s: MemoryPanelState = {
-        kind: "data",
+      const s = {
+        kind: "data" as const,
         globalEntries: [{ id: "global", content: "global" }],
         projectEntries: [{ id: "project", content: "project" }],
       };
@@ -228,8 +228,8 @@ describe("memory panel element", () => {
     });
 
     it("accepts scoped project unavailability", () => {
-      const s: MemoryPanelState = {
-        kind: "data",
+      const s = {
+        kind: "data" as const,
         globalEntries: [],
         projectEntries: [],
         projectUnavailableMessage: "Project-specific memory could not be loaded.",
@@ -238,7 +238,7 @@ describe("memory panel element", () => {
     });
 
     it("accepts error state with message", () => {
-      const s: MemoryPanelState = { kind: "error", message: "fail" };
+      const s = { kind: "error" as const, message: "fail" };
       expect(s.kind).toBe("error");
       expect(s.message).toBe("fail");
     });
@@ -262,31 +262,45 @@ function groupSummary(group: string): string {
   return group.slice(summaryStart, summaryEnd + "</summary>".length);
 }
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
+class FakeButton {
+  private clickHandler: EventListenerOrEventListenerObject | undefined;
 
-function deferred<T>(): Deferred<T> {
-  let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => {
-    resolvePromise = resolve;
-  });
+  addEventListener(event: string, handler: EventListenerOrEventListenerObject): void {
+    if (event === "click") this.clickHandler = handler;
+  }
 
-  return {
-    promise,
-    resolve(value) {
-      if (resolvePromise === undefined) throw new Error("Deferred promise is unavailable");
-      resolvePromise(value);
-    },
-  };
+  click(): void {
+    if (this.clickHandler === undefined) throw new Error("No click handler registered");
+    // MouseEvent is unavailable in the Vitest Node environment; the
+    // panel callback does not inspect the event, so a plain object suffices.
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    const event = { type: "click" } as unknown as MouseEvent;
+    if (typeof this.clickHandler === "function") this.clickHandler(event);
+    else this.clickHandler.handleEvent(event);
+  }
 }
 
 class FakeShadowRoot {
   innerHTML = "";
+  private readonly elements = new Map<string, FakeButton>();
 
-  querySelector(): null {
-    return null;
+  querySelector(selector: string): FakeButton | null {
+    // Support attribute-only selectors like button[data-retry] by checking
+    // that the tag and attribute name both appear in the rendered HTML.
+    const parts = selector.split("[");
+    if (parts.length !== 2 || parts[0] === undefined || parts[1] === undefined) return null;
+    const tagName = parts[0];
+    const attrPart = parts[1].replace("]", "");
+    const attrName = (attrPart.includes("=") ? attrPart.split("=")[0] : attrPart) ?? "";
+    if (!this.innerHTML.includes(`<${tagName}`) || !this.innerHTML.includes(attrName)) {
+      this.elements.delete(selector);
+      return null;
+    }
+    const existing = this.elements.get(selector);
+    if (existing !== undefined) return existing;
+    const button = new FakeButton();
+    this.elements.set(selector, button);
+    return button;
   }
 }
 
@@ -311,14 +325,12 @@ class FakeCustomElementRegistry {
 }
 
 interface MemoryPanelElementInstance extends HTMLElement {
-  context: WorkspacePanelContext | undefined;
+  memoryState: { kind: string; globalEntries?: { id: string; content: string }[]; projectEntries?: { id: string; content: string }[]; refreshError?: string; message?: string } | undefined;
+  onRetry: (() => void) | undefined;
+  readonly root: { innerHTML: string; querySelector(selector: string): { click(): void } | null };
   disconnectedCallback(): void;
 }
 
-const lifecycleFetchers = {
-  fetchGlobalMemories: vi.fn<() => Promise<MemoryEntry[]>>(),
-  fetchProjectMemories: vi.fn<(projectPath: string) => Promise<MemoryEntry[]>>(),
-};
 const originalHTMLElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
 const originalCustomElements = Object.getOwnPropertyDescriptor(globalThis, "customElements");
 
@@ -339,7 +351,9 @@ function restoreGlobalProperty(name: "HTMLElement" | "customElements", descripto
 }
 
 function isMemoryPanelElementInstance(value: HTMLElement): value is MemoryPanelElementInstance {
-  return "context" in value
+  return "memoryState" in value
+    && "onRetry" in value
+    && "root" in value
     && "disconnectedCallback" in value
     && typeof value.disconnectedCallback === "function";
 }
@@ -354,161 +368,98 @@ async function createMemoryPanel(): Promise<MemoryPanelElementInstance> {
   return panel;
 }
 
-// The panel only consumes these fields; the complete plugin context is irrelevant to this lifecycle harness.
-/* eslint-disable @typescript-eslint/consistent-type-assertions -- test-only partial WorkspacePanelContext */
-function contextFor(
-  host: WorkspacePanelContext["host"],
-  identity: { machineId?: string; projectId?: string; workspaceId?: string; path?: string } = {},
-): WorkspacePanelContext {
-  return {
-    machine: { id: identity.machineId ?? "machine-1" },
-    workspace: {
-      projectId: identity.projectId ?? "project-1",
-      id: identity.workspaceId ?? "workspace-1",
-      path: identity.path ?? "/projects/one",
-    },
-    host,
-  } as unknown as WorkspacePanelContext;
-}
-/* eslint-enable @typescript-eslint/consistent-type-assertions */
+describe("memoryBadge", () => {
+  it("returns no tab count for loading, unavailable, error, or empty data", () => {
+    expect(memoryBadge({ kind: "loading" })).toBeUndefined();
+    expect(memoryBadge({ kind: "unavailable" })).toBeUndefined();
+    expect(memoryBadge({ kind: "error", message: "offline" })).toBeUndefined();
+    expect(memoryBadge({ kind: "data", globalEntries: [], projectEntries: [] })).toBeUndefined();
+  });
 
-async function settleMemoryLoad(): Promise<void> {
-  await new Promise<void>((resolve) => { setImmediate(resolve); });
-}
+  it("sums global and project entries for a positive tab count", () => {
+    expect(memoryBadge({
+      kind: "data",
+      globalEntries: [{ id: "g", content: "global" }],
+      projectEntries: [{ id: "p1", content: "one" }, { id: "p2", content: "two" }],
+    })).toBe(3);
+  });
+});
+
+describe("isMemoryPanelVisible", () => {
+  it("hides only a confirmed unavailable provider", () => {
+    expect(isMemoryPanelVisible({ kind: "unavailable" })).toBe(false);
+    expect(isMemoryPanelVisible({ kind: "loading" })).toBe(true);
+    expect(isMemoryPanelVisible({ kind: "data", globalEntries: [], projectEntries: [] })).toBe(true);
+    expect(isMemoryPanelVisible({ kind: "error", message: "offline" })).toBe(true);
+  });
+});
 
 describe("memory panel lifecycle", () => {
-  beforeEach(() => {
-    lifecycleFetchers.fetchGlobalMemories.mockReset();
-    lifecycleFetchers.fetchProjectMemories.mockReset();
+  let panel: MemoryPanelElementInstance;
+  let retryCallback: ReturnType<typeof vi.fn<() => void>>;
+
+  beforeEach(async () => {
     installFakeCustomElements();
     vi.resetModules();
-    vi.doMock("./memoryClient.js", () => lifecycleFetchers);
+    retryCallback = vi.fn();
+    panel = await createMemoryPanel();
   });
 
   afterEach(() => {
-    vi.doUnmock("./memoryClient.js");
     restoreGlobalProperty("HTMLElement", originalHTMLElement);
     restoreGlobalProperty("customElements", originalCustomElements);
   });
 
-  it("does not restart a successful load when requestRender supplies a fresh same-workspace context", async () => {
-    lifecycleFetchers.fetchGlobalMemories.mockResolvedValue([{ id: "global", content: "Global memory" }]);
-    lifecycleFetchers.fetchProjectMemories.mockResolvedValue([{ id: "project", content: "Project memory" }]);
-    const panel = await createMemoryPanel();
-    const replacementHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-    const replacement = contextFor(replacementHost);
-    const initialHost = {
-      requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>(() => {
-        panel.context = replacement;
-      }),
+  it("renders data when memoryState is set without invoking network mocks", () => {
+    panel.memoryState = {
+      kind: "data",
+      globalEntries: [{ id: "g", content: "global" }],
+      projectEntries: [{ id: "p", content: "project" }],
     };
 
-    panel.context = contextFor(initialHost);
-    await settleMemoryLoad();
-
-    expect(initialHost.requestRender).toHaveBeenCalledOnce();
-    expect(lifecycleFetchers.fetchGlobalMemories).toHaveBeenCalledOnce();
-    expect(lifecycleFetchers.fetchProjectMemories).toHaveBeenCalledOnce();
+    const html = panel.root.innerHTML;
+    expect(html).toContain("Global memory");
+    expect(html).toContain("Project-specific memory");
+    expect(html).toContain("global");
+    expect(html).toContain("project");
   });
 
-  it("does not restart a global-error load when requestRender supplies a fresh same-workspace context", async () => {
-    lifecycleFetchers.fetchGlobalMemories.mockRejectedValue(new Error("Global route unavailable"));
-    lifecycleFetchers.fetchProjectMemories.mockResolvedValue([]);
-    const panel = await createMemoryPanel();
-    const replacementHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-    const replacement = contextFor(replacementHost);
-    const initialHost = {
-      requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>(() => {
-        panel.context = replacement;
-      }),
+  it("calls the supplied retry callback once when Retry button is clicked", () => {
+    panel.onRetry = retryCallback;
+    panel.memoryState = { kind: "error", message: "offline" };
+
+    const button = panel.root.querySelector("button[data-retry]");
+    if (button === null) throw new Error("Expected retry button to be present");
+    button.click();
+
+    expect(retryCallback).toHaveBeenCalledOnce();
+  });
+
+  it("renders unavailable as a no-workspace-compatible empty state", () => {
+    panel.memoryState = { kind: "unavailable" };
+
+    const html = panel.root.innerHTML;
+    expect(html).toContain("Select a workspace.");
+  });
+
+  it("renders data with refreshError retaining scope groups and showing Retry", () => {
+    panel.onRetry = retryCallback;
+    panel.memoryState = {
+      kind: "data",
+      globalEntries: [{ id: "g", content: "global" }],
+      projectEntries: [],
+      refreshError: "Polling failed",
     };
 
-    panel.context = contextFor(initialHost);
-    await settleMemoryLoad();
+    const html = panel.root.innerHTML;
+    expect(html).toContain("Global memory");
+    expect(html).toContain("global");
+    expect(html).toContain("Polling failed");
 
-    expect(initialHost.requestRender).toHaveBeenCalledOnce();
-    expect(lifecycleFetchers.fetchGlobalMemories).toHaveBeenCalledOnce();
-    expect(lifecycleFetchers.fetchProjectMemories).toHaveBeenCalledOnce();
-  });
+    const button = panel.root.querySelector("button[data-retry]");
+    if (button === null) throw new Error("Expected retry button to be present");
+    button.click();
 
-  it("accepts an in-flight result after a fresh context wrapper preserves the workspace identity and path", async () => {
-    const global = deferred<MemoryEntry[]>();
-    const project = deferred<MemoryEntry[]>();
-    lifecycleFetchers.fetchGlobalMemories.mockReturnValue(global.promise);
-    lifecycleFetchers.fetchProjectMemories.mockReturnValue(project.promise);
-    const panel = await createMemoryPanel();
-    const initialHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-    const replacementHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-    const initial = contextFor(initialHost);
-    const replacement = contextFor(replacementHost);
-
-    panel.context = initial;
-    panel.context = replacement;
-    global.resolve([]);
-    project.resolve([]);
-    await settleMemoryLoad();
-
-    expect(lifecycleFetchers.fetchGlobalMemories).toHaveBeenCalledOnce();
-    expect(lifecycleFetchers.fetchProjectMemories).toHaveBeenCalledOnce();
-    expect(initialHost.requestRender).toHaveBeenCalledOnce();
-    expect(replacementHost.requestRender).not.toHaveBeenCalled();
-  });
-
-  it("suppresses a stale result when the semantic workspace changes", async () => {
-    const globalA = deferred<MemoryEntry[]>();
-    const projectA = deferred<MemoryEntry[]>();
-    const globalB = deferred<MemoryEntry[]>();
-    const projectB = deferred<MemoryEntry[]>();
-    lifecycleFetchers.fetchGlobalMemories
-      .mockReturnValueOnce(globalA.promise)
-      .mockReturnValueOnce(globalB.promise);
-    lifecycleFetchers.fetchProjectMemories
-      .mockReturnValueOnce(projectA.promise)
-      .mockReturnValueOnce(projectB.promise);
-    const panel = await createMemoryPanel();
-    const hostA = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-    const hostB = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-
-    panel.context = contextFor(hostA);
-    panel.context = contextFor(hostB, { workspaceId: "workspace-2", path: "/projects/two" });
-    globalA.resolve([]);
-    projectA.resolve([]);
-    await settleMemoryLoad();
-    expect(hostA.requestRender).not.toHaveBeenCalled();
-
-    globalB.resolve([]);
-    projectB.resolve([]);
-    await settleMemoryLoad();
-    expect(hostB.requestRender).toHaveBeenCalledOnce();
-  });
-
-  it("suppresses a stale result after context removal or disconnect", async () => {
-    const removedGlobal = deferred<MemoryEntry[]>();
-    const removedProject = deferred<MemoryEntry[]>();
-    lifecycleFetchers.fetchGlobalMemories.mockReturnValueOnce(removedGlobal.promise);
-    lifecycleFetchers.fetchProjectMemories.mockReturnValueOnce(removedProject.promise);
-    const removedPanel = await createMemoryPanel();
-    const removedHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-
-    removedPanel.context = contextFor(removedHost);
-    removedPanel.context = undefined;
-    removedGlobal.resolve([]);
-    removedProject.resolve([]);
-    await settleMemoryLoad();
-    expect(removedHost.requestRender).not.toHaveBeenCalled();
-
-    const disconnectedGlobal = deferred<MemoryEntry[]>();
-    const disconnectedProject = deferred<MemoryEntry[]>();
-    lifecycleFetchers.fetchGlobalMemories.mockReturnValueOnce(disconnectedGlobal.promise);
-    lifecycleFetchers.fetchProjectMemories.mockReturnValueOnce(disconnectedProject.promise);
-    const disconnectedPanel = await createMemoryPanel();
-    const disconnectedHost = { requestRender: vi.fn<WorkspacePanelContext["host"]["requestRender"]>() };
-
-    disconnectedPanel.context = contextFor(disconnectedHost);
-    disconnectedPanel.disconnectedCallback();
-    disconnectedGlobal.resolve([]);
-    disconnectedProject.resolve([]);
-    await settleMemoryLoad();
-    expect(disconnectedHost.requestRender).not.toHaveBeenCalled();
+    expect(retryCallback).toHaveBeenCalledOnce();
   });
 });

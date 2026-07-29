@@ -1,5 +1,21 @@
-import type { PiWebUiPlugin } from "@hyperdreamer/pi-webui/plugin-api";
-import { defineMemoryPanelElement } from "./memoryPanelElement.js";
+import type { PiWebUiPlugin, WorkspacePanelContext } from "@hyperdreamer/pi-webui/plugin-api";
+import { defineMemoryPanelElement, isMemoryPanelVisible, memoryBadge } from "./memoryPanelElement.js";
+
+interface BundledMemoryAppState {
+  readonly memory: import("./memoryData.js").MemoryWorkspaceState;
+}
+
+type BundledMemoryContext = WorkspacePanelContext & {
+  readonly state: BundledMemoryAppState;
+  readonly onRefreshMemory: () => void;
+};
+
+// The core supplies a context compatible with BundledMemoryContext;
+// this is the narrowest boundary type without importing core internals.
+function bundledMemoryContext(context: WorkspacePanelContext): BundledMemoryContext {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+  return context as BundledMemoryContext;
+}
 
 const plugin: PiWebUiPlugin = {
   apiVersion: 1,
@@ -24,7 +40,12 @@ const plugin: PiWebUiPlugin = {
               </svg>
             `,
             order: 50,
-            render: (context) => html`<pi-webui-memory-panel .context=${context}></pi-webui-memory-panel>`,
+            visible: (context) => isMemoryPanelVisible(bundledMemoryContext(context).state.memory),
+            badge: (context) => memoryBadge(bundledMemoryContext(context).state.memory),
+            render: (context) => {
+              const memory = bundledMemoryContext(context);
+              return html`<pi-webui-memory-panel .context=${context} .memoryState=${memory.state.memory} .onRetry=${memory.onRefreshMemory}></pi-webui-memory-panel>`;
+            },
           },
         ],
       },
