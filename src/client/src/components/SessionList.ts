@@ -270,7 +270,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   private renderCleanupButton() {
     const label = this.canCleanup ? "Preview session cleanup" : this.cleanupUnavailableMessage;
     return html`<button type="button" class="cleanup-entry" title=${label} aria-label=${label} @click=${(event: MouseEvent) => { event.stopPropagation(); this.onCleanup?.(); }}>
-      ${svg`<svg class="cleanup-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14 5 5 5"></path><path d="M3 21h6l10-10-5-5L4 16l-1 5Z"></path><path d="m7 17 4 4"></path></svg>`}
+      ${svg`<svg class="cleanup-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m4 21 4-17h2l4 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path><path d="m8 4h8l2 4"></path><path d="M12 4v6"></path><path d="m18 8-2 4"></path><path d="M10 12 6 4"></path></svg>`}
     </button>`;
   }
 
