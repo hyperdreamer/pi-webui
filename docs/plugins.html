@@ -272,7 +272,8 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
                 The Memory tab is visible only when a compatible memory provider is detected for the active agent
                 profile and project scope. A compatible provider with zero entries still shows the tab but omits the
                 badge. A positive badge totals global and project-specific memory entries. PI WEBUI refreshes the badge
-                immediately after a selected project or workspace change and then checks approximately every 30 seconds.
+                immediately after a selected project or workspace change and then checks approximately every 30 seconds. This is polling;
+                PI WEBUI does not promise instant or realtime updates.
               </p>
               <ul>
                 <li>Plugin id: <code>workspace-memory</code></li>
