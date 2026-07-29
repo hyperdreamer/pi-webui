@@ -27,7 +27,7 @@ export class PiHermesMemoryProvider implements MemoryProvider {
     const globalRootAvailable = await this.directoryExists(join(this.agentDir, "pi-hermes-memory"));
     const project = await this.projectScope(input.projectPath);
 
-    if (!globalRootAvailable && !project.rootAvailable && project.unavailableMessage === undefined) {
+    if (!globalRootAvailable && !project.rootAvailable) {
       return { kind: "unavailable" };
     }
 

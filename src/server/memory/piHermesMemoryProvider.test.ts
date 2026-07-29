@@ -27,6 +27,12 @@ describe("PiHermesMemoryProvider", () => {
     expect(result).toEqual({ kind: "unavailable" });
   });
 
+  it("reports unavailable when neither Hermes root exists and the project basename is unsafe", async () => {
+    const result = await new PiHermesMemoryProvider(agentDir).read({ projectPath: "/work/.." });
+
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+
   it("reports an empty Hermes root as available without inventing entries", async () => {
     await mkdir(join(agentDir, "pi-hermes-memory"));
 
