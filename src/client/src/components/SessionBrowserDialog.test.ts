@@ -70,6 +70,18 @@ describe("SessionBrowserDialog", () => {
     expect(renderedText).toContain("Investigate deployment");
   });
 
+  it("finds a matching child even when its session family starts folded", () => {
+    const parent = session("parent", { firstMessage: "Coordinate release" });
+    const child = session("child", { firstMessage: "Deploy the documentation", parentSessionPath: parent.path });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [parent, child];
+    Reflect.set(dialog, "searchQuery", "deploy");
+
+    const renderedText = templateText(dialog.render());
+    expect(renderedText).toContain("Coordinate release");
+    expect(renderedText).toContain("Deploy the documentation");
+  });
+
   it("selects a session through the supplied callback", () => {
     const target = session("target", { firstMessage: "Open me" });
     const dialog = new SessionBrowserDialog();
