@@ -192,6 +192,7 @@ export interface QualifiedWorkspacePanelContribution extends WorkspacePanelContr
   pluginId: PluginId;
   localId: LocalContributionId;
   machineId?: string;
+  sourcePluginId?: PluginId;
 }
 
 export interface WorkspaceLabelContext extends WorkspaceContext {

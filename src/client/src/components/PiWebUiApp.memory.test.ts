@@ -1,8 +1,10 @@
 import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import type { Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { PluginRegistry } from "../plugins/registry";
+import type { WorkspacePanelContext } from "../plugins/types";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 const project: Project = { id: "project-a", name: "Project A", path: "/work/project-a", createdAt: "now" };
@@ -73,6 +75,70 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("observes an enabled visible Memory contribution from the selected remote machine", () => {
+    const app = createApp();
+    const remoteMachine = {
+      id: "remote-1",
+      name: "Remote 1",
+      kind: "remote" as const,
+      createdAt: "now",
+      updatedAt: "now",
+    };
+    registerRemoteMemoryWorkspacePanel(app, remoteMachine.id);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedMachine: remoteMachine,
+      selectedProject: project,
+      selectedWorkspace: workspace,
+      memory: {
+        kind: "data",
+        globalEntries: [{ id: "global", content: "Global memory" }],
+        projectEntries: [{ id: "project", content: "Project memory" }],
+      },
+    };
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+    const context = createWorkspacePanelContext(app, workspace);
+    const remotePanelId = `${machineScopedPluginId(remoteMachine.id, "workspace-memory")}:workspace.memory`;
+    const remoteMemoryPanel = pluginRegistry(app).getWorkspacePanels().find((panel) => panel.id === remotePanelId);
+
+    expect(remoteMemoryPanel?.visible?.(context)).toBe(true);
+    expect(remoteMemoryPanel?.badge?.(context)).toBe(2);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+
+    expect(updatePolling).toHaveBeenCalledWith(true);
+  });
+
+  it("observes the selected remote Memory contribution when its machine-specific gateway counterpart is hidden", () => {
+    const app = createApp();
+    const remoteMachine = {
+      id: "remote-1",
+      name: "Remote 1",
+      kind: "remote" as const,
+      createdAt: "now",
+      updatedAt: "now",
+    };
+    registerMemoryWorkspacePanel(app, true);
+    registerRemoteMemoryWorkspacePanel(app, remoteMachine.id, true);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedMachine: remoteMachine,
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+
+    expect(updatePolling).toHaveBeenCalledWith(true);
+  });
+
   it("deactivates memory polling when the Memory contribution is absent", () => {
     const app = createApp();
     const next: AppState = {
@@ -119,7 +185,7 @@ interface MemoryLifecycleController {
 }
 
 type HandleWorkspaceChange = (this: PiWebUiApp, previous: AppState, next: AppState) => void;
-type CreateWorkspacePanelContext = (this: PiWebUiApp, workspace: Workspace) => object;
+type CreateWorkspacePanelContext = (this: PiWebUiApp, workspace: Workspace) => WorkspacePanelContext;
 type DisconnectedHook = (this: PiWebUiApp) => void;
 type WorkspacePanels = (this: PiWebUiApp) => unknown[];
 
@@ -141,9 +207,10 @@ function createApp(): PiWebUiApp {
   return new PiWebUiApp();
 }
 
-function registerMemoryWorkspacePanel(app: PiWebUiApp): void {
+function registerMemoryWorkspacePanel(app: PiWebUiApp, machineSpecific = false): void {
   pluginRegistry(app).register({
     id: "workspace-memory",
+    machineSpecific,
     plugin: {
       apiVersion: 1,
       name: "Memory",
@@ -152,6 +219,30 @@ function registerMemoryWorkspacePanel(app: PiWebUiApp): void {
           workspacePanels: [{
             id: "workspace.memory",
             title: "Memory",
+            render: () => html``,
+          }],
+        },
+      }),
+    },
+  });
+}
+
+function registerRemoteMemoryWorkspacePanel(app: PiWebUiApp, machineId: string, machineSpecific = false): void {
+  pluginRegistry(app).register({
+    id: machineScopedPluginId(machineId, "workspace-memory"),
+    machineId,
+    sourcePluginId: "workspace-memory",
+    machineSpecific,
+    plugin: {
+      apiVersion: 1,
+      name: "Memory",
+      activate: () => ({
+        contributions: {
+          workspacePanels: [{
+            id: "workspace.memory",
+            title: "Memory",
+            visible: (context) => context.state.memory.kind !== "unavailable",
+            badge: (context) => context.state.memory.kind === "data" ? 2 : undefined,
             render: () => html``,
           }],
         },
@@ -195,7 +286,7 @@ function handleWorkspaceChange(app: PiWebUiApp, previous: AppState, next: AppSta
   method.call(app, previous, next);
 }
 
-function createWorkspacePanelContext(app: PiWebUiApp, selectedWorkspace: Workspace): object {
+function createWorkspacePanelContext(app: PiWebUiApp, selectedWorkspace: Workspace): WorkspacePanelContext {
   const method: unknown = Reflect.get(app, "createWorkspacePanelContext");
   if (!isCreateWorkspacePanelContext(method)) throw new Error("PiWebUiApp.createWorkspacePanelContext is not callable");
   return method.call(app, selectedWorkspace);
