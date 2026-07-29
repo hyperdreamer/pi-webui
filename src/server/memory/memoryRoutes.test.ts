@@ -58,6 +58,7 @@ describe("memoryRoutes", () => {
   async function buildApp(): Promise<FastifyInstance> {
     const instance = Fastify({ logger: false });
     registerMemoryRoutes(instance, provider, "/api");
+    registerMemoryRoutes(instance, provider, "/api/machines/local");
     return instance;
   }
 
@@ -125,6 +126,61 @@ describe("memoryRoutes", () => {
       const response = await app.inject({
         method: "GET",
         url: "/api/agent-memory/project?projectPath=%2Fsome%2Fpath",
+      });
+      expect(response.statusCode).toBe(503);
+    });
+  });
+
+  describe("GET /api/agent-memory/snapshot", () => {
+    it("returns 400 when projectPath query is missing", async () => {
+      app = await buildApp();
+      const response = await app.inject({ method: "GET", url: "/api/agent-memory/snapshot" });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("returns unavailable when no compatible provider root exists", async () => {
+      app = await buildApp();
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-memory/snapshot?projectPath=%2Fwork%2Frepo",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ kind: "unavailable" });
+    });
+
+    it("returns global and project scopes in one snapshot", async () => {
+      await mkdir(join(agentDir, "pi-hermes-memory"), { recursive: true });
+      await writeMemoryFile("pi-hermes-memory/MEMORY.md", "Global entry");
+      await writeMemoryFile("projects-memory/repo/MEMORY.md", "Project entry");
+      app = await buildApp();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-memory/snapshot?projectPath=%2Fwork%2Frepo",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ kind: "data", globalEntries: [{ content: "Global entry" }], projectEntries: [{ content: "Project entry" }] });
+    });
+
+    it("registers the snapshot under the local machine prefix", async () => {
+      app = await buildApp();
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/machines/local/agent-memory/snapshot?projectPath=%2Fwork%2Frepo",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ kind: "unavailable" });
+    });
+
+    it("returns 503 when agent profile is unavailable", async () => {
+      provider = unavailableProvider();
+      app = await buildApp();
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/agent-memory/snapshot?projectPath=%2Fwork%2Frepo",
       });
       expect(response.statusCode).toBe(503);
     });

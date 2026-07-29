@@ -1,6 +1,7 @@
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionMessageForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SystemInfoResponse, SystemMetricsResponse, SystemNetworkMetrics } from "../../../shared/apiTypes";
 import type { SessionDefaultsResponse } from "../../../shared/apiTypes";
+import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
@@ -54,6 +55,35 @@ function parseUnknownArray(value: unknown): unknown[] {
 function arrayOfString(value: unknown, key: string): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) throw new Error(`Expected string array field: ${key}`);
   return value;
+}
+
+export function parseMemorySnapshotResponse(value: unknown): MemorySnapshotResponse {
+  if (!isRecord(value) || typeof value["kind"] !== "string") throw new Error("Invalid memory snapshot response");
+  if (value["kind"] === "unavailable") return { kind: "unavailable" };
+  if (value["kind"] !== "data") throw new Error("Invalid memory snapshot response");
+  return {
+    kind: "data",
+    globalEntries: parseMemoryEntries(value["globalEntries"]),
+    projectEntries: parseMemoryEntries(value["projectEntries"]),
+    ...(typeof value["projectUnavailableMessage"] === "string" ? { projectUnavailableMessage: value["projectUnavailableMessage"] } : {}),
+  };
+}
+
+function parseMemoryEntries(value: unknown): MemoryEntry[] {
+  if (!Array.isArray(value)) throw new Error("Invalid memory snapshot response");
+  return value.map((entry) => {
+    if (!isRecord(entry) || typeof entry["id"] !== "string" || typeof entry["content"] !== "string") {
+      throw new Error("Invalid memory snapshot response");
+    }
+    return {
+      id: entry["id"],
+      content: entry["content"],
+      ...(typeof entry["category"] === "string" ? { category: entry["category"] } : {}),
+      ...(typeof entry["created"] === "string" ? { created: entry["created"] } : {}),
+      ...(typeof entry["last"] === "string" ? { last: entry["last"] } : {}),
+      ...(typeof entry["failureReason"] === "string" ? { failureReason: entry["failureReason"] } : {}),
+    };
+  });
 }
 
 export function parseMessagePage(value: unknown): MessagePage {

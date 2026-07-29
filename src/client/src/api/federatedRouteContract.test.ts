@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS, type FederatedHttpRouteSpec } from "../../../shared/federatedRoutes";
-import { activityApi, configApi, filesApi, gitApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
+import { activityApi, configApi, filesApi, gitApi, memoryApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 import { globalSessionEvents, realtimeEvents, sessionEvents, terminalSocket } from "./sockets";
 import { workspaceImagePreviewUrl } from "./urls";
 
@@ -75,6 +75,10 @@ describe("federated route contract", () => {
     });
   });
 
+  it("allowlists read-only memory snapshots for remote machines", () => {
+    expect(FEDERATED_HTTP_ROUTES).toContainEqual({ method: "GET", path: "/agent-memory/snapshot" });
+  });
+
   it("covers machine-scoped client HTTP calls with remote proxy routes", async () => {
     const fetchMock = vi.fn<FetchLike>(() => Promise.resolve(jsonResponse({})));
     vi.stubGlobal("fetch", fetchMock);
@@ -84,6 +88,7 @@ describe("federated route contract", () => {
       ignoreParseFailure(piWebUiApi.checkForUpdates(machineId)),
       ignoreParseFailure(piWebUiApi.systemInfo(machineId)),
       ignoreParseFailure(piWebUiApi.systemMetrics(machineId)),
+      ignoreParseFailure(memoryApi.snapshot(workspace.path, machineId)),
       ignoreParseFailure(configApi.config(machineId)),
       ignoreParseFailure(configApi.saveConfig({ spawnSessions: true }, machineId)),
       ignoreParseFailure(modelsConfigApi.discover({ providerName: "custom", provider: { api: "openai-completions", baseUrl: "https://models.example.test/v1", apiKey: "$MODEL_API_KEY" } }, machineId)),

@@ -23,6 +23,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "POST", path: "/models-config/discover" },
   { method: "GET", path: "/session-defaults" },
   { method: "PUT", path: "/session-defaults" },
+  { method: "GET", path: "/agent-memory/snapshot" },
   { method: "GET", path: "/skills" },
   { method: "PATCH", path: "/skills" },
   { method: "POST", path: "/skills/search", timeoutMs: SKILLS_OPERATION_PROXY_TIMEOUT_MS },

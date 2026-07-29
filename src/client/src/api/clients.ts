@@ -1,6 +1,7 @@
 import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
+import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
 import { request } from "./http";
@@ -23,6 +24,7 @@ import {
   parseMachine,
   parseMachineHealth,
   parseMachineRuntime,
+  parseMemorySnapshotResponse,
   parseMachinesResponse,
   parseMessagePage,
   parseModelConnectionTestResponse,
@@ -140,6 +142,15 @@ export const machinesApi = {
   deleteMachine: (machineId: string) => request(`api/machines/${encodeURIComponent(machineId)}`, (value) => value, { method: "DELETE" }),
   health: (machineId: string) => request(`api/machines/${encodeURIComponent(machineId)}/health`, parseMachineHealth),
   runtime: (machineId: string, refresh = false) => request(`api/machines/${encodeURIComponent(machineId)}/runtime${refresh ? "?refresh=1" : ""}`, parseMachineRuntime, refresh ? { cache: "no-store" } : {}),
+};
+
+function memorySnapshotPath(projectPath: string, machineId = "local"): string {
+  const params = new URLSearchParams({ projectPath });
+  return `${machinePrefix(machineId)}/agent-memory/snapshot?${params.toString()}`;
+}
+
+export const memoryApi = {
+  snapshot: (projectPath: string, machineId = "local"): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse),
 };
 
 function configPath(machineId?: string): string {
@@ -415,6 +426,7 @@ export const gitApi = {
 export const api = {
   ...piWebUiApi,
   ...machinesApi,
+  ...memoryApi,
   ...configApi,
   ...pluginsApi,
   ...piPackagesApi,
