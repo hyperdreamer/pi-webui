@@ -306,14 +306,15 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     if (visibleSessions.length === 0 || !this.selectionScopes.has("current")) return null;
 
     const selectedSessions = this.selectedSessions("current");
-    const archivableSessions = selectedSessions.filter((session) => isArchivableSessionInfo(session, this.statuses[session.id], this.sessionPersistenceOptions()));
+    const selectedVisibleSessions = visibleSessions.filter((session) => this.selectedSessionIds.has(session.id));
+    const archivableVisibleSessions = selectedVisibleSessions.filter((session) => isArchivableSessionInfo(session, this.statuses[session.id], this.sessionPersistenceOptions()));
     const allVisibleSelected = visibleSessions.length > 0 && visibleSessions.every((session) => this.selectedSessionIds.has(session.id));
-    const visibleSelectedCount = visibleSessions.filter((session) => this.selectedSessionIds.has(session.id)).length;
+    const visibleSelectedCount = selectedVisibleSessions.length;
     return html`
       <div class="bulk-row selecting">
         <button ?disabled=${visibleSessions.length === 0} @click=${() => { this.toggleVisibleSelection(visibleSessions, !allVisibleSelected); }}>${allVisibleSelected ? "Clear visible" : "Select visible"}</button>
         <small>${selectedSessions.length} selected${visibleSelectedCount !== selectedSessions.length ? html` · ${visibleSelectedCount} visible` : null}</small>
-        <button ?disabled=${archivableSessions.length === 0} @click=${() => { this.archiveSelectedCurrent(); }}>Archive selected</button>
+        <button ?disabled=${archivableVisibleSessions.length === 0} @click=${() => { this.archiveSelectedCurrent(archivableVisibleSessions); }}>Archive selected</button>
         <button @click=${() => { this.clearSelection("current"); }}>Clear</button>
         <button @click=${() => { this.closeSelection("current"); }}>Done</button>
       </div>
@@ -537,8 +538,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     void this.onDeleteArchivedMany?.(archived);
   }
 
-  private archiveSelectedCurrent(): void {
-    const sessions = this.selectedSessions("current").filter((session) => isArchivableSessionInfo(session, this.statuses[session.id], this.sessionPersistenceOptions()));
+  private archiveSelectedCurrent(sessions: SessionInfo[]): void {
+    if (sessions.length === 0) return;
     this.selectedSessionIds = removeSessionIds(this.selectedSessionIds, sessions.map((session) => session.id));
     void this.onArchiveMany?.(sessions);
   }

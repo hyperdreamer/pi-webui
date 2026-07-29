@@ -310,6 +310,30 @@ describe("session sidebar search and cleanup controls", () => {
     expect(templateText(list.render())).not.toContain('id="session-search"');
   });
 
+  // The Node test environment has no DOM harness, so inspect the stable
+  // archive button text to narrowly exercise Lit's bulk-action wiring.
+  it("archives only selected current sessions visible to an active query", () => {
+    const hidden = session("hidden", { firstMessage: "Unrelated current session" });
+    const visible = session("visible", { firstMessage: "Deploy release" });
+    const list = new SessionList();
+    const onArchiveMany = vi.fn();
+    list.sessions = [hidden, visible];
+    list.onArchiveMany = onArchiveMany;
+    Reflect.set(list, "selectionScopes", new Set(["current"]));
+    Reflect.set(list, "selectedSessionIds", new Set([hidden.id, visible.id]));
+    Reflect.set(list, "searchOpen", true);
+
+    templateEventHandlerAfterMarker(list.render(), 'id="session-search"')(searchInputEvent("deploy"));
+    const rendered = list.render();
+    expect(templateText(rendered)).toContain("Deploy release");
+    expect(templateText(rendered)).not.toContain("Unrelated current session");
+
+    templateEventHandlerNearMarker(rendered, "Archive selected")(new Event("click"));
+
+    expect(onArchiveMany).toHaveBeenCalledWith([visible]);
+    expect(Reflect.get(list, "selectedSessionIds")).toEqual(new Set([hidden.id]));
+  });
+
   it("shows matching folded descendants and archived results while searching", () => {
     const parent = session("parent", { firstMessage: "Coordinate release" });
     const child = session("child", { firstMessage: "Deploy documentation", parentSessionPath: parent.path });
