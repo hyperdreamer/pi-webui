@@ -1,6 +1,8 @@
+import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
+import { PluginRegistry } from "../plugins/registry";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 const project: Project = { id: "project-a", name: "Project A", path: "/work/project-a", createdAt: "now" };
@@ -20,8 +22,9 @@ afterEach(() => {
 });
 
 describe("PiWebUiApp memory lifecycle wiring", () => {
-  it("restarts memory polling when the selected workspace path changes without an id change", () => {
+  it("restarts memory polling when the selected workspace path changes and the Memory contribution is enabled", () => {
     const app = createApp();
+    registerMemoryWorkspacePanel(app);
     const previous: AppState = {
       ...initialAppState(),
       selectedProject: project,
@@ -36,11 +39,12 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
 
     handleWorkspaceChange(app, previous, next);
 
-    expect(updatePolling).toHaveBeenCalledOnce();
+    expect(updatePolling).toHaveBeenCalledWith(true);
   });
 
-  it("starts selected-workspace memory polling, exposes its internal retry callback, and disposes it on disconnect", () => {
+  it("starts selected-workspace memory polling for an enabled contribution, exposes its internal retry callback, and disposes it on disconnect", () => {
     const app = createApp();
+    registerMemoryWorkspacePanel(app);
     const next: AppState = {
       ...initialAppState(),
       selectedProject: project,
@@ -57,7 +61,7 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
 
     handleWorkspaceChange(app, initialAppState(), next);
 
-    expect(updatePolling).toHaveBeenCalledOnce();
+    expect(updatePolling).toHaveBeenCalledWith(true);
     const context = createWorkspacePanelContext(app, workspace);
     const onRefreshMemory: unknown = Reflect.get(context, "onRefreshMemory");
     if (!isVoidCallback(onRefreshMemory)) throw new Error("PiWebUiApp did not expose an internal memory refresh callback");
@@ -68,10 +72,48 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
 
     expect(dispose).toHaveBeenCalledOnce();
   });
+
+  it("deactivates memory polling when the Memory contribution is absent", () => {
+    const app = createApp();
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+
+    expect(updatePolling).toHaveBeenCalledWith(false);
+  });
+
+  it("deactivates polling after an enabled Memory contribution is removed", () => {
+    const app = createApp();
+    registerMemoryWorkspacePanel(app);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+    setPluginRegistry(app, new PluginRegistry());
+    workspacePanels(app);
+
+    expect(updatePolling).toHaveBeenNthCalledWith(1, true);
+    expect(updatePolling).toHaveBeenNthCalledWith(2, false);
+  });
 });
 
 interface MemoryLifecycleController {
-  updatePolling(): void;
+  updatePolling(observed?: boolean): void;
   refresh(): Promise<void>;
   dispose(): void;
 }
@@ -79,6 +121,7 @@ interface MemoryLifecycleController {
 type HandleWorkspaceChange = (this: PiWebUiApp, previous: AppState, next: AppState) => void;
 type CreateWorkspacePanelContext = (this: PiWebUiApp, workspace: Workspace) => object;
 type DisconnectedHook = (this: PiWebUiApp) => void;
+type WorkspacePanels = (this: PiWebUiApp) => unknown[];
 
 function createApp(): PiWebUiApp {
   const storage = { getItem: () => null, setItem: () => undefined, removeItem: () => undefined };
@@ -96,6 +139,35 @@ function createApp(): PiWebUiApp {
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   return new PiWebUiApp();
+}
+
+function registerMemoryWorkspacePanel(app: PiWebUiApp): void {
+  pluginRegistry(app).register({
+    id: "workspace-memory",
+    plugin: {
+      apiVersion: 1,
+      name: "Memory",
+      activate: () => ({
+        contributions: {
+          workspacePanels: [{
+            id: "workspace.memory",
+            title: "Memory",
+            render: () => html``,
+          }],
+        },
+      }),
+    },
+  });
+}
+
+function pluginRegistry(app: PiWebUiApp): PluginRegistry {
+  const value: unknown = Reflect.get(app, "plugins");
+  if (!(value instanceof PluginRegistry)) throw new Error("PiWebUiApp plugin registry is unavailable");
+  return value;
+}
+
+function setPluginRegistry(app: PiWebUiApp, registry: PluginRegistry): void {
+  if (!Reflect.set(app, "plugins", registry)) throw new Error("Could not replace PiWebUiApp plugin registry");
 }
 
 function setAppState(app: PiWebUiApp, state: AppState): void {
@@ -129,6 +201,12 @@ function createWorkspacePanelContext(app: PiWebUiApp, selectedWorkspace: Workspa
   return method.call(app, selectedWorkspace);
 }
 
+function workspacePanels(app: PiWebUiApp): void {
+  const method: unknown = Reflect.get(app, "workspacePanels");
+  if (!isWorkspacePanels(method)) throw new Error("PiWebUiApp.workspacePanels is not callable");
+  method.call(app);
+}
+
 function invokeDisconnected(app: PiWebUiApp): void {
   const method: unknown = Reflect.get(app, "disconnectedCallback");
   if (!isDisconnectedHook(method)) throw new Error("PiWebUiApp.disconnectedCallback is not callable");
@@ -151,6 +229,10 @@ function isHandleWorkspaceChange(value: unknown): value is HandleWorkspaceChange
 }
 
 function isCreateWorkspacePanelContext(value: unknown): value is CreateWorkspacePanelContext {
+  return typeof value === "function";
+}
+
+function isWorkspacePanels(value: unknown): value is WorkspacePanels {
   return typeof value === "function";
 }
 

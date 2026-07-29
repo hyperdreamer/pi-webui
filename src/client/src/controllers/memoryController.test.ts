@@ -103,13 +103,40 @@ describe("MemoryController", () => {
     expect(timers.pendingCallbacks()).toHaveLength(1);
   });
 
-  it("records a confirmed unavailable provider", async () => {
+  it("stops polling after a confirmed unavailable snapshot", async () => {
     const snapshot = vi.fn().mockResolvedValue({ kind: "unavailable" });
-    const harness = controllerFor({ snapshot, timers: fakeTimers() });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
 
     harness.controller.updatePolling();
 
     await vi.waitFor(() => { expect(harness.state.memory).toEqual({ kind: "unavailable" }); });
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(timers.pendingCallbacks()).toHaveLength(0);
+    await Promise.resolve();
+    expect(snapshot).toHaveBeenCalledOnce();
+  });
+
+  it("clears pending polls while observation is disabled and restarts when it resumes", async () => {
+    const snapshot = vi.fn()
+      .mockResolvedValueOnce(dataSnapshot("initial"))
+      .mockResolvedValueOnce(dataSnapshot("resumed"));
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling(true);
+    await vi.waitFor(() => { expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "initial" }] }); });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    harness.controller.updatePolling(false);
+
+    expect(timers.pendingCallbacks()).toHaveLength(0);
+    await Promise.resolve();
+    expect(snapshot).toHaveBeenCalledOnce();
+
+    harness.controller.updatePolling(true);
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledTimes(2); });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
   });
 
   it("keeps an available zero-entry snapshot as data", async () => {
@@ -208,6 +235,23 @@ describe("MemoryController", () => {
     expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("retried")], projectEntries: [] });
     expect(timers.delays).toEqual([30_000, 30_000, 30_000]);
     expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
+  it("uses one changed-scope request when a synchronous snapshot failure settles immediately", async () => {
+    const snapshot = vi.fn()
+      .mockResolvedValueOnce(dataSnapshot("initial"))
+      .mockImplementation(() => { throw new Error("Changed-scope failure"); });
+    const harness = controllerFor({ snapshot, timers: fakeTimers() });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "initial" }] }); });
+    harness.apply({ selectedWorkspace: { ...workspace, id: "workspace-b", path: "/work/project-b" } });
+    snapshot.mockClear();
+
+    await harness.controller.refresh();
+
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(harness.state.memory).toEqual({ kind: "error", message: "Error: Changed-scope failure" });
   });
 
   it("cleans up timers and discards a late result after disposal", async () => {

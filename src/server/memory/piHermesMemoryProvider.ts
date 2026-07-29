@@ -28,6 +28,7 @@ export class PiHermesMemoryProvider implements MemoryProvider {
     const project = await this.projectScope(input.projectPath);
 
     if (!globalRootAvailable && !project.rootAvailable) {
+      if (project.probeError !== undefined) throw project.probeError;
       return { kind: "unavailable" };
     }
 
@@ -79,8 +80,12 @@ export class PiHermesMemoryProvider implements MemoryProvider {
         rootAvailable: await this.directoryExists(rootPath),
         memoryFilePath: join(rootPath, "MEMORY.md"),
       };
-    } catch {
-      return { rootAvailable: false, unavailableMessage: PROJECT_UNAVAILABLE_MESSAGE };
+    } catch (error) {
+      return {
+        rootAvailable: false,
+        unavailableMessage: PROJECT_UNAVAILABLE_MESSAGE,
+        probeError: toError(error),
+      };
     }
   }
 
@@ -107,6 +112,11 @@ interface ProjectScope {
   readonly rootAvailable: boolean;
   readonly memoryFilePath?: string;
   readonly unavailableMessage?: string;
+  readonly probeError?: Error;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function isUnsafeProjectName(name: string): boolean {

@@ -101,6 +101,7 @@ const THEME_OPTION_PREFIX = "theme:";
 const FILES_ROUTE_NAMESPACE = queryNamespace("core:workspace.files");
 const GIT_ROUTE_NAMESPACE = queryNamespace("core:workspace.git");
 const TERMINAL_ROUTE_NAMESPACE = queryNamespace("core:workspace.terminal");
+const MEMORY_WORKSPACE_PANEL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -1007,7 +1008,7 @@ export class PiWebUiApp extends LitElement {
   private handleWorkspaceChange(previous: AppState, next: AppState) {
     const memoryScopeChanged = memoryPollingScopeChanged(previous, next);
     if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) {
-      if (memoryScopeChanged) this.memory.updatePolling();
+      if (memoryScopeChanged) this.synchronizeMemoryPollingForSelectedWorkspace();
       return;
     }
     this.starterSessionDefaults = undefined;
@@ -1020,14 +1021,14 @@ export class PiWebUiApp extends LitElement {
       this.writeSelectedTerminalToUrl(selectedTerminalId, { replace: true });
     }
     if (next.selectedWorkspace === undefined) {
-      this.memory.updatePolling();
+      this.synchronizeMemoryPollingForSelectedWorkspace();
       return;
     }
     void this.refreshActiveTerminals(next.selectedWorkspace);
     void this.refreshWorkspaceDeletionRuns();
     this.refreshSelectedWorkspaceTool(next.workspaceTool);
     this.git.updatePolling();
-    this.memory.updatePolling();
+    this.synchronizeMemoryPollingForSelectedWorkspace();
   }
 
   private async loadStarterSessionDefaults(workspace: Workspace): Promise<void> {
@@ -1657,10 +1658,28 @@ export class PiWebUiApp extends LitElement {
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
-    return this.plugins.getWorkspacePanels().filter((panel) => {
+    const panels = this.plugins.getWorkspacePanels();
+    this.synchronizeMemoryPolling(panels, context);
+    return panels.filter((panel) => {
       if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
       return panel.visible?.(context) ?? true;
     });
+  }
+
+  private synchronizeMemoryPollingForSelectedWorkspace(): void {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) {
+      this.memory.updatePolling(false);
+      return;
+    }
+    const context = this.createWorkspacePanelContext(workspace);
+    this.synchronizeMemoryPolling(this.plugins.getWorkspacePanels(), context);
+  }
+
+  private synchronizeMemoryPolling(panels: readonly QualifiedWorkspacePanelContribution[], context: WorkspacePanelContext): void {
+    const memoryPanel = panels.find((panel) => panel.id === MEMORY_WORKSPACE_PANEL_ID);
+    const observed = memoryPanel !== undefined && (memoryPanel.visible?.(context) ?? true);
+    this.memory.updatePolling(observed);
   }
 
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {

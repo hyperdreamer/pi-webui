@@ -187,13 +187,14 @@ interface MemoryGroupRenderOptions {
 }
 
 function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
-  const unavailable = options.unavailableMessage !== undefined;
+  const unavailable = options.unavailableMessage !== undefined && options.entries.length === 0;
+  const hasPartialWarning = options.unavailableMessage !== undefined && !unavailable;
   const count = `${String(options.entries.length)} ${options.entries.length === 1 ? "entry" : "entries"}`;
   const body = unavailable
     ? `<p class="memory-group-message unavailable">${escapeHtml(options.unavailableMessage)}</p>`
     : options.entries.length === 0
       ? `<p class="memory-group-message">${escapeHtml(options.emptyMessage)}</p>`
-      : options.entries.map((entry) => renderEntryHtml(entry)).join("");
+      : `${hasPartialWarning ? `<p class="memory-group-message warning">${escapeHtml(options.unavailableMessage)}</p>` : ""}${options.entries.map((entry) => renderEntryHtml(entry)).join("")}`;
 
   return `
     <details class="memory-group">
@@ -227,6 +228,7 @@ function panelStyles(): string {
       .memory-group-body { padding: 0 12px 12px; }
       .memory-group-message { margin: 0; color: var(--pi-muted); }
       .memory-group-message.unavailable { color: var(--pi-danger); }
+      .memory-group-message.warning { color: var(--pi-warning, #d97706); margin-bottom: 8px; }
       .muted { color: var(--pi-muted); }
       .spinner { display: flex; align-items: center; gap: 8px; color: var(--pi-muted); }
       .spinner::before { content: ""; display: inline-block; width: 16px; height: 16px; border: 2px solid var(--pi-border); border-top-color: var(--pi-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }

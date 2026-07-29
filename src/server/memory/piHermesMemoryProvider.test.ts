@@ -33,6 +33,42 @@ describe("PiHermesMemoryProvider", () => {
     expect(result).toEqual({ kind: "unavailable" });
   });
 
+  it.each(["EACCES", "ENOTDIR"])("rejects a %s project-root probe when the global root is absent", async (code) => {
+    const globalRootPath = join(agentDir, "pi-hermes-memory");
+    const projectRootPath = join(agentDir, "projects-memory", "repo");
+    const projectProbeError = Object.assign(new Error(`project probe ${code}`), { code });
+    const provider = new PiHermesMemoryProvider(agentDir, {
+      readFile: () => Promise.reject(new Error("Memory files must not be read after a failed availability probe")),
+      isDirectory: (path) => {
+        if (path === globalRootPath) return Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+        if (path === projectRootPath) return Promise.reject(projectProbeError);
+        return Promise.reject(new Error(`Unexpected directory probe: ${path}`));
+      },
+    });
+
+    await expect(provider.read({ projectPath: "/work/repo" })).rejects.toThrow(`project probe ${code}`);
+  });
+
+  it("keeps a global provider available when the project-root probe fails", async () => {
+    const globalRootPath = join(agentDir, "pi-hermes-memory");
+    const projectRootPath = join(agentDir, "projects-memory", "repo");
+    const provider = new PiHermesMemoryProvider(agentDir, {
+      readFile: () => Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" })),
+      isDirectory: (path) => {
+        if (path === globalRootPath) return Promise.resolve(true);
+        if (path === projectRootPath) return Promise.reject(Object.assign(new Error("project denied"), { code: "EACCES" }));
+        return Promise.reject(new Error(`Unexpected directory probe: ${path}`));
+      },
+    });
+
+    await expect(provider.read({ projectPath: "/work/repo" })).resolves.toEqual({
+      kind: "data",
+      globalEntries: [],
+      projectEntries: [],
+      projectUnavailableMessage: "Project-specific memory could not be loaded.",
+    });
+  });
+
   it("reports an empty Hermes root as available without inventing entries", async () => {
     await mkdir(join(agentDir, "pi-hermes-memory"));
 

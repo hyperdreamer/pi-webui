@@ -61,4 +61,33 @@ describe("MemoryCatalog", () => {
       projectUnavailableMessage: "First project failure",
     });
   });
+
+  it("retains successful project entries alongside another provider's project warning", async () => {
+    const catalog = new MemoryCatalog([
+      {
+        id: "unavailable-project",
+        read: () => resolved({
+          kind: "data",
+          globalEntries: [],
+          projectEntries: [],
+          projectUnavailableMessage: "One provider could not read project memory.",
+        }),
+      },
+      {
+        id: "project-data",
+        read: () => resolved({
+          kind: "data",
+          globalEntries: [],
+          projectEntries: [{ id: "entry", content: "Available project memory" }],
+        }),
+      },
+    ]);
+
+    await expect(catalog.read("/work/repo")).resolves.toEqual({
+      kind: "data",
+      globalEntries: [],
+      projectEntries: [{ id: "project-data:entry", content: "Available project memory" }],
+      projectUnavailableMessage: "One provider could not read project memory.",
+    });
+  });
 });

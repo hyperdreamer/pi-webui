@@ -46,6 +46,7 @@ export class MemoryController {
   private generation = 0;
   private nextRequestId = 0;
   private inFlight: InFlightMemoryRequest | undefined;
+  private observing = false;
 
   constructor(
     private readonly getState: GetState,
@@ -57,14 +58,19 @@ export class MemoryController {
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   }
 
-  updatePolling(): void {
+  updatePolling(observed = true): void {
+    if (!observed) {
+      this.stopObserving();
+      return;
+    }
+    this.observing = true;
     const scope = this.currentScope();
     if (scope === undefined) {
       this.invalidateScope();
       return;
     }
     if (this.scope?.key !== scope.key) {
-      this.startScope(scope);
+      void this.startScope(scope);
       return;
     }
     if (this.inFlight?.generation === this.generation && this.inFlight.scopeKey === scope.key) return;
@@ -73,25 +79,30 @@ export class MemoryController {
   }
 
   async refresh(): Promise<void> {
+    if (!this.observing) return;
     const scope = this.currentScope();
     if (scope === undefined) {
       this.invalidateScope();
       return;
     }
-    if (this.scope?.key !== scope.key) this.startScope(scope);
-    else this.clearPollTimer();
+    if (this.scope?.key !== scope.key) {
+      await this.startScope(scope);
+      return;
+    }
+    this.clearPollTimer();
     await this.startRequest(scope);
   }
 
   dispose(): void {
+    this.observing = false;
     this.invalidateScope();
   }
 
-  private startScope(scope: MemoryScope): void {
+  private startScope(scope: MemoryScope): Promise<void> {
     this.invalidateScope();
     this.scope = scope;
     this.setState({ memory: { kind: "loading" } });
-    void this.startRequest(scope);
+    return this.startRequest(scope);
   }
 
   private startRequest(scope: MemoryScope): Promise<void> {
@@ -112,7 +123,9 @@ export class MemoryController {
     try {
       const snapshot = await this.fetchSnapshot(scope.workspacePath, scope.machineId);
       if (!this.isCurrent(scope, generation)) return;
-      this.setState({ memory: stateForSnapshot(snapshot) });
+      const memory = stateForSnapshot(snapshot);
+      this.setState({ memory });
+      if (memory.kind === "unavailable") this.stopObserving();
     } catch (error) {
       if (!this.isCurrent(scope, generation)) return;
       this.applyFailure(String(error));
@@ -136,9 +149,15 @@ export class MemoryController {
     this.clearPollTimer();
     this.pollTimer = this.timer.setTimeout(() => {
       this.pollTimer = undefined;
-      if (!this.isCurrent(scope, generation)) return;
+      if (!this.observing || !this.isCurrent(scope, generation)) return;
       void this.startRequest(scope);
     }, this.pollIntervalMs);
+  }
+
+  private stopObserving(): void {
+    if (!this.observing) return;
+    this.observing = false;
+    this.invalidateScope();
   }
 
   private invalidateScope(): void {
@@ -170,7 +189,7 @@ export class MemoryController {
   }
 
   private isCurrent(scope: MemoryScope, generation: number): boolean {
-    if (generation !== this.generation || this.scope?.key !== scope.key) return false;
+    if (!this.observing || generation !== this.generation || this.scope?.key !== scope.key) return false;
     const current = this.currentScope();
     if (current?.machineId !== scope.machineId) return false;
     return current.projectId === scope.projectId

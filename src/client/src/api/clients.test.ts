@@ -116,6 +116,7 @@ describe("memory snapshot API", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/agent-memory/snapshot?projectPath=%2Frepo+with+spaces%2F%3F");
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
   });
 });
 

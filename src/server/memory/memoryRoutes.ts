@@ -52,6 +52,7 @@ export function registerMemoryRoutes(
   app.get<{ Querystring: { projectPath?: string } }>(
     `${prefix}/agent-memory/snapshot`,
     async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
       const projectPath = request.query.projectPath;
 
       if (projectPath === undefined || projectPath === "") {

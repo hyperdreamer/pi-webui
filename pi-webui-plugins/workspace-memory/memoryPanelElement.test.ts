@@ -182,6 +182,26 @@ describe("memory panel element", () => {
       expect(projectGroup).toContain("Project-specific memory could not be loaded.");
     });
 
+    it("keeps project entries visible beside a partial provider warning", () => {
+      const state = {
+        kind: "data" as const,
+        globalEntries: [{ id: "global", content: "Global memory" }],
+        projectEntries: [
+          { id: "project-one", content: "Available project memory one" },
+          { id: "project-two", content: "Available project memory two" },
+        ],
+        projectUnavailableMessage: "One provider could not read project memory.",
+      };
+
+      const projectGroup = groupWithTitle(memoryGroups(renderPanelState(state)), "Project-specific memory");
+      expect(memoryBadge(state)).toBe(3);
+      expect(projectGroup).toContain("2 entries");
+      expect(projectGroup).toContain("Available project memory one");
+      expect(projectGroup).toContain("Available project memory two");
+      expect(projectGroup).toContain("One provider could not read project memory.");
+      expect(projectGroup).not.toContain("Unavailable");
+    });
+
     it("keeps nested entry details, category badges, escaped content, and dates inside their scope", () => {
       const html = renderPanelState({
         kind: "data",

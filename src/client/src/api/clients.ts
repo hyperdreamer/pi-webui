@@ -150,7 +150,7 @@ function memorySnapshotPath(projectPath: string, machineId = "local"): string {
 }
 
 export const memoryApi = {
-  snapshot: (projectPath: string, machineId = "local"): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse),
+  snapshot: (projectPath: string, machineId = "local"): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse, { cache: "no-store" }),
 };
 
 function configPath(machineId?: string): string {

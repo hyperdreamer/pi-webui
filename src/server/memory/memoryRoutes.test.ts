@@ -146,6 +146,7 @@ describe("memoryRoutes", () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.json()).toEqual({ kind: "unavailable" });
     });
 
