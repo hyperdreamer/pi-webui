@@ -28,6 +28,13 @@ describe("MemoryService", () => {
       expect(entries).toEqual([]);
     });
 
+    it("returns empty arrays from both scope helpers when no provider root exists", async () => {
+      const service = new MemoryService(agentDir);
+
+      await expect(service.globalEntries()).resolves.toEqual([]);
+      await expect(service.projectEntries("/some/nonexistent/project")).resolves.toEqual([]);
+    });
+
     it("reads entries from MEMORY.md", async () => {
       await writeMemoryFile("pi-hermes-memory/MEMORY.md", "Entry one.\n§\nEntry two.");
       const service = new MemoryService(agentDir);
