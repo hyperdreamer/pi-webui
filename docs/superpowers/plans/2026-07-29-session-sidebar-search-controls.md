@@ -75,7 +75,7 @@ describe("hasSessionSearchQuery", () => {
   });
 });
 
-const matchingCases: Array<[string, string, Partial<SessionInfo>]> = [
+const matchingCases: [string, string, Partial<SessionInfo>][] = [
   ["label", "release plan", { name: "Release plan" }],
   ["first message", "deploy", { firstMessage: "Deploy the documentation" }],
   ["session ID", "session-42", { id: "session-42" }],
