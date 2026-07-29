@@ -53,13 +53,35 @@ describe("MemoryController", () => {
     await vi.waitFor(() => { expect(timers.pendingCallbacks()).toHaveLength(1); });
   });
 
+  it("joins a current-scope refresh while a request is in flight without adding a fetch or timer", async () => {
+    const pending = deferred<MemorySnapshotResponse>();
+    const snapshot = vi.fn().mockReturnValue(pending.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledOnce(); });
+    const refresh = harness.controller.refresh();
+
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(timers.pendingCallbacks()).toHaveLength(0);
+
+    pending.resolve(dataSnapshot("settled"));
+    await refresh;
+
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("settled")], projectEntries: [] });
+    expect(timers.delays).toEqual([30_000]);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
   it("drops a late workspace-A snapshot after workspace-B becomes current", async () => {
     const first = deferred<MemorySnapshotResponse>();
     const second = deferred<MemorySnapshotResponse>();
     const snapshot = vi.fn()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
-    const harness = controllerFor({ snapshot, timers: fakeTimers() });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
 
     harness.controller.updatePolling();
     await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledOnce(); });
@@ -69,11 +91,16 @@ describe("MemoryController", () => {
 
     second.resolve(dataSnapshot("b"));
     await vi.waitFor(() => { expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "b" }] }); });
+    expect(timers.delays).toEqual([30_000]);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
     first.resolve(dataSnapshot("a"));
     await first.promise;
     await Promise.resolve();
 
     expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "b" }] });
+    expect(timers.delays).toEqual([30_000]);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
   });
 
   it("records a confirmed unavailable provider", async () => {
@@ -141,6 +168,25 @@ describe("MemoryController", () => {
     harness.controller.updatePolling();
 
     await vi.waitFor(() => { expect(harness.state.memory).toEqual({ kind: "error", message: "Error: Memory endpoint unavailable" }); });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
+  it("schedules a retry after a synchronous snapshot failure instead of retaining a settled request", async () => {
+    const snapshot = vi.fn(() => { throw new Error("Memory endpoint unavailable synchronously"); });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling();
+
+    await vi.waitFor(() => { expect(harness.state.memory).toEqual({ kind: "error", message: "Error: Memory endpoint unavailable synchronously" }); });
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(timers.delays).toEqual([30_000]);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledTimes(2); });
+    expect(timers.delays).toEqual([30_000, 30_000]);
     expect(timers.pendingCallbacks()).toHaveLength(1);
   });
 

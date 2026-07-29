@@ -100,8 +100,11 @@ export class MemoryController {
 
     const generation = this.generation;
     const requestId = ++this.nextRequestId;
+    // `load()` can settle synchronously when a snapshot collaborator throws, so register it first.
+    const request: InFlightMemoryRequest = { generation, requestId, scopeKey: scope.key, promise: Promise.resolve() };
+    this.inFlight = request;
     const promise = this.load(scope, generation, requestId);
-    this.inFlight = { generation, requestId, scopeKey: scope.key, promise };
+    request.promise = promise;
     return promise;
   }
 
