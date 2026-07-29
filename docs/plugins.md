@@ -208,6 +208,8 @@ Built-in plugins can be managed from **Settings → PI WEBUI plugins** or with t
 
 The tab shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable project-specific request displays a scoped **Project-specific unavailable** state while **Global memory** remains available. A failed global-memory request is presented as a panel-level retryable error.
 
+The Memory tab is visible only when a compatible memory provider is detected for the active agent profile and project scope. A compatible provider with zero entries still shows the tab but omits the badge. A positive badge totals global and project-specific memory entries. PI WEBUI refreshes the badge immediately after a selected project or workspace change and then checks approximately every 30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
+
 Memory is bundled with PI WEBUI and enabled by default. To disable it, use **Settings → PI WEBUI plugins** or set:
 
 ```json

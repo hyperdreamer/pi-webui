@@ -1,20 +1,7 @@
 import type { WorkspacePanelContext } from "@hyperdreamer/pi-webui/plugin-api";
-import { fetchGlobalMemories, fetchProjectMemories } from "./memoryClient.js";
-import { MemoryLoadController } from "./memoryLoadController.js";
-import type { MemoryEntry } from "./memoryData.js";
+import type { MemoryEntry, MemoryWorkspaceState } from "./memoryData.js";
 
 export const memoryPanelTagName = "pi-webui-memory-panel";
-
-export type MemoryPanelState =
-  | { kind: "no-workspace" }
-  | { kind: "loading" }
-  | {
-      kind: "data";
-      globalEntries: MemoryEntry[];
-      projectEntries: MemoryEntry[];
-      projectUnavailableMessage?: string;
-    }
-  | { kind: "error"; message: string };
 
 const CATEGORY_CLASS: Record<string, string> = {
   "tool-quirk": "cat-amber",
@@ -74,6 +61,25 @@ export function renderEntryHtml(entry: MemoryEntry): string {
   `;
 }
 
+/**
+ * Returns the total count of memories for a workspace-panel badge, or
+ * undefined when no badge should be shown (loading, unavailable, error, or
+ * zero entries).
+ */
+export function memoryBadge(state: MemoryWorkspaceState): number | undefined {
+  if (state.kind !== "data") return undefined;
+  const total = state.globalEntries.length + state.projectEntries.length;
+  return total > 0 ? total : undefined;
+}
+
+/**
+ * Returns true unless the provider has confirmed that memories are
+ * unavailable (e.g. older agent runtime without the memory endpoint).
+ */
+export function isMemoryPanelVisible(state: MemoryWorkspaceState): boolean {
+  return state.kind !== "unavailable";
+}
+
 export function defineMemoryPanelElement(): void {
   if (typeof customElements !== "undefined" && !customElements.get(memoryPanelTagName)) {
     customElements.define(memoryPanelTagName, PiWebUiMemoryPanel);
@@ -92,83 +98,39 @@ const _BaseElement: typeof HTMLElement = typeof HTMLElement !== "undefined"
   : _noopElementConstructor();
 
 class PiWebUiMemoryPanel extends _BaseElement {
-  private contextValue: WorkspacePanelContext | undefined;
-  private state: MemoryPanelState = { kind: "no-workspace" };
+  private state: MemoryWorkspaceState = { kind: "loading" };
+  private retry: (() => void) | undefined;
   private readonly root: ShadowRoot;
-  private readonly loadController = new MemoryLoadController({ fetchGlobalMemories, fetchProjectMemories });
 
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
   }
 
-  /** Public setter for the workspace panel context. */
-  set context(value: WorkspacePanelContext | undefined) {
-    const previousContext = this.contextValue;
-    this.contextValue = value;
-    if (isSameWorkspaceContext(previousContext, value)) return;
-
-    this.loadController.invalidate();
-    if (value === undefined) {
-      this.state = { kind: "no-workspace" };
-      this.render();
-      return;
-    }
-
-    if (this.isConnected) void this.loadMemories();
+  /** Public setter for the workspace panel context (reserved for WorkspacePanel wiring). */
+  set context(_value: WorkspacePanelContext | undefined) {
+    // Context is consumed by the plugin contribution (visible/badge/render),
+    // not by the panel element itself in the new architecture.  Keep the
+    // setter so WorkspacePanel can assign it without errors.
   }
 
-  /** Exposed for tests to inject state directly without network calls. */
-  setState(next: MemoryPanelState): void {
-    this.state = next;
+  /** Accept the core-owned memory state and render synchronously. */
+  set memoryState(value: MemoryWorkspaceState) {
+    this.state = value;
     this.render();
+  }
+
+  /** Retry callback wired to the core MemoryController. */
+  set onRetry(value: (() => void) | undefined) {
+    this.retry = value;
   }
 
   connectedCallback(): void {
     this.render();
-    if (this.contextValue !== undefined) {
-      void this.loadMemories();
-    }
   }
 
   disconnectedCallback(): void {
-    this.loadController.invalidate();
-  }
-
-  private async loadMemories(): Promise<void> {
-    const context = this.contextValue;
-    if (context === undefined) {
-      this.state = { kind: "no-workspace" };
-      this.render();
-      return;
-    }
-
-    const workspacePath = context.workspace.path;
-    this.state = { kind: "loading" };
-    this.render();
-
-    const result = await this.loadController.load(workspacePath);
-    if (result === undefined || !this.isCurrentContext(context, workspacePath)) return;
-
-    this.state = result.kind === "global-error"
-      ? { kind: "error", message: result.message }
-      : {
-          kind: "data",
-          globalEntries: result.globalEntries,
-          projectEntries: result.projectEntries,
-          ...(result.projectUnavailableMessage === undefined
-            ? {}
-            : { projectUnavailableMessage: result.projectUnavailableMessage }),
-        };
-    this.render();
-    context.host.requestRender();
-  }
-
-  private isCurrentContext(context: WorkspacePanelContext, workspacePath: string): boolean {
-    const currentContext = this.contextValue;
-    return currentContext !== undefined
-      && hasSameWorkspaceIdentity(currentContext, context)
-      && currentContext.workspace.path === workspacePath;
+    // No timers to clean up — the core controller owns that lifetime.
   }
 
   private render(): void {
@@ -177,29 +139,17 @@ class PiWebUiMemoryPanel extends _BaseElement {
   }
 
   private attachEventListeners(): void {
+    const retry = this.retry;
+    if (retry === undefined) return;
     this.root.querySelector("button[data-retry]")?.addEventListener("click", () => {
-      void this.loadMemories();
+      retry();
     });
   }
 }
 
-function isSameWorkspaceContext(
-  left: WorkspacePanelContext | undefined,
-  right: WorkspacePanelContext | undefined,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  return hasSameWorkspaceIdentity(left, right) && left.workspace.path === right.workspace.path;
-}
-
-function hasSameWorkspaceIdentity(left: WorkspacePanelContext, right: WorkspacePanelContext): boolean {
-  return left.machine.id === right.machine.id
-    && left.workspace.projectId === right.workspace.projectId
-    && left.workspace.id === right.workspace.id;
-}
-
-export function renderPanelState(state: MemoryPanelState): string {
+export function renderPanelState(state: MemoryWorkspaceState): string {
   switch (state.kind) {
-    case "no-workspace":
+    case "unavailable":
       return `<section class="empty">Select a workspace.</section>`;
     case "loading":
       return `<section class="viewer"><div class="spinner">Loading memories\u2026</div></section>`;
@@ -210,6 +160,7 @@ export function renderPanelState(state: MemoryPanelState): string {
       </section>`;
     case "data":
       return `<section class="viewer">
+        ${state.refreshError === undefined ? "" : `<div class="status warning">${escapeHtml(state.refreshError)}</div>`}
         ${renderMemoryGroupHtml({
           title: "Global memory",
           entries: state.globalEntries,
@@ -223,6 +174,7 @@ export function renderPanelState(state: MemoryPanelState): string {
             ? {}
             : { unavailableMessage: state.projectUnavailableMessage }),
         })}
+        ${state.refreshError === undefined ? "" : `<button class="secondary" data-retry style="margin-top:10px">Retry</button>`}
       </section>`;
   }
 }
@@ -235,13 +187,14 @@ interface MemoryGroupRenderOptions {
 }
 
 function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
-  const unavailable = options.unavailableMessage !== undefined;
+  const unavailable = options.unavailableMessage !== undefined && options.entries.length === 0;
+  const hasPartialWarning = options.unavailableMessage !== undefined && !unavailable;
   const count = `${String(options.entries.length)} ${options.entries.length === 1 ? "entry" : "entries"}`;
   const body = unavailable
     ? `<p class="memory-group-message unavailable">${escapeHtml(options.unavailableMessage)}</p>`
     : options.entries.length === 0
       ? `<p class="memory-group-message">${escapeHtml(options.emptyMessage)}</p>`
-      : options.entries.map((entry) => renderEntryHtml(entry)).join("");
+      : `${hasPartialWarning ? `<p class="memory-group-message warning">${escapeHtml(options.unavailableMessage)}</p>` : ""}${options.entries.map((entry) => renderEntryHtml(entry)).join("")}`;
 
   return `
     <details class="memory-group">
@@ -275,12 +228,14 @@ function panelStyles(): string {
       .memory-group-body { padding: 0 12px 12px; }
       .memory-group-message { margin: 0; color: var(--pi-muted); }
       .memory-group-message.unavailable { color: var(--pi-danger); }
+      .memory-group-message.warning { color: var(--pi-warning, #d97706); margin-bottom: 8px; }
       .muted { color: var(--pi-muted); }
       .spinner { display: flex; align-items: center; gap: 8px; color: var(--pi-muted); }
       .spinner::before { content: ""; display: inline-block; width: 16px; height: 16px; border: 2px solid var(--pi-border); border-top-color: var(--pi-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
       .status { border: 1px solid var(--pi-border); border-radius: 8px; padding: 10px; }
       .status.error { border-color: var(--pi-danger); color: var(--pi-danger); }
+      .status.warning { border-color: var(--pi-warning, #d97706); color: var(--pi-warning, #d97706); margin-bottom: 10px; }
       button { border: 1px solid var(--pi-accent-border); border-radius: 7px; background: var(--pi-accent); color: var(--pi-bg); cursor: pointer; padding: 6px 10px; font: inherit; }
       button.secondary { border-color: var(--pi-border); background: var(--pi-surface); color: var(--pi-text); }
       .memory-entry { border: 1px solid var(--pi-border); border-radius: 8px; margin-bottom: 8px; }

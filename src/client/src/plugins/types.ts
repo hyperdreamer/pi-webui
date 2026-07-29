@@ -170,6 +170,7 @@ export interface WorkspacePanelContext extends WorkspaceContext {
   onCancelWorkspaceUpload: (batchId: string) => void;
   onClearWorkspaceUpload: (batchId: string) => void;
   onRefreshGit: () => void;
+  onRefreshMemory: () => void;
   onSelectDiff: (path: string) => void;
   onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => void;
 }
@@ -191,6 +192,7 @@ export interface QualifiedWorkspacePanelContribution extends WorkspacePanelContr
   pluginId: PluginId;
   localId: LocalContributionId;
   machineId?: string;
+  sourcePluginId?: PluginId;
 }
 
 export interface WorkspaceLabelContext extends WorkspaceContext {

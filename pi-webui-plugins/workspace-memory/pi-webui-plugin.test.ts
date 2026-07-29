@@ -80,5 +80,42 @@ describe("pi-webui workspace-memory plugin", () => {
     it("panel has a render function", () => {
       expect(typeof result.contributions.workspacePanels?.[0]?.render).toBe("function");
     });
+
+    it("panel declares visible and badge callbacks", () => {
+      expect(typeof result.contributions.workspacePanels?.[0]?.visible).toBe("function");
+      expect(typeof result.contributions.workspacePanels?.[0]?.badge).toBe("function");
+    });
+
+    it("badge returns undefined for loading state", () => {
+      const badge = result.contributions.workspacePanels?.[0]?.badge;
+      if (typeof badge !== "function") throw new Error("Expected badge function");
+      // The context shape matches the core BundledMemoryContext; cast for test.
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(badge({ state: { memory: { kind: "loading" } } } as unknown as Parameters<typeof badge>[0])).toBeUndefined();
+    });
+
+    it("badge returns a positive number for populated data", () => {
+      const badge = result.contributions.workspacePanels?.[0]?.badge;
+      if (typeof badge !== "function") throw new Error("Expected badge function");
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(badge({
+        state: {
+          memory: {
+            kind: "data",
+            globalEntries: [{ id: "g", content: "global" }],
+            projectEntries: [{ id: "p", content: "project" }],
+          },
+        },
+      } as unknown as Parameters<typeof badge>[0])).toBe(2);
+    });
+
+    it("visible returns false only for unavailable", () => {
+      const visible = result.contributions.workspacePanels?.[0]?.visible;
+      if (typeof visible !== "function") throw new Error("Expected visible function");
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(visible({ state: { memory: { kind: "unavailable" } } } as unknown as Parameters<typeof visible>[0])).toBe(false);
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(visible({ state: { memory: { kind: "loading" } } } as unknown as Parameters<typeof visible>[0])).toBe(true);
+    });
   });
 });

@@ -10,6 +10,7 @@ import { ActivityController } from "../controllers/activityController";
 import { AuthController } from "../controllers/authController";
 import { FileExplorerController } from "../controllers/fileExplorerController";
 import { GitController } from "../controllers/gitController";
+import { MemoryController } from "../controllers/memoryController";
 import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
@@ -31,7 +32,7 @@ import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPer
 import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
-import type { PiWebUiPluginRegistration, PluginMachine, PluginPromptEditor, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "../plugins/types";
+import type { LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "../plugins/types";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebUiTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
 import { corePlugin } from "../plugins/core";
 import { themePackPlugin } from "../plugins/themes";
@@ -100,6 +101,9 @@ const THEME_OPTION_PREFIX = "theme:";
 const FILES_ROUTE_NAMESPACE = queryNamespace("core:workspace.files");
 const GIT_ROUTE_NAMESPACE = queryNamespace("core:workspace.git");
 const TERMINAL_ROUTE_NAMESPACE = queryNamespace("core:workspace.terminal");
+const MEMORY_WORKSPACE_PLUGIN_ID: PluginId = "workspace-memory";
+const MEMORY_WORKSPACE_PANEL_LOCAL_ID: LocalContributionId = "workspace.memory";
+const MEMORY_WORKSPACE_PANEL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -238,6 +242,10 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     () => { this.updateUrl(); },
+  );
+  private readonly memory = new MemoryController(
+    () => this.state,
+    (patch) => { this.setState(patch); },
   );
   private readonly keyboard = new KeyboardShortcutDispatcher();
   private readonly realtime = new RealtimeSocket();
@@ -471,6 +479,7 @@ export class PiWebUiApp extends LitElement {
     this.realtime.close();
     this.closeMachineActivitySockets();
     this.git.dispose();
+    this.memory.dispose();
     if (this.piWebUiStatusTimer !== undefined) window.clearInterval(this.piWebUiStatusTimer);
     this.piWebUiStatusTimer = undefined;
     this.clearScheduledPiWebUiStatusRefresh();
@@ -999,7 +1008,11 @@ export class PiWebUiApp extends LitElement {
   }
 
   private handleWorkspaceChange(previous: AppState, next: AppState) {
-    if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) return;
+    const memoryScopeChanged = memoryPollingScopeChanged(previous, next);
+    if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) {
+      if (memoryScopeChanged) this.synchronizeMemoryPollingForSelectedWorkspace();
+      return;
+    }
     this.starterSessionDefaults = undefined;
     this.terminalAutoStartWorkspaceId = undefined;
     this.activeTerminalIds.clear();
@@ -1009,11 +1022,15 @@ export class PiWebUiApp extends LitElement {
       this.rememberCurrentMachineNavigation();
       this.writeSelectedTerminalToUrl(selectedTerminalId, { replace: true });
     }
-    if (next.selectedWorkspace === undefined) return;
+    if (next.selectedWorkspace === undefined) {
+      this.synchronizeMemoryPollingForSelectedWorkspace();
+      return;
+    }
     void this.refreshActiveTerminals(next.selectedWorkspace);
     void this.refreshWorkspaceDeletionRuns();
     this.refreshSelectedWorkspaceTool(next.workspaceTool);
     this.git.updatePolling();
+    this.synchronizeMemoryPollingForSelectedWorkspace();
   }
 
   private async loadStarterSessionDefaults(workspace: Workspace): Promise<void> {
@@ -1643,10 +1660,28 @@ export class PiWebUiApp extends LitElement {
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
-    return this.plugins.getWorkspacePanels().filter((panel) => {
+    const panels = this.plugins.getWorkspacePanels();
+    this.synchronizeMemoryPolling(panels, context);
+    return panels.filter((panel) => {
       if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
       return panel.visible?.(context) ?? true;
     });
+  }
+
+  private synchronizeMemoryPollingForSelectedWorkspace(): void {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) {
+      this.memory.updatePolling(false);
+      return;
+    }
+    const context = this.createWorkspacePanelContext(workspace);
+    this.synchronizeMemoryPolling(this.plugins.getWorkspacePanels(), context);
+  }
+
+  private synchronizeMemoryPolling(panels: readonly QualifiedWorkspacePanelContribution[], context: WorkspacePanelContext): void {
+    const observed = panels.some((panel) => isMemoryWorkspacePanel(panel)
+      && (panel.visible?.(context) ?? true));
+    this.memory.updatePolling(observed);
   }
 
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
@@ -1828,6 +1863,7 @@ export class PiWebUiApp extends LitElement {
         onCancelWorkspaceUpload: (batchId) => { this.files.cancelWorkspaceUpload(batchId); },
         onClearWorkspaceUpload: (batchId) => { this.files.clearWorkspaceUpload(batchId); },
         onRefreshGit: () => { void this.git.refreshGit(); },
+        onRefreshMemory: () => { void this.memory.refresh(); },
         onSelectDiff: (path: string) => { void this.git.selectDiff(path); },
         onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => { this.selectTerminal(terminalId, options); },
       }, createContext);
@@ -2934,6 +2970,18 @@ function unreadChatIdentity(machineId: string, session: Pick<SessionInfo, "id" |
 function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {
   const session = state.selectedSession;
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
+}
+
+function isMemoryWorkspacePanel(panel: QualifiedWorkspacePanelContribution): boolean {
+  return panel.id === MEMORY_WORKSPACE_PANEL_ID
+    || (panel.sourcePluginId === MEMORY_WORKSPACE_PLUGIN_ID && panel.localId === MEMORY_WORKSPACE_PANEL_LOCAL_ID);
+}
+
+function memoryPollingScopeChanged(previous: AppState, next: AppState): boolean {
+  return selectedMachineId(previous) !== selectedMachineId(next)
+    || previous.selectedProject?.id !== next.selectedProject?.id
+    || previous.selectedWorkspace?.id !== next.selectedWorkspace?.id
+    || previous.selectedWorkspace?.path !== next.selectedWorkspace?.path;
 }
 
 function machineUnreadInputsChanged(previous: AppState, next: AppState): boolean {

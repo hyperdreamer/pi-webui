@@ -1,4 +1,5 @@
 import type { AuthProviderOption, CommandOption, CommandResult, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PiWebUiStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace, WorkspaceActivity } from "./api";
+import type { MemoryEntry } from "../../shared/apiTypes";
 import type { ChatLine } from "./components/shared";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
@@ -68,11 +69,24 @@ export interface AppState {
   selectedDiff: GitDiffResponse | undefined;
   selectedStagedDiff: GitDiffResponse | undefined;
   gitStale: boolean;
+  memory: MemoryWorkspaceState;
   activeTerminalCount: number;
   selectedTerminalId: string | undefined;
   piWebUiStatus: PiWebUiStatusResponse | undefined;
   error: string;
 }
+
+export type MemoryWorkspaceState =
+  | { kind: "loading" }
+  | { kind: "unavailable" }
+  | {
+      kind: "data";
+      globalEntries: MemoryEntry[];
+      projectEntries: MemoryEntry[];
+      projectUnavailableMessage?: string;
+      refreshError?: string;
+    }
+  | { kind: "error"; message: string };
 
 export type AuthDialogState =
   | { step: "method" }
@@ -99,6 +113,7 @@ export type WorkspaceScopedStateReset = Pick<AppState,
   | "selectedDiff"
   | "selectedStagedDiff"
   | "gitStale"
+  | "memory"
   | "selectedTerminalId"
   | "error"
 >;
@@ -122,6 +137,7 @@ export function resetWorkspaceScopedState(): WorkspaceScopedStateReset {
     selectedDiff: undefined,
     selectedStagedDiff: undefined,
     gitStale: false,
+    memory: { kind: "loading" },
     selectedTerminalId: undefined,
     error: "",
   };
@@ -184,6 +200,7 @@ export function initialAppState(): AppState {
     selectedDiff: undefined,
     selectedStagedDiff: undefined,
     gitStale: false,
+    memory: { kind: "loading" },
     activeTerminalCount: 0,
     selectedTerminalId: undefined,
     piWebUiStatus: undefined,

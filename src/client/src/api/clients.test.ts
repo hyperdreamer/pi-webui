@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { PiWebUiConfigValues, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
-import { configApi, filesApi, machinesApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
+import { configApi, filesApi, machinesApi, memoryApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -103,6 +103,20 @@ describe("machine-scoped runtime API", () => {
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/api/machines/remote%20a/runtime");
     expect(fetchCall(fetchMock, 1)[0]).toBe("https://pi.example.test/api/machines/remote%20a/runtime?refresh=1");
     expect(fetchCall(fetchMock, 1)[1]?.cache).toBe("no-store");
+  });
+});
+
+describe("memory snapshot API", () => {
+  it("uses an application-relative encoded selected-machine snapshot path", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const fetchMock = stubJsonFetch({ kind: "unavailable" });
+
+    await expect(memoryApi.snapshot("/repo with spaces/?", "remote /?")).resolves.toEqual({ kind: "unavailable" });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/agent-memory/snapshot?projectPath=%2Frepo+with+spaces%2F%3F");
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
   });
 });
 

@@ -1289,6 +1289,15 @@ export interface MemoryEntry {
   failureReason?: string;
 }
 
+export type MemorySnapshotResponse =
+  | { kind: "unavailable" }
+  | {
+      kind: "data";
+      globalEntries: MemoryEntry[];
+      projectEntries: MemoryEntry[];
+      projectUnavailableMessage?: string;
+    };
+
 export interface MemoryEntriesResponse {
   entries: MemoryEntry[];
 }
