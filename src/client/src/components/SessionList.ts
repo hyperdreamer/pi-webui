@@ -270,7 +270,16 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   private renderCleanupButton() {
     const label = this.canCleanup ? "Preview session cleanup" : this.cleanupUnavailableMessage;
     return html`<button type="button" class="cleanup-entry" title=${label} aria-label=${label} @click=${(event: MouseEvent) => { event.stopPropagation(); this.onCleanup?.(); }}>
-      ${svg`<svg class="cleanup-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m4 21 4-17h2l4 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path><path d="m8 4h8l2 4"></path><path d="M12 4v6"></path><path d="m18 8-2 4"></path><path d="M10 12 6 4"></path></svg>`}
+      ${svg`<svg class="cleanup-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path class="cleanup-broom" d="M4 3 12.2 13.8"></path>
+  <path class="cleanup-broom" d="m10.7 12.8 2.8 2.1"></path>
+  <path class="cleanup-broom" d="M11 13.5c-1.4 1.1-1.5 2.9-.7 4.4.8 1.5 1.2 2.6.8 3.6 1.9.2 3.5-.1 4.6-1.1 1.2.2 2.4-.1 3.3-.8 1.4-.1 2.4-.9 2.9-1.9-3.7-.5-6.4-2.5-8.5-5.2Z"></path>
+  <path class="cleanup-broom" d="M12 18.5v2.4"></path>
+  <path class="cleanup-broom" d="M14.6 18.8v2"></path>
+  <path class="cleanup-broom" d="M17.2 18.7v1.5"></path>
+  <path class="cleanup-sparkle" d="m17.5 2 .55 1.45 1.45.55-1.45.55-.55 1.45-.55-1.45-1.45-.55 1.45-.55Z"></path>
+  <path class="cleanup-sparkle" d="m20 7 .4 1.1 1.1.4-1.1.4-.4 1.1-.4-1.1-1.1-.4 1.1-.4Z"></path>
+</svg>`}
     </button>`;
   }
 

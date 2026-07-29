@@ -375,6 +375,9 @@ describe("session sidebar search and cleanup controls", () => {
 
     expect(onCleanup).toHaveBeenCalledOnce();
     expect(templateText(list.render())).toContain("cleanup-icon");
+    const cleanupMarkup = templateText(list.render());
+    expect(cleanupMarkup).toContain('class="cleanup-broom"');
+    expect(cleanupMarkup.match(/class="cleanup-sparkle"/g)).toHaveLength(2);
     expect(templateText(list.render())).not.toContain(">Clean up</button>");
 
     list.canCleanup = false;
