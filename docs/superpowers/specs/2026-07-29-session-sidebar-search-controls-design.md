@@ -59,6 +59,7 @@ No server route, API contract, storage format, configuration key, session daemon
 - Reuse the Projects block's compact, outlined SVG visual language and 30 px icon-control geometry for the session search button. Place it alongside the existing header controls without widening the sidebar.
 - Render the search input above the list with the same border, spacing, focus treatment, placeholder, and accessible labeling pattern as the Projects search field.
 - Render the broom as an outlined inline SVG within a compact icon button. Keep it visually consistent with the search and expanded-browser icons rather than using an emoji or text glyph.
+- **Approved visual refinement:** use a clearly angled broom handle and bristle head with two small outlined four-point sparkle accents above the bristles. The sparkles communicate cleanup while preserving the existing 24×24 view box, 15 px rendered icon size, `currentColor` stroke, and rounded line treatment.
 - Use semantic labels rather than relying on SVG meaning alone. The SVGs are hidden from assistive technology; the controls expose descriptive `title` and `aria-label` values.
 - Search opening moves focus into the input after Lit updates. The normal section keyboard-navigation and row activation behavior continue to target only the currently visible result rows.
 
@@ -75,7 +76,7 @@ Search is a synchronous, client-only projection over current component propertie
 Follow TDD for implementation and add focused regression coverage before production changes:
 
 1. **Shared helper tests:** empty query behavior; case-insensitive label, first-message, ID, and workspace-path matches; ancestor retention; hidden-child discovery using unfolded rows; no-match result; input immutability and cycle-safe parent traversal.
-2. **Compact `SessionList` tests:** labelled search and broom controls; opening input and focus; close/reset behavior; query filtering across current and archived data; temporary reveal of folded-child and archived matches; no-match state; action-menu dismissal on query changes; unchanged cleanup callback/capability text.
+2. **Compact `SessionList` tests:** labelled search and broom controls; opening input and focus; close/reset behavior; query filtering across current and archived data; temporary reveal of folded-child and archived matches; no-match state; action-menu dismissal on query changes; unchanged cleanup callback/capability text; and the approved broom-plus-two-sparkles SVG structure.
 3. **Expanded browser tests:** the dialog uses the shared matching/ancestor semantics, including a query that finds an initially folded descendant.
 4. Run changed Vitest files first, then `npm run typecheck`, lint the changed client files, and `npm run verify` before review. Inspect the UI at normal and narrow sidebar widths for icon alignment, input overflow, visible focus, result context, and archived-result behavior.
 
@@ -88,3 +89,4 @@ The shipped UI change is user-visible and requires a patch Changeset. Do not edi
 - Do not change the expanded browser's scope; it remains project-wide. Its search behavior changes only as needed to share the compact view's accepted matching semantics.
 - Do not alter session-runtime ownership, session-daemon protocol, session storage, API contracts, or cleanup execution behavior.
 - No README or user-facing documentation update is required for this localized UI polish; the release-facing Changeset will record it after implementation.
+- The approved icon refinement changes only the cleanup SVG artwork and its focused regression coverage; it must not alter cleanup behavior, accessible naming, layout geometry, search behavior, or session runtime ownership.
