@@ -19,16 +19,11 @@ describe("WorkspaceController", () => {
     };
     const sessionRequest = deferred<SessionInfo[]>();
     let state: AppState = { ...initialAppState(), projects: [project], selectedProject: project };
-    const sessions: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> = {
-      clearActiveSession: () => undefined,
-      preferredSession: () => undefined,
-      selectSession: () => Promise.resolve(),
-    };
     const controller = new WorkspaceController(
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       () => undefined,
-      sessions,
+      sessionControllerStub(),
       new InMemoryWorkspaceSelectionMemory(),
       {
         api: {
@@ -49,6 +44,73 @@ describe("WorkspaceController", () => {
     expect(state.sessions).toEqual([]);
   });
 
+  it("preserves loaded memory when reselecting the identical workspace scope", async () => {
+    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
+    const main = workspace(project, "workspace-1", "/workspace");
+    const memory: AppState["memory"] = {
+      kind: "data",
+      globalEntries: [{ id: "global", content: "Global memory" }],
+      projectEntries: [{ id: "project", content: "Project memory" }],
+    };
+    const sessionRequest = deferred<SessionInfo[]>();
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [project],
+      selectedProject: project,
+      selectedWorkspace: main,
+      memory,
+    };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      sessionControllerStub(),
+      new InMemoryWorkspaceSelectionMemory(),
+      { api: { workspaces: () => Promise.resolve([]), sessions: () => sessionRequest.promise } },
+    );
+
+    const selecting = controller.selectWorkspace({ ...main });
+
+    expect(state.memory).toEqual(memory);
+    expect(state.isLoadingSessions).toBe(true);
+
+    sessionRequest.resolve([]);
+    await selecting;
+  });
+
+  it("resets memory when selecting a workspace with a different path", async () => {
+    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
+    const main = workspace(project, "workspace-1", "/workspace");
+    const moved = workspace(project, "workspace-1", "/workspace-moved");
+    const sessionRequest = deferred<SessionInfo[]>();
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [project],
+      selectedProject: project,
+      selectedWorkspace: main,
+      memory: {
+        kind: "data",
+        globalEntries: [{ id: "global", content: "Global memory" }],
+        projectEntries: [{ id: "project", content: "Project memory" }],
+      },
+    };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      sessionControllerStub(),
+      new InMemoryWorkspaceSelectionMemory(),
+      { api: { workspaces: () => Promise.resolve([]), sessions: () => sessionRequest.promise } },
+    );
+
+    const selecting = controller.selectWorkspace(moved);
+
+    expect(state.memory).toEqual({ kind: "loading" });
+
+    sessionRequest.resolve([]);
+    await selecting;
+  });
+
   it("loads related sessions from the selected project's other workspaces", async () => {
     const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
     const main = workspace(project, "workspace-1", "/workspace");
@@ -56,17 +118,12 @@ describe("WorkspaceController", () => {
     const mainSession = session("parent", main.path);
     const featureSession = session("child", feature.path, { parentSessionPath: mainSession.path });
     let state: AppState = { ...initialAppState(), projects: [project], selectedProject: project, workspaces: [main, feature] };
-    const sessions: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> = {
-      clearActiveSession: () => undefined,
-      preferredSession: () => undefined,
-      selectSession: () => Promise.resolve(),
-    };
     const sessionsApi = vi.fn((cwd: string) => Promise.resolve(cwd === main.path ? [mainSession] : [featureSession]));
     const controller = new WorkspaceController(
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       () => undefined,
-      sessions,
+      sessionControllerStub(),
       new InMemoryWorkspaceSelectionMemory(),
       { api: { workspaces: () => Promise.resolve([]), sessions: sessionsApi } },
     );
@@ -102,6 +159,14 @@ function session(id: string, cwd: string, overrides: Partial<SessionInfo> = {}):
     messageCount: 1,
     firstMessage: id,
     ...overrides,
+  };
+}
+
+function sessionControllerStub(): Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> {
+  return {
+    clearActiveSession: () => undefined,
+    preferredSession: () => undefined,
+    selectSession: () => Promise.resolve(),
   };
 }
 

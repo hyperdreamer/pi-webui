@@ -1,5 +1,5 @@
 import { api as defaultApi, type Project, type SessionInfo, type Workspace } from "../api";
-import { resetWorkspaceScopedState } from "../appState";
+import { resetWorkspaceScopedState, type AppState } from "../appState";
 import { mergeCachedNewSessions } from "../cachedNewSessions";
 import { machineProjectKey } from "../machineKeys";
 import { selectedMachineId, type GetState, type RouteTarget, type SetState, type UpdateUrl } from "./types";
@@ -56,11 +56,20 @@ export class WorkspaceController {
   }
 
   async selectWorkspace(workspace: Workspace, target?: { sessionId?: string | undefined; updateUrl?: boolean | undefined }) {
+    const state = this.getState();
+    const preserveMemory = isSameWorkspaceScope(state, workspace);
     const projectSessionsRequest = ++this.projectSessionsRequest;
-    const machineId = selectedMachineId(this.getState());
+    const machineId = selectedMachineId(state);
     this.workspaceSelection.rememberWorkspace({ ...workspace, projectId: machineProjectKey(machineId, workspace.projectId) });
     this.sessions.clearActiveSession();
-    this.setState({ selectedWorkspace: workspace, isLoadingWorkspaces: false, ...resetWorkspaceScopedState(), isLoadingSessions: true });
+    const reset = resetWorkspaceScopedState();
+    this.setState({
+      selectedWorkspace: workspace,
+      isLoadingWorkspaces: false,
+      ...reset,
+      ...(preserveMemory ? { memory: state.memory } : {}),
+      isLoadingSessions: true,
+    });
     try {
       const sessions = mergeCachedNewSessions(workspace.path, await this.api.sessions(workspace.path, machineId), machineId);
       if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedWorkspace?.id !== workspace.id || this.getState().selectedProject?.id !== workspace.projectId) return;
@@ -127,6 +136,12 @@ export function canDeleteWorkspace(workspace: Workspace | undefined): boolean {
 
 function selectFallbackWorkspace(workspaces: Workspace[]): Workspace | undefined {
   return workspaces.find((workspace) => workspace.isMain) ?? workspaces[0];
+}
+
+function isSameWorkspaceScope(state: AppState, workspace: Workspace): boolean {
+  return state.selectedProject?.id === workspace.projectId
+    && state.selectedWorkspace?.id === workspace.id
+    && state.selectedWorkspace.path === workspace.path;
 }
 
 function uniqueSessionsByPath(sessions: readonly SessionInfo[]): SessionInfo[] {
