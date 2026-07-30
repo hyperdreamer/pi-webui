@@ -209,6 +209,7 @@ export class PiWebUiApp extends LitElement {
       applySnapshot: async (snapshot) => {
         await this.workspaces.reconcileProjectCatalog(snapshot);
       },
+      captureTopologyRequest: (scope) => this.workspaces.captureProjectCatalogTopologyRequest(scope),
       onBackgroundError: (operation, error) => {
         console.warn(`Failed to ${operation}`, error);
       },
@@ -219,6 +220,7 @@ export class PiWebUiApp extends LitElement {
     (patch) => { this.setState(patch); },
     {
       api: workspacesApi,
+      captureTopologyRequest: (scope) => this.workspaces.captureProjectCatalogTopologyRequest(scope),
       onProjectTopology: async (snapshot) => {
         const project = this.state.projects.find((candidate) => (
           candidate.id === snapshot.projectId && candidate.path === snapshot.projectPath
@@ -228,6 +230,7 @@ export class PiWebUiApp extends LitElement {
           machineId: snapshot.machineId,
           project,
           workspaces: snapshot.workspaces,
+          ...(snapshot.topologyRequest === undefined ? {} : { topologyRequest: snapshot.topologyRequest }),
         });
       },
       onError: ({ machineId, projectId, error }) => {

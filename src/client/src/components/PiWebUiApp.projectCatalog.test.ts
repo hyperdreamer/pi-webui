@@ -130,6 +130,32 @@ describe("PiWebUiApp project catalog wiring", () => {
     await resuming;
   });
 
+  it("keeps a later active-CWD topology request when it completes before an older catalog poll", async () => {
+    const harness = await crossSourceTopologyHarness();
+
+    harness.activityResponse.resolve([mainWorkspace, featureWorkspace]);
+    await harness.activityPass;
+    harness.pollResponse.resolve([mainWorkspace]);
+    await harness.pollPass;
+
+    expect(appState(harness.app).workspaces).toEqual([mainWorkspace, featureWorkspace]);
+    expect(appState(harness.app).workspacesByProjectId[project.id]).toEqual([mainWorkspace, featureWorkspace]);
+    expect(appState(harness.app).projectSessions).toEqual(expect.arrayContaining([parentSession, spawnedSession]));
+  });
+
+  it("keeps a later active-CWD topology request when the older catalog poll completes first", async () => {
+    const harness = await crossSourceTopologyHarness();
+
+    harness.pollResponse.resolve([mainWorkspace]);
+    await harness.pollPass;
+    harness.activityResponse.resolve([mainWorkspace, featureWorkspace]);
+    await harness.activityPass;
+
+    expect(appState(harness.app).workspaces).toEqual([mainWorkspace, featureWorkspace]);
+    expect(appState(harness.app).workspacesByProjectId[project.id]).toEqual([mainWorkspace, featureWorkspace]);
+    expect(appState(harness.app).projectSessions).toEqual(expect.arrayContaining([parentSession, spawnedSession]));
+  });
+
   it("reconciles an activity-discovered worktree through the selected project catalog seam", async () => {
     const app = createApp();
     const activeSession = {
@@ -179,6 +205,10 @@ interface ProjectCatalogLifecycleController {
   dispose(): void;
 }
 
+interface ProjectActivityOwnershipReconciler {
+  handleActivityApplied(machineId: string): Promise<void>;
+}
+
 interface RealtimeConnector {
   connect(onEvent: (event: unknown) => void, onOpen?: () => void, machineId?: string): void;
 }
@@ -211,6 +241,7 @@ interface CreateAppOptions {
 interface FakeTimers {
   setTimeout(callback: () => void): number;
   clearTimeout(id: number): void;
+  fireLatest(): void;
   pendingCallbacks(): readonly (() => void)[];
 }
 
@@ -225,6 +256,12 @@ function fakeTimers(): FakeTimers {
     },
     clearTimeout(id) {
       callbacks.delete(id);
+    },
+    fireLatest() {
+      const entry = [...callbacks.entries()].at(-1);
+      if (entry === undefined) throw new Error("Expected a pending timer");
+      callbacks.delete(entry[0]);
+      entry[1]();
     },
     pendingCallbacks: () => [...callbacks.values()],
   };
@@ -248,6 +285,76 @@ function createApp({ catalogTimers }: CreateAppOptions = {}): PiWebUiApp {
   return new PiWebUiApp();
 }
 
+async function crossSourceTopologyHarness() {
+  const timers = fakeTimers();
+  const pollResponse = deferred<Workspace[]>();
+  const activityResponse = deferred<Workspace[]>();
+  const pollRequested = deferred<undefined>();
+  const activityRequested = deferred<undefined>();
+  let requestCount = 0;
+  const pollWorkspaces = vi.fn(() => {
+    requestCount += 1;
+    if (requestCount !== 1) throw new Error("Unexpected catalog workspace topology request");
+    pollRequested.resolve(undefined);
+    return pollResponse.promise;
+  });
+  const activityWorkspaces = vi.fn(() => {
+    requestCount += 1;
+    if (requestCount !== 2) throw new Error("Unexpected activity workspace topology request");
+    activityRequested.resolve(undefined);
+    return activityResponse.promise;
+  });
+  vi.spyOn(sessionsApi, "sessions").mockResolvedValue([spawnedSession]);
+
+  const app = createApp({ catalogTimers: timers });
+  setConnectionState(app, true);
+  setAppState(app, {
+    ...initialAppState(),
+    projects: [project],
+    selectedProject: project,
+    selectedWorkspace: mainWorkspace,
+    workspaces: [mainWorkspace],
+    workspacesByProjectId: { [project.id]: [mainWorkspace] },
+    sessions: [parentSession],
+    projectSessions: [parentSession],
+    workspaceActivities: {
+      [featureWorkspace.path]: {
+        cwd: featureWorkspace.path,
+        hasSessionActivity: true,
+        hasTerminalActivity: false,
+        updatedAt: "now",
+      },
+    },
+  });
+  bindSessionsApiAtWorkspaceControllerSeam(app);
+
+  const catalog = projectCatalogController(app);
+  const activityOwnership = projectActivityOwnershipCoordinator(app);
+  bindCatalogWorkspaces(catalog, pollWorkspaces);
+  bindActivityWorkspaces(activityOwnership, activityWorkspaces);
+  catalog.updatePolling(true);
+  timers.fireLatest();
+  const pollPass = catalog.refresh();
+  const activityPass = activityOwnership.handleActivityApplied("local");
+  await Promise.all([pollRequested.promise, activityRequested.promise]);
+
+  return {
+    app,
+    pollResponse,
+    activityResponse,
+    pollPass,
+    activityPass,
+  };
+}
+
+function bindCatalogWorkspaces(catalog: ProjectCatalogLifecycleController, workspaces: () => Promise<Workspace[]>): void {
+  if (!Reflect.set(catalog, "listWorkspaces", workspaces)) throw new Error("Could not bind the project catalog workspace endpoint");
+}
+
+function bindActivityWorkspaces(coordinator: ProjectActivityOwnershipReconciler, workspaces: () => Promise<Workspace[]>): void {
+  if (!Reflect.set(coordinator, "api", { workspaces })) throw new Error("Could not bind the project activity workspace endpoint");
+}
+
 function bindSessionsApiAtWorkspaceControllerSeam(app: PiWebUiApp): void {
   const controller = workspaceController(app);
   const api: unknown = Reflect.get(controller, "api");
@@ -268,6 +375,12 @@ function workspaceController(app: PiWebUiApp): WorkspaceController {
 function projectCatalogController(app: PiWebUiApp): ProjectCatalogLifecycleController {
   const value: unknown = Reflect.get(app, "projectCatalog");
   if (!isProjectCatalogLifecycleController(value)) throw new Error("PiWebUiApp project catalog controller is unavailable");
+  return value;
+}
+
+function projectActivityOwnershipCoordinator(app: PiWebUiApp): ProjectActivityOwnershipReconciler {
+  const value: unknown = Reflect.get(app, "projectActivityOwnership");
+  if (!isProjectActivityOwnershipReconciler(value)) throw new Error("PiWebUiApp project activity ownership coordinator is unavailable");
   return value;
 }
 
@@ -385,6 +498,10 @@ function isProjectCatalogLifecycleController(value: unknown): value is ProjectCa
     && typeof Reflect.get(value, "updatePolling") === "function"
     && typeof Reflect.get(value, "refresh") === "function"
     && typeof Reflect.get(value, "dispose") === "function";
+}
+
+function isProjectActivityOwnershipReconciler(value: unknown): value is ProjectActivityOwnershipReconciler {
+  return typeof value === "object" && value !== null && typeof Reflect.get(value, "handleActivityApplied") === "function";
 }
 
 function isActivityTopologyCallback(value: unknown): value is ActivityTopologyCallback {

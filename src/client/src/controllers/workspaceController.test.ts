@@ -375,32 +375,44 @@ describe("WorkspaceController", () => {
     expect(listSessions).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves foreground error when failed discovery falls back from a removed workspace", async () => {
-    const unavailableWorkspace = workspace(project, "workspace-unavailable", "/workspace-unavailable");
-    const error = new Error("unavailable workspace sessions");
+  it("keeps a failed catalog fallback session list in the background and retries it on an identical snapshot", async () => {
+    const error = new Error("main workspace sessions unavailable");
     const onBackgroundError = vi.fn();
-    const harness = controllerForCatalog({
+    const listSessions = vi.fn((cwd: string) => (
+      cwd === mainWorkspace.path && listSessions.mock.calls.length === 1
+        ? Promise.reject<SessionInfo[]>(error)
+        : Promise.resolve<SessionInfo[]>([parentSession])
+    ));
+    const { controller, state } = catalogHarnessWithLiveSessionController({
       selectedWorkspace: featureWorkspace,
       workspaces: [mainWorkspace, featureWorkspace],
-      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      sessions: [spawnedSession],
       projectSessions: [parentSession, spawnedSession],
       error: "existing foreground error",
-      listSessions: (cwd: string) => {
-        if (cwd === unavailableWorkspace.path) return Promise.reject<SessionInfo[]>(error);
-        return Promise.resolve<SessionInfo[]>([]);
-      },
+      listSessions,
       onBackgroundError,
     });
-
-    await harness.controller.reconcileProjectCatalog({
+    const snapshot = {
       machineId: "local",
       project,
-      workspaces: [mainWorkspace, unavailableWorkspace],
-    });
+      workspaces: [mainWorkspace],
+    };
 
-    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
-    expect(harness.state.error).toBe("existing foreground error");
-    expect(onBackgroundError).toHaveBeenCalledWith("reconcile discovered workspace sessions", error);
+    await controller.reconcileProjectCatalog(snapshot);
+
+    expect(state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(state.error).toBe("existing foreground error");
+    expect(state.sessions).toEqual([parentSession]);
+    expect(state.projectSessions).toEqual([parentSession]);
+    expect(state.isLoadingSessions).toBe(false);
+    expect(onBackgroundError).toHaveBeenCalledWith("reconcile selected workspace fallback sessions", error);
+
+    await controller.reconcileProjectCatalog(snapshot);
+
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenLastCalledWith(mainWorkspace.path, "local");
+    expect(state.sessions).toEqual([parentSession]);
+    expect(state.projectSessions).toEqual([parentSession]);
   });
 
   it("rejects catalog snapshots with stale machine, project, or path scope", async () => {
@@ -514,19 +526,24 @@ function controllerForCatalog({
 }
 
 function catalogHarnessWithLiveSessionController(input: {
+  selectedWorkspace?: Workspace;
   workspaces: Workspace[];
+  sessions?: SessionInfo[];
   projectSessions: SessionInfo[];
+  error?: string;
   listSessions?: ListSessions;
+  onBackgroundError?: WorkspaceControllerDependencies["onBackgroundError"];
 }) {
   const state: AppState = {
     ...initialAppState(),
     projects: [project],
     selectedProject: project,
-    selectedWorkspace: mainWorkspace,
+    selectedWorkspace: input.selectedWorkspace ?? mainWorkspace,
     workspaces: input.workspaces,
     workspacesByProjectId: { [project.id]: input.workspaces },
-    sessions: [parentSession],
+    sessions: input.sessions ?? [parentSession],
     projectSessions: input.projectSessions,
+    ...(input.error === undefined ? {} : { error: input.error }),
   };
   const sessionController = new SessionController(
     () => state,
@@ -546,6 +563,7 @@ function catalogHarnessWithLiveSessionController(input: {
         workspaces: () => Promise.resolve([]),
         sessions: input.listSessions ?? ((cwd: string) => Promise.resolve(cwd === featureWorkspace.path ? [spawnedSession] : [])),
       },
+      ...(input.onBackgroundError === undefined ? {} : { onBackgroundError: input.onBackgroundError }),
     },
   );
   return { controller, sessionController, state };

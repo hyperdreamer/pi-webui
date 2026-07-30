@@ -5,10 +5,22 @@ import { selectedMachineId, type GetState } from "./types";
 const DEFAULT_PROJECT_CATALOG_POLL_INTERVAL_MS = 5_000;
 const BACKGROUND_RECONCILIATION_OPERATION = "reconcile selected project catalog";
 
+export interface ProjectCatalogTopologyScope {
+  machineId: string;
+  projectId: string;
+  projectPath: string;
+}
+
+/** A request-order token assigned by the shared workspace topology reconciler. */
+export interface ProjectCatalogTopologyRequest extends ProjectCatalogTopologyScope {
+  order: number;
+}
+
 export interface ProjectCatalogSnapshot {
   machineId: string;
   project: Project;
   workspaces: Workspace[];
+  topologyRequest?: ProjectCatalogTopologyRequest;
 }
 
 export interface ProjectCatalogTimer {
@@ -22,6 +34,8 @@ export interface ProjectCatalogControllerDependencies {
   timer?: ProjectCatalogTimer;
   pollIntervalMs?: number;
   onBackgroundError?: (operation: string, error: unknown) => void;
+  /** Captures a shared request order immediately before listing topology. */
+  captureTopologyRequest?: (scope: ProjectCatalogTopologyScope) => ProjectCatalogTopologyRequest;
 }
 
 interface ProjectCatalogScope {
@@ -56,6 +70,7 @@ export class ProjectCatalogController {
   private readonly timer: ProjectCatalogTimer;
   private readonly pollIntervalMs: number;
   private readonly onBackgroundError: ProjectCatalogControllerDependencies["onBackgroundError"];
+  private readonly captureTopologyRequest: ProjectCatalogControllerDependencies["captureTopologyRequest"];
   private pollTimer: number | undefined;
   private scope: ProjectCatalogScope | undefined;
   private generation = 0;
@@ -73,6 +88,7 @@ export class ProjectCatalogController {
     this.timer = deps.timer ?? defaultProjectCatalogTimer;
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_PROJECT_CATALOG_POLL_INTERVAL_MS;
     this.onBackgroundError = deps.onBackgroundError;
+    this.captureTopologyRequest = deps.captureTopologyRequest;
   }
 
   updatePolling(observed = true): void {
@@ -156,9 +172,21 @@ export class ProjectCatalogController {
 
   private async load(scope: ProjectCatalogScope, generation: number, requestId: number): Promise<void> {
     try {
+      // Capture after the physical request is registered, immediately before its
+      // network boundary, so response order cannot redefine topology order.
+      const topologyRequest = this.captureTopologyRequest?.({
+        machineId: scope.machineId,
+        projectId: scope.project.id,
+        projectPath: scope.project.path,
+      });
       const workspaces = await this.listWorkspaces(scope.project.id, scope.machineId);
       if (!this.isCurrent(scope, generation)) return;
-      await this.applySnapshot({ machineId: scope.machineId, project: scope.project, workspaces });
+      await this.applySnapshot({
+        machineId: scope.machineId,
+        project: scope.project,
+        workspaces,
+        ...(topologyRequest === undefined ? {} : { topologyRequest }),
+      });
     } catch (error) {
       if (this.isCurrent(scope, generation)) this.reportBackgroundError(error);
     } finally {
