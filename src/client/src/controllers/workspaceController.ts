@@ -22,6 +22,10 @@ interface CatalogFallbackSelection {
   eligibleProjectSessions: SessionInfo[];
 }
 
+interface CatalogFallbackFailure {
+  error: unknown;
+}
+
 interface WorkspaceSelectionTarget {
   sessionId?: string | undefined;
   updateUrl?: boolean | undefined;
@@ -120,9 +124,19 @@ export class WorkspaceController {
       ...(target?.preserveError === true ? { error } : {}),
       isLoadingSessions: true,
     });
+    const catalogFallback = target?.catalogFallback;
     try {
       const listedSessions = await this.api.sessions(workspace.path, machineId);
       if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
+        if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
+          workspace,
+          machineId,
+          projectSessionsRequest,
+          target?.catalogScope,
+        )) {
+          this.restoreCatalogFallbackSessionState(workspace, machineId, catalogFallback);
+          return;
+        }
         this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
         return;
       }
@@ -134,14 +148,23 @@ export class WorkspaceController {
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
       if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
+        if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
+          workspace,
+          machineId,
+          projectSessionsRequest,
+          target?.catalogScope,
+        )) {
+          this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+          return;
+        }
         this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
         return;
       }
-      if (target?.catalogFallback === undefined) {
+      if (catalogFallback === undefined) {
         this.setState({ error: String(error), isLoadingSessions: false });
         return;
       }
-      this.applyCatalogFallbackSessionFailure(workspace, machineId, target.catalogFallback, error);
+      this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
     }
   }
 
@@ -363,6 +386,15 @@ export class WorkspaceController {
     fallback: CatalogFallbackSelection,
     error: unknown,
   ): void {
+    this.restoreCatalogFallbackSessionState(workspace, machineId, fallback, { error });
+  }
+
+  private restoreCatalogFallbackSessionState(
+    workspace: Workspace,
+    machineId: string,
+    fallback: CatalogFallbackSelection,
+    failure?: CatalogFallbackFailure,
+  ): void {
     const state = this.getState();
     const workspaces = state.workspacesByProjectId[workspace.projectId] ?? state.workspaces;
     const workspacePaths = new Set(workspaces.map((candidate) => candidate.path));
@@ -371,13 +403,40 @@ export class WorkspaceController {
       ...state.projectSessions.filter((session) => workspacePaths.has(session.cwd)),
     ]);
     this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(machineId, workspace.projectId, workspace));
-    this.reportBackgroundError("reconcile selected workspace fallback sessions", error);
+    if (failure !== undefined) this.reportBackgroundError("reconcile selected workspace fallback sessions", failure.error);
     this.setState({
       sessions: eligibleProjectSessions.filter((session) => session.cwd === workspace.path),
       projectSessions: eligibleProjectSessions,
       error: fallback.foregroundError,
       isLoadingSessions: false,
     });
+  }
+
+  private isCatalogFallbackRecoveryCurrent(
+    workspace: Workspace,
+    machineId: string,
+    request: number,
+    catalogScope: CatalogWorkspaceSelectionScope | undefined,
+  ): boolean {
+    if (catalogScope === undefined) return false;
+    if (machineId !== catalogScope.machineId
+      || workspace.projectId !== catalogScope.project.id
+      || request !== this.projectSessionsRequest
+      || !this.isProjectCatalogScopeCurrent(catalogScope.machineId, catalogScope.project)) return false;
+
+    const state = this.getState();
+    const selectedProject = state.selectedProject;
+    const selectedWorkspace = state.selectedWorkspace;
+    if (selectedProject === undefined
+      || selectedWorkspace === undefined
+      || selectedMachineId(state) !== machineId
+      || selectedProject.id !== workspace.projectId
+      || selectedProject.path !== catalogScope.project.path
+      || workspaceIdentity(selectedWorkspace) !== workspaceIdentity(workspace)) return false;
+
+    const workspaces = state.workspacesByProjectId[workspace.projectId]
+      ?? (selectedProject.id === workspace.projectId ? state.workspaces : []);
+    return workspaceStillExists(workspace, workspaces);
   }
 
   private clearStaleCatalogSelectionLoadingIfOwned(

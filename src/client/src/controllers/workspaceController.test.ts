@@ -415,6 +415,152 @@ describe("WorkspaceController", () => {
     expect(state.projectSessions).toEqual([parentSession]);
   });
 
+  it("recovers a stale catalog fallback rejection under a newer same-scope topology token", async () => {
+    const fallbackSessions = deferred<SessionInfo[]>();
+    const error = new Error("main workspace sessions unavailable");
+    const onBackgroundError = vi.fn();
+    const listSessions = vi.fn((cwd: string) => (
+      cwd === mainWorkspace.path && listSessions.mock.calls.length === 1
+        ? fallbackSessions.promise
+        : Promise.resolve<SessionInfo[]>([parentSession])
+    ));
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      sessions: [spawnedSession],
+      projectSessions: [parentSession, spawnedSession],
+      error: "existing foreground error",
+      listSessions,
+      onBackgroundError,
+    });
+    const scope = { machineId: "local", projectId: project.id, projectPath: project.path };
+    const olderRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+
+    const reconcilingOlderSnapshot = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: olderRequest,
+    });
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledOnce();
+    });
+
+    const newerRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: newerRequest,
+    });
+    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(harness.state.sessions).toEqual([]);
+    expect(harness.state.projectSessions).toEqual([]);
+    expect(harness.state.isLoadingSessions).toBe(true);
+
+    fallbackSessions.reject(error);
+    await reconcilingOlderSnapshot;
+
+    expect(harness.state.sessions).toEqual([parentSession]);
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+    expect(harness.state.error).toBe("existing foreground error");
+    expect(harness.state.isLoadingSessions).toBe(false);
+    expect(onBackgroundError).toHaveBeenCalledOnce();
+    expect(onBackgroundError).toHaveBeenCalledWith("reconcile selected workspace fallback sessions", error);
+
+    const retryRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: retryRequest,
+    });
+
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenLastCalledWith(mainWorkspace.path, "local");
+    expect(harness.state.sessions).toEqual([parentSession]);
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+  });
+
+  it("restores eligible rows without publishing or navigating a stale catalog fallback success", async () => {
+    const fallbackSessions = deferred<SessionInfo[]>();
+    const staleListedSession = session("stale-listed", mainWorkspace.path);
+    const retriedSession = session("retried", mainWorkspace.path);
+    const listSessions = vi.fn((cwd: string) => (
+      cwd === mainWorkspace.path && listSessions.mock.calls.length === 1
+        ? fallbackSessions.promise
+        : Promise.resolve<SessionInfo[]>([retriedSession])
+    ));
+    const updateUrl = vi.fn();
+    const selectSession = vi.fn(() => {
+      updateUrl();
+      return Promise.resolve();
+    });
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      sessions: [spawnedSession],
+      projectSessions: [parentSession, spawnedSession],
+      error: "existing foreground error",
+      listSessions,
+      updateUrl,
+      sessionController: {
+        clearActiveSession: () => undefined,
+        preferredSession: () => staleListedSession,
+        selectSession,
+      },
+    });
+    const scope = { machineId: "local", projectId: project.id, projectPath: project.path };
+    const olderRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+
+    const reconcilingOlderSnapshot = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: olderRequest,
+    });
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledOnce();
+    });
+
+    const newerRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: newerRequest,
+    });
+
+    fallbackSessions.resolve([staleListedSession]);
+    await reconcilingOlderSnapshot;
+
+    expect(harness.state.sessions).toEqual([parentSession]);
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+    expect(harness.state.sessions).not.toContainEqual(staleListedSession);
+    expect(harness.state.projectSessions).not.toContainEqual(staleListedSession);
+    expect(harness.state.error).toBe("existing foreground error");
+    expect(harness.state.isLoadingSessions).toBe(false);
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(updateUrl).not.toHaveBeenCalled();
+
+    const retryRequest = harness.controller.captureProjectCatalogTopologyRequest(scope);
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+      topologyRequest: retryRequest,
+    });
+
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenLastCalledWith(mainWorkspace.path, "local");
+    expect(harness.state.sessions).toEqual(expect.arrayContaining([parentSession, retriedSession]));
+    expect(harness.state.projectSessions).toEqual(expect.arrayContaining([parentSession, retriedSession]));
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(updateUrl).not.toHaveBeenCalled();
+  });
+
   it("rejects catalog snapshots with stale machine, project, or path scope", async () => {
     const listSessions = vi.fn(() => Promise.resolve([spawnedSession]));
     const harness = controllerForCatalog({
@@ -604,6 +750,10 @@ function session(id: string, cwd: string, overrides: Partial<SessionInfo> = {}):
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => { resolve = promiseResolve; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
