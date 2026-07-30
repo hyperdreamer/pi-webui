@@ -75,6 +75,54 @@ describe("ProjectController", () => {
     expect(onProjectsApplied).toHaveBeenCalledOnce();
   });
 
+  it("clears an obsolete selected project before notifying ownership observers", async () => {
+    const oldProject = project("current", "/old-current");
+    const replacementProject = project("current", "/replacement-current");
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [oldProject],
+      selectedProject: oldProject,
+      selectedWorkspace: workspace(oldProject.id, oldProject.path),
+      workspaces: [workspace(oldProject.id, oldProject.path)],
+      workspacesByProjectId: {
+        [oldProject.id]: [workspace(oldProject.id, oldProject.path)],
+      },
+    };
+    const events: string[] = [];
+    const projectsWhenCleared: Project[][] = [];
+    const observedSelectedProjects: (Project | undefined)[] = [];
+    const clearSelection = vi.fn(() => {
+      events.push("clear");
+      projectsWhenCleared.push(state.projects);
+      state = { ...state, selectedProject: undefined, selectedWorkspace: undefined, workspaces: [] };
+    });
+    const onProjectsApplied = vi.fn(() => {
+      events.push("applied");
+      observedSelectedProjects.push(state.selectedProject);
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection },
+      {
+        api: {
+          projects: vi.fn().mockResolvedValue([replacementProject]),
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+        },
+        onProjectsApplied,
+      },
+    );
+
+    await controller.loadProjects();
+
+    expect(state.projects).toEqual([replacementProject]);
+    expect(clearSelection).toHaveBeenCalledOnce();
+    expect(projectsWhenCleared).toEqual([[replacementProject]]);
+    expect(events).toEqual(["clear", "applied"]);
+    expect(observedSelectedProjects).toEqual([undefined]);
+  });
+
   it("notifies after adding a project and preserves the existing selection flow", async () => {
     const addedProject = project("added", "/added");
     let state: AppState = { ...initialAppState(), projectDialogOpen: true };

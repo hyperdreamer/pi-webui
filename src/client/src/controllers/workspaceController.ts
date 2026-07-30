@@ -234,7 +234,7 @@ export class WorkspaceController {
       orderedSnapshot.machineId,
     );
     if (!this.isProjectCatalogSnapshotCurrent(orderedSnapshot)
-      || this.getState().selectedProject?.id !== orderedSnapshot.project.id) return;
+      || !this.isSelectedProject(orderedSnapshot.project)) return;
 
     const pending = this.pendingProjectSelection;
     if (this.isPendingProjectSelectionCurrent(pending)
@@ -268,7 +268,7 @@ export class WorkspaceController {
 
     const selectedWorkspace = this.getState().selectedWorkspace;
     if (!selectedWorkspaceRemoved
-      || this.getState().selectedProject?.id !== orderedSnapshot.project.id
+      || !this.isSelectedProject(orderedSnapshot.project)
       || selectedWorkspace === undefined
       || workspaceStillExists(selectedWorkspace, orderedSnapshot.workspaces)) return;
 
@@ -321,7 +321,10 @@ export class WorkspaceController {
   async refreshAfterWorkspaceDeleted(projectId: string, workspaceId: string): Promise<void> {
     const workspaces = await this.refreshProjectWorkspaces(projectId, { fallbackSelection: "foreground" });
     const state = this.getState();
-    if (state.selectedProject?.id !== projectId || state.selectedWorkspace?.id !== workspaceId) return;
+    const project = state.projects.find((candidate) => candidate.id === projectId);
+    if (project === undefined
+      || !this.isSelectedProject(project)
+      || state.selectedWorkspace?.id !== workspaceId) return;
 
     const fallback = selectFallbackWorkspace(workspaces);
     if (fallback !== undefined) await this.selectWorkspace(fallback);
@@ -344,6 +347,11 @@ export class WorkspaceController {
     this.pendingProjectSelection = undefined;
   }
 
+  private isSelectedProject(project: Project): boolean {
+    const selectedProject = this.getState().selectedProject;
+    return selectedProject?.id === project.id && selectedProject.path === project.path;
+  }
+
   private isPendingProjectSelectionCurrent(
     pending: PendingProjectSelection | undefined,
   ): pending is PendingProjectSelection {
@@ -353,8 +361,7 @@ export class WorkspaceController {
     const state = this.getState();
     const currentProject = state.projects.find((candidate) => candidate.id === pending.project.id);
     return selectedMachineId(state) === pending.machineId
-      && state.selectedProject?.id === pending.project.id
-      && state.selectedProject.path === pending.project.path
+      && this.isSelectedProject(pending.project)
       && currentProject?.path === pending.project.path;
   }
 
@@ -377,7 +384,6 @@ export class WorkspaceController {
       await this.selectWorkspace(workspace, {
         sessionId: pending.target?.sessionId,
         updateUrl: pending.target?.updateUrl,
-        ...(catalogScope === undefined ? {} : { catalogScope }),
       });
       return;
     }
@@ -401,7 +407,7 @@ export class WorkspaceController {
     machineId: string,
   ): { added: Workspace[]; selectedWorkspaceRemoved: boolean } {
     const state = this.getState();
-    const selectedProject = state.selectedProject?.id === project.id;
+    const selectedProject = this.isSelectedProject(project);
     const oldWorkspaces = state.workspacesByProjectId[project.id]
       ?? (selectedProject ? state.workspaces : []);
     const oldWorkspaceIdentities = new Set(oldWorkspaces.map(workspaceIdentity));
@@ -458,7 +464,7 @@ export class WorkspaceController {
     if (hydratedSessions.length === 0) return;
 
     const state = this.getState();
-    if (!this.isProjectCatalogSnapshotCurrent(snapshot) || state.selectedProject?.id !== project.id) return;
+    if (!this.isProjectCatalogSnapshotCurrent(snapshot) || !this.isSelectedProject(project)) return;
     const workspaces = state.workspacesByProjectId[project.id] ?? state.workspaces;
     const workspacePaths = new Set(workspaces.map((workspace) => workspace.path));
     const currentProjectSessions = state.projectSessions.filter((session) => workspacePaths.has(session.cwd));
@@ -525,17 +531,14 @@ export class WorkspaceController {
       || !this.isProjectCatalogScopeCurrent(catalogScope.machineId, catalogScope.project)) return false;
 
     const state = this.getState();
-    const selectedProject = state.selectedProject;
+    const isSelectedProject = this.isSelectedProject(catalogScope.project);
     const selectedWorkspace = state.selectedWorkspace;
-    if (selectedProject === undefined
-      || selectedWorkspace === undefined
+    if (selectedWorkspace === undefined
       || selectedMachineId(state) !== machineId
-      || selectedProject.id !== workspace.projectId
-      || selectedProject.path !== catalogScope.project.path
+      || !isSelectedProject
       || workspaceIdentity(selectedWorkspace) !== workspaceIdentity(workspace)) return false;
 
-    const workspaces = state.workspacesByProjectId[workspace.projectId]
-      ?? (selectedProject.id === workspace.projectId ? state.workspaces : []);
+    const workspaces = state.workspacesByProjectId[workspace.projectId] ?? state.workspaces;
     return workspaceStillExists(workspace, workspaces);
   }
 
@@ -587,7 +590,7 @@ export class WorkspaceController {
     if (!this.isProjectCatalogSnapshotCurrent(snapshot)) return false;
     const state = this.getState();
     const workspaces = state.workspacesByProjectId[snapshot.project.id]
-      ?? (state.selectedProject?.id === snapshot.project.id ? state.workspaces : []);
+      ?? (this.isSelectedProject(snapshot.project) ? state.workspaces : []);
     return workspaceStillExists(workspace, workspaces);
   }
 

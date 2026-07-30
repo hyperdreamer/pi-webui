@@ -282,6 +282,72 @@ describe("WorkspaceController", () => {
     expect(selectedSessionIds).toEqual([spawnedSession.id]);
   });
 
+  it("settles a catalog-completed foreground session list after a later topology request starts", async () => {
+    const foregroundWorkspaces = deferred<Workspace[]>();
+    const featureSessions = deferred<SessionInfo[]>();
+    const selectedSessionIds: string[] = [];
+    const listSessions = vi.fn((cwd: string) => (
+      cwd === featureWorkspace.path ? featureSessions.promise : Promise.resolve<SessionInfo[]>([])
+    ));
+    let state: AppState = { ...initialAppState(), projects: [project] };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      {
+        clearActiveSession: () => undefined,
+        preferredSession: (_cwd, sessions) => sessions[0],
+        selectSession: (selected) => {
+          selectedSessionIds.push(selected.id);
+          return Promise.resolve();
+        },
+      },
+      new InMemoryWorkspaceSelectionMemory(),
+      {
+        api: {
+          workspaces: () => foregroundWorkspaces.promise,
+          sessions: listSessions,
+        },
+      },
+    );
+
+    const selecting = controller.selectProject(project, {
+      workspaceId: featureWorkspace.id,
+      sessionId: spawnedSession.id,
+    });
+    const topologyRequest = controller.captureProjectCatalogTopologyRequest({
+      machineId: "local",
+      projectId: project.id,
+      projectPath: project.path,
+    });
+    const reconciling = controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+      topologyRequest,
+    });
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledWith(featureWorkspace.path, "local");
+    });
+
+    controller.captureProjectCatalogTopologyRequest({
+      machineId: "local",
+      projectId: project.id,
+      projectPath: project.path,
+    });
+    featureSessions.resolve([spawnedSession]);
+    await reconciling;
+
+    expect(state.selectedWorkspace).toEqual(featureWorkspace);
+    expect(state.sessions).toEqual(expect.arrayContaining([spawnedSession]));
+    expect(state.projectSessions).toEqual(expect.arrayContaining([spawnedSession]));
+    expect(state.isLoadingSessions).toBe(false);
+    expect(selectedSessionIds).toEqual([spawnedSession.id]);
+
+    foregroundWorkspaces.resolve([mainWorkspace]);
+    await selecting;
+  });
+
   it("does not restore an old-path foreground topology after the same project ID is retargeted", async () => {
     const replacementProject = { ...project, path: "/workspace-replacement" };
     const oldMain = workspace(project, "workspace-1", project.path);
@@ -668,6 +734,41 @@ describe("WorkspaceController", () => {
     expect(harness.state.projectSessions).toEqual([parentSession]);
     expect(harness.state.workspacesByProjectId[otherProject.id]).toEqual([otherMainWorkspace, otherFeatureWorkspace]);
     expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replacement-path catalog snapshot cache-only for an obsolete selected project", async () => {
+    const replacementProject = { ...project, path: "/workspace-replacement" };
+    const oldMainWorkspace = workspace(project, "old-main", project.path);
+    const replacementMainWorkspace = workspace(replacementProject, "replacement-main", replacementProject.path);
+    const oldSession = session("old", oldMainWorkspace.path);
+    const listSessions = vi.fn(() => Promise.resolve<SessionInfo[]>([]));
+    const updateUrl = vi.fn();
+    const harness = controllerForCatalog({
+      projects: [replacementProject],
+      selectedProject: project,
+      selectedWorkspace: oldMainWorkspace,
+      workspaces: [oldMainWorkspace],
+      workspacesByProjectId: { [project.id]: [oldMainWorkspace] },
+      sessions: [oldSession],
+      projectSessions: [oldSession],
+      listSessions,
+      updateUrl,
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project: replacementProject,
+      workspaces: [replacementMainWorkspace],
+    });
+
+    expect(harness.state.workspacesByProjectId[project.id]).toEqual([replacementMainWorkspace]);
+    expect(harness.state.selectedProject).toEqual(project);
+    expect(harness.state.workspaces).toEqual([oldMainWorkspace]);
+    expect(harness.state.selectedWorkspace).toEqual(oldMainWorkspace);
+    expect(harness.state.sessions).toEqual([oldSession]);
+    expect(harness.state.projectSessions).toEqual([oldSession]);
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(updateUrl).not.toHaveBeenCalled();
   });
 
   it("retains a failed discovered workspace for background retry without replacing foreground error", async () => {

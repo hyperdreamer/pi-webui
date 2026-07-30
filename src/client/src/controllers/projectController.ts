@@ -37,7 +37,11 @@ export class ProjectController {
       }
       const projectIds = new Set(projects.map((project) => project.id));
       const workspacesByProjectId = Object.fromEntries(Object.entries(this.getState().workspacesByProjectId).filter(([projectId]) => projectIds.has(projectId)));
+      const selectedProject = this.getState().selectedProject;
+      const selectedProjectPathChanged = selectedProject !== undefined
+        && projects.some((project) => project.id === selectedProject.id && project.path !== selectedProject.path);
       this.setState({ projects, workspacesByProjectId });
+      if (selectedProjectPathChanged) this.workspaces.clearSelection();
       this.onProjectsApplied?.(machineId);
       if (defaultProject !== undefined) await this.workspaces.selectProject(defaultProject);
     } catch (error) {
