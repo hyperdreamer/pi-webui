@@ -57,24 +57,33 @@ afterEach(() => {
 });
 
 describe("PiWebUiApp project catalog wiring", () => {
-  it("observes the selected project after foreground workspace loading and disposes on disconnect", () => {
-    const app = createApp();
+  it("defers selected-project catalog observation until foreground workspace loading completes and disposes on disconnect", () => {
+    const timers = fakeTimers();
+    const app = createApp({ catalogTimers: timers });
     const catalog = projectCatalogController(app);
-    const updatePolling = vi.spyOn(catalog, "updatePolling").mockImplementation(() => undefined);
-    const dispose = vi.spyOn(catalog, "dispose").mockImplementation(() => undefined);
-
-    invokeConnected(app);
-    applyAppState(app, {
+    const updatePolling = vi.spyOn(catalog, "updatePolling");
+    const dispose = vi.spyOn(catalog, "dispose");
+    setAppState(app, {
       ...initialAppState(),
       selectedProject: project,
       workspaces: [mainWorkspace],
-      isLoadingWorkspaces: false,
+      isLoadingWorkspaces: true,
     });
 
+    invokeConnected(app);
+    updatePolling.mockClear();
+
+    expect(timers.pendingCallbacks()).toHaveLength(0);
+
+    applyAppState(app, { isLoadingWorkspaces: false });
+
+    expect(updatePolling).toHaveBeenCalledOnce();
     expect(updatePolling).toHaveBeenCalledWith(true);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
 
     invokeDisconnected(app);
     expect(dispose).toHaveBeenCalledOnce();
+    expect(timers.pendingCallbacks()).toHaveLength(0);
   });
 
   it("does not start catalog polling for a detached app", () => {
@@ -195,7 +204,33 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(e
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
-function createApp(): PiWebUiApp {
+interface CreateAppOptions {
+  catalogTimers?: FakeTimers;
+}
+
+interface FakeTimers {
+  setTimeout(callback: () => void): number;
+  clearTimeout(id: number): void;
+  pendingCallbacks(): readonly (() => void)[];
+}
+
+function fakeTimers(): FakeTimers {
+  const callbacks = new Map<number, () => void>();
+  let nextId = 1;
+  return {
+    setTimeout(callback) {
+      const id = nextId++;
+      callbacks.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      callbacks.delete(id);
+    },
+    pendingCallbacks: () => [...callbacks.values()],
+  };
+}
+
+function createApp({ catalogTimers }: CreateAppOptions = {}): PiWebUiApp {
   const storage = { getItem: () => null, setItem: () => undefined, removeItem: () => undefined };
   vi.stubGlobal("window", {
     location: { search: "" },
@@ -206,8 +241,8 @@ function createApp(): PiWebUiApp {
     removeEventListener: () => undefined,
     setInterval: () => 1,
     clearInterval: () => undefined,
-    setTimeout: () => 1,
-    clearTimeout: () => undefined,
+    setTimeout: catalogTimers === undefined ? () => 1 : (callback: () => void) => catalogTimers.setTimeout(callback),
+    clearTimeout: catalogTimers === undefined ? () => undefined : (id: number) => { catalogTimers.clearTimeout(id); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   return new PiWebUiApp();
