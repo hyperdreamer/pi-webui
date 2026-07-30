@@ -1,6 +1,6 @@
 # Exact subsession model and thinking selection — design
 
-**Status:** Approved design direction; awaiting review of this written specification.
+**Status:** Approved specification.
 
 ## Goal
 
