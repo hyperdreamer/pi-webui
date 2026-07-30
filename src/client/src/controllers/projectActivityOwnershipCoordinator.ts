@@ -2,6 +2,7 @@ import { workspacesApi as defaultApi, type Project, type Workspace } from "../ap
 import { isWorkspaceActivityActive } from "../../../shared/activity";
 import { projectOwnsWorkspacePath } from "../workspaceActivity";
 import { selectedMachineId, type GetState, type SetState } from "./types";
+import type { ProjectCatalogTopologyRequest, ProjectCatalogTopologyScope } from "./projectCatalogController";
 
 export interface ProjectActivityOwnershipFailure {
   machineId: string;
@@ -9,8 +10,19 @@ export interface ProjectActivityOwnershipFailure {
   error: unknown;
 }
 
+export interface ProjectWorkspaceTopologySnapshot {
+  machineId: string;
+  projectId: string;
+  projectPath: string;
+  workspaces: Workspace[];
+  topologyRequest?: ProjectCatalogTopologyRequest;
+}
+
 export interface ProjectActivityOwnershipCoordinatorDependencies {
   api?: Pick<typeof defaultApi, "workspaces">;
+  onProjectTopology?: (snapshot: ProjectWorkspaceTopologySnapshot) => Promise<void> | void;
+  /** Captures the shared topology order immediately before listing a project. */
+  captureTopologyRequest?: (scope: ProjectCatalogTopologyScope) => ProjectCatalogTopologyRequest;
   onError?: (failure: ProjectActivityOwnershipFailure) => void;
 }
 
@@ -31,11 +43,13 @@ interface OwnershipPass {
 }
 
 /**
- * Hydrates only project-to-workspace topology needed to attribute active CWDs.
+ * Discovers project-to-workspace topology needed to attribute active CWDs.
  * Selection and navigation remain owned by their existing controllers.
  */
 export class ProjectActivityOwnershipCoordinator {
   private readonly api: Pick<typeof defaultApi, "workspaces">;
+  private readonly onProjectTopology: ((snapshot: ProjectWorkspaceTopologySnapshot) => Promise<void> | void) | undefined;
+  private readonly captureTopologyRequest: ((scope: ProjectCatalogTopologyScope) => ProjectCatalogTopologyRequest) | undefined;
   private readonly onError: ((failure: ProjectActivityOwnershipFailure) => void) | undefined;
   private machineGeneration = 0;
   private activityMachineGeneration = -1;
@@ -52,6 +66,8 @@ export class ProjectActivityOwnershipCoordinator {
     deps: ProjectActivityOwnershipCoordinatorDependencies = {},
   ) {
     this.api = deps.api ?? defaultApi;
+    this.onProjectTopology = deps.onProjectTopology;
+    this.captureTopologyRequest = deps.captureTopologyRequest;
     this.onError = deps.onError;
   }
 
@@ -121,8 +137,13 @@ export class ProjectActivityOwnershipCoordinator {
   private async runPass(pass: OwnershipPass): Promise<void> {
     await Promise.all(pass.projects.map(async (project) => {
       try {
+        const topologyRequest = this.captureTopologyRequest?.({
+          machineId: pass.machineId,
+          projectId: project.id,
+          projectPath: project.path,
+        });
         const workspaces = await this.api.workspaces(project.id, pass.machineId);
-        this.applyProjectWorkspaces(pass, project, workspaces);
+        await this.applyProjectWorkspaces(pass, project, workspaces, topologyRequest);
       } catch (error) {
         if (this.isPassScopeCurrent(pass)) this.reportError({ machineId: pass.machineId, projectId: project.id, error });
       }
@@ -144,16 +165,35 @@ export class ProjectActivityOwnershipCoordinator {
     if (runTrailingPass) await this.reconcile(selectedMachineId(this.getState()));
   }
 
-  private applyProjectWorkspaces(pass: OwnershipPass, project: ProjectTopologySnapshot, workspaces: Workspace[]): void {
+  private async applyProjectWorkspaces(
+    pass: OwnershipPass,
+    project: ProjectTopologySnapshot,
+    workspaces: Workspace[],
+    topologyRequest: ProjectCatalogTopologyRequest | undefined,
+  ): Promise<void> {
     if (this.activePass !== pass || !this.isPassScopeCurrent(pass)) return;
     const state = this.getState();
     const currentProject = state.projects.find((candidate) => candidate.id === project.id);
     if (currentProject?.path !== project.path) return;
-    if (state.workspacesByProjectId[project.id] !== project.startingWorkspaces) return;
+    // Callers without the shared seam retain the optimistic cache guard. When
+    // ordered topology is installed, its request token is the authoritative
+    // guard: an array replacement by an older source must not block this pass.
+    if (topologyRequest === undefined && state.workspacesByProjectId[project.id] !== project.startingWorkspaces) return;
+
+    if (this.onProjectTopology !== undefined) {
+      await this.onProjectTopology({
+        machineId: pass.machineId,
+        projectId: project.id,
+        projectPath: project.path,
+        workspaces,
+        ...(topologyRequest === undefined ? {} : { topologyRequest }),
+      });
+      return;
+    }
 
     this.setState({
       workspacesByProjectId: {
-        ...state.workspacesByProjectId,
+        ...this.getState().workspacesByProjectId,
         [project.id]: workspaces,
       },
     });

@@ -14,6 +14,7 @@ import { MemoryController } from "../controllers/memoryController";
 import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
+import { ProjectCatalogController } from "../controllers/projectCatalogController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
 import { SessionController } from "../controllers/sessionController";
@@ -189,11 +190,49 @@ export class PiWebUiApp extends LitElement {
       },
     },
   );
+  private readonly workspaces = new WorkspaceController(
+    () => this.state,
+    (patch) => { this.setState(patch); },
+    () => { this.updateUrl(); },
+    this.sessions,
+    new SessionStorageWorkspaceSelectionMemory(),
+    {
+      onBackgroundError: (operation, error) => {
+        console.warn(`Failed to ${operation}`, error);
+      },
+    },
+  );
+  private readonly projectCatalog = new ProjectCatalogController(
+    () => this.state,
+    {
+      workspaces: workspacesApi.workspaces,
+      applySnapshot: async (snapshot) => {
+        await this.workspaces.reconcileProjectCatalog(snapshot);
+      },
+      captureTopologyRequest: (scope) => this.workspaces.captureProjectCatalogTopologyRequest(scope),
+      onBackgroundError: (operation, error) => {
+        console.warn(`Failed to ${operation}`, error);
+      },
+    },
+  );
   private readonly projectActivityOwnership = new ProjectActivityOwnershipCoordinator(
     () => this.state,
     (patch) => { this.setState(patch); },
     {
       api: workspacesApi,
+      captureTopologyRequest: (scope) => this.workspaces.captureProjectCatalogTopologyRequest(scope),
+      onProjectTopology: async (snapshot) => {
+        const project = this.state.projects.find((candidate) => (
+          candidate.id === snapshot.projectId && candidate.path === snapshot.projectPath
+        ));
+        if (project === undefined) return;
+        await this.workspaces.reconcileProjectCatalog({
+          machineId: snapshot.machineId,
+          project,
+          workspaces: snapshot.workspaces,
+          ...(snapshot.topologyRequest === undefined ? {} : { topologyRequest: snapshot.topologyRequest }),
+        });
+      },
       onError: ({ machineId, projectId, error }) => {
         console.warn(`Failed to discover project activity ownership for ${projectId} on ${machineId}`, error);
       },
@@ -208,13 +247,6 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     (status) => { this.sessions.applySessionStatus(status); },
-  );
-  private readonly workspaces = new WorkspaceController(
-    () => this.state,
-    (patch) => { this.setState(patch); },
-    () => { this.updateUrl(); },
-    this.sessions,
-    new SessionStorageWorkspaceSelectionMemory(),
   );
   private readonly projects = new ProjectController(
     () => this.state,
@@ -441,6 +473,7 @@ export class PiWebUiApp extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this.synchronizeProjectCatalogPolling();
     this.unreadConnected = true;
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("pageshow", this.onPageShow);
@@ -475,6 +508,7 @@ export class PiWebUiApp extends LitElement {
     this.keyboard.reset();
     this.auth.dispose();
     this.sessions.dispose();
+    this.projectCatalog.dispose();
     this.notifications.dispose();
     this.realtime.close();
     this.closeMachineActivitySockets();
@@ -509,6 +543,13 @@ export class PiWebUiApp extends LitElement {
     if (machineActivitySubscriptionInputsChanged(previous, this.state)) this.syncMachineActivitySubscriptions();
     this.notifications.syncEnvironment(previous, this.state);
     if (previous.selectedProject?.name !== this.state.selectedProject?.name) this.syncWindowTitle();
+    this.synchronizeProjectCatalogPolling();
+  }
+
+  private synchronizeProjectCatalogPolling(): void {
+    // The node lifecycle shim may expose isConnected as undefined; do not let
+    // ProjectCatalogController's default observation parameter treat that as true.
+    this.projectCatalog.updatePolling(this.isConnected ? true : false);
   }
 
   private async loadProjectsAndRestoreRoute() {
@@ -535,6 +576,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async refreshAfterBrowserResume(): Promise<void> {
+    void this.projectCatalog.refresh();
     await this.renegotiateUnreadMachines();
     await Promise.all([
       this.sessions.refreshSelectedSession(),
@@ -1101,6 +1143,7 @@ export class PiWebUiApp extends LitElement {
         const workspace = this.state.selectedWorkspace;
         if (workspace !== undefined) void this.refreshActiveTerminals(workspace);
         void this.refreshWorkspaceActivity(machineId);
+        void this.projectCatalog.refresh();
       },
       machineId,
     );
