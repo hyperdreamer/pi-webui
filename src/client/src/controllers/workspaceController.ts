@@ -141,7 +141,12 @@ export class WorkspaceController {
           this.restoreCatalogFallbackSessionState(workspace, machineId, catalogFallback);
           return;
         }
-        this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
+        this.clearStaleCatalogSelectionLoadingIfOwned(
+          workspace,
+          machineId,
+          projectSessionsRequest,
+          target?.catalogScope,
+        );
         return;
       }
       const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
@@ -161,7 +166,12 @@ export class WorkspaceController {
           this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
           return;
         }
-        this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
+        this.clearStaleCatalogSelectionLoadingIfOwned(
+          workspace,
+          machineId,
+          projectSessionsRequest,
+          target?.catalogScope,
+        );
         return;
       }
       if (catalogFallback === undefined) {
@@ -450,10 +460,14 @@ export class WorkspaceController {
   }
 
   private clearStaleCatalogSelectionLoadingIfOwned(
+    workspace: Workspace,
+    machineId: string,
     request: number,
     catalogScope: CatalogWorkspaceSelectionScope | undefined,
   ): void {
-    if (catalogScope !== undefined && request === this.projectSessionsRequest) this.setState({ isLoadingSessions: false });
+    if (catalogScope !== undefined && this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) {
+      this.setState({ isLoadingSessions: false });
+    }
   }
 
   private isWorkspaceSelectionTargetCurrent(

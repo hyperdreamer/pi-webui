@@ -420,6 +420,35 @@ describe("WorkspaceController", () => {
     expect(updateUrl).not.toHaveBeenCalled();
   });
 
+  it("does not clear a newer machine scope's session loading when a stale catalog fallback settles", async () => {
+    const fallbackSessions = deferred<SessionInfo[]>();
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      projectSessions: [parentSession, spawnedSession],
+      listSessions: () => fallbackSessions.promise,
+    });
+
+    const reconciling = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+    });
+    await vi.waitFor(() => {
+      expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+      expect(harness.state.isLoadingSessions).toBe(true);
+    });
+
+    harness.apply({ selectedMachine: remoteMachine, isLoadingSessions: true });
+    fallbackSessions.resolve([]);
+
+    await reconciling;
+
+    expect(harness.state.selectedMachine).toEqual(remoteMachine);
+    expect(harness.state.isLoadingSessions).toBe(true);
+  });
+
   it("keeps a newer foreground selection's session loading state when a stale catalog fallback finishes", async () => {
     const fallbackSessions = deferred<SessionInfo[]>();
     const foregroundSessions = deferred<SessionInfo[]>();
