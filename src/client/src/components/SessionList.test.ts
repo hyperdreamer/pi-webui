@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerAfterMarker, findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, sessionRowsForSessionList, unreadSessionCount } from "./SessionList";
 
@@ -322,6 +322,29 @@ describe("session sidebar search and cleanup controls", () => {
     expect(rendered).toContain("Current parent context");
     expect(rendered).toContain("Deploy archived result");
     expect(rendered).not.toContain("parent unavailable");
+  });
+
+  // The Node test environment has no DOM harness, so inspect the archive
+  // disclosure's stable semantic class to narrowly verify its click wiring.
+  it("keeps a collapsed archive state unchanged when search forces archived results visible", () => {
+    const archived = session("archived", {
+      archived: true,
+      archivedAt: "2026-07-30T00:00:00.000Z",
+      firstMessage: "Deploy archived result",
+    });
+    const list = new SessionList();
+    list.sessions = [archived];
+    Reflect.set(list, "archivedExpanded", false);
+    Reflect.set(list, "searchQuery", "deploy");
+
+    const searchRendered = list.render();
+    expect(templateText(searchRendered)).toContain("Deploy archived result");
+    expect(findOptionalTemplateEventHandlerAfterMarker(searchRendered, 'class="section-toggle"')).toBeUndefined();
+
+    Reflect.set(list, "searchQuery", "");
+    const restored = list.render();
+    expect(templateText(restored)).toContain("▸ Archived");
+    expect(templateEventHandlerAfterMarker(restored, 'class="section-toggle"')).toBeTypeOf("function");
   });
 
   it("opens and closes the inline search control, clearing its query on close", () => {

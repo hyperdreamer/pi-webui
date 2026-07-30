@@ -311,7 +311,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const active = this.selectionScopes.has("archived");
     return html`
       <h2 class="subheading">
-        <button class="section-toggle" aria-expanded=${String(expanded)} @click=${() => { this.toggleArchived(); }}><span>${expanded ? "▾" : "▸"} Archived</span></button>
+        ${hasSessionSearchQuery(this.searchQuery)
+          ? html`<span class="plain-heading">${expanded ? "▾" : "▸"} Archived</span>`
+          : html`<button class="section-toggle" aria-expanded=${String(expanded)} @click=${() => { this.toggleArchived(); }}><span>${expanded ? "▾" : "▸"} Archived</span></button>`}
         ${expanded ? html`<button class="bulk-select-entry ${active ? "selected" : ""}" title=${active ? "Close archived session selection" : "Select archived sessions"} aria-label=${active ? "Close archived session selection" : "Select archived sessions"} aria-expanded=${String(active)} aria-pressed=${String(active)} @click=${() => { this.toggleSelection("archived", archivedSessions); }}>☑</button>` : null}
         <small class="section-count">${archivedSessions.length}</small>
       </h2>
