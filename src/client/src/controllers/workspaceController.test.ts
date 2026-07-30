@@ -208,12 +208,55 @@ describe("WorkspaceController", () => {
     expect(harness.state.workspacesByProjectId[project.id]).toEqual([mainWorkspace]);
   });
 
+  it("does not apply fallback sessions or navigation after its catalog path becomes stale", async () => {
+    const fallbackSessions = deferred<SessionInfo[]>();
+    const listSessions = vi.fn(() => fallbackSessions.promise);
+    const updateUrl = vi.fn();
+    const selectSession = vi.fn(() => {
+      updateUrl();
+      return Promise.resolve();
+    });
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      projectSessions: [parentSession, spawnedSession],
+      listSessions,
+      updateUrl,
+      sessionController: {
+        clearActiveSession: () => undefined,
+        preferredSession: () => parentSession,
+        selectSession,
+      },
+    });
+
+    const reconciling = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+    });
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledWith(mainWorkspace.path, "local");
+    });
+
+    harness.apply({ projects: [{ ...project, path: "/workspace-moved" }] });
+    fallbackSessions.resolve([parentSession]);
+
+    await reconciling;
+
+    expect(harness.state.sessions).toEqual([]);
+    expect(harness.state.projectSessions).toEqual([]);
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(updateUrl).not.toHaveBeenCalled();
+  });
+
   it("clears the foreground selection when no workspace remains after a snapshot", async () => {
     const harness = controllerForCatalog({
       selectedWorkspace: mainWorkspace,
       workspaces: [mainWorkspace],
       workspacesByProjectId: { [project.id]: [mainWorkspace] },
       projectSessions: [parentSession],
+      error: "existing foreground error",
     });
 
     await harness.controller.reconcileProjectCatalog({
@@ -226,6 +269,7 @@ describe("WorkspaceController", () => {
     expect(harness.state.selectedWorkspace).toBeUndefined();
     expect(harness.state.workspaces).toEqual([]);
     expect(harness.state.projectSessions).toEqual([]);
+    expect(harness.state.error).toBe("existing foreground error");
   });
 
   it("updates only the per-project topology cache for a non-selected project snapshot", async () => {
@@ -288,6 +332,34 @@ describe("WorkspaceController", () => {
     await harness.controller.reconcileProjectCatalog(snapshot);
 
     expect(listSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves foreground error when failed discovery falls back from a removed workspace", async () => {
+    const unavailableWorkspace = workspace(project, "workspace-unavailable", "/workspace-unavailable");
+    const error = new Error("unavailable workspace sessions");
+    const onBackgroundError = vi.fn();
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      projectSessions: [parentSession, spawnedSession],
+      error: "existing foreground error",
+      listSessions: (cwd: string) => {
+        if (cwd === unavailableWorkspace.path) return Promise.reject<SessionInfo[]>(error);
+        return Promise.resolve<SessionInfo[]>([]);
+      },
+      onBackgroundError,
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, unavailableWorkspace],
+    });
+
+    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(harness.state.error).toBe("existing foreground error");
+    expect(onBackgroundError).toHaveBeenCalledWith("reconcile discovered workspace sessions", error);
   });
 
   it("rejects catalog snapshots with stale machine, project, or path scope", async () => {
@@ -364,12 +436,16 @@ interface CatalogHarnessInput extends Partial<AppState> {
   listSessions?: ListSessions;
   listWorkspaces?: ListWorkspaces;
   onBackgroundError?: WorkspaceControllerDependencies["onBackgroundError"];
+  sessionController?: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession">;
+  updateUrl?: () => void;
 }
 
 function controllerForCatalog({
   listSessions = () => Promise.resolve([]),
   listWorkspaces = () => Promise.resolve([]),
   onBackgroundError,
+  sessionController = sessionControllerStub(),
+  updateUrl = () => undefined,
   ...statePatch
 }: CatalogHarnessInput) {
   const state: AppState = {
@@ -381,8 +457,8 @@ function controllerForCatalog({
   const controller = new WorkspaceController(
     () => state,
     (patch) => { Object.assign(state, patch); },
-    () => undefined,
-    sessionControllerStub(),
+    updateUrl,
+    sessionController,
     new InMemoryWorkspaceSelectionMemory(),
     {
       api: { workspaces: listWorkspaces, sessions: listSessions },

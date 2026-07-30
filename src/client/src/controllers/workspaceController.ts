@@ -7,6 +7,18 @@ import type { ProjectCatalogSnapshot } from "./projectCatalogController";
 import type { SessionController } from "./sessionController";
 import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, type WorkspaceSelectionMemory } from "./workspaceSelection";
 
+interface CatalogWorkspaceSelectionScope {
+  machineId: string;
+  project: Project;
+}
+
+interface WorkspaceSelectionTarget {
+  sessionId?: string | undefined;
+  updateUrl?: boolean | undefined;
+  preserveError?: boolean | undefined;
+  catalogScope?: CatalogWorkspaceSelectionScope | undefined;
+}
+
 export interface WorkspaceControllerDependencies {
   api?: Pick<typeof defaultApi, "sessions" | "workspaces">;
   onBackgroundError?: (operation: string, error: unknown) => void;
@@ -30,10 +42,18 @@ export class WorkspaceController {
     this.onBackgroundError = deps.onBackgroundError;
   }
 
-  clearSelection(options?: { updateUrl?: boolean | undefined }) {
+  clearSelection(options?: { updateUrl?: boolean | undefined; preserveError?: boolean | undefined }) {
+    const error = this.getState().error;
     this.projectSessionsRequest += 1;
     this.sessions.clearActiveSession();
-    this.setState({ selectedProject: undefined, selectedWorkspace: undefined, workspaces: [], isLoadingWorkspaces: false, ...resetWorkspaceScopedState() });
+    this.setState({
+      selectedProject: undefined,
+      selectedWorkspace: undefined,
+      workspaces: [],
+      isLoadingWorkspaces: false,
+      ...resetWorkspaceScopedState(),
+      ...(options?.preserveError === true ? { error } : {}),
+    });
     if (options?.updateUrl !== false) this.updateUrl();
   }
 
@@ -61,26 +81,42 @@ export class WorkspaceController {
     }
   }
 
-  async selectWorkspace(workspace: Workspace, target?: { sessionId?: string | undefined; updateUrl?: boolean | undefined }) {
+  async selectWorkspace(workspace: Workspace, target?: WorkspaceSelectionTarget) {
+    if (!this.isCatalogSelectionScopeCurrent(target?.catalogScope)) return;
+
     const projectSessionsRequest = ++this.projectSessionsRequest;
     const machineId = selectedMachineId(this.getState());
+    const error = this.getState().error;
     this.workspaceSelection.rememberWorkspace({ ...workspace, projectId: machineProjectKey(machineId, workspace.projectId) });
     this.sessions.clearActiveSession();
-    this.setState({ selectedWorkspace: workspace, isLoadingWorkspaces: false, ...resetWorkspaceScopedState(), isLoadingSessions: true });
+    this.setState({
+      selectedWorkspace: workspace,
+      isLoadingWorkspaces: false,
+      ...resetWorkspaceScopedState(),
+      ...(target?.preserveError === true ? { error } : {}),
+      isLoadingSessions: true,
+    });
     try {
-      const sessions = mergeCachedNewSessions(workspace.path, await this.api.sessions(workspace.path, machineId), machineId);
-      if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedWorkspace?.id !== workspace.id || this.getState().selectedProject?.id !== workspace.projectId) return;
+      const listedSessions = await this.api.sessions(workspace.path, machineId);
+      if (!this.isWorkspaceSelectionCurrent(workspace, machineId, target?.catalogScope)) return;
+      const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
-      void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId);
+      void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope);
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
       if (session) await this.sessions.selectSession(session, { updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId && this.getState().selectedWorkspace?.id === workspace.id) this.setState({ error: String(error), isLoadingSessions: false });
+      if (this.isWorkspaceSelectionCurrent(workspace, machineId, target?.catalogScope)) this.setState({ error: String(error), isLoadingSessions: false });
     }
   }
 
-  private async refreshProjectSessions(request: number, workspace: Workspace, currentSessions: SessionInfo[], machineId: string): Promise<void> {
+  private async refreshProjectSessions(
+    request: number,
+    workspace: Workspace,
+    currentSessions: SessionInfo[],
+    machineId: string,
+    catalogScope?: CatalogWorkspaceSelectionScope,
+  ): Promise<void> {
     const state = this.getState();
     const projectWorkspaces = state.workspaces.filter((candidate) => candidate.projectId === workspace.projectId);
     if (!projectWorkspaces.some((candidate) => candidate.id === workspace.id)) projectWorkspaces.unshift(workspace);
@@ -93,7 +129,8 @@ export class WorkspaceController {
       if (request !== this.projectSessionsRequest
         || selectedMachineId(this.getState()) !== machineId
         || this.getState().selectedProject?.id !== workspace.projectId
-        || this.getState().selectedWorkspace?.id !== workspace.id) return;
+        || this.getState().selectedWorkspace?.id !== workspace.id
+        || !this.isCatalogSelectionScopeCurrent(catalogScope)) return;
       this.setState({ projectSessions: uniqueSessionsByPath(sessionLists.flat()) });
     } catch {
       // Cross-workspace grouping is an enhancement; preserve the current
@@ -122,11 +159,14 @@ export class WorkspaceController {
 
     const fallback = selectFallbackWorkspace(snapshot.workspaces);
     if (fallback === undefined) {
-      this.clearSelection();
+      this.clearSelection({ preserveError: true });
       return;
     }
 
-    await this.selectWorkspace(fallback);
+    await this.selectWorkspace(fallback, {
+      preserveError: true,
+      catalogScope: { machineId: snapshot.machineId, project: snapshot.project },
+    });
     if (!this.isProjectCatalogScopeCurrent(snapshot.machineId, snapshot.project)) return;
   }
 
@@ -221,6 +261,22 @@ export class WorkspaceController {
         ...currentProjectSessions,
       ]),
     });
+  }
+
+  private isWorkspaceSelectionCurrent(
+    workspace: Workspace,
+    machineId: string,
+    catalogScope: CatalogWorkspaceSelectionScope | undefined,
+  ): boolean {
+    const state = this.getState();
+    return selectedMachineId(state) === machineId
+      && state.selectedWorkspace?.id === workspace.id
+      && state.selectedProject?.id === workspace.projectId
+      && this.isCatalogSelectionScopeCurrent(catalogScope);
+  }
+
+  private isCatalogSelectionScopeCurrent(catalogScope: CatalogWorkspaceSelectionScope | undefined): boolean {
+    return catalogScope === undefined || this.isProjectCatalogScopeCurrent(catalogScope.machineId, catalogScope.project);
   }
 
   private isProjectCatalogScopeCurrent(machineId: string, project: Project): boolean {
