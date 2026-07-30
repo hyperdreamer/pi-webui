@@ -324,6 +324,26 @@ describe("session sidebar search and cleanup controls", () => {
     expect(rendered).not.toContain("parent unavailable");
   });
 
+  it("retains an archived parent for a matching current child", () => {
+    const archivedParent = session("archived-parent", {
+      archived: true,
+      archivedAt: "2026-07-30T00:00:00.000Z",
+      firstMessage: "Archived parent context",
+    });
+    const currentChild = session("current-child", {
+      firstMessage: "Deploy current result",
+      parentSessionPath: archivedParent.path,
+    });
+    const list = new SessionList();
+    list.sessions = [archivedParent, currentChild];
+    Reflect.set(list, "searchQuery", "deploy");
+
+    const rendered = templateText(list.render());
+    expect(rendered).toContain("Archived parent context");
+    expect(rendered).toContain("Deploy current result");
+    expect(rendered).not.toContain("parent unavailable");
+  });
+
   // The Node test environment has no DOM harness, so inspect the archive
   // disclosure's stable semantic class to narrowly verify its click wiring.
   it("keeps a collapsed archive state unchanged when search forces archived results visible", () => {

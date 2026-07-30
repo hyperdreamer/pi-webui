@@ -137,12 +137,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const searchRows = searchActive
       ? filterSessionRows(sessionRowsForSearch(sessionTreeSessions, treeOptions), this.searchQuery)
       : [];
-    const currentRows = searchActive
-      ? searchRows.filter((row) => row.session.archived !== true)
-      : normalCurrentRows;
-    const archivedRows = searchActive
-      ? searchRows.filter((row) => row.session.archived === true)
-      : allArchivedRows;
+    const { currentRows, archivedRows } = searchActive
+      ? partitionSearchRows(searchRows)
+      : { currentRows: normalCurrentRows, archivedRows: allArchivedRows };
     const currentSelectableSessions = selectableCurrentSessions(currentRows);
     const unfilteredCurrentSelectableSessions = selectableCurrentSessions(normalCurrentRows);
     const archivedVisible = this.archivedExpanded || (searchActive && archivedRows.length > 0);
@@ -743,6 +740,27 @@ export function unreadSessionCount(
     runtime.sending?.[session.id] === true,
     unreadSessionIds.has(session.id),
   ) === "unread").length;
+}
+
+function partitionSearchRows(rows: readonly SessionRow[]): { currentRows: SessionRow[]; archivedRows: SessionRow[] } {
+  const rowsByPath = new Map(rows.map((row) => [row.session.path, row]));
+  const currentFamilyPaths = new Set<string>();
+  const pendingPaths = rows
+    .filter((row) => row.session.archived !== true)
+    .map((row) => row.session.path);
+
+  while (pendingPaths.length > 0) {
+    const path = pendingPaths.pop();
+    if (path === undefined || currentFamilyPaths.has(path)) continue;
+    currentFamilyPaths.add(path);
+    const parentPath = rowsByPath.get(path)?.session.parentSessionPath;
+    if (parentPath !== undefined && rowsByPath.has(parentPath)) pendingPaths.push(parentPath);
+  }
+
+  return {
+    currentRows: rows.filter((row) => currentFamilyPaths.has(row.session.path)),
+    archivedRows: rows.filter((row) => !currentFamilyPaths.has(row.session.path)),
+  };
 }
 
 function hasStringValue(target: EventTarget | null): target is EventTarget & { value: string } {
