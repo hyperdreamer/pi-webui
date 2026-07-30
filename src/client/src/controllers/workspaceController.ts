@@ -3,15 +3,19 @@ import { resetWorkspaceScopedState } from "../appState";
 import { mergeCachedNewSessions } from "../cachedNewSessions";
 import { machineProjectKey } from "../machineKeys";
 import { selectedMachineId, type GetState, type RouteTarget, type SetState, type UpdateUrl } from "./types";
+import type { ProjectCatalogSnapshot } from "./projectCatalogController";
 import type { SessionController } from "./sessionController";
 import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, type WorkspaceSelectionMemory } from "./workspaceSelection";
 
 export interface WorkspaceControllerDependencies {
   api?: Pick<typeof defaultApi, "sessions" | "workspaces">;
+  onBackgroundError?: (operation: string, error: unknown) => void;
 }
 
 export class WorkspaceController {
   private readonly api: Pick<typeof defaultApi, "sessions" | "workspaces">;
+  private readonly onBackgroundError: WorkspaceControllerDependencies["onBackgroundError"];
+  private readonly unhydratedWorkspaceKeys = new Set<string>();
   private projectSessionsRequest = 0;
 
   constructor(
@@ -23,6 +27,7 @@ export class WorkspaceController {
     deps: WorkspaceControllerDependencies = {},
   ) {
     this.api = deps.api ?? defaultApi;
+    this.onBackgroundError = deps.onBackgroundError;
   }
 
   clearSelection(options?: { updateUrl?: boolean | undefined }) {
@@ -46,7 +51,8 @@ export class WorkspaceController {
     try {
       const workspaces = await this.api.workspaces(project.id, machineId);
       if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedProject?.id !== project.id) return;
-      this.setState({ workspaces, workspacesByProjectId: { ...this.getState().workspacesByProjectId, [project.id]: workspaces }, isLoadingWorkspaces: false });
+      this.applyProjectWorkspaceProjection(project, workspaces, machineId);
+      this.setState({ isLoadingWorkspaces: false });
       const workspace = selectPreferredWorkspace(workspaces, { targetWorkspaceId: target?.workspaceId, latestWorkspaceId: this.workspaceSelection.latestWorkspaceId(machineProjectKey(machineId, project.id)) });
       if (workspace) await this.selectWorkspace(workspace, { sessionId: target?.sessionId, updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
@@ -95,11 +101,42 @@ export class WorkspaceController {
     }
   }
 
+  async reconcileProjectCatalog(snapshot: ProjectCatalogSnapshot): Promise<void> {
+    if (!this.isProjectCatalogScopeCurrent(snapshot.machineId, snapshot.project)) return;
+
+    const { added, selectedWorkspaceRemoved } = this.applyProjectWorkspaceProjection(snapshot.project, snapshot.workspaces, snapshot.machineId);
+    if (this.getState().selectedProject?.id !== snapshot.project.id) return;
+
+    for (const workspace of added) this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(snapshot.machineId, snapshot.project.id, workspace));
+    const workspacesToHydrate = uniqueWorkspacesByKey(snapshot.workspaces.filter((workspace) => (
+      this.unhydratedWorkspaceKeys.has(workspaceHydrationKey(snapshot.machineId, snapshot.project.id, workspace))
+    )));
+    await this.hydrateDiscoveredWorkspaceSessions(snapshot.project, workspacesToHydrate, snapshot.machineId);
+    if (!this.isProjectCatalogScopeCurrent(snapshot.machineId, snapshot.project)) return;
+
+    const selectedWorkspace = this.getState().selectedWorkspace;
+    if (!selectedWorkspaceRemoved
+      || this.getState().selectedProject?.id !== snapshot.project.id
+      || selectedWorkspace === undefined
+      || workspaceStillExists(selectedWorkspace, snapshot.workspaces)) return;
+
+    const fallback = selectFallbackWorkspace(snapshot.workspaces);
+    if (fallback === undefined) {
+      this.clearSelection();
+      return;
+    }
+
+    await this.selectWorkspace(fallback);
+    if (!this.isProjectCatalogScopeCurrent(snapshot.machineId, snapshot.project)) return;
+  }
+
   async refreshProjectWorkspaces(projectId: string): Promise<Workspace[]> {
-    const project = this.getState().projects.find((candidate) => candidate.id === projectId);
+    const state = this.getState();
+    const project = state.projects.find((candidate) => candidate.id === projectId);
     if (project === undefined) throw new Error("Project not found");
-    const workspaces = await this.api.workspaces(project.id, selectedMachineId(this.getState()));
-    this.applyProjectWorkspaces(project.id, workspaces);
+    const machineId = selectedMachineId(state);
+    const workspaces = await this.api.workspaces(project.id, machineId);
+    await this.reconcileProjectCatalog({ machineId, project, workspaces });
     return workspaces;
   }
 
@@ -113,11 +150,100 @@ export class WorkspaceController {
     else this.clearSelection();
   }
 
-  private applyProjectWorkspaces(projectId: string, workspaces: Workspace[]): void {
+  private applyProjectWorkspaceProjection(
+    project: Project,
+    workspaces: Workspace[],
+    machineId: string,
+  ): { added: Workspace[]; selectedWorkspaceRemoved: boolean } {
     const state = this.getState();
-    const workspacesByProjectId = { ...state.workspacesByProjectId, [projectId]: workspaces };
-    if (state.selectedProject?.id === projectId) this.setState({ workspaces, workspacesByProjectId });
-    else this.setState({ workspacesByProjectId });
+    const selectedProject = state.selectedProject?.id === project.id;
+    const oldWorkspaces = state.workspacesByProjectId[project.id]
+      ?? (selectedProject ? state.workspaces : []);
+    const oldWorkspaceIdentities = new Set(oldWorkspaces.map(workspaceIdentity));
+    const added = workspaces.filter((workspace) => !oldWorkspaceIdentities.has(workspaceIdentity(workspace)));
+    const workspacePaths = new Set(workspaces.map((workspace) => workspace.path));
+    const workspaceKeys = new Set(workspaces.map((workspace) => workspaceHydrationKey(machineId, project.id, workspace)));
+    for (const key of this.unhydratedWorkspaceKeys) {
+      if (isWorkspaceKeyForProject(key, machineId, project.id) && !workspaceKeys.has(key)) this.unhydratedWorkspaceKeys.delete(key);
+    }
+
+    const selectedWorkspace = selectedProject ? state.selectedWorkspace : undefined;
+    const refreshedSelectedWorkspace = selectedWorkspace === undefined
+      ? undefined
+      : workspaces.find((workspace) => workspaceIdentity(workspace) === workspaceIdentity(selectedWorkspace));
+    const selectedWorkspaceRemoved = selectedWorkspace !== undefined && refreshedSelectedWorkspace === undefined;
+    const workspacesByProjectId = { ...state.workspacesByProjectId, [project.id]: workspaces };
+    this.setState({
+      workspacesByProjectId,
+      ...(selectedProject ? { workspaces } : {}),
+      ...(refreshedSelectedWorkspace === undefined ? {} : { selectedWorkspace: refreshedSelectedWorkspace }),
+      ...(selectedProject ? { projectSessions: state.projectSessions.filter((session) => workspacePaths.has(session.cwd)) } : {}),
+    });
+    return { added, selectedWorkspaceRemoved };
+  }
+
+  private async hydrateDiscoveredWorkspaceSessions(
+    project: Project,
+    workspacesToHydrate: Workspace[],
+    machineId: string,
+  ): Promise<void> {
+    if (workspacesToHydrate.length === 0 || !this.isProjectCatalogScopeCurrent(machineId, project)) return;
+
+    const results = await Promise.allSettled(workspacesToHydrate.map(async (workspace) => {
+      const sessions = await this.api.sessions(workspace.path, machineId);
+      if (!this.isWorkspaceCurrentForProject(project, workspace, machineId)) return undefined;
+      return { workspace, sessions: mergeCachedNewSessions(workspace.path, sessions, machineId) };
+    }));
+    if (!this.isProjectCatalogScopeCurrent(machineId, project)) return;
+
+    const hydratedSessions: SessionInfo[] = [];
+    for (const [index, result] of results.entries()) {
+      const workspace = workspacesToHydrate[index];
+      if (workspace === undefined) continue;
+      if (result.status === "rejected") {
+        this.reportBackgroundError("reconcile discovered workspace sessions", result.reason);
+        continue;
+      }
+      if (result.value === undefined) continue;
+      this.unhydratedWorkspaceKeys.delete(workspaceHydrationKey(machineId, project.id, workspace));
+      hydratedSessions.push(...result.value.sessions);
+    }
+    if (hydratedSessions.length === 0) return;
+
+    const state = this.getState();
+    if (!this.isProjectCatalogScopeCurrent(machineId, project) || state.selectedProject?.id !== project.id) return;
+    const workspaces = state.workspacesByProjectId[project.id] ?? state.workspaces;
+    const workspacePaths = new Set(workspaces.map((workspace) => workspace.path));
+    const currentProjectSessions = state.projectSessions.filter((session) => workspacePaths.has(session.cwd));
+    this.setState({
+      projectSessions: uniqueSessionsByPath([
+        ...hydratedSessions.filter((session) => workspacePaths.has(session.cwd)),
+        ...currentProjectSessions,
+      ]),
+    });
+  }
+
+  private isProjectCatalogScopeCurrent(machineId: string, project: Project): boolean {
+    const state = this.getState();
+    const currentProject = state.projects.find((candidate) => candidate.id === project.id);
+    return selectedMachineId(state) === machineId && currentProject?.path === project.path;
+  }
+
+  private isWorkspaceCurrentForProject(project: Project, workspace: Workspace, machineId: string): boolean {
+    if (!this.isProjectCatalogScopeCurrent(machineId, project)) return false;
+    const state = this.getState();
+    const workspaces = state.workspacesByProjectId[project.id]
+      ?? (state.selectedProject?.id === project.id ? state.workspaces : []);
+    return workspaceStillExists(workspace, workspaces);
+  }
+
+  private reportBackgroundError(operation: string, error: unknown): void {
+    if (this.onBackgroundError === undefined) return;
+    try {
+      this.onBackgroundError(operation, error);
+    } catch {
+      // Reporting must not disrupt background reconciliation or its retry state.
+    }
   }
 }
 
@@ -127,6 +253,29 @@ export function canDeleteWorkspace(workspace: Workspace | undefined): boolean {
 
 function selectFallbackWorkspace(workspaces: Workspace[]): Workspace | undefined {
   return workspaces.find((workspace) => workspace.isMain) ?? workspaces[0];
+}
+
+function workspaceIdentity(workspace: Workspace): string {
+  return JSON.stringify([workspace.id, workspace.path]);
+}
+
+function workspaceHydrationKey(machineId: string, projectId: string, workspace: Workspace): string {
+  return JSON.stringify([machineId, projectId, workspace.id, workspace.path]);
+}
+
+function isWorkspaceKeyForProject(key: string, machineId: string, projectId: string): boolean {
+  return key.startsWith(`${JSON.stringify([machineId, projectId]).slice(0, -1)},`);
+}
+
+function uniqueWorkspacesByKey(workspaces: readonly Workspace[]): Workspace[] {
+  const workspacesByKey = new Map<string, Workspace>();
+  for (const workspace of workspaces) workspacesByKey.set(workspaceIdentity(workspace), workspace);
+  return [...workspacesByKey.values()];
+}
+
+function workspaceStillExists(workspace: Workspace, workspaces: readonly Workspace[]): boolean {
+  const identity = workspaceIdentity(workspace);
+  return workspaces.some((candidate) => workspaceIdentity(candidate) === identity);
 }
 
 function uniqueSessionsByPath(sessions: readonly SessionInfo[]): SessionInfo[] {

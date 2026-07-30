@@ -1,29 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Machine, Project, SessionInfo, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
-import type { Project, SessionInfo, Workspace } from "../api";
+import { sessionActivityIndicators } from "../sessionActivity";
+import { SessionController } from "./sessionController";
+import { FakeSocket } from "./sessionController.testSupport";
 import { InMemoryWorkspaceSelectionMemory } from "./workspaceSelection";
-import { WorkspaceController } from "./workspaceController";
-import type { SessionController } from "./sessionController";
+import { WorkspaceController, type WorkspaceControllerDependencies } from "./workspaceController";
+
+const project: Project = {
+  id: "project-1",
+  name: "workspace",
+  path: "/workspace",
+  createdAt: "now",
+};
+const otherProject: Project = {
+  id: "project-2",
+  name: "other workspace",
+  path: "/other-workspace",
+  createdAt: "now",
+};
+const mainWorkspace = workspace(project, "workspace-1", project.path);
+const featureWorkspace = workspace(project, "workspace-feature", "/workspace-feature");
+const parentSession = session("parent", mainWorkspace.path);
+const spawnedSession = session("spawned", featureWorkspace.path, { parentSessionPath: parentSession.path });
+const remoteMachine: Machine = {
+  id: "remote",
+  name: "Remote",
+  kind: "remote",
+  createdAt: "now",
+  updatedAt: "now",
+};
 
 describe("WorkspaceController", () => {
   it("marks sessions as loading until an opened workspace has returned its session list", async () => {
-    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
-    const workspace: Workspace = {
-      id: "workspace-1",
-      projectId: project.id,
-      path: project.path,
-      label: project.name,
-      isMain: true,
-      isGitRepo: false,
-      isGitWorktree: false,
-    };
     const sessionRequest = deferred<SessionInfo[]>();
     let state: AppState = { ...initialAppState(), projects: [project], selectedProject: project };
-    const sessions: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> = {
-      clearActiveSession: () => undefined,
-      preferredSession: () => undefined,
-      selectSession: () => Promise.resolve(),
-    };
+    const sessions = sessionControllerStub();
     const controller = new WorkspaceController(
       () => state,
       (patch) => { state = { ...state, ...patch }; },
@@ -38,7 +50,7 @@ describe("WorkspaceController", () => {
       },
     );
 
-    const selecting = controller.selectWorkspace(workspace);
+    const selecting = controller.selectWorkspace(mainWorkspace);
 
     expect(state.isLoadingSessions).toBe(true);
 
@@ -50,18 +62,14 @@ describe("WorkspaceController", () => {
   });
 
   it("loads related sessions from the selected project's other workspaces", async () => {
-    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
-    const main = workspace(project, "workspace-1", "/workspace");
-    const feature = workspace(project, "workspace-feature", "/workspace-feature");
-    const mainSession = session("parent", main.path);
-    const featureSession = session("child", feature.path, { parentSessionPath: mainSession.path });
-    let state: AppState = { ...initialAppState(), projects: [project], selectedProject: project, workspaces: [main, feature] };
-    const sessions: Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> = {
-      clearActiveSession: () => undefined,
-      preferredSession: () => undefined,
-      selectSession: () => Promise.resolve(),
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [project],
+      selectedProject: project,
+      workspaces: [mainWorkspace, featureWorkspace],
     };
-    const sessionsApi = vi.fn((cwd: string) => Promise.resolve(cwd === main.path ? [mainSession] : [featureSession]));
+    const sessions = sessionControllerStub();
+    const sessionsApi = vi.fn((cwd: string) => Promise.resolve(cwd === mainWorkspace.path ? [parentSession] : [spawnedSession]));
     const controller = new WorkspaceController(
       () => state,
       (patch) => { state = { ...state, ...patch }; },
@@ -71,22 +79,376 @@ describe("WorkspaceController", () => {
       { api: { workspaces: () => Promise.resolve([]), sessions: sessionsApi } },
     );
 
-    await controller.selectWorkspace(main);
+    await controller.selectWorkspace(mainWorkspace);
 
     await vi.waitFor(() => {
-      expect(state.projectSessions).toEqual([mainSession, featureSession]);
+      expect(state.projectSessions).toEqual([parentSession, spawnedSession]);
     });
-    expect(sessionsApi).toHaveBeenCalledWith(feature.path, "local");
+    expect(sessionsApi).toHaveBeenCalledWith(featureWorkspace.path, "local");
+  });
+
+  it("applies a selected-project topology snapshot to both workspace projections and hydrates only added workspaces", async () => {
+    const listSessions = vi.fn((cwd: string) => Promise.resolve(cwd === featureWorkspace.path ? [spawnedSession] : []));
+    const harness = controllerForCatalog({
+      selectedProject: project,
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+      listSessions,
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    });
+
+    expect(harness.state.workspaces).toEqual([mainWorkspace, featureWorkspace]);
+    expect(harness.state.workspacesByProjectId[project.id]).toEqual([mainWorkspace, featureWorkspace]);
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(listSessions).toHaveBeenCalledWith(featureWorkspace.path, "local");
+    expect(harness.state.projectSessions).toEqual(expect.arrayContaining([parentSession, spawnedSession]));
+    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+  });
+
+  it("renders activity after a session event preceded discovery of its worktree", async () => {
+    const { controller, sessionController, state } = catalogHarnessWithLiveSessionController({
+      workspaces: [mainWorkspace],
+      projectSessions: [parentSession],
+    });
+
+    sessionController.applyGlobalEvent({ type: "session.created", session: spawnedSession });
+    sessionController.applyGlobalEvent({
+      type: "activity.update",
+      activity: { sessionId: spawnedSession.id, phase: "active", label: "prompt accepted", at: "now" },
+    });
+    sessionController.flushPendingUpdates();
+
+    expect(state.projectSessions).not.toContainEqual(spawnedSession);
+
+    await controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    });
+
+    const indicators = sessionActivityIndicators(spawnedSession, state.projectSessions, {
+      statuses: state.sessionStatuses,
+      activities: state.sessionActivities,
+    });
+    expect(indicators).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "session", label: "This session is working" }),
+    ]));
+  });
+
+  it("preserves a live session row that arrives while discovered-workspace hydration is in flight", async () => {
+    const listedSessions = deferred<SessionInfo[]>();
+    const { controller, sessionController, state } = catalogHarnessWithLiveSessionController({
+      workspaces: [mainWorkspace],
+      projectSessions: [parentSession],
+      listSessions: () => listedSessions.promise,
+    });
+
+    const reconciling = controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    });
+    const liveSpawnedSession = { ...spawnedSession, messageCount: 7 };
+    sessionController.applyGlobalEvent({ type: "session.created", session: liveSpawnedSession });
+    listedSessions.resolve([{ ...spawnedSession, messageCount: 1 }]);
+
+    await reconciling;
+
+    expect(state.projectSessions.find((candidate) => candidate.path === spawnedSession.path)).toEqual(liveSpawnedSession);
+  });
+
+  it("hydrates a relocated workspace when its ID is unchanged but its path changes", async () => {
+    const previousFeatureWorkspace = { ...featureWorkspace, path: "/workspace-feature-old" };
+    const relocatedFeatureWorkspace = { ...featureWorkspace, path: "/workspace-feature-new" };
+    const relocatedSession = { ...spawnedSession, cwd: relocatedFeatureWorkspace.path };
+    const listSessions = vi.fn((cwd: string) => Promise.resolve(cwd === relocatedFeatureWorkspace.path ? [relocatedSession] : []));
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace, previousFeatureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, previousFeatureWorkspace] },
+      projectSessions: [parentSession],
+      listSessions,
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, relocatedFeatureWorkspace],
+    });
+
+    expect(harness.state.workspaces).toEqual([mainWorkspace, relocatedFeatureWorkspace]);
+    expect(harness.state.projectSessions).toEqual(expect.arrayContaining([parentSession, relocatedSession]));
+    expect(listSessions).toHaveBeenCalledWith(relocatedFeatureWorkspace.path, "local");
+  });
+
+  it("selects the main fallback when the selected workspace is removed from a snapshot", async () => {
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      projectSessions: [parentSession, spawnedSession],
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+    });
+
+    expect(harness.state.selectedProject).toEqual(project);
+    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(harness.state.workspaces).toEqual([mainWorkspace]);
+    expect(harness.state.workspacesByProjectId[project.id]).toEqual([mainWorkspace]);
+  });
+
+  it("clears the foreground selection when no workspace remains after a snapshot", async () => {
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [],
+    });
+
+    expect(harness.state.selectedProject).toBeUndefined();
+    expect(harness.state.selectedWorkspace).toBeUndefined();
+    expect(harness.state.workspaces).toEqual([]);
+    expect(harness.state.projectSessions).toEqual([]);
+  });
+
+  it("updates only the per-project topology cache for a non-selected project snapshot", async () => {
+    const otherMainWorkspace = workspace(otherProject, "other-main", otherProject.path);
+    const otherFeatureWorkspace = workspace(otherProject, "other-feature", "/other-workspace-feature");
+    const listSessions = vi.fn(() => Promise.resolve([spawnedSession]));
+    const harness = controllerForCatalog({
+      projects: [project, otherProject],
+      selectedProject: project,
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: {
+        [project.id]: [mainWorkspace],
+        [otherProject.id]: [otherMainWorkspace],
+      },
+      projectSessions: [parentSession],
+      listSessions,
+    });
+
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project: otherProject,
+      workspaces: [otherMainWorkspace, otherFeatureWorkspace],
+    });
+
+    expect(harness.state.workspaces).toEqual([mainWorkspace]);
+    expect(harness.state.selectedProject).toEqual(project);
+    expect(harness.state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+    expect(harness.state.workspacesByProjectId[otherProject.id]).toEqual([otherMainWorkspace, otherFeatureWorkspace]);
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it("retains a failed discovered workspace for background retry without replacing foreground error", async () => {
+    const error = new Error("feature sessions unavailable");
+    const listSessions = vi.fn(() => Promise.reject(error));
+    const onBackgroundError = vi.fn();
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+      error: "existing foreground error",
+      listSessions,
+      onBackgroundError,
+    });
+    const snapshot = {
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    };
+
+    await harness.controller.reconcileProjectCatalog(snapshot);
+
+    expect(harness.state.workspaces).toEqual([mainWorkspace, featureWorkspace]);
+    expect(harness.state.error).toBe("existing foreground error");
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+    expect(onBackgroundError).toHaveBeenCalledWith("reconcile discovered workspace sessions", error);
+
+    await harness.controller.reconcileProjectCatalog(snapshot);
+
+    expect(listSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects catalog snapshots with stale machine, project, or path scope", async () => {
+    const listSessions = vi.fn(() => Promise.resolve([spawnedSession]));
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+      listSessions,
+    });
+    const snapshot = { machineId: "local", project, workspaces: [mainWorkspace, featureWorkspace] };
+
+    await harness.controller.reconcileProjectCatalog({ ...snapshot, machineId: remoteMachine.id });
+    harness.apply({ projects: [] });
+    await harness.controller.reconcileProjectCatalog(snapshot);
+    harness.apply({ projects: [{ ...project, path: "/workspace-moved" }] });
+    await harness.controller.reconcileProjectCatalog(snapshot);
+
+    expect(harness.state.workspaces).toEqual([mainWorkspace]);
+    expect(harness.state.workspacesByProjectId[project.id]).toEqual([mainWorkspace]);
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it("does not merge discovered sessions after the catalog scope changes during hydration", async () => {
+    const listedSessions = deferred<SessionInfo[]>();
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+      listSessions: () => listedSessions.promise,
+    });
+
+    const reconciling = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    });
+    harness.apply({ selectedMachine: remoteMachine });
+    listedSessions.resolve([spawnedSession]);
+
+    await reconciling;
+
+    expect(harness.state.projectSessions).toEqual([parentSession]);
+  });
+
+  it("returns fetched workspaces after reconciling them for command-run callers", async () => {
+    const listWorkspaces = vi.fn(() => Promise.resolve([mainWorkspace, featureWorkspace]));
+    const harness = controllerForCatalog({
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      projectSessions: [parentSession],
+      listWorkspaces,
+      listSessions: (cwd: string) => Promise.resolve(cwd === featureWorkspace.path ? [spawnedSession] : []),
+    });
+
+    const fetched = await harness.controller.refreshProjectWorkspaces(project.id);
+
+    expect(fetched).toEqual([mainWorkspace, featureWorkspace]);
+    expect(harness.state.workspaces).toEqual([mainWorkspace, featureWorkspace]);
+    expect(harness.state.workspacesByProjectId[project.id]).toEqual([mainWorkspace, featureWorkspace]);
+    expect(harness.state.projectSessions).toEqual(expect.arrayContaining([parentSession, spawnedSession]));
   });
 });
 
-function workspace(project: Project, id: string, path: string): Workspace {
+type WorkspaceApi = NonNullable<WorkspaceControllerDependencies["api"]>;
+type ListSessions = WorkspaceApi["sessions"];
+type ListWorkspaces = WorkspaceApi["workspaces"];
+
+interface CatalogHarnessInput extends Partial<AppState> {
+  listSessions?: ListSessions;
+  listWorkspaces?: ListWorkspaces;
+  onBackgroundError?: WorkspaceControllerDependencies["onBackgroundError"];
+}
+
+function controllerForCatalog({
+  listSessions = () => Promise.resolve([]),
+  listWorkspaces = () => Promise.resolve([]),
+  onBackgroundError,
+  ...statePatch
+}: CatalogHarnessInput) {
+  const state: AppState = {
+    ...initialAppState(),
+    projects: [project],
+    selectedProject: project,
+    ...statePatch,
+  };
+  const controller = new WorkspaceController(
+    () => state,
+    (patch) => { Object.assign(state, patch); },
+    () => undefined,
+    sessionControllerStub(),
+    new InMemoryWorkspaceSelectionMemory(),
+    {
+      api: { workspaces: listWorkspaces, sessions: listSessions },
+      ...(onBackgroundError === undefined ? {} : { onBackgroundError }),
+    },
+  );
+  return {
+    controller,
+    get state() { return state; },
+    apply: (patch: Partial<AppState>) => { Object.assign(state, patch); },
+  };
+}
+
+function catalogHarnessWithLiveSessionController(input: {
+  workspaces: Workspace[];
+  projectSessions: SessionInfo[];
+  listSessions?: ListSessions;
+}) {
+  const state: AppState = {
+    ...initialAppState(),
+    projects: [project],
+    selectedProject: project,
+    selectedWorkspace: mainWorkspace,
+    workspaces: input.workspaces,
+    workspacesByProjectId: { [project.id]: input.workspaces },
+    sessions: [parentSession],
+    projectSessions: input.projectSessions,
+  };
+  const sessionController = new SessionController(
+    () => state,
+    (patch) => { Object.assign(state, patch); },
+    () => undefined,
+    undefined,
+    { socket: new FakeSocket() },
+  );
+  const controller = new WorkspaceController(
+    () => state,
+    (patch) => { Object.assign(state, patch); },
+    () => undefined,
+    sessionController,
+    new InMemoryWorkspaceSelectionMemory(),
+    {
+      api: {
+        workspaces: () => Promise.resolve([]),
+        sessions: input.listSessions ?? ((cwd: string) => Promise.resolve(cwd === featureWorkspace.path ? [spawnedSession] : [])),
+      },
+    },
+  );
+  return { controller, sessionController, state };
+}
+
+function sessionControllerStub(): Pick<SessionController, "clearActiveSession" | "preferredSession" | "selectSession"> {
+  return {
+    clearActiveSession: () => undefined,
+    preferredSession: () => undefined,
+    selectSession: () => Promise.resolve(),
+  };
+}
+
+function workspace(projectForWorkspace: Project, id: string, path: string): Workspace {
   return {
     id,
-    projectId: project.id,
+    projectId: projectForWorkspace.id,
     path,
     label: id,
-    isMain: path === project.path,
+    isMain: path === projectForWorkspace.path,
     isGitRepo: false,
     isGitWorktree: false,
   };
