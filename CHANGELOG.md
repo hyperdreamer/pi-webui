@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.3
+
+### Patch Changes
+
+- 9088561: Keep live worktree and spawned-session discovery from reverting to stale project topology while a project load is pending.
+- c2f1002: Keep the legacy project-memory endpoint available when global memory files cannot be read.
+- 7e007b7: Show agent-created worktrees and their spawned sessions in the sidebar without requiring a browser refresh or project switch.
+- 0b0c1b6: Show the effective global and project memory entry count on the Memory workspace tab.
+- 145e1ea: Add inline session search in the sidebar and a compact broom control for session cleanup.
+
 ## 1.10.2
 
 ### Patch Changes
