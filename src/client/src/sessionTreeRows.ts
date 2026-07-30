@@ -15,16 +15,18 @@ export interface SessionRowsOptions {
   foldedSessionPaths?: ReadonlySet<string>;
 }
 
+function availableSessionTreeSessions(sessions: readonly SessionInfo[], options: SessionRowsOptions): SessionInfo[] {
+  if (options.knownWorkspacePaths === undefined) return [...sessions];
+  return sessions.filter((session) => session.cwd === options.currentWorkspacePath || options.knownWorkspacePaths?.has(session.cwd) === true);
+}
+
 /**
  * Projects a session catalog into the tree visible from a workspace. Parents
  * and children may live in different project workspaces, so the projection
  * retains the full related family while marking external rows for the caller.
  */
 export function sessionRowsForCurrentTree(sessions: SessionInfo[], options: SessionRowsOptions = {}): SessionRow[] {
-  const availableSessions = sessions.filter((session) => {
-    if (options.knownWorkspacePaths === undefined) return true;
-    return session.cwd === options.currentWorkspacePath || options.knownWorkspacePaths.has(session.cwd);
-  });
+  const availableSessions = availableSessionTreeSessions(sessions, options);
   const byPath = new Map(availableSessions.map((session) => [session.path, session]));
   const childrenByPath = sessionChildrenByParentPath(availableSessions, byPath);
   const anchorPaths = availableSessions
@@ -33,6 +35,12 @@ export function sessionRowsForCurrentTree(sessions: SessionInfo[], options: Sess
   const relatedPaths = relatedSessionPaths(anchorPaths, byPath, childrenByPath);
   const visiblePaths = unarchivedPathsWithAncestors(relatedPaths, byPath);
   return sessionRows(availableSessions.filter((session) => visiblePaths.has(session.path)), options);
+}
+
+export function sessionRowsForSearch(sessions: SessionInfo[], options: SessionRowsOptions = {}): SessionRow[] {
+  const { foldedSessionPaths: _ignoredFoldedPaths, ...visibilityOptions } = options;
+  void _ignoredFoldedPaths;
+  return sessionRows(availableSessionTreeSessions(sessions, visibilityOptions), visibilityOptions);
 }
 
 export function sessionRows(sessions: SessionInfo[], options: SessionRowsOptions = {}): SessionRow[] {
