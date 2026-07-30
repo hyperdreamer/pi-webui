@@ -230,6 +230,134 @@ describe("WorkspaceController", () => {
     expect(state.error).toBe("");
   });
 
+  it("keeps a newer catalog topology when a foreground project load settles late", async () => {
+    const staleWorkspaces = [mainWorkspace];
+    const currentWorkspaces = [mainWorkspace, featureWorkspace];
+    const foregroundWorkspaces = deferred<Workspace[]>();
+    const selectedSessionIds: string[] = [];
+    let state: AppState = { ...initialAppState(), projects: [project] };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      {
+        clearActiveSession: () => undefined,
+        preferredSession: (_cwd, sessions) => sessions[0],
+        selectSession: (selected) => {
+          selectedSessionIds.push(selected.id);
+          return Promise.resolve();
+        },
+      },
+      new InMemoryWorkspaceSelectionMemory(),
+      {
+        api: {
+          workspaces: () => foregroundWorkspaces.promise,
+          sessions: (cwd) => Promise.resolve(cwd === featureWorkspace.path ? [spawnedSession] : [parentSession]),
+        },
+      },
+    );
+
+    const selecting = controller.selectProject(project, { workspaceId: featureWorkspace.id });
+    const topologyRequest = controller.captureProjectCatalogTopologyRequest({
+      machineId: "local",
+      projectId: project.id,
+      projectPath: project.path,
+    });
+    await controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: currentWorkspaces,
+      topologyRequest,
+    });
+
+    expect(state.workspaces).toEqual(currentWorkspaces);
+    expect(state.workspacesByProjectId[project.id]).toEqual(currentWorkspaces);
+
+    foregroundWorkspaces.resolve(staleWorkspaces);
+    await selecting;
+
+    expect(state.workspaces).toEqual(currentWorkspaces);
+    expect(state.workspacesByProjectId[project.id]).toEqual(currentWorkspaces);
+    expect(state.selectedWorkspace).toEqual(featureWorkspace);
+    expect(selectedSessionIds).toEqual([spawnedSession.id]);
+  });
+
+  it("does not restore an old-path foreground topology after the same project ID is retargeted", async () => {
+    const replacementProject = { ...project, path: "/workspace-replacement" };
+    const oldMain = workspace(project, "workspace-1", project.path);
+    const replacementMain = workspace(replacementProject, "workspace-1", replacementProject.path);
+    const oldForeground = deferred<Workspace[]>();
+    const replacementForeground = deferred<Workspace[]>();
+    const workspaces = vi.fn()
+      .mockImplementationOnce(() => oldForeground.promise)
+      .mockImplementationOnce(() => replacementForeground.promise);
+    const harness = controllerForCatalog({ projects: [project], listWorkspaces: workspaces });
+
+    const oldSelecting = harness.controller.selectProject(project);
+    harness.apply({ projects: [replacementProject] });
+    const replacementSelecting = harness.controller.selectProject(replacementProject);
+    const topologyRequest = harness.controller.captureProjectCatalogTopologyRequest({
+      machineId: "local",
+      projectId: replacementProject.id,
+      projectPath: replacementProject.path,
+    });
+    await harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project: replacementProject,
+      workspaces: [replacementMain],
+      topologyRequest,
+    });
+
+    oldForeground.resolve([oldMain]);
+    replacementForeground.resolve([oldMain]);
+    await Promise.all([oldSelecting, replacementSelecting]);
+
+    expect(harness.state.selectedProject).toEqual(replacementProject);
+    expect(harness.state.workspaces).toEqual([replacementMain]);
+    expect(harness.state.workspacesByProjectId[replacementProject.id]).toEqual([replacementMain]);
+    expect(harness.state.selectedWorkspace).toEqual(replacementMain);
+  });
+
+  it("ignores a stale foreground project-load failure after catalog selection completes", async () => {
+    const foregroundWorkspaces = deferred<Workspace[]>();
+    const currentWorkspaces = [mainWorkspace, featureWorkspace];
+    let state: AppState = { ...initialAppState(), projects: [project] };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      sessionControllerStub(),
+      new InMemoryWorkspaceSelectionMemory(),
+      {
+        api: {
+          workspaces: () => foregroundWorkspaces.promise,
+          sessions: () => Promise.resolve([]),
+        },
+      },
+    );
+
+    const selecting = controller.selectProject(project);
+    const topologyRequest = controller.captureProjectCatalogTopologyRequest({
+      machineId: "local",
+      projectId: project.id,
+      projectPath: project.path,
+    });
+    await controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: currentWorkspaces,
+      topologyRequest,
+    });
+
+    foregroundWorkspaces.reject(new Error("stale foreground workspace load"));
+    await selecting;
+
+    expect(state.workspaces).toEqual(currentWorkspaces);
+    expect(state.workspacesByProjectId[project.id]).toEqual(currentWorkspaces);
+    expect(state.selectedWorkspace).toEqual(mainWorkspace);
+    expect(state.error).toBe("");
+  });
+
   it("loads related sessions from the selected project's other workspaces", async () => {
     let state: AppState = {
       ...initialAppState(),

@@ -17,6 +17,13 @@ interface CatalogWorkspaceSelectionScope {
   topologyRequest: ProjectCatalogTopologyRequest;
 }
 
+interface PendingProjectSelection {
+  request: number;
+  machineId: string;
+  project: Project;
+  target: RouteTarget | undefined;
+}
+
 interface CatalogFallbackSelection {
   foregroundError: string;
   eligibleProjectSessions: SessionInfo[];
@@ -50,6 +57,8 @@ export class WorkspaceController {
   private readonly latestTopologyRequestOrderByScope = new Map<string, number>();
   private nextTopologyRequestOrder = 0;
   private projectSessionsRequest = 0;
+  private projectSelectionRequest = 0;
+  private pendingProjectSelection: PendingProjectSelection | undefined;
 
   constructor(
     private readonly getState: GetState,
@@ -64,6 +73,7 @@ export class WorkspaceController {
   }
 
   clearSelection(options?: { updateUrl?: boolean | undefined; preserveError?: boolean | undefined }) {
+    this.invalidatePendingProjectSelection();
     const error = this.getState().error;
     this.projectSessionsRequest += 1;
     this.sessions.clearActiveSession();
@@ -93,19 +103,18 @@ export class WorkspaceController {
 
   async selectProject(project: Project, target?: RouteTarget) {
     this.projectSessionsRequest += 1;
-    const machineId = selectedMachineId(this.getState());
+    const pending = this.beginProjectSelection(project, target);
     this.sessions.clearActiveSession();
     this.setState({ selectedProject: project, selectedWorkspace: undefined, workspaces: [], isLoadingWorkspaces: true, ...resetWorkspaceScopedState() });
     try {
-      const workspaces = await this.api.workspaces(project.id, machineId);
-      if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedProject?.id !== project.id) return;
-      this.applyProjectWorkspaceProjection(project, workspaces, machineId);
-      this.setState({ isLoadingWorkspaces: false });
-      const workspace = selectPreferredWorkspace(workspaces, { targetWorkspaceId: target?.workspaceId, latestWorkspaceId: this.workspaceSelection.latestWorkspaceId(machineProjectKey(machineId, project.id)) });
-      if (workspace) await this.selectWorkspace(workspace, { sessionId: target?.sessionId, updateUrl: target?.updateUrl });
-      else if (target?.updateUrl !== false) this.updateUrl();
+      const workspaces = await this.api.workspaces(project.id, pending.machineId);
+      if (!this.isPendingProjectSelectionCurrent(pending)) return;
+      this.applyProjectWorkspaceProjection(project, workspaces, pending.machineId);
+      await this.completePendingProjectSelection(pending, workspaces);
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId && this.getState().selectedProject?.id === project.id) this.setState({ error: String(error), isLoadingWorkspaces: false });
+      if (!this.isPendingProjectSelectionCurrent(pending)) return;
+      this.pendingProjectSelection = undefined;
+      this.setState({ error: String(error), isLoadingWorkspaces: false });
     }
   }
 
@@ -227,6 +236,19 @@ export class WorkspaceController {
     if (!this.isProjectCatalogSnapshotCurrent(orderedSnapshot)
       || this.getState().selectedProject?.id !== orderedSnapshot.project.id) return;
 
+    const pending = this.pendingProjectSelection;
+    if (this.isPendingProjectSelectionCurrent(pending)
+      && pending.machineId === orderedSnapshot.machineId
+      && pending.project.id === orderedSnapshot.project.id
+      && pending.project.path === orderedSnapshot.project.path) {
+      await this.completePendingProjectSelection(pending, orderedSnapshot.workspaces, {
+        machineId: orderedSnapshot.machineId,
+        project: orderedSnapshot.project,
+        topologyRequest,
+      });
+      return;
+    }
+
     for (const workspace of added) {
       this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(
         orderedSnapshot.machineId,
@@ -304,6 +326,64 @@ export class WorkspaceController {
     const fallback = selectFallbackWorkspace(workspaces);
     if (fallback !== undefined) await this.selectWorkspace(fallback);
     else this.clearSelection();
+  }
+
+  private beginProjectSelection(project: Project, target: RouteTarget | undefined): PendingProjectSelection {
+    const pending: PendingProjectSelection = {
+      request: ++this.projectSelectionRequest,
+      machineId: selectedMachineId(this.getState()),
+      project,
+      target,
+    };
+    this.pendingProjectSelection = pending;
+    return pending;
+  }
+
+  private invalidatePendingProjectSelection(): void {
+    this.projectSelectionRequest += 1;
+    this.pendingProjectSelection = undefined;
+  }
+
+  private isPendingProjectSelectionCurrent(
+    pending: PendingProjectSelection | undefined,
+  ): pending is PendingProjectSelection {
+    if (pending === undefined
+      || this.pendingProjectSelection !== pending
+      || pending.request !== this.projectSelectionRequest) return false;
+    const state = this.getState();
+    const currentProject = state.projects.find((candidate) => candidate.id === pending.project.id);
+    return selectedMachineId(state) === pending.machineId
+      && state.selectedProject?.id === pending.project.id
+      && state.selectedProject.path === pending.project.path
+      && currentProject?.path === pending.project.path;
+  }
+
+  private async completePendingProjectSelection(
+    pending: PendingProjectSelection,
+    workspaces: Workspace[],
+    catalogScope?: CatalogWorkspaceSelectionScope,
+  ): Promise<void> {
+    if (!this.isPendingProjectSelectionCurrent(pending)
+      || (catalogScope !== undefined && !this.isCatalogSelectionScopeCurrent(catalogScope))) return;
+
+    this.pendingProjectSelection = undefined;
+    const workspace = selectPreferredWorkspace(workspaces, {
+      targetWorkspaceId: pending.target?.workspaceId,
+      latestWorkspaceId: this.workspaceSelection.latestWorkspaceId(
+        machineProjectKey(pending.machineId, pending.project.id),
+      ),
+    });
+    if (workspace !== undefined) {
+      await this.selectWorkspace(workspace, {
+        sessionId: pending.target?.sessionId,
+        updateUrl: pending.target?.updateUrl,
+        ...(catalogScope === undefined ? {} : { catalogScope }),
+      });
+      return;
+    }
+
+    this.setState({ isLoadingWorkspaces: false });
+    if (pending.target?.updateUrl !== false) this.updateUrl();
   }
 
   private isCurrentWorkspaceSessionRequest(request: number, workspace: Workspace, machineId: string): boolean {
