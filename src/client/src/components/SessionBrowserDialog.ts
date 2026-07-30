@@ -4,7 +4,7 @@ import type { SessionActivity, SessionInfo, SessionStatus } from "../api";
 import { sessionActivityIndicators } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { filterSessionRows, hasSessionSearchQuery } from "../sessionSearch";
-import { sessionRowsForCurrentTree, type SessionRow } from "../sessionTreeRows";
+import { sessionRowsForSearch, type SessionRow } from "../sessionTreeRows";
 import { sessionRowsForSessionList } from "./SessionList";
 import { renderActionActivityIndicators } from "./activityBadge";
 import { activateSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
@@ -79,7 +79,7 @@ export class SessionBrowserDialog extends LitElement {
 
   private get visibleRows(): SessionRow[] {
     const rows = hasSessionSearchQuery(this.searchQuery)
-      ? sessionRowsForCurrentTree(this.sessions)
+      ? sessionRowsForSearch(this.sessions)
       : sessionRowsForSessionList(this.sessions, {
         expandedSessionPaths: this.expandedSessionPaths,
         ...(this.selected === undefined ? {} : { selectedSessionPath: this.selected.path }),
@@ -123,7 +123,7 @@ export class SessionBrowserDialog extends LitElement {
   }
 
   private renderSessionGroupToggle(row: SessionRow): TemplateResult | null {
-    if (!row.hasChildren) return null;
+    if (!row.hasChildren || hasSessionSearchQuery(this.searchQuery)) return null;
     const { folded } = row;
     const action = folded ? "Expand" : "Collapse";
     return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path, folded); }}>${folded ? "▸" : "▾"}</button>`;

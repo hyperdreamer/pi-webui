@@ -82,6 +82,39 @@ describe("SessionBrowserDialog", () => {
     expect(renderedText).toContain("Deploy the documentation");
   });
 
+  it("does not expose a mutable disclosure control while search results are unfolded", () => {
+    const parent = session("parent", { firstMessage: "Parent context" });
+    const child = session("child", { firstMessage: "Deploy result", parentSessionPath: parent.path });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [parent, child];
+    Reflect.set(dialog, "expandedSessionPaths", new Set([parent.path]));
+    Reflect.set(dialog, "searchQuery", "deploy");
+
+    expect(templateText(dialog.render())).not.toContain("Collapse Parent context");
+    expect(Reflect.get(dialog, "expandedSessionPaths")).toEqual(new Set([parent.path]));
+
+    Reflect.set(dialog, "searchQuery", "");
+    expect(templateText(dialog.render())).toContain("Collapse Parent context");
+  });
+
+  it("retains a current parent for a matching archived child", () => {
+    const parent = session("parent", { firstMessage: "Current parent context" });
+    const archivedChild = session("archived-child", {
+      archived: true,
+      archivedAt: "2026-07-30T00:00:00.000Z",
+      firstMessage: "Deploy archived result",
+      parentSessionPath: parent.path,
+    });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [parent, archivedChild];
+    Reflect.set(dialog, "searchQuery", "deploy");
+
+    const rendered = templateText(dialog.render());
+    expect(rendered).toContain("Current parent context");
+    expect(rendered).toContain("Deploy archived result");
+    expect(rendered).not.toContain("parent unavailable");
+  });
+
   it("selects a session through the supplied callback", () => {
     const target = session("target", { firstMessage: "Open me" });
     const dialog = new SessionBrowserDialog();
