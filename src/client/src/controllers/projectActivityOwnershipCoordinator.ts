@@ -9,8 +9,16 @@ export interface ProjectActivityOwnershipFailure {
   error: unknown;
 }
 
+export interface ProjectWorkspaceTopologySnapshot {
+  machineId: string;
+  projectId: string;
+  projectPath: string;
+  workspaces: Workspace[];
+}
+
 export interface ProjectActivityOwnershipCoordinatorDependencies {
   api?: Pick<typeof defaultApi, "workspaces">;
+  onProjectTopology?: (snapshot: ProjectWorkspaceTopologySnapshot) => Promise<void> | void;
   onError?: (failure: ProjectActivityOwnershipFailure) => void;
 }
 
@@ -31,11 +39,12 @@ interface OwnershipPass {
 }
 
 /**
- * Hydrates only project-to-workspace topology needed to attribute active CWDs.
+ * Discovers project-to-workspace topology needed to attribute active CWDs.
  * Selection and navigation remain owned by their existing controllers.
  */
 export class ProjectActivityOwnershipCoordinator {
   private readonly api: Pick<typeof defaultApi, "workspaces">;
+  private readonly onProjectTopology: ((snapshot: ProjectWorkspaceTopologySnapshot) => Promise<void> | void) | undefined;
   private readonly onError: ((failure: ProjectActivityOwnershipFailure) => void) | undefined;
   private machineGeneration = 0;
   private activityMachineGeneration = -1;
@@ -52,6 +61,7 @@ export class ProjectActivityOwnershipCoordinator {
     deps: ProjectActivityOwnershipCoordinatorDependencies = {},
   ) {
     this.api = deps.api ?? defaultApi;
+    this.onProjectTopology = deps.onProjectTopology;
     this.onError = deps.onError;
   }
 
@@ -122,7 +132,7 @@ export class ProjectActivityOwnershipCoordinator {
     await Promise.all(pass.projects.map(async (project) => {
       try {
         const workspaces = await this.api.workspaces(project.id, pass.machineId);
-        this.applyProjectWorkspaces(pass, project, workspaces);
+        await this.applyProjectWorkspaces(pass, project, workspaces);
       } catch (error) {
         if (this.isPassScopeCurrent(pass)) this.reportError({ machineId: pass.machineId, projectId: project.id, error });
       }
@@ -144,16 +154,30 @@ export class ProjectActivityOwnershipCoordinator {
     if (runTrailingPass) await this.reconcile(selectedMachineId(this.getState()));
   }
 
-  private applyProjectWorkspaces(pass: OwnershipPass, project: ProjectTopologySnapshot, workspaces: Workspace[]): void {
+  private async applyProjectWorkspaces(
+    pass: OwnershipPass,
+    project: ProjectTopologySnapshot,
+    workspaces: Workspace[],
+  ): Promise<void> {
     if (this.activePass !== pass || !this.isPassScopeCurrent(pass)) return;
     const state = this.getState();
     const currentProject = state.projects.find((candidate) => candidate.id === project.id);
     if (currentProject?.path !== project.path) return;
     if (state.workspacesByProjectId[project.id] !== project.startingWorkspaces) return;
 
+    if (this.onProjectTopology !== undefined) {
+      await this.onProjectTopology({
+        machineId: pass.machineId,
+        projectId: project.id,
+        projectPath: project.path,
+        workspaces,
+      });
+      return;
+    }
+
     this.setState({
       workspacesByProjectId: {
-        ...state.workspacesByProjectId,
+        ...this.getState().workspacesByProjectId,
         [project.id]: workspaces,
       },
     });

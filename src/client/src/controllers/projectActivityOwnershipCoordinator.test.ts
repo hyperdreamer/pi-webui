@@ -4,7 +4,11 @@ import { initialAppState } from "../appState";
 import type { Machine, Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
 import { ActivityController } from "./activityController";
-import { ProjectActivityOwnershipCoordinator } from "./projectActivityOwnershipCoordinator";
+import {
+  ProjectActivityOwnershipCoordinator,
+  type ProjectActivityOwnershipFailure,
+  type ProjectWorkspaceTopologySnapshot,
+} from "./projectActivityOwnershipCoordinator";
 import { ProjectController } from "./projectController";
 
 const localMachine: Machine = {
@@ -99,6 +103,280 @@ describe("ProjectActivityOwnershipCoordinator", () => {
       mainView: state.mainView,
       workspaceTool: state.workspaceTool,
     }).toEqual(initialSelection);
+  });
+
+  it("forwards a current selected-project discovery snapshot to the common catalog seam", async () => {
+    const project: Project = { id: "p1", name: "p1", path: "/repo", createdAt: "now" };
+    const mainWorkspace = workspace(project.id, project.path);
+    const featureWorkspace = workspace(project.id, "/repo-feature");
+    const featureActivity = activity(featureWorkspace.path);
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [project],
+      selectedProject: project,
+      selectedWorkspace: mainWorkspace,
+      workspaces: [mainWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace] },
+      workspaceActivities: { [featureActivity.cwd]: featureActivity },
+    };
+    const received: ProjectWorkspaceTopologySnapshot[] = [];
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: { workspaces: () => Promise.resolve([mainWorkspace, featureWorkspace]) },
+        onProjectTopology: (snapshot) => { received.push(snapshot); },
+      },
+    );
+
+    await coordinator.handleActivityApplied("local");
+
+    expect(received).toEqual([{
+      machineId: "local",
+      projectId: project.id,
+      projectPath: project.path,
+      workspaces: [mainWorkspace, featureWorkspace],
+    }]);
+    expect(state.workspacesByProjectId[project.id]).toEqual([mainWorkspace]);
+  });
+
+  it("awaits catalog topology handoff before completing an ownership pass", async () => {
+    const candidate = project();
+    const externalActivity = activity("/tmp/awaited-catalog-handoff");
+    const callbackCompletion = deferred<undefined>();
+    let callbackStarted = false;
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [candidate],
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: { workspaces: () => Promise.resolve([workspace(candidate.id, externalActivity.cwd)]) },
+        onProjectTopology: async () => {
+          callbackStarted = true;
+          await callbackCompletion.promise;
+        },
+      },
+    );
+
+    let completed = false;
+    const pass = coordinator.handleActivityApplied(localMachine.id).then(() => { completed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(callbackStarted).toBe(true);
+    expect(completed).toBe(false);
+
+    callbackCompletion.resolve(undefined);
+    await pass;
+
+    expect(completed).toBe(true);
+  });
+
+  it("keeps cache-only discovery fallback for callers without a catalog topology callback", async () => {
+    const candidate = project();
+    const mainWorkspace = workspace(candidate.id, candidate.path);
+    const featureWorkspace = workspace(candidate.id, "/tmp/cache-fallback-worktree");
+    const featureActivity = activity(featureWorkspace.path);
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [candidate],
+      workspacesByProjectId: { [candidate.id]: [mainWorkspace] },
+      workspaceActivities: { [featureActivity.cwd]: featureActivity },
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { api: { workspaces: () => Promise.resolve([mainWorkspace, featureWorkspace]) } },
+    );
+
+    await coordinator.handleActivityApplied(localMachine.id);
+
+    expect(state.workspacesByProjectId[candidate.id]).toEqual([mainWorkspace, featureWorkspace]);
+  });
+
+  it("does not forward a stale machine response to the catalog seam or mutate the cache", async () => {
+    const machineA = machine("machine-a");
+    const machineB = machine("machine-b");
+    const candidate = project();
+    const externalActivity = activity("/tmp/stale-machine-catalog-handoff");
+    const staleResponse = deferred<Workspace[]>();
+    const received: ProjectWorkspaceTopologySnapshot[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: machineA,
+      projects: [candidate],
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: { workspaces: () => staleResponse.promise },
+        onProjectTopology: (snapshot) => { received.push(snapshot); },
+      },
+    );
+
+    const stalePass = coordinator.handleActivityApplied(machineA.id);
+    state = {
+      ...state,
+      selectedMachine: machineB,
+      projects: [],
+      workspaceActivities: {},
+      workspacesByProjectId: {},
+    };
+    coordinator.handleSelectedMachineChanged();
+    state = {
+      ...state,
+      selectedMachine: machineA,
+      projects: [candidate],
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+      workspacesByProjectId: {},
+    };
+    coordinator.handleSelectedMachineChanged();
+
+    staleResponse.resolve([workspace(candidate.id, externalActivity.cwd)]);
+    await stalePass;
+
+    expect(received).toEqual([]);
+    expect(state.workspacesByProjectId[candidate.id]).toBeUndefined();
+  });
+
+  it("does not forward a response for a removed project to the catalog seam or mutate the cache", async () => {
+    const candidate = project();
+    const externalActivity = activity("/tmp/removed-project-catalog-handoff");
+    const staleResponse = deferred<Workspace[]>();
+    const received: ProjectWorkspaceTopologySnapshot[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [candidate],
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: { workspaces: () => staleResponse.promise },
+        onProjectTopology: (snapshot) => { received.push(snapshot); },
+      },
+    );
+
+    const stalePass = coordinator.handleActivityApplied(localMachine.id);
+    state = { ...state, projects: [], workspacesByProjectId: {} };
+    await coordinator.handleProjectsApplied(localMachine.id);
+    staleResponse.resolve([workspace(candidate.id, externalActivity.cwd)]);
+    await stalePass;
+
+    expect(received).toEqual([]);
+    expect(state.workspacesByProjectId[candidate.id]).toBeUndefined();
+  });
+
+  it("does not forward a response after a newer project cache entry to the catalog seam", async () => {
+    const candidate = project();
+    const externalActivity = activity("/tmp/stale-cache-catalog-handoff");
+    const originalCache = [workspace(candidate.id, candidate.path)];
+    const newerCache = [...originalCache, workspace(candidate.id, "/tmp/newer-catalog-topology")];
+    const staleResponse = deferred<Workspace[]>();
+    const received: ProjectWorkspaceTopologySnapshot[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [candidate],
+      workspacesByProjectId: { [candidate.id]: originalCache },
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: { workspaces: () => staleResponse.promise },
+        onProjectTopology: (snapshot) => { received.push(snapshot); },
+      },
+    );
+
+    const stalePass = coordinator.handleActivityApplied(localMachine.id);
+    state = {
+      ...state,
+      workspacesByProjectId: { ...state.workspacesByProjectId, [candidate.id]: newerCache },
+    };
+    staleResponse.resolve([...originalCache, workspace(candidate.id, externalActivity.cwd)]);
+    await stalePass;
+
+    expect(received).toEqual([]);
+    expect(state.workspacesByProjectId[candidate.id]).toBe(newerCache);
+  });
+
+  it("reports callback failures without changing selection or the global error", async () => {
+    const failedProject = project("failed", "/failed");
+    const successfulProject = project("successful", "/successful");
+    const selectedWorkspace = workspace(failedProject.id, failedProject.path);
+    const successfulWorkspace = workspace(successfulProject.id, successfulProject.path);
+    const unknownActivity = activity("/tmp/callback-failure-owner");
+    const callbackFailure = new Error("catalog handoff unavailable");
+    const received: ProjectWorkspaceTopologySnapshot[] = [];
+    const reported: ProjectActivityOwnershipFailure[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [failedProject, successfulProject],
+      selectedProject: failedProject,
+      selectedWorkspace,
+      workspaces: [selectedWorkspace],
+      workspaceActivities: { [unknownActivity.cwd]: unknownActivity },
+      error: "existing global error",
+    };
+    const initialSelection = {
+      selectedProject: state.selectedProject,
+      selectedWorkspace: state.selectedWorkspace,
+      selectedSession: state.selectedSession,
+      workspaces: state.workspaces,
+      mainView: state.mainView,
+      workspaceTool: state.workspaceTool,
+    };
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      {
+        api: {
+          workspaces: (projectId) => Promise.resolve(projectId === failedProject.id ? [selectedWorkspace] : [successfulWorkspace]),
+        },
+        onProjectTopology: (snapshot) => {
+          if (snapshot.projectId === failedProject.id) throw callbackFailure;
+          received.push(snapshot);
+        },
+        onError: (failure) => { reported.push(failure); },
+      },
+    );
+
+    await expect(coordinator.handleActivityApplied(localMachine.id)).resolves.toBeUndefined();
+
+    expect(received).toEqual([{
+      machineId: localMachine.id,
+      projectId: successfulProject.id,
+      projectPath: successfulProject.path,
+      workspaces: [successfulWorkspace],
+    }]);
+    expect(reported).toEqual([{
+      machineId: localMachine.id,
+      projectId: failedProject.id,
+      error: callbackFailure,
+    }]);
+    expect(state.error).toBe("existing global error");
+    expect({
+      selectedProject: state.selectedProject,
+      selectedWorkspace: state.selectedWorkspace,
+      selectedSession: state.selectedSession,
+      workspaces: state.workspaces,
+      mainView: state.mainView,
+      workspaceTool: state.workspaceTool,
+    }).toEqual(initialSelection);
+    expect(state.workspacesByProjectId).toEqual({});
   });
 
   it("does not request workspace topology for activity inside a project root", async () => {
