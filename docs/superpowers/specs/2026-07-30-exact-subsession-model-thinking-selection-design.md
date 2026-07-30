@@ -99,6 +99,7 @@ An eligible active parent composer reads its saved exact child defaults from liv
 - When they differ, keep the override visible with a chip such as `Children: gpt-5.6-luna · medium`.
 - Clicking either form opens the same exact model/thinking form.
 - Saving updates the chip only after the server confirms durable persistence.
+- Saving remains disabled while the parent has active agent, bash, compaction, or tree-navigation work. The current values remain inspectable, but PI WEBUI does not interleave a configuration entry with an in-flight session mutation.
 - **Copy current session settings** copies the parent's current exact pair into a new persisted child selection.
 
 The control is absent when:
@@ -145,7 +146,7 @@ The module owns:
 - `SubsessionModelSelection` and `SubsessionModelOption` domain values;
 - the custom entry type and version;
 - parsing and serializing persisted selections;
-- selecting the latest valid defaults entry on the active session branch;
+- reading the latest matching defaults entry on the active session branch and distinguishing no entry from an invalid authoritative entry;
 - enumerating exact available models and `getSupportedThinkingLevels(model)` results;
 - resolving an exact provider/id against the daemon's refreshed available model snapshot;
 - validating a thinking level against that resolved model; and
@@ -186,7 +187,9 @@ The entry is intentionally excluded from LLM context. Reads inspect the active b
 
 New parent creation writes an exact entry before delivering the initial prompt. Active updates append another versioned entry through the existing serialized session-entry mutation path, then publish updated status.
 
-Malformed, unsupported-version, or incomplete historical entries are ignored during recovery. A parent created before this feature has no entry; it uses its current exact model/thinking as a compatibility fallback until the user saves a selection. No background migration rewrites old session files.
+A parent created before this feature has no matching entry; it uses its current exact model/thinking as a compatibility fallback until the user saves a selection. No background migration rewrites old session files.
+
+Once a matching custom entry exists, the latest matching entry is authoritative. If that entry is malformed, incomplete, or uses an unsupported version, resolution fails closed with a compatibility/configuration error. PI WEBUI must not revive an older valid entry or fall back to the current parent, because either behavior would silently discard the user's latest persisted intent.
 
 ### Runtime creation
 
@@ -287,7 +290,7 @@ GET api/.../sessions/:sessionId/subsession-defaults?cwd=...
 PUT api/.../sessions/:sessionId/subsession-defaults
 ```
 
-The GET response supplies the saved exact selection plus exact model options. The PUT accepts one complete selection, validates it, persists it, and returns confirmed state. These paths use the existing application-relative browser request boundary and federation/session-daemon proxy conventions.
+The GET response supplies the saved exact selection plus exact model options. The PUT accepts one complete selection, validates it, persists it, and returns confirmed state. Saving uses the existing writable-session, active-branch, and serialized session-entry mutation protections. While agent, bash, compaction, or tree-navigation work is active, the browser leaves the values inspectable but disables the mutation. These paths use the existing application-relative browser request boundary and federation/session-daemon proxy conventions.
 
 ## Data flow
 
@@ -327,8 +330,9 @@ status snapshot includes saved child defaults
 ```text
 parent invokes spawn_subsession
   → resolve and validate optional exact override
-  → otherwise read latest valid defaults from active branch
-  → otherwise use legacy current-parent fallback
+  → otherwise read the active branch's authoritative latest matching defaults
+  → if that entry is invalid, fail closed
+  → otherwise use legacy current-parent fallback only when no matching entry exists
   → resolve target workspace
   → refresh available model registry without network discovery
   → find exact provider + model id
@@ -361,7 +365,7 @@ The server revalidates on session creation. If the catalog changed after the bro
 
 ### Failed active save
 
-The last confirmed persisted selection remains authoritative. The control stays open, displays the error, and does not optimistically update the summary chip. Archived sessions remain read-only, and session-tree-exclusive mutations use existing conflict/error handling.
+The last confirmed persisted selection remains authoritative. The control stays open, displays the error, and does not optimistically update the summary chip. Archived sessions remain read-only. During agent, bash, compaction, or tree-navigation work, the current selection remains inspectable but Save is disabled; server-side writable-session and serialized-mutation checks remain authoritative against stale or forged requests.
 
 ### Persistence failure
 
@@ -392,8 +396,8 @@ Follow TDD and add focused regression coverage before production edits.
 ### Pure configuration-module tests
 
 1. Parse and serialize the versioned custom entry.
-2. Select the latest valid entry from the active branch only.
-3. Ignore malformed, incomplete, and unsupported-version historical entries.
+2. Read the latest matching entry from the active branch and distinguish no entry from an invalid authoritative entry.
+3. Treat a malformed, incomplete, or unsupported-version latest matching entry as a fail-closed compatibility/configuration error without reviving an older value.
 4. Enumerate exact available models and their supported thinking levels.
 5. Reject unavailable models and unsupported thinking without fallback/clamping.
 6. Resolve exact override, persisted defaults, and legacy fallback in the required order.
@@ -412,7 +416,7 @@ Follow TDD and add focused regression coverage before production edits.
 
 1. New parent creation persists an exact child snapshot before the initial prompt.
 2. Runtime creation receives both `initialModel` and `initialThinkingLevel` exactly once.
-3. Active updates append a serialized custom entry and publish confirmed status.
+3. Active updates append a serialized custom entry and publish confirmed status; conflicting agent, bash, compaction, or tree-navigation work blocks the mutation without hiding the current values.
 4. Session reopening recovers the saved selection.
 5. Tree navigation derives defaults from the active branch, not an abandoned branch.
 6. `spawnSubsession()` uses saved defaults when no override is supplied.
@@ -434,7 +438,7 @@ Follow TDD and add focused regression coverage before production edits.
 
 1. Starter creation sends or requests the correct exact snapshot based on linked/independent state.
 2. Active saves update UI state only after server confirmation.
-3. Unsupported machines, disabled subsessions, archived sessions, and tracked children omit the control.
+3. Unsupported machines, disabled subsessions, archived sessions, and tracked children omit the control; eligible parents with active work keep it inspectable but cannot save.
 4. Icon and summary-chip states compare the exact child pair with the current parent pair.
 5. The form shows exact provider/model options and only the selected model's supported thinking levels.
 6. Changing to an incompatible model clears thinking and disables Save.
