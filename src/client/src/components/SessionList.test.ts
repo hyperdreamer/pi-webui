@@ -291,6 +291,39 @@ describe("sessionRowsForCurrentTree", () => {
 });
 
 describe("session sidebar search and cleanup controls", () => {
+  it("keeps family disclosure state unchanged while a query shows unfolded results", () => {
+    const parent = session("parent", { firstMessage: "Coordinate release" });
+    const child = session("child", { firstMessage: "Deploy documentation", parentSessionPath: parent.path });
+    const list = new SessionList();
+    list.sessions = [parent, child];
+    Reflect.set(list, "expandedSessionPaths", new Set([parent.path]));
+    Reflect.set(list, "searchQuery", "deploy");
+
+    expect(templateText(list.render())).not.toContain("Collapse Coordinate release");
+    expect(expandedSessionPaths(list)).toEqual(new Set([parent.path]));
+
+    Reflect.set(list, "searchQuery", "");
+    expect(templateText(list.render())).toContain("Collapse Coordinate release");
+  });
+
+  it("retains a current parent for a matching archived child", () => {
+    const parent = session("parent", { firstMessage: "Current parent context" });
+    const archivedChild = session("archived-child", {
+      archived: true,
+      archivedAt: "2026-07-30T00:00:00.000Z",
+      firstMessage: "Deploy archived result",
+      parentSessionPath: parent.path,
+    });
+    const list = new SessionList();
+    list.sessions = [parent, archivedChild];
+    Reflect.set(list, "searchQuery", "deploy");
+
+    const rendered = templateText(list.render());
+    expect(rendered).toContain("Current parent context");
+    expect(rendered).toContain("Deploy archived result");
+    expect(rendered).not.toContain("parent unavailable");
+  });
+
   it("opens and closes the inline search control, clearing its query on close", () => {
     const list = new SessionList();
     const openSearch = findOptionalTemplateEventHandlerNearMarker(list.render(), 'aria-controls="session-search"');

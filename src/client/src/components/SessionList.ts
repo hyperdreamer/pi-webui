@@ -5,7 +5,7 @@ import { sessionActivityIndicators, sessionRowActivityKind } from "../sessionAct
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { filterSessionRows, hasSessionSearchQuery } from "../sessionSearch";
-import { sessionRows, sessionRowsForCurrentTree, type SessionRow, type SessionRowsOptions } from "../sessionTreeRows";
+import { sessionRows, sessionRowsForCurrentTree, sessionRowsForSearch, type SessionRow, type SessionRowsOptions } from "../sessionTreeRows";
 import { isSessionActive } from "../../../shared/activity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicators } from "./activityBadge";
@@ -134,8 +134,15 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const currentRowPaths = new Set(unfoldedCurrentRows.map((row) => row.session.path));
     const allArchivedRows = sessionRows(this.sessions.filter((session) => session.archived === true && !currentRowPaths.has(session.path)));
     const searchActive = hasSessionSearchQuery(this.searchQuery);
-    const currentRows = searchActive ? filterSessionRows(unfoldedCurrentRows, this.searchQuery) : normalCurrentRows;
-    const archivedRows = searchActive ? filterSessionRows(allArchivedRows, this.searchQuery) : allArchivedRows;
+    const searchRows = searchActive
+      ? filterSessionRows(sessionRowsForSearch(sessionTreeSessions, treeOptions), this.searchQuery)
+      : [];
+    const currentRows = searchActive
+      ? searchRows.filter((row) => row.session.archived !== true)
+      : normalCurrentRows;
+    const archivedRows = searchActive
+      ? searchRows.filter((row) => row.session.archived === true)
+      : allArchivedRows;
     const currentSelectableSessions = selectableCurrentSessions(currentRows);
     const unfilteredCurrentSelectableSessions = selectableCurrentSessions(normalCurrentRows);
     const archivedVisible = this.archivedExpanded || (searchActive && archivedRows.length > 0);
@@ -493,7 +500,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private renderSessionGroupToggle(row: SessionRow) {
-    if (!row.hasChildren) return null;
+    if (!row.hasChildren || hasSessionSearchQuery(this.searchQuery)) return null;
     const { folded } = row;
     const action = folded ? "Expand" : "Collapse";
     return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path, folded); }}>${folded ? "▸" : "▾"}</button>`;
