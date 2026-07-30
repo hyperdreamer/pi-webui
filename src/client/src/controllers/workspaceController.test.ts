@@ -246,8 +246,49 @@ describe("WorkspaceController", () => {
 
     expect(harness.state.sessions).toEqual([]);
     expect(harness.state.projectSessions).toEqual([]);
+    expect(harness.state.isLoadingSessions).toBe(false);
     expect(selectSession).not.toHaveBeenCalled();
     expect(updateUrl).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer foreground selection's session loading state when a stale catalog fallback finishes", async () => {
+    const fallbackSessions = deferred<SessionInfo[]>();
+    const foregroundSessions = deferred<SessionInfo[]>();
+    const listSessions = vi.fn(() => fallbackSessions.promise)
+      .mockImplementationOnce(() => fallbackSessions.promise)
+      .mockImplementationOnce(() => foregroundSessions.promise);
+    const harness = controllerForCatalog({
+      selectedWorkspace: featureWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      workspacesByProjectId: { [project.id]: [mainWorkspace, featureWorkspace] },
+      projectSessions: [parentSession, spawnedSession],
+      listSessions,
+    });
+
+    const reconciling = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace],
+    });
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledTimes(1);
+    });
+
+    harness.apply({ projects: [{ ...project, path: "/workspace-moved" }] });
+    const selectingForeground = harness.controller.selectWorkspace(mainWorkspace);
+    await vi.waitFor(() => {
+      expect(listSessions).toHaveBeenCalledTimes(2);
+    });
+
+    fallbackSessions.resolve([]);
+    await reconciling;
+
+    expect(harness.state.isLoadingSessions).toBe(true);
+
+    foregroundSessions.resolve([]);
+    await selectingForeground;
+
+    expect(harness.state.isLoadingSessions).toBe(false);
   });
 
   it("clears the foreground selection when no workspace remains after a snapshot", async () => {

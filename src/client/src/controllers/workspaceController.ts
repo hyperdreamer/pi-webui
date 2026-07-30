@@ -98,7 +98,10 @@ export class WorkspaceController {
     });
     try {
       const listedSessions = await this.api.sessions(workspace.path, machineId);
-      if (!this.isWorkspaceSelectionCurrent(workspace, machineId, target?.catalogScope)) return;
+      if (!this.isWorkspaceSelectionCurrent(workspace, machineId, target?.catalogScope)) {
+        this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
+        return;
+      }
       const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
       void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope);
@@ -107,6 +110,7 @@ export class WorkspaceController {
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
       if (this.isWorkspaceSelectionCurrent(workspace, machineId, target?.catalogScope)) this.setState({ error: String(error), isLoadingSessions: false });
+      else this.clearStaleCatalogSelectionLoadingIfOwned(projectSessionsRequest, target?.catalogScope);
     }
   }
 
@@ -261,6 +265,13 @@ export class WorkspaceController {
         ...currentProjectSessions,
       ]),
     });
+  }
+
+  private clearStaleCatalogSelectionLoadingIfOwned(
+    request: number,
+    catalogScope: CatalogWorkspaceSelectionScope | undefined,
+  ): void {
+    if (catalogScope !== undefined && request === this.projectSessionsRequest) this.setState({ isLoadingSessions: false });
   }
 
   private isWorkspaceSelectionCurrent(
