@@ -105,6 +105,38 @@ describe("PiHermesMemoryProvider", () => {
     });
   });
 
+  it("reads project entries without probing or reading global memory", async () => {
+    const projectRootPath = join(agentDir, "projects-memory", "repo");
+    const projectMemoryPath = join(projectRootPath, "MEMORY.md");
+    const provider = new PiHermesMemoryProvider(agentDir, {
+      isDirectory: (path) => path === projectRootPath
+        ? Promise.resolve(true)
+        : Promise.reject(new Error(`Unexpected directory probe: ${path}`)),
+      readFile: (path) => path === projectMemoryPath
+        ? Promise.resolve("[project] Independent project entry")
+        : Promise.reject(new Error(`Unexpected file read: ${path}`)),
+    });
+
+    await expect(provider.readProjectEntries("/work/repo")).resolves.toMatchObject([
+      { content: "[project] Independent project entry", category: "project" },
+    ]);
+  });
+
+  it("returns no project entries when the project memory file is inaccessible", async () => {
+    const projectRootPath = join(agentDir, "projects-memory", "repo");
+    const projectMemoryPath = join(projectRootPath, "MEMORY.md");
+    const provider = new PiHermesMemoryProvider(agentDir, {
+      isDirectory: (path) => path === projectRootPath
+        ? Promise.resolve(true)
+        : Promise.reject(new Error(`Unexpected directory probe: ${path}`)),
+      readFile: (path) => path === projectMemoryPath
+        ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+        : Promise.reject(new Error(`Unexpected file read: ${path}`)),
+    });
+
+    await expect(provider.readProjectEntries("/work/repo")).resolves.toEqual([]);
+  });
+
   it("keeps global entries when only the project read fails", async () => {
     const globalMemoryPath = join(agentDir, "pi-hermes-memory", "MEMORY.md");
     const failuresPath = join(agentDir, "pi-hermes-memory", "failures.md");

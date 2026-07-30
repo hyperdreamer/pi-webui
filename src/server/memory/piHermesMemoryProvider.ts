@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { parseMemoryFile } from "./memoryFileParser.js";
+import { parseMemoryFile, type ParsedMemoryEntry } from "./memoryFileParser.js";
 import type { MemoryProvider, MemoryProviderInput, MemoryProviderResult } from "./memoryProvider.js";
 
 const PROJECT_UNAVAILABLE_MESSAGE = "Project-specific memory could not be loaded.";
@@ -57,6 +57,16 @@ export class PiHermesMemoryProvider implements MemoryProvider {
         projectEntries: [],
         projectUnavailableMessage: PROJECT_UNAVAILABLE_MESSAGE,
       };
+    }
+  }
+
+  async readProjectEntries(projectPath: string): Promise<ParsedMemoryEntry[]> {
+    const project = await this.projectScope(projectPath);
+    if (!project.rootAvailable || project.memoryFilePath === undefined) return [];
+    try {
+      return await this.readOptionalEntries(project.memoryFilePath);
+    } catch {
+      return [];
     }
   }
 

@@ -14,7 +14,6 @@ export class MemoryService {
   }
 
   async projectEntries(projectPath: string): Promise<ParsedMemoryEntry[]> {
-    const result = await this.provider.read({ projectPath });
-    return result.kind === "data" ? result.projectEntries : [];
+    return this.provider.readProjectEntries(projectPath);
   }
 }

@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PiHermesMemoryProvider } from "./piHermesMemoryProvider.js";
 import { MemoryService } from "./memoryService.js";
 
 describe("MemoryService", () => {
@@ -9,6 +10,10 @@ describe("MemoryService", () => {
 
   beforeEach(async () => {
     agentDir = await mkdtemp(join(tmpdir(), "pi-webui-memory-service-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   afterEach(async () => {
@@ -62,6 +67,20 @@ describe("MemoryService", () => {
   });
 
   describe("projectEntries", () => {
+    it("uses the project-only provider read instead of aggregate reads", async () => {
+      const aggregateRead = vi.spyOn(PiHermesMemoryProvider.prototype, "read").mockRejectedValue(new Error("global read must not run"));
+      const projectRead = vi.spyOn(PiHermesMemoryProvider.prototype, "readProjectEntries").mockResolvedValue([
+        { id: "project", content: "Project entry" },
+      ]);
+      const service = new MemoryService(agentDir);
+
+      await expect(service.projectEntries("/work/repo")).resolves.toEqual([
+        { id: "project", content: "Project entry" },
+      ]);
+      expect(projectRead).toHaveBeenCalledWith("/work/repo");
+      expect(aggregateRead).not.toHaveBeenCalled();
+    });
+
     it("returns empty array when the project memory file does not exist", async () => {
       const service = new MemoryService(agentDir);
       const entries = await service.projectEntries("/some/nonexistent/project");
