@@ -72,14 +72,14 @@ export class WorkspaceController {
     });
     try {
       const sessions = mergeCachedNewSessions(workspace.path, await this.api.sessions(workspace.path, machineId), machineId);
-      if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedWorkspace?.id !== workspace.id || this.getState().selectedProject?.id !== workspace.projectId) return;
+      if (!this.isCurrentWorkspaceSessionRequest(projectSessionsRequest, workspace, machineId)) return;
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
       void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId);
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
       if (session) await this.sessions.selectSession(session, { updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId && this.getState().selectedWorkspace?.id === workspace.id) this.setState({ error: String(error), isLoadingSessions: false });
+      if (this.isCurrentWorkspaceSessionRequest(projectSessionsRequest, workspace, machineId)) this.setState({ error: String(error), isLoadingSessions: false });
     }
   }
 
@@ -93,10 +93,7 @@ export class WorkspaceController {
         if (candidate.id === workspace.id) return currentSessions;
         return mergeCachedNewSessions(candidate.path, await this.api.sessions(candidate.path, machineId), machineId);
       }));
-      if (request !== this.projectSessionsRequest
-        || selectedMachineId(this.getState()) !== machineId
-        || this.getState().selectedProject?.id !== workspace.projectId
-        || this.getState().selectedWorkspace?.id !== workspace.id) return;
+      if (!this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) return;
       this.setState({ projectSessions: uniqueSessionsByPath(sessionLists.flat()) });
     } catch {
       // Cross-workspace grouping is an enhancement; preserve the current
@@ -120,6 +117,15 @@ export class WorkspaceController {
     const fallback = selectFallbackWorkspace(workspaces);
     if (fallback !== undefined) await this.selectWorkspace(fallback);
     else this.clearSelection();
+  }
+
+  private isCurrentWorkspaceSessionRequest(request: number, workspace: Workspace, machineId: string): boolean {
+    const state = this.getState();
+    return request === this.projectSessionsRequest
+      && selectedMachineId(state) === machineId
+      && state.selectedProject?.id === workspace.projectId
+      && state.selectedWorkspace?.id === workspace.id
+      && state.selectedWorkspace.path === workspace.path;
   }
 
   private applyProjectWorkspaces(projectId: string, workspaces: Workspace[]): void {

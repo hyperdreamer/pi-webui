@@ -111,6 +111,108 @@ describe("WorkspaceController", () => {
     await selecting;
   });
 
+  it("keeps the latest exact workspace reselect's sessions and preferred selection", async () => {
+    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
+    const main = workspace(project, "workspace-1", "/workspace");
+    const firstRequest = deferred<SessionInfo[]>();
+    const latestRequest = deferred<SessionInfo[]>();
+    const requests = [firstRequest, latestRequest];
+    const selectedSessionIds: string[] = [];
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [project],
+      selectedProject: project,
+      selectedWorkspace: main,
+    };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      {
+        clearActiveSession: () => undefined,
+        preferredSession: (_cwd, sessions) => sessions[0],
+        selectSession: (selected) => {
+          selectedSessionIds.push(selected.id);
+          return Promise.resolve();
+        },
+      },
+      new InMemoryWorkspaceSelectionMemory(),
+      {
+        api: {
+          workspaces: () => Promise.resolve([]),
+          sessions: () => {
+            const request = requests.shift();
+            if (request === undefined) throw new Error("Unexpected session request");
+            return request.promise;
+          },
+        },
+      },
+    );
+    const firstSelecting = controller.selectWorkspace({ ...main });
+    const latestSelecting = controller.selectWorkspace({ ...main });
+    const latestSessions = [session("latest", main.path)];
+
+    latestRequest.resolve(latestSessions);
+    await latestSelecting;
+
+    expect(state.sessions).toEqual(latestSessions);
+    expect(state.projectSessions).toEqual(latestSessions);
+    expect(state.isLoadingSessions).toBe(false);
+    expect(selectedSessionIds).toEqual(["latest"]);
+
+    firstRequest.resolve([session("stale", main.path)]);
+    await firstSelecting;
+
+    expect(state.sessions).toEqual(latestSessions);
+    expect(state.projectSessions).toEqual(latestSessions);
+    expect(state.isLoadingSessions).toBe(false);
+    expect(selectedSessionIds).toEqual(["latest"]);
+  });
+
+  it("ignores a stale exact workspace reselect error", async () => {
+    const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
+    const main = workspace(project, "workspace-1", "/workspace");
+    const firstRequest = deferred<SessionInfo[]>();
+    const latestRequest = deferred<SessionInfo[]>();
+    const requests = [firstRequest, latestRequest];
+    const latestSessions = [session("latest", main.path)];
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [project],
+      selectedProject: project,
+      selectedWorkspace: main,
+    };
+    const controller = new WorkspaceController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      sessionControllerStub(),
+      new InMemoryWorkspaceSelectionMemory(),
+      {
+        api: {
+          workspaces: () => Promise.resolve([]),
+          sessions: () => {
+            const request = requests.shift();
+            if (request === undefined) throw new Error("Unexpected session request");
+            return request.promise;
+          },
+        },
+      },
+    );
+    const firstSelecting = controller.selectWorkspace({ ...main });
+    const latestSelecting = controller.selectWorkspace({ ...main });
+
+    latestRequest.resolve(latestSessions);
+    await latestSelecting;
+    firstRequest.reject(new Error("stale sessions request"));
+    await firstSelecting;
+
+    expect(state.sessions).toEqual(latestSessions);
+    expect(state.projectSessions).toEqual(latestSessions);
+    expect(state.isLoadingSessions).toBe(false);
+    expect(state.error).toBe("");
+  });
+
   it("loads related sessions from the selected project's other workspaces", async () => {
     const project: Project = { id: "project-1", name: "workspace", path: "/workspace", createdAt: "now" };
     const main = workspace(project, "workspace-1", "/workspace");
@@ -172,6 +274,10 @@ function sessionControllerStub(): Pick<SessionController, "clearActiveSession" |
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => { resolve = promiseResolve; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
