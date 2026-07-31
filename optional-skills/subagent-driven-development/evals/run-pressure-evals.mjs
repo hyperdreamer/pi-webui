@@ -110,6 +110,7 @@ export function buildPiInvocation(args, repetition) {
   const sessionDir = `${args.output}/.sessions/${runSuffix}`;
   const profileDir = `${args.output}/.profiles/${runSuffix}`;
   const fixtureDir = `${args.output}/.fixtures/${runSuffix}`;
+  let rolePromptSource = null;
 
   const piArgs = [
     "--mode", "json",
@@ -134,10 +135,13 @@ export function buildPiInvocation(args, repetition) {
     }
   } else if (args.condition !== "no-guidance") {
     // Role suites load no controller skill: role guidance is explicit system text.
-    const promptRelative = args.condition === "candidate"
-      ? `${SKILL_ROOT_RELATIVE}/${args.scenario.candidateRolePrompt}`
-      : join(args.originalSkill, args.scenario.originalRolePrompt);
-    piArgs.push("--append-system-prompt", promptRelative);
+    // Pi reads --append-system-prompt as file contents when the value is an
+    // existing path, so the path must resolve from the evaluator root.
+    const promptPath = args.condition === "candidate"
+      ? join(args.evaluatorRoot, SKILL_ROOT_RELATIVE, args.scenario.candidateRolePrompt)
+      : resolve(args.originalSkill, args.scenario.originalRolePrompt);
+    piArgs.push("--append-system-prompt", promptPath);
+    rolePromptSource = promptPath;
   }
 
   piArgs.push("--extension", FAKE_TOOLS_RELATIVE);
@@ -174,7 +178,20 @@ export function buildPiInvocation(args, repetition) {
     env.SDD_EVAL_ROLE_TOOL_MODE = args.scenario.roleToolMode;
   }
 
-  return { command: "pi", args: piArgs, env, sessionDir, profileDir, fixtureDir };
+  return { command: "pi", args: piArgs, env, sessionDir, profileDir, fixtureDir, rolePromptSource };
+}
+
+/**
+ * Options for the Pi child process.
+ *
+ * `maxBuffer` is raised well above Node's 1 MiB default because a single run at a
+ * high thinking level emits hundreds of streaming events and was measured at
+ * ~1.02 MiB. On overflow `spawnSync` kills the child and returns truncated
+ * output with no error text, which is indistinguishable from a model that
+ * simply produced nothing.
+ */
+export function spawnOptions() {
+  return { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 };
 }
 
 export function inspectPiJsonEvents(lines) {
@@ -222,7 +239,11 @@ export function inspectPiJsonEvents(lines) {
   }
 
   const finalText = assistantText.length > 0 ? assistantText[assistantText.length - 1] : "";
-  if (assistantText.length === 0) harnessBlocked = true;
+  // A run that produced no final assistant text, or that never reached
+  // agent_end, did not complete: the transport failed rather than the model
+  // declining to answer. Either way it is not scoreable evidence.
+  const truncated = !sawAgentEnd;
+  if (assistantText.length === 0 || truncated) harnessBlocked = true;
 
   return {
     toolCalls,
@@ -232,6 +253,7 @@ export function inspectPiJsonEvents(lines) {
     provider,
     model,
     sawAgentEnd,
+    truncated,
     status: harnessBlocked ? "HARNESS_BLOCKED" : "SCORED",
   };
 }
@@ -350,7 +372,7 @@ function runRepetition(args, repetition) {
   try {
     const result = spawnSync(invocation.command, invocation.args, {
       cwd: args.evaluatorRoot,
-      encoding: "utf8",
+      ...spawnOptions(),
       env: { ...process.env, ...invocation.env },
     });
     const inspection = inspectPiJsonEvents(String(result.stdout ?? ""));
@@ -367,6 +389,7 @@ function runRepetition(args, repetition) {
       toolCalls: inspection.toolCalls,
       provider: inspection.provider,
       resolvedModel: inspection.model,
+      rolePromptSource: invocation.rolePromptSource,
       ...score,
       at: new Date().toISOString(),
     };

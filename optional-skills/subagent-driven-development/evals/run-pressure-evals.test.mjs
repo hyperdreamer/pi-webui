@@ -20,6 +20,7 @@ import {
   prepareRepetitionWorkspace,
   scoreRun,
   seedTemporaryProfile,
+  spawnOptions,
   removeTemporaryProfile,
 } from "./run-pressure-evals.mjs";
 
@@ -210,6 +211,7 @@ describe("deterministic SDD pressure evaluator", () => {
       jsonEvent({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "PLAN_INVALID" }] } }),
       jsonEvent({ type: "tool_execution_end", toolCallId: "t1", toolName: "read", result: "PLAN_INVALID", isError: false }),
       assistantMessageEnd("State token: CAPABILITY_BLOCKED"),
+      jsonEvent({ type: "agent_end", messages: [] }),
     ]);
     expect(inspection.finalText).toBe("State token: CAPABILITY_BLOCKED");
     expect(scoreRun({ expectedState: "PLAN_INVALID" }, inspection).expectedStateMatch).toBe(false);
@@ -232,6 +234,7 @@ describe("deterministic SDD pressure evaluator", () => {
     const inspection = inspectPiJsonEvents([
       jsonEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "spawn_subsession", args: {} }),
       assistantMessageEnd("PLAN_INVALID"),
+      jsonEvent({ type: "agent_end", messages: [] }),
     ]);
     const score = scoreRun({
       expectedState: "PLAN_INVALID",
@@ -521,6 +524,25 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(plan.split("## Task 4:")[1]).not.toContain("Implementer tier");
     expect(plan).toContain("## Task 3: Reduce the state machine");
     expect(plan.split("## Task 3:")[1].split("## Task 4:")[0]).toContain("**Implementer tier:** Advanced");
+  });
+
+  it("allows stdout far beyond the default spawn buffer", () => {
+    // A single run at high thinking emits hundreds of streaming events and
+    // exceeded 1 MiB in practice. spawnSync's default maxBuffer is 1 MiB and it
+    // KILLS the child on overflow, so the run dies mid-stream and scores as
+    // HARNESS_BLOCKED with no error message anywhere.
+    expect(spawnOptions().maxBuffer).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it("treats a truncated event stream as HARNESS_BLOCKED rather than a candidate failure", () => {
+    // Truncation looks like a completed run with empty assistant text.
+    const inspection = inspectPiJsonEvents([
+      jsonEvent({ type: "tool_execution_start", toolCallId: "t1", toolName: "read", args: { path: "/x" } }),
+      assistantMessageEnd("", { stopReason: "toolUse" }),
+    ]);
+    expect(inspection.sawAgentEnd).toBe(false);
+    expect(inspection.status).toBe("HARNESS_BLOCKED");
+    expect(inspection.truncated).toBe(true);
   });
 
   it("writes nothing outside the requested output directory", () => {

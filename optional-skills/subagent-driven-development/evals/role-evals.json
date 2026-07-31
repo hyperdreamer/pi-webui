@@ -99,7 +99,8 @@
     {
       "id": "final-reviewer-reconciles-ledgers",
       "role": "final-reviewer",
-      "originalRolePrompt": "task-reviewer-prompt.md",
+      "originalRolePrompt": "../requesting-code-review/code-reviewer.md",
+      "originalRolePromptNote": "Plan Task 3 Step 1 requires the canonical requesting-code-review/code-reviewer.md for the final-reviewer original control; the recorded source path is kept in each run record.",
       "candidateRolePrompt": "prompts/final-reviewer-prompt.md",
       "roleToolMode": "read-only",
       "allowedReportPath": "reports/final-review.md",
