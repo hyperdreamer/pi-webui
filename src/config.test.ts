@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled } from "./config.js";
+import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
 
 let tempDir: string;
 let configPath: string;
@@ -61,6 +62,41 @@ describe("PI WEBUI config persistence", () => {
   it("persists and reads maxUploadBytes", () => {
     savePiWebUiConfig({ maxUploadBytes: 1234 }, testOptions());
     expect(loadPiWebUiConfig(testOptions()).config.maxUploadBytes).toBe(1234);
+  });
+
+  it("persists and reads the complete model tier ladder", () => {
+    const modelTiers = validModelTiers();
+    savePiWebUiConfig({ modelTiers }, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config.modelTiers).toEqual(modelTiers);
+  });
+
+  it("preserves unrelated keys while replacing the model tier ladder", async () => {
+    await writeFile(configPath, `${JSON.stringify({ future: { enabled: true }, modelTiers: { stale: true } }, null, 2)}\n`, "utf8");
+
+    const modelTiers = validModelTiers();
+    savePiWebUiConfig({ modelTiers }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ future: { enabled: true }, modelTiers });
+  });
+
+  it("reports an externally invalid model tier ladder without crashing or defaulting", async () => {
+    const invalid = { economy: validModelTiers().economy };
+    await writeFile(configPath, `${JSON.stringify({ modelTiers: invalid }, null, 2)}\n`, "utf8");
+
+    const loaded = loadPiWebUiConfig(testOptions());
+
+    expect(loaded.config.modelTiers).toBeUndefined();
+    expect(loaded.modelTiersError).toContain("six canonical tiers");
+  });
+
+  it("retains an invalid external ladder when saving an unrelated config update", async () => {
+    const invalid = { economy: validModelTiers().economy };
+    await writeFile(configPath, `${JSON.stringify({ modelTiers: invalid, future: { enabled: true } }, null, 2)}\n`, "utf8");
+
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ modelTiers: invalid, future: { enabled: true }, port: 9000 });
   });
 
   it("persists and reads custom agent runtime settings", () => {
@@ -238,6 +274,17 @@ describe("subsessionsEnabled", () => {
     expect(subsessionsEnabled({ PI_WEBUI_SUBSESSIONS: "0" }, { subsessions: true })).toBe(false);
   });
 });
+
+function validModelTiers(): ModelTierLadder {
+  return {
+    economy: { model: { provider: "acme", id: "economy" }, thinkingLevel: "off" },
+    fast: { model: { provider: "acme", id: "fast" }, thinkingLevel: "low" },
+    standard: { model: { provider: "acme", id: "standard" }, thinkingLevel: "medium" },
+    advanced: { model: { provider: "acme", id: "advanced" }, thinkingLevel: "high" },
+    capable: { model: { provider: "acme", id: "capable" }, thinkingLevel: "xhigh" },
+    frontier: { model: { provider: "acme", id: "frontier" }, thinkingLevel: "max" },
+  };
+}
 
 function testOptions(): { env: NodeJS.ProcessEnv } {
   return { env: { PI_WEBUI_CONFIG: configPath } };

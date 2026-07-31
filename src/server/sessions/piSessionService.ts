@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { loadPiWebUiConfig } from "../../config.js";
 import { open, readFile, writeFile } from "node:fs/promises";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -35,6 +36,7 @@ import { deterministicSessionName, fallbackSessionName, generateShortSessionName
 import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
 import { attachmentsToInlineImages, saveAttachmentsToWorkspace } from "./attachmentService.js";
 import { parsePromptAttachments } from "../../shared/promptAttachments.js";
+import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_LIMIT } from "../../shared/apiTypes.js";
 import type {
   SavedPromptAttachment,
@@ -68,6 +70,7 @@ import {
 } from "./sessionNotificationStore.js";
 import { plainTextTheme } from "./plainTextTheme.js";
 import { SessionUnreadStore, type SessionUnreadMutation } from "./sessionUnreadStore.js";
+import { createModelTierRegistry, isModelTier, runtimeThinkingLevels, type ModelTierRegistry, type ModelTier } from "./modelTierRegistry.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -197,6 +200,7 @@ type SessionCreationProvenance = "tracked-subsession";
 interface StartSessionOptions {
   parentSession?: string;
   initialModel?: AgentModel;
+  initialThinkingLevel?: ClientThinkingLevel;
 }
 
 interface InternalStartSessionOptions extends StartSessionOptions {
@@ -205,6 +209,14 @@ interface InternalStartSessionOptions extends StartSessionOptions {
 
 function requirePromptText(value: unknown): string {
   if (typeof value !== "string") throw new Error("Prompt text is required");
+  return value;
+}
+
+function leadingTierDirective(prompt: string): ModelTier | undefined {
+  const match = /^(?:\uFEFF)?\/tier-([^\s\r\n]+)(?:[ \t]*(?:\r?\n|$))/u.exec(prompt);
+  if (match === null) return undefined;
+  const value = match[1];
+  if (value === undefined || !isModelTier(value)) throw new Error(`Unknown leading tier directive: /tier-${value ?? ""}`);
   return value;
 }
 
@@ -389,7 +401,7 @@ interface PendingSessionOpen {
   promise: Promise<ActiveSession<PiSessionRuntime>>;
 }
 
-interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "creationProvenance"> {
+interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "initialThinkingLevel" | "creationProvenance"> {
   notificationGeneration?: SessionNotificationGeneration;
   notifications?: "enabled" | "disabled";
 }
@@ -533,11 +545,13 @@ interface CreateAgentRuntimeOptions {
   sessionManager: PiSessionManager;
   delegationToolsEnabled: boolean;
   initialModel?: AgentModel;
+  initialThinkingLevel?: ClientThinkingLevel;
 }
 
 type PiWebUiRuntimeFactoryOptions = Parameters<CreateAgentSessionRuntimeFactory>[0] & {
   delegationToolsEnabled?: boolean;
   initialModel?: AgentModel;
+  initialThinkingLevel?: ClientThinkingLevel;
 };
 
 type PiWebUiCreateAgentSessionRuntimeFactory = (
@@ -548,7 +562,7 @@ type CreateAgentRuntime = (createRuntime: PiWebUiCreateAgentSessionRuntimeFactor
 
 function defaultCreateAgentRuntime(createRuntime: PiWebUiCreateAgentSessionRuntimeFactory, options: CreateAgentRuntimeOptions): Promise<PiSessionRuntime> {
   if (!(options.sessionManager instanceof SessionManager)) throw new Error("Default runtime creation requires an SDK SessionManager");
-  const runtimeFactory = createRuntimeWithOneShotSessionOptions(createRuntime, options.initialModel, options.delegationToolsEnabled);
+  const runtimeFactory = createRuntimeWithOneShotSessionOptions(createRuntime, options.initialModel, options.initialThinkingLevel, options.delegationToolsEnabled);
   return createAgentSessionRuntime(runtimeFactory, {
     cwd: options.cwd,
     agentDir: options.agentDir,
@@ -559,20 +573,25 @@ function defaultCreateAgentRuntime(createRuntime: PiWebUiCreateAgentSessionRunti
 function createRuntimeWithOneShotSessionOptions(
   createRuntime: PiWebUiCreateAgentSessionRuntimeFactory,
   initialModel: AgentModel | undefined,
+  initialThinkingLevel: ClientThinkingLevel | undefined,
   delegationToolsEnabled: boolean,
 ): CreateAgentSessionRuntimeFactory {
   // These inputs belong only to the session being opened. A later runtime
   // replacement resolves its own model and delegation capability.
   let pendingInitialModel = initialModel;
+  let pendingInitialThinkingLevel = initialThinkingLevel;
   let pendingDelegationToolsEnabled: boolean | undefined = delegationToolsEnabled;
   return async (options) => {
     const model = pendingInitialModel;
+    const thinkingLevel = pendingInitialThinkingLevel;
     const toolsEnabled = pendingDelegationToolsEnabled;
     pendingInitialModel = undefined;
+    pendingInitialThinkingLevel = undefined;
     pendingDelegationToolsEnabled = undefined;
     return createRuntime({
       ...options,
       ...(model === undefined ? {} : { initialModel: model }),
+      ...(thinkingLevel === undefined ? {} : { initialThinkingLevel: thinkingLevel }),
       ...(toolsEnabled === undefined ? {} : { delegationToolsEnabled: toolsEnabled }),
     });
   };
@@ -599,7 +618,7 @@ function createDefaultRuntimeFactory(
   spawn?: SpawnSessionFn,
   subsessions?: SubsessionToolDeps,
 ): PiWebUiCreateAgentSessionRuntimeFactory {
-  return async ({ cwd, agentDir, sessionManager, sessionStartEvent, initialModel, delegationToolsEnabled }) => {
+  return async ({ cwd, agentDir, sessionManager, sessionStartEvent, initialModel, initialThinkingLevel, delegationToolsEnabled }) => {
     const services = await createAgentSessionServices({ cwd, agentDir, modelRuntime });
     const resolvedDelegationToolsEnabled = delegationToolsEnabled
       ?? await sessionAllowsDelegationTools(sessionManager, sessionManagers);
@@ -610,6 +629,7 @@ function createDefaultRuntimeFactory(
       customTools,
       ...(sessionStartEvent === undefined ? {} : { sessionStartEvent }),
       ...(initialModel === undefined ? {} : { model: initialModel }),
+      ...(initialThinkingLevel === undefined ? {} : { thinkingLevel: initialThinkingLevel }),
     });
     return { ...result, services, diagnostics: services.diagnostics };
   };
@@ -646,6 +666,8 @@ export interface PiSessionServiceDependencies {
   createRuntime?: PiWebUiCreateAgentSessionRuntimeFactory;
   createAgentRuntime?: CreateAgentRuntime;
   modelRuntime: ModelRuntime;
+  /** Injectable typed tier resolver; production resolves the global config at dispatch time. */
+  modelTierRegistry?: ModelTierRegistry<AgentModel>;
   heartbeatIntervalMs?: number;
   workspaceActivity?: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity">;
   /**
@@ -715,6 +737,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly createRuntime: PiWebUiCreateAgentSessionRuntimeFactory;
   private readonly createAgentRuntime: CreateAgentRuntime;
   private readonly modelRuntime: ModelRuntime;
+  private readonly modelTierRegistry: ModelTierRegistry<AgentModel>;
   private readonly workspaceActivity: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity"> | undefined;
   private readonly spawnTargets: SpawnTargetResolver | undefined;
   private readonly logger: PiSessionLogger;
@@ -762,6 +785,17 @@ export class PiSessionService implements SessionRouteService {
       },
     );
     this.createAgentRuntime = deps.createAgentRuntime ?? defaultCreateAgentRuntime;
+    this.modelTierRegistry = deps.modelTierRegistry ?? createModelTierRegistry({
+      loadConfig: () => {
+        const loaded = loadPiWebUiConfig();
+        return {
+          ...(loaded.config.modelTiers === undefined ? {} : { modelTiers: loaded.config.modelTiers }),
+          ...(loaded.modelTiersError === undefined ? {} : { modelTiersError: loaded.modelTiersError }),
+        };
+      },
+      models: () => this.modelRuntime.getAvailableSnapshot(),
+      supportedThinkingLevels: runtimeThinkingLevels,
+    });
     this.workspaceActivity = deps.workspaceActivity;
     this.heartbeat = setInterval(() => { this.publishHeartbeats(); }, deps.heartbeatIntervalMs ?? 2000);
     this.commandService = new SessionCommandService(
@@ -1007,6 +1041,7 @@ export class PiSessionService implements SessionRouteService {
       cwd,
       {
         ...(options.initialModel === undefined ? {} : { initialModel: options.initialModel }),
+        ...(options.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: options.initialThinkingLevel }),
         ...(options.creationProvenance === undefined ? {} : { creationProvenance: options.creationProvenance }),
       },
     );
@@ -1058,9 +1093,26 @@ export class PiSessionService implements SessionRouteService {
     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
     const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, input.cwd);
     if (!decision.allowed) throw spawnTargetError(decision);
+
+    let initialModel = input.model;
+    let initialThinkingLevel: ClientThinkingLevel | undefined;
+    if (input.tier !== undefined) {
+      const echoedTier = leadingTierDirective(input.prompt);
+      if (echoedTier !== undefined && echoedTier !== input.tier) {
+        throw new Error(`Leading tier directive /tier-${echoedTier} disagrees with typed tier ${input.tier}`);
+      }
+      const resolved = this.modelTierRegistry.resolve(input.tier);
+      if (!isKnownThinkingLevel(resolved.thinkingLevel)) {
+        throw new Error(`tier ${input.tier} resolved to unknown thinking level ${resolved.thinkingLevel}`);
+      }
+      initialModel = resolved.model;
+      initialThinkingLevel = resolved.thinkingLevel;
+    }
+
     const created = await this.startSession(decision.cwd, {
       ...(input.parentSessionFile === undefined ? {} : { parentSession: input.parentSessionFile }),
-      ...(input.model === undefined ? {} : { initialModel: input.model }),
+      ...(initialModel === undefined ? {} : { initialModel }),
+      ...(initialThinkingLevel === undefined ? {} : { initialThinkingLevel }),
       creationProvenance: "tracked-subsession",
     });
     const parentSessionFile = nonEmptyString(input.parentSessionFile);
@@ -2461,6 +2513,7 @@ export class PiSessionService implements SessionRouteService {
       sessionManager,
       delegationToolsEnabled,
       ...(options.initialModel === undefined ? {} : { initialModel: options.initialModel }),
+      ...(options.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: options.initialThinkingLevel }),
     });
     const active: ActiveSession<PiSessionRuntime> = { runtime, unsubscribe: noop };
     let boundSession = runtime.session;

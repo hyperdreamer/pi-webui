@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, savePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, savePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
 import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
 
@@ -13,6 +13,7 @@ export const SELECTED_MACHINE_CONFIG_KEYS = [
   "pathAccess",
   "uploads",
   "maxUploadBytes",
+  "modelTiers",
   "spawnSessions",
   "subsessions",
   "agent",
@@ -39,6 +40,7 @@ export function currentPiWebUiConfigResponse(options: LoadOptions = {}): PiWebUi
     exists: loaded.exists,
     config: loaded.config,
     effectiveConfig: effective.config,
+    ...(loaded.modelTiersError === undefined ? {} : { modelTiersError: loaded.modelTiersError }),
     envOverrides: piWebUiConfigEnvOverrides(env, effective.config),
   };
 }
@@ -114,6 +116,7 @@ export function parsePiWebUiConfigResponseBody(value: unknown, source = "PI WEBU
     exists: requireResponseBoolean(record, "exists", source),
     config: parseConfigRequest(record["config"], "portable"),
     effectiveConfig: parseConfigRequest(record["effectiveConfig"], "portable"),
+    ...(record["modelTiersError"] === undefined ? {} : { modelTiersError: requireResponseString(record, "modelTiersError", source) }),
     envOverrides: parsePiWebUiConfigEnvOverridesResponse(record["envOverrides"], source),
   };
 }
@@ -129,6 +132,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
   const pathAccess = value["pathAccess"];
   const uploads = value["uploads"];
   const maxUploadBytes = value["maxUploadBytes"];
+  const modelTiers = value["modelTiers"];
   const spawnSessions = value["spawnSessions"];
   const subsessions = value["subsessions"];
   const agent = value["agent"];
@@ -146,6 +150,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
   if (pathAccess !== undefined) config.pathAccess = parsePathAccessRequest(pathAccess);
   if (uploads !== undefined) config.uploads = parseUploadsConfig(uploads, "request");
   if (maxUploadBytes !== undefined) config.maxUploadBytes = parseMaxUploadBytesRequest(maxUploadBytes);
+  if (modelTiers !== undefined) config.modelTiers = parseModelTiersConfig(modelTiers, "request");
   if (spawnSessions !== undefined) {
     if (typeof spawnSessions !== "boolean") throw new Error("PI WEBUI config spawnSessions must be a boolean");
     config.spawnSessions = spawnSessions;
@@ -164,6 +169,7 @@ function pickSelectedMachineConfig(config: PiWebUiConfigValues): PiWebUiConfig {
     ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
     ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
     ...(config.maxUploadBytes !== undefined ? { maxUploadBytes: config.maxUploadBytes } : {}),
+    ...(config.modelTiers !== undefined ? { modelTiers: config.modelTiers } : {}),
     ...(config.spawnSessions !== undefined ? { spawnSessions: config.spawnSessions } : {}),
     ...(config.subsessions !== undefined ? { subsessions: config.subsessions } : {}),
     ...(config.agent !== undefined ? { agent: config.agent } : {}),

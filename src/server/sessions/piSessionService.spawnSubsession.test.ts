@@ -98,6 +98,184 @@ describe("PiSessionService", () => {
       await service.dispose();
     });
 
+    it("binds a typed tier as model then thinking before the child's first prompt", async () => {
+      const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
+      const child = fakeRuntime("child-1", { sessionFile: "/tmp/child-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
+      const model = testModel();
+      const setterCalls: string[] = [];
+      child.session.setModel = (nextModel) => {
+        setterCalls.push(`model:${nextModel.provider}/${nextModel.id}`);
+        return Promise.resolve();
+      };
+      child.session.setThinkingLevel = (level) => {
+        setterCalls.push(`thinking:${level}`);
+      };
+      child.session.prompt = (text) => {
+        setterCalls.push(`prompt:${text}`);
+        return Promise.resolve();
+      };
+      const runtimes = [parent.runtime, child.runtime];
+      let index = 0;
+      const createAgentRuntime: RuntimeCreator = async (_createRuntime, options) => {
+        const runtime = runtimes[index] ?? child.runtime;
+        index += 1;
+        if (options.initialModel !== undefined) await runtime.session.setModel(options.initialModel);
+        if (options.initialThinkingLevel !== undefined) runtime.session.setThinkingLevel(options.initialThinkingLevel);
+        return runtime;
+      };
+      const modelTierRegistry = {
+        resolve: vi.fn(() => ({ tier: "economy" as const, model, thinkingLevel: "high" as const })),
+      };
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime,
+        modelTierRegistry,
+        sessionManager: sessionGateway([]),
+        archiveStore: emptyArchiveStore(),
+        spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true, cwd: "/workspace-feature" }) },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.start("/workspace");
+      await service.spawnSubsession({
+        spawningCwd: "/workspace",
+        parentSessionId: "parent-1",
+        parentSessionFile: "/tmp/parent-1.jsonl",
+        prompt: "do the slice",
+        cwd: "/workspace-feature",
+        tier: "economy",
+      });
+
+      expect(modelTierRegistry.resolve).toHaveBeenCalledWith("economy");
+      expect(setterCalls).toEqual([
+        `model:${model.provider}/${model.id}`,
+        "thinking:high",
+        "prompt:do the slice",
+      ]);
+      await service.dispose();
+    });
+
+    it("keeps prompt text inert when a typed economy tier is supplied", async () => {
+      const prompts = ["do the slice while mentioning /tier-frontier", "do the slice"];
+      for (const prompt of prompts) {
+        const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
+        const child = fakeRuntime("child-1", { sessionFile: "/tmp/child-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
+        const economyModel = testModel();
+        const selectedModels: PiAgentSession["model"][] = [];
+        child.session.setModel = (nextModel) => {
+          selectedModels.push(nextModel);
+          return Promise.resolve();
+        };
+        const runtimes = [parent.runtime, child.runtime];
+        let index = 0;
+        const modelTierRegistry = {
+          resolve: vi.fn(() => ({ tier: "economy" as const, model: economyModel, thinkingLevel: "high" as const })),
+        };
+        const service = new PiSessionService(new CapturingSessionEventHub(), {
+          agentDir: TEST_AGENT_DIR,
+          modelRuntime: testModelRuntime,
+          createAgentRuntime: async (_createRuntime, options) => {
+            const runtime = runtimes[index] ?? child.runtime;
+            index += 1;
+            if (options.initialModel !== undefined) await runtime.session.setModel(options.initialModel);
+            if (options.initialThinkingLevel !== undefined) runtime.session.setThinkingLevel(options.initialThinkingLevel);
+            return runtime;
+          },
+          modelTierRegistry,
+          sessionManager: sessionGateway([]),
+          archiveStore: emptyArchiveStore(),
+          spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true, cwd: "/workspace-feature" }) },
+          heartbeatIntervalMs: 60_000,
+        });
+
+        await service.start("/workspace");
+        await service.spawnSubsession({
+          spawningCwd: "/workspace",
+          parentSessionId: "parent-1",
+          parentSessionFile: "/tmp/parent-1.jsonl",
+          prompt,
+          cwd: "/workspace-feature",
+          tier: "economy",
+        });
+
+        expect(selectedModels).toEqual([economyModel]);
+        await service.dispose();
+      }
+    });
+
+    it("rejects an unresolvable tier before creating a child", async () => {
+      const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
+      const create = vi.fn(() => fakeSessionManager("/workspace-feature"));
+      const modelTierRegistry = {
+        resolve: vi.fn(() => {
+          throw new Error("tier economy names unavailable model acme/small");
+        }),
+      };
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime: runtimeCreator(parent.runtime),
+        modelTierRegistry,
+        sessionManager: { create, list: () => Promise.resolve([]), open: () => fakeSessionManager() },
+        archiveStore: emptyArchiveStore(),
+        spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true, cwd: "/workspace-feature" }) },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.start("/workspace");
+      await expect(service.spawnSubsession({
+        spawningCwd: "/workspace",
+        parentSessionId: "parent-1",
+        parentSessionFile: "/tmp/parent-1.jsonl",
+        prompt: "do the slice",
+        cwd: "/workspace-feature",
+        tier: "economy",
+      })).rejects.toThrow("acme/small");
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(modelTierRegistry.resolve).toHaveBeenCalledWith("economy");
+      await service.dispose();
+    });
+
+    it("inherits the parent model without parsing a prompt when tier is omitted", async () => {
+      const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
+      const child = fakeRuntime("child-1", { sessionFile: "/tmp/child-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
+      const parentModel = testModel();
+      const initialModels: PiAgentSession["model"][] = [];
+      const modelTierRegistry = { resolve: vi.fn() };
+      const runtimes = [parent.runtime, child.runtime];
+      let index = 0;
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime: (_createRuntime, options) => {
+          initialModels.push(options.initialModel);
+          const runtime = runtimes[index] ?? child.runtime;
+          index += 1;
+          return Promise.resolve(runtime);
+        },
+        modelTierRegistry,
+        sessionManager: sessionGateway([]),
+        archiveStore: emptyArchiveStore(),
+        spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true, cwd: "/workspace-feature" }) },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.start("/workspace");
+      await service.spawnSubsession({
+        spawningCwd: "/workspace",
+        parentSessionId: "parent-1",
+        parentSessionFile: "/tmp/parent-1.jsonl",
+        prompt: "/tier-frontier\ndo the slice",
+        cwd: "/workspace-feature",
+        model: parentModel,
+      });
+
+      expect(initialModels).toEqual([undefined, parentModel]);
+      expect(modelTierRegistry.resolve).not.toHaveBeenCalled();
+      await service.dispose();
+    });
+
     it("persists tracked child links in the parent and child sessions", async () => {
       const parentPersisted: { customType: string; data?: unknown }[] = [];
       const childPersisted: { customType: string; data?: unknown }[] = [];
