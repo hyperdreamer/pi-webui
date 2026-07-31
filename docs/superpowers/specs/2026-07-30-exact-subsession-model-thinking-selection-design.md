@@ -1,6 +1,6 @@
 # Exact subsession model and thinking selection — design
 
-**Status:** Approved specification.
+**Status:** Superseded by [Tiered session model policy and deterministic SDD](./2026-07-31-tiered-session-model-policy-and-deterministic-sdd-design.md). Do not implement this specification.
 
 ## Goal
 

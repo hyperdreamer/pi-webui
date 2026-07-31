@@ -1,5 +1,7 @@
 # Exact Subsession Model and Thinking Selection Implementation Plan
 
+> **Status: Superseded.** Do not execute this plan. It is replaced by the [Tiered session model policy and deterministic SDD design](../specs/2026-07-31-tiered-session-model-policy-and-deterministic-sdd-design.md); a new implementation plan will follow written-spec review.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let each eligible parent session persist an exact provider/model/thinking default for future tracked subsessions, expose that choice in the starter and active composers, and permit one complete exact override per `spawn_subsession` call.
