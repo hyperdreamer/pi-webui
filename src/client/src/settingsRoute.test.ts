@@ -42,6 +42,8 @@ describe("settings route helpers", () => {
     expect(parseSettingsSection("plugins")).toBe("plugins");
     expect(parseSettingsSection("shortcuts")).toBe("shortcuts");
     expect(parseSettingsSection("keyboard")).toBe("shortcuts");
+    expect(parseSettingsSection("modeltiers")).toBe("modeltiers");
+    expect(parseSettingsSection("model-tiers")).toBe("modeltiers");
     expect(parseSettingsSection("unknown")).toBeUndefined();
   });
 

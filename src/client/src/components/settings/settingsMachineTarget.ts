@@ -15,6 +15,7 @@ export interface SelectedMachineSettingsSupport {
 }
 
 export type AgentProfileSettingsSupport = SelectedMachineSettingsSupport;
+export type ModelTierSettingsSupport = SelectedMachineSettingsSupport;
 
 export function settingsMachineTarget(machine: Pick<Machine, "id" | "name" | "kind"> | undefined): SettingsMachineTarget {
   if (machine !== undefined) return { id: machine.id, name: machine.name, kind: machine.kind };
@@ -45,6 +46,13 @@ export function agentProfileSettingsSupport(target: SettingsMachineTarget, runti
     state: "unsupported",
     message: `Pi-compatible agent profile settings are not available on ${target.name}. Update and restart PI WEBUI on that machine, then try again.`,
   };
+}
+
+export function modelTierSettingsSupport(target: SettingsMachineTarget, runtime: Pick<MachineRuntime, "ok" | "capabilities"> | undefined): ModelTierSettingsSupport {
+  if (target.kind === "local") return { state: "supported" };
+  if (runtime?.ok !== true) return { state: "unknown" };
+  if (supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.modelTierSettings) || supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.selectedMachineSettings)) return { state: "supported" };
+  return { state: "unsupported", message: selectedMachineSettingsUnavailableMessage(target) };
 }
 
 export function selectedMachineSettingsSupportKey(support: SelectedMachineSettingsSupport): string {
