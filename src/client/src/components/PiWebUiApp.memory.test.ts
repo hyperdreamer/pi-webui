@@ -78,6 +78,61 @@ describe("PiWebUiApp Memory activity-Rail lifecycle wiring", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("uses safe visibility without evaluating the Memory badge during polling", () => {
+    const app = createApp();
+    const visible = vi.fn(visibleMemoryActivity);
+    const badge = vi.fn(() => 2);
+    registerMemoryActivityRail(app, false, visible, badge);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    synchronizeMemoryPollingForSelectedWorkspace(app);
+
+    expect(visible).toHaveBeenCalledOnce();
+    expect(badge).not.toHaveBeenCalled();
+    expect(updatePolling).toHaveBeenCalledWith(true);
+  });
+
+  it("binds selected remote Memory polling visibility to the remote activity context", () => {
+    const app = createApp();
+    const remoteMachine = {
+      id: "remote-1",
+      name: "Remote 1",
+      kind: "remote" as const,
+      createdAt: "now",
+      updatedAt: "now",
+    };
+    let closeFromPolling: (() => void) | undefined;
+    const visible = (context: ActivityRailContext): boolean => {
+      closeFromPolling = () => { context.host.close(); };
+      return visibleMemoryActivity(context);
+    };
+    registerRemoteMemoryActivityRail(app, remoteMachine.id, false, visible);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedMachine: remoteMachine,
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    const remoteActivityId = qualifiedContributionId(`${machineScopedPluginId(remoteMachine.id, "workspace-memory")}:workspace.memory`);
+    openActivityRailItem(app, remoteActivityId, vi.fn());
+    expect(activeActivityId(app)).toBe(remoteActivityId);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    synchronizeMemoryPollingForSelectedWorkspace(app);
+
+    expect(updatePolling).toHaveBeenCalledWith(true);
+    if (closeFromPolling === undefined) throw new Error("Expected polling to retain the remote Memory host.close callback");
+    closeFromPolling();
+    expect(activeActivityId(app)).toBeUndefined();
+  });
+
   it("observes an enabled visible Memory activity from the selected remote machine", () => {
     const app = createApp();
     const remoteMachine = {
@@ -250,6 +305,9 @@ type ActivityRailItems = (this: PiWebUiApp) => ActivityRailDisplayItem[];
 type RegisterExternalPlugins = (this: PiWebUiApp, label: string, load: () => Promise<PiWebUiPluginRegistration[]>) => Promise<boolean>;
 type DisconnectedHook = (this: PiWebUiApp) => void;
 type MemoryActivityVisibility = (context: ActivityRailContext) => boolean;
+type MemoryActivityBadge = (context: ActivityRailContext) => number | undefined;
+type SynchronizeMemoryPollingForSelectedWorkspace = (this: PiWebUiApp) => void;
+type OpenActivityRailItem = (this: PiWebUiApp, id: QualifiedContributionId, restoreFocus: () => void) => void;
 
 function createApp(): PiWebUiApp {
   const storage = { getItem: () => null, setItem: () => undefined, removeItem: () => undefined };
@@ -269,25 +327,39 @@ function createApp(): PiWebUiApp {
   return new PiWebUiApp();
 }
 
-function registerMemoryActivityRail(app: PiWebUiApp, machineSpecific = false): void {
+function registerMemoryActivityRail(
+  app: PiWebUiApp,
+  machineSpecific = false,
+  visible: MemoryActivityVisibility = visibleMemoryActivity,
+  badge?: MemoryActivityBadge,
+): void {
   pluginRegistry(app).register({
     id: "workspace-memory",
     machineSpecific,
-    plugin: memoryActivityPlugin(),
+    plugin: memoryActivityPlugin(visible, badge),
   });
 }
 
-function registerRemoteMemoryActivityRail(app: PiWebUiApp, machineId: string, machineSpecific = false): void {
+function registerRemoteMemoryActivityRail(
+  app: PiWebUiApp,
+  machineId: string,
+  machineSpecific = false,
+  visible: MemoryActivityVisibility = visibleMemoryActivity,
+  badge?: MemoryActivityBadge,
+): void {
   pluginRegistry(app).register({
     id: machineScopedPluginId(machineId, "workspace-memory"),
     machineId,
     sourcePluginId: "workspace-memory",
     machineSpecific,
-    plugin: memoryActivityPlugin(),
+    plugin: memoryActivityPlugin(visible, badge),
   });
 }
 
-function memoryActivityPlugin(visible: MemoryActivityVisibility = visibleMemoryActivity): PiWebUiPluginRegistration["plugin"] {
+function memoryActivityPlugin(
+  visible: MemoryActivityVisibility = visibleMemoryActivity,
+  badge: MemoryActivityBadge = (context) => context.state.memory.kind === "data" ? 2 : undefined,
+): PiWebUiPluginRegistration["plugin"] {
   return {
     apiVersion: 1,
     name: "Memory",
@@ -298,7 +370,7 @@ function memoryActivityPlugin(visible: MemoryActivityVisibility = visibleMemoryA
           title: "Memory",
           icon: html`<svg aria-hidden="true"></svg>`,
           visible,
-          badge: (context) => context.state.memory.kind === "data" ? 2 : undefined,
+          badge,
           render: () => html``,
         }],
       },
@@ -368,10 +440,46 @@ function registerExternalPlugins(app: PiWebUiApp, label: string, load: () => Pro
   return method.call(app, label, load);
 }
 
+function synchronizeMemoryPollingForSelectedWorkspace(app: PiWebUiApp): void {
+  const method: unknown = Reflect.get(app, "synchronizeMemoryPollingForSelectedWorkspace");
+  if (!isSynchronizeMemoryPollingForSelectedWorkspace(method)) throw new Error("PiWebUiApp Memory polling synchronizer is unavailable");
+  method.call(app);
+}
+
+function openActivityRailItem(app: PiWebUiApp, id: QualifiedContributionId, restoreFocus: () => void): void {
+  const method: unknown = Reflect.get(app, "openActivityRailItem");
+  if (!isOpenActivityRailItem(method)) throw new Error("PiWebUiApp activity opener is unavailable");
+  method.call(app, id, restoreFocus);
+}
+
+function activeActivityId(app: PiWebUiApp): QualifiedContributionId | undefined {
+  const value: unknown = Reflect.get(app, "activeActivityRailId");
+  if (value === undefined) return undefined;
+  if (!isQualifiedContributionId(value)) throw new Error("PiWebUiApp active activity id is invalid");
+  return value;
+}
+
+function qualifiedContributionId(value: string): QualifiedContributionId {
+  if (!isQualifiedContributionId(value)) throw new Error("Expected a qualified contribution id");
+  return value;
+}
+
 function invokeDisconnected(app: PiWebUiApp): void {
   const method: unknown = Reflect.get(app, "disconnectedCallback");
   if (!isDisconnectedHook(method)) throw new Error("PiWebUiApp.disconnectedCallback is not callable");
   method.call(app);
+}
+
+function isQualifiedContributionId(value: unknown): value is QualifiedContributionId {
+  return typeof value === "string" && value.includes(":");
+}
+
+function isSynchronizeMemoryPollingForSelectedWorkspace(value: unknown): value is SynchronizeMemoryPollingForSelectedWorkspace {
+  return typeof value === "function";
+}
+
+function isOpenActivityRailItem(value: unknown): value is OpenActivityRailItem {
+  return typeof value === "function";
 }
 
 function isMemoryLifecycleController(value: unknown): value is MemoryLifecycleController {

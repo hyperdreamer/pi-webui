@@ -1,10 +1,46 @@
 import { html } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
-import { renderActivityRailBody, visibleActivityRailItems } from "./activityRail";
+import { isActivityRailItemVisible, renderActivityRailBody, visibleActivityRailItems } from "./activityRail";
 import type { ActivityRailContext, QualifiedActivityRailContribution } from "./types";
 
 describe("activity rail contribution evaluation", () => {
+  it("evaluates visibility without invoking badges or renders", () => {
+    const context = createActivityRailContext();
+    const reportError = vi.fn();
+    const badge = vi.fn(() => 1);
+    const render = vi.fn(() => html`<p>Activity</p>`);
+    const visible: QualifiedActivityRailContribution = {
+      id: "example:visible",
+      pluginId: "example",
+      localId: "visible",
+      title: "Visible",
+      icon: html`<svg></svg>`,
+      visible: () => true,
+      badge,
+      render,
+    };
+
+    expect(isActivityRailItemVisible(visible, context, reportError)).toBe(true);
+    expect(badge).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+
+    const visibilityError = new Error("visible callback failed");
+    const throwingVisible: QualifiedActivityRailContribution = {
+      ...visible,
+      id: "example:throwing-visible",
+      localId: "throwing-visible",
+      visible: () => {
+        throw visibilityError;
+      },
+    };
+
+    expect(isActivityRailItemVisible(throwingVisible, context, reportError)).toBe(false);
+    expect(reportError).toHaveBeenCalledWith("visible", "example:throwing-visible", visibilityError);
+    expect(badge).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+  });
+
   it("isolates callback failures while preserving registry order", () => {
     const context = createActivityRailContext();
     const reportError = vi.fn();

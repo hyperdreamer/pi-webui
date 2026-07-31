@@ -16,6 +16,19 @@ export type ReportActivityRailError = (
   error: unknown,
 ) => void;
 
+export function isActivityRailItemVisible(
+  contribution: QualifiedActivityRailContribution,
+  context: ActivityRailContext,
+  reportError: ReportActivityRailError,
+): boolean {
+  try {
+    return contribution.visible?.(context) !== false;
+  } catch (error) {
+    reportError("visible", contribution.id, error);
+    return false;
+  }
+}
+
 export function visibleActivityRailItems(
   contributions: readonly QualifiedActivityRailContribution[],
   context: ActivityRailContext,
@@ -24,12 +37,7 @@ export function visibleActivityRailItems(
   const items: ActivityRailDisplayItem[] = [];
 
   for (const contribution of contributions) {
-    try {
-      if (contribution.visible?.(context) === false) continue;
-    } catch (error) {
-      reportError("visible", contribution.id, error);
-      continue;
-    }
+    if (!isActivityRailItemVisible(contribution, context, reportError)) continue;
 
     let badge: ActivityRailDisplayItem["badge"];
     try {

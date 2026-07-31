@@ -34,7 +34,7 @@ import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
 import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal } from "../plugins/types";
-import { visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
+import { isActivityRailItemVisible, visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebUiTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
 import { corePlugin } from "../plugins/core";
 import { themePackPlugin } from "../plugins/themes";
@@ -1744,16 +1744,18 @@ export class PiWebUiApp extends LitElement {
       this.memory.updatePolling(false);
       return;
     }
-    const context = this.createActivityRailContext(MEMORY_ACTIVITY_RAIL_ID);
-    this.synchronizeMemoryPolling(activities, context);
+    this.synchronizeMemoryPolling(activities);
   }
 
   private synchronizeMemoryPolling(
     activities: readonly QualifiedActivityRailContribution[],
-    context: ActivityRailContext,
   ): void {
     const observed = activities.some((activity) => isMemoryActivityRailItem(activity)
-      && this.projectActivityRailItems([activity], context).some((item) => item.id === activity.id));
+      && isActivityRailItemVisible(
+        activity,
+        this.createActivityRailContext(activity.id),
+        this.reportActivityRailError,
+      ));
     this.memory.updatePolling(observed);
   }
 
