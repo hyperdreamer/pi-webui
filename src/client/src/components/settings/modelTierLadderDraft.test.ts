@@ -19,10 +19,14 @@ const smallModel: TierModelRef = { provider: "openai", id: "gpt-small" };
 const largeModel: TierModelRef = { provider: "openai", id: "org/gpt-large/model" };
 const staleModel: TierModelRef = { provider: "missing-provider", id: "org/stale/model" };
 
-const models: readonly ModelTierModelOption[] = [
-  { model: smallModel, name: "Small", thinkingLevels: ["off"] },
-  { model: largeModel, name: "Large", thinkingLevels: ["off", "low", "medium", "high", "max"] },
-];
+const smallModelOption: ModelTierModelOption = { model: smallModel, name: "Small", thinkingLevels: ["off"] };
+const largeModelOption: ModelTierModelOption = {
+  model: largeModel,
+  name: "Large",
+  thinkingLevels: ["off", "low", "medium", "high", "max"],
+};
+const staleModelOption: ModelTierModelOption = { model: staleModel, thinkingLevels: ["off"] };
+const models: readonly ModelTierModelOption[] = [smallModelOption, largeModelOption];
 
 function validLadder(): ModelTierLadder {
   return {
@@ -81,10 +85,12 @@ describe("model tier ladder drafts", () => {
   it("preserves a compatible thinking level and clears an incompatible one on model selection", () => {
     const source = modelTierLadderDraftFromResponse(responseWithLadder(validLadder()));
 
-    const preserved = updateTierModel(source, "economy", largeModel, models);
+    const preserved = updateTierModel(source, "economy", largeModelOption);
     expect(preserved.economy).toEqual({ model: largeModel, thinkingLevel: "medium" });
+    expect(preserved.economy.model).not.toBe(largeModelOption.model);
+    expect(preserved.economy.model).not.toHaveProperty("thinkingLevels");
 
-    const cleared = updateTierModel(source, "economy", smallModel, models);
+    const cleared = updateTierModel(source, "economy", smallModelOption);
     expect(cleared.economy).toEqual({ model: smallModel, thinkingLevel: "" });
     expect(validateModelTierDraft(cleared, models).rows.economy).toMatchObject({ valid: false });
     expect(validateModelTierDraft(cleared, models).rows.economy.reason).toContain("thinking");
@@ -98,19 +104,19 @@ describe("model tier ladder drafts", () => {
     expect(missing.rows.economy.reason).toContain("economy");
     expect(missing.rows.economy.reason).toContain("model");
 
-    const emptyThinking = updateTierModel(emptyModelTierLadderDraft(), "fast", smallModel, models);
+    const emptyThinking = updateTierModel(emptyModelTierLadderDraft(), "fast", smallModelOption);
     const emptyThinkingValidation = validateModelTierDraft(emptyThinking, models);
     expect(emptyThinkingValidation.rows.fast).toMatchObject({ valid: false });
     expect(emptyThinkingValidation.rows.fast.reason).toContain("thinking");
 
-    let unavailable = updateTierModel(emptyModelTierLadderDraft(), "standard", staleModel, models);
+    let unavailable = updateTierModel(emptyModelTierLadderDraft(), "standard", staleModelOption);
     unavailable = updateTierThinkingLevel(unavailable, "standard", "off");
     const unavailableValidation = validateModelTierDraft(unavailable, models);
     expect(unavailableValidation.rows.standard).toMatchObject({ valid: false });
     expect(unavailableValidation.rows.standard.reason).toContain("standard");
     expect(unavailableValidation.rows.standard.reason).toContain("unavailable");
 
-    let unsupported = updateTierModel(emptyModelTierLadderDraft(), "advanced", smallModel, models);
+    let unsupported = updateTierModel(emptyModelTierLadderDraft(), "advanced", smallModelOption);
     unsupported = updateTierThinkingLevel(unsupported, "advanced", "high");
     const unsupportedValidation = validateModelTierDraft(unsupported, models);
     expect(unsupportedValidation.rows.advanced).toMatchObject({ valid: false });
@@ -125,7 +131,7 @@ describe("model tier ladder drafts", () => {
     const incomplete = updateTierThinkingLevel(draft, "frontier", "");
     expect(modelTierLadderFromDraft(incomplete, models)).toBeUndefined();
 
-    const duplicate = updateTierModel(draft, "frontier", largeModel, models);
+    const duplicate = updateTierModel(draft, "frontier", largeModelOption);
     const duplicateWithSameThinking = updateTierThinkingLevel(duplicate, "frontier", "medium");
     expect(validateModelTierDraft(duplicateWithSameThinking, models).valid).toBe(true);
     expect(modelTierLadderFromDraft(duplicateWithSameThinking, models)).toMatchObject({

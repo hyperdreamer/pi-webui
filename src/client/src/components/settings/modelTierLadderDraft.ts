@@ -47,20 +47,16 @@ export function modelTierLadderDraftFromResponse(response: ModelTierSettingsResp
 export function updateTierModel(
   draft: ModelTierLadderDraft,
   tier: ModelTier,
-  model: TierModelRef,
-  models?: readonly ModelTierModelOption[],
+  option: ModelTierModelOption,
 ): ModelTierLadderDraft {
   const current = draft[tier];
-  const selected = models?.find((option) => sameModel(option.model, model));
-  const thinkingLevel = models === undefined || current.thinkingLevel === ""
+  const thinkingLevel = current.thinkingLevel === "" || option.thinkingLevels.includes(current.thinkingLevel)
     ? current.thinkingLevel
-    : selected?.thinkingLevels.includes(current.thinkingLevel) === true
-      ? current.thinkingLevel
-      : "";
+    : "";
   return {
     ...draft,
     [tier]: {
-      model: { ...model },
+      model: { ...option.model },
       thinkingLevel,
     },
   };
