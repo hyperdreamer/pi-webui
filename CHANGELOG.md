@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.4
+
+### Patch Changes
+
+- 6d991c1: Keep Workspace Memory sections expanded during live updates and avoid unnecessary panel redraws.
+
 ## 1.10.3
 
 ### Patch Changes
