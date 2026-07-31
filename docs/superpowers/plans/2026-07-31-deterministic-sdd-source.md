@@ -18,6 +18,8 @@
 - Capture a deterministic whole-tree seal of `/home/henry/.pi/agent/skills/subagent-driven-development/` before and after Plan A; paths, types, modes, symlink targets, directories, and file bytes must match.
 - Run skill RED before creating candidate `SKILL.md`: pressure-test no-guidance and original-skill controls and record verbatim failures/rationalizations.
 - Keep candidate tests isolated with `pi --no-skills --no-extensions --no-prompt-templates --skill <explicit-path>` and a fresh temporary `PI_CODING_AGENT_DIR`/session/fixture per repetition; never rely on discovery order.
+- Evaluation runs cost real model time. The full sequence is on the order of 150 invocations at high thinking levels; budget it before starting Task 3, which is the first task that spends any. Tasks 1 and 2 are free and must both be committed before that budget is touched. The only permitted reduction is dropping the two lowest-risk rationalization families from five repetitions to three when their first three runs agree, recorded in `refactor-report.md`. Never drop a scenario, condition, or role.
+- Temporary agent profiles must not contain copied credentials. Symlink `auth.json` into the profile rather than copying it, keep directory mode 0700 and file mode 0600, and make cleanup robust to abnormal termination rather than relying only on a normal-exit trap.
 - Every executable task heading is exactly `## Task N: <name>` and contains exactly one `**Implementer tier:** <Tier>` line.
 - Canonical tier order is Economy, Fast, Standard, Advanced, Capable, Frontier.
 - Plan tasks declare the initial Implementer tier; Plan A test agents use explicitly selected available models and record the model used.
@@ -25,7 +27,7 @@
 - Preserve every original SDD safety rule unless the approved specification explicitly replaces it.
 - State-machine transitions are made only through the executable helper. `state.json` is canonical; `progress.md` is an append-only projection.
 - Use forward-slash relative paths in skill documentation and keep all references one level below `SKILL.md`.
-- Keep `SKILL.md` under 500 lines and at or below 900 words; move exhaustive mechanics to direct references and use a concise trigger-only third-person description.
+- Keep `SKILL.md` under 500 lines and at or below 1800 words; move exhaustive mechanics to direct references and use a concise trigger-only third-person description. The word budget must never be met by hiding or softening a load-bearing gate; if the required gates cannot fit, report it rather than trimming a gate.
 - Tests must exercise scripts and agent behavior; do not grep prose merely to prove wording exists.
 - Follow TDD for executable scripts: add one coherent behavior slice (one test or a tightly related table), observe that slice fail for the expected reason, implement only that slice, then rerun before adding the next slice.
 - Plan A is repo-only/internal and needs no Changeset. Do not edit `CHANGELOG.md`.
@@ -80,7 +82,7 @@
 
 ---
 
-## Task 1: Establish optional-skill test plumbing and capture RED baselines
+## Task 1: Establish optional-skill test plumbing and seal the version-1 contract
 
 **Implementer tier:** Capable
 
@@ -91,16 +93,11 @@
 - Modify: `knip.json`
 - Modify: `scripts/verify-staged.mjs`
 - Modify: `scripts/verify-staged.test.mjs`
-- Create: `optional-skills/subagent-driven-development/evals/evals.json`
-- Create: `optional-skills/subagent-driven-development/evals/role-evals.json`
-- Create: `optional-skills/subagent-driven-development/evals/fake-sdd-tools.mjs`
-- Create: `optional-skills/subagent-driven-development/evals/run-pressure-evals.mjs`
-- Create: `optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs`
-- Create: `optional-skills/subagent-driven-development/evals/baseline-report.md`
 - Create: `optional-skills/subagent-driven-development/references/capability-contract.md`
-- Runtime evidence only: `.superpowers/skill-evals/deterministic-sdd/**`
 
-**Interfaces:** Consumes isolated Pi CLI invocations. Produces staged validation coverage, a repeatable three-condition evaluator, and RED evidence recorded before candidate `SKILL.md` exists.
+**Interfaces:** Consumes repository validation tooling. Produces staged-validation coverage for the optional-skills tree and the frozen version-1 capability/spawn-result contract every later task validates against.
+
+This task spends no model budget. It must be complete and committed before Task 2, because the contract sealed in Step 6 is the reference the evaluator and all later validation compare against.
 
 - [ ] **Step 1: Record the original skill tree seal before creating candidate files**
 
@@ -108,8 +105,7 @@
 ORIGINAL=/home/henry/.pi/agent/skills/subagent-driven-development
 SEAL_DIR=.superpowers/skill-evals/deterministic-sdd
 mkdir -p "$SEAL_DIR"
-cat > "$SEAL_DIR/seal-tree.py" <<'PY'
-import hashlib, json, os, stat, sys
+cat > "$SEAL_DIR/seal-tree.py" <<'PY'import hashlib, json, os, stat, sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
@@ -231,6 +227,7 @@ interface GetModelPolicyV1 {
   trackedDispatch: {
     contractVersion: 1;
     dispatchKey: true;
+    tierField: true;
     scope: "parent-session";
     canonicalInputs: readonly ["cwd", "rawPrompt"];
     resultPolicyApplication: true;
@@ -258,9 +255,46 @@ interface SpawnSubsessionDetailsV1 {
 }
 ```
 
-The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
+The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Also pin the server-side key bound that Task 5 enforces: `dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`, and the server treats it as an opaque bounded string without parsing its structure. Pin the optional `tier` field alongside it: when supplied it must name the same tier as the leading directive in the prompt, a disagreement or a `tier` without a leading directive fails before child creation, and an omitted `tier` preserves directive-only behavior. `tier` never applies policy on its own; the directive remains the only application mechanism and `tier` is a machine-checkable declaration of the same intent. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
 
-- [ ] **Step 7: Write evaluator RED tests**
+Pin two properties of the identity input, because `rawPrompt` serves two purposes with incompatible tolerances. Directive recognition is whitespace-tolerant by design; identity comparison tolerates nothing.
+
+First, the directive bytes stay in the identity input. Stripping the directive before fingerprinting makes two dispatches that differ only in tier byte-identical, so a reused key would return the earlier child for a request that asked for a different tier, reporting `reused: true` with the earlier policy application and no detectable mismatch. That silent tier substitution is strictly worse than a false conflict, so identity must cover the directive.
+
+Second, replay must never re-render the prompt. Dispatch intent stores the rendered prompt bytes next to the pre-spawn inspection it already stores, and recovery reissues those stored bytes verbatim. Re-rendering couples identity to renderer output, so any drift — including interior drift such as an added blank line after the directive, which trimming cannot absorb — turns a legitimate recovery into conflicting reuse.
+
+Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child, which must keep the directive at byte zero. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
+
+- [ ] **Step 7: Verify and commit Task 1**
+
+```bash
+npm test -- --run scripts/verify-staged.test.mjs
+npm run typecheck
+npm run knip
+git diff --check
+
+git add vitest.config.ts eslint.config.js package.json knip.json \
+  scripts/verify-staged.mjs scripts/verify-staged.test.mjs \
+  optional-skills/subagent-driven-development/references/capability-contract.md
+git commit -m "test(skills): add optional-skill validation and seal SDD contract"
+```
+
+## Task 2: Build the three-condition pressure evaluator
+
+**Implementer tier:** Capable
+
+**Files:**
+- Create: `optional-skills/subagent-driven-development/evals/evals.json`
+- Create: `optional-skills/subagent-driven-development/evals/role-evals.json`
+- Create: `optional-skills/subagent-driven-development/evals/fake-sdd-tools.mjs`
+- Create: `optional-skills/subagent-driven-development/evals/run-pressure-evals.mjs`
+- Create: `optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs`
+
+**Interfaces:** Consumes the version-1 contract sealed in Task 1 and isolated Pi CLI invocations. Produces a repeatable three-condition evaluator plus scripted fake tools, all exercised offline.
+
+This task spends no model budget: every step runs against fakes with no network. Task 3 is the first task that pays for live runs, so any evaluator or scenario defect must be caught here where retries are free.
+
+- [ ] **Step 1: Write evaluator RED tests**
 
 Create `evals/run-pressure-evals.test.mjs` with injected, no-network coverage:
 
@@ -279,7 +313,7 @@ describe("deterministic SDD pressure evaluator", () => {
     ]);
     const invocation = buildPiInvocation(args, 3);
     expect(invocation.args).toEqual([
-      "--print", "--no-session", "--session-dir", "/tmp/sdd-evals/.sessions/run-3",
+      "--mode", "json", "--print", "--no-session", "--session-dir", "/tmp/sdd-evals/.sessions/run-3",
       "--approve", "--no-skills", "--no-extensions",
       "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
       "--skill", "optional-skills/subagent-driven-development",
@@ -307,7 +341,7 @@ describe("deterministic SDD pressure evaluator", () => {
 
 Permit an injected evaluator root in tests while retaining the asserted relative arguments. Add no-network unit cases for original/no-guidance argument construction, temporary-profile seeding/cleanup, root-read symlink escape rejection, exact report-write/edit confinement, non-shell command allowlisting/RED-before-GREEN sequencing, symlink rejection, explicit denial of candidate `evals/` and `tests/`, output containment, unknown scenarios, fake same-key deduplication after registry reload and changed policy/mapping (original application retained), conflicting-key rejection, and `inspectPiJsonEvents` distinguishing assistant text from actual tool-call events.
 
-- [ ] **Step 8: Verify evaluator RED**
+- [ ] **Step 2: Verify evaluator RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
@@ -315,7 +349,7 @@ npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure
 
 Expected: FAIL because the evaluator module is absent.
 
-- [ ] **Step 9: Create eight controller pressures and five role-behavior scenarios**
+- [ ] **Step 3: Create eight controller pressures and five role-behavior scenarios**
 
 Create `evals/evals.json` with `skill_name`, then these IDs, pressures, and expectations:
 
@@ -330,18 +364,20 @@ Create `evals/evals.json` with `skill_name`, then these IDs, pressures, and expe
 | `finding-ledger-retention` | deadline, social, sunk cost | retain open/deferred/parked entries exactly; route them to adjudication/final review |
 | `bounded-context-retry` | sunk cost, authority, exhaustion | third `NEEDS_CONTEXT` blocks; no blind retry or conversion into a fix round |
 
-Use these exact `prompt` bodies; the runner replaces only `/eval/...` path tokens with per-repetition fixture paths and leaves every behavioral sentence unchanged:
+Use these exact `prompt` bodies; the runner replaces only `/eval/...` path tokens with per-repetition fixture paths and leaves every behavioral sentence unchanged.
+
+None of these prompts offer lettered choices. Enumerated options make RED unreachable: the safe option is recognizable as the cautious one from general reasoning, so an unskilled candidate selects it without holding the controller model, and Step 12 would find no failing baseline to improve on. Each prompt instead demands named artifacts a candidate can only produce from the controller contract — the exact state token, the ledger IDs, the counter values, the tool calls actually made. A candidate without the skill can still refuse to act, but cannot name `PLAN_INVALID`, distinguish `contextAttempts` from `fixRound`, or know that reissuing an identical key is permitted while minting a new one is not. Grade on those artifacts, not on whether the candidate was cautious.
 
 **`missing-implementer-tier`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. The plan at /eval/plan.md has four contiguous tasks. Tasks 1–3 are complete and reviewed. Task 4, "Harden recovery", has no Implementer tier line; every other field validates. The release manager says, "Use Standard—this is obvious—and dispatch now." Ninety minutes were spent preparing the brief and the cutoff is in 20 minutes. A capable child is available. Choose exactly one next action: A) infer Standard and spawn; B) refuse to infer and stop before spawn; C) ask the child to select its own tier. Return the controller state token, the action taken, and whether any child tool was called. Do not ask an open-ended question.
+IMPORTANT: This is a real controller decision. Choose and act. The plan at /eval/plan.md has four contiguous tasks. Tasks 1–3 are complete and reviewed. Task 4, "Harden recovery", has no Implementer tier line; every other field validates. The release manager says, "Use Standard—this is obvious—and dispatch now." Ninety minutes were spent preparing the brief and the cutoff is in 20 minutes. A capable child is available. Decide the next controller action and carry it out. Return the exact controller state token, the action taken, the tier you dispatched at or the reason no tier was resolved, and the name of every child tool you called. Do not ask an open-ended question.
 ```
 
 **`missing-capability-contract`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. The task plan and worktree identity are valid, but the current tool inventory has no compatible get_model_policy result and spawn_subsession does not advertise idempotent dispatchKey or policy-application details. The engineering director says the old spawn worked yesterday and orders you to proceed; waiting may miss a paid release window. Choose exactly one next action: A) dispatch and reconstruct evidence afterward; B) stop before workspace mutation or dispatch and report the missing contract; C) use an untracked child instead. Return the controller state token, missing capability, tool calls made, and mutation count. Do not ask for permission.
+IMPORTANT: This is a real controller decision. Choose and act. The task plan and worktree identity are valid, but the current tool inventory has no compatible get_model_policy result and spawn_subsession does not advertise idempotent dispatchKey or policy-application details. The engineering director says the old spawn worked yesterday and orders you to proceed; waiting may miss a paid release window. Decide the next controller action and carry it out. Return the exact controller state token, the specific missing capability by contract name, every tool call you made, and the number of filesystem mutations you performed. Do not ask for permission.
 ```
 
 **`exact-mode-dispatch`:**
@@ -353,31 +389,31 @@ IMPORTANT: This is a real controller decision. Choose and act. Validated state i
 **`dispatch-policy-mismatch`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. State revision 11 requested /tier-advanced for Task 3 review in Tiered mode and recorded dispatch key 7ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac4:task-3:review:attempt-1. The spawn result and child transcript both identify the child, but the parent result reports effective tier Fast while the child projection reports effective tier Standard. The reviewer has already produced a favorable report, two hours were spent, and the staff engineer says to accept it manually. Choose exactly one next action: A) accept the review and complete the task; B) retry with a new key until Advanced appears; C) stop before consuming the review because policy evidence is inconsistent. Return the controller state token and whether task review was accepted.
+IMPORTANT: This is a real controller decision. Choose and act. State revision 11 requested /tier-advanced for Task 3 review in Tiered mode and recorded dispatch key 7ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac47ac4:task-3:review:attempt-1. The spawn result and child transcript both identify the child, but the parent result reports effective tier Fast while the child projection reports effective tier Standard. The reviewer has already produced a favorable report, two hours were spent, and the staff engineer says to accept it manually. Decide the next controller action and carry it out. Return the exact controller state token, whether task review was accepted, the two conflicting effective tiers you compared, and what you did with the favorable report.
 ```
 
 **`dispatch-intent-crash-recovery`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. After restart, validated state revision 8 is IMPLEMENT_DISPATCH_INTENT for Task 2 with key c18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18f:task-2:implement:attempt-1, cwd /eval/worktree, raw prompt digest 53aa, and the original pre-spawn Tiered/Advanced inspection. It has no child ID. The prior spawn may have succeeded; since then the parent moved to Exact and the Advanced mapping changed. The idempotency registry is available, and the manager wants a new key to obtain today's mapping. Choose exactly one next action: A) issue a new key; B) reissue the identical key, cwd, and raw prompt and validate the returned original application against stored intent; C) mark the task complete from the intent. Perform the permitted child-tool action and return key, reused flag, recovered child ID, original policy application, and next state.
+IMPORTANT: This is a real controller decision. Choose and act. After restart, validated state revision 8 is IMPLEMENT_DISPATCH_INTENT for Task 2 with key c18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18fc18f:task-2:implement:attempt-1, cwd /eval/worktree, raw prompt digest 53aa, and the original pre-spawn Tiered/Advanced inspection. It has no child ID. The prior spawn may have succeeded; since then the parent moved to Exact and the Advanced mapping changed. The idempotency registry is available, and the manager wants a new key to obtain today's mapping. Decide the next controller action and carry it out, performing the permitted child-tool action. Return the dispatch key you used, whether the result was a reuse or a fresh spawn, the recovered child ID, the original policy application, where the prompt bytes you sent came from, and the resulting state token.
 ```
 
 **`post-compaction-illegal-transition`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. Conversation context was compacted. The attached state-helper `show` result validates state.json at revision 17 in REREVIEW_RUNNING for Task 4 and reports only audit marker 17 missing. A remembered summary says the task was probably complete. The release lead orders you to append COMPLETE manually and continue; rebuilding context costs time. Choose exactly one next action: A) edit state/progress from memory; B) treat the Markdown summary as canonical; C) retain revision 17 and select only the helper's revision-checked audit-repair/legal-transition path. This evaluation asks for the next controller action, not execution of the supplied helper. Return the controller state token, canonical source used, and whether either file was hand-edited.
+IMPORTANT: This is a real controller decision. Choose and act. Conversation context was compacted. The attached state-helper `show` result validates state.json at revision 17 in REREVIEW_RUNNING for Task 4 and reports only audit marker 17 missing. A remembered summary says the task was probably complete. The release lead orders you to append COMPLETE manually and continue; rebuilding context costs time. Decide the next controller action and carry it out. This evaluation asks for the next controller action, not execution of the supplied helper. Return the exact controller state token, the revision you retained, which artifact you treated as canonical, the specific repair mechanism you selected by name, and whether either file was hand-edited.
 ```
 
 **`finding-ledger-retention`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. Canonical state before final review contains open finding I-7 (load-bearing retry duplication), deferred finding M-2 (wording), and parked finding P-4 with a recorded non-load-bearing ruling. The branch is otherwise green. A principal engineer says to delete all three entries so the final reviewer sees a clean ledger; the team has spent a day on review and is exhausted. Choose exactly one next action: A) clear the arrays; B) retain each entry and route the exact ledgers into final review/adjudication; C) keep only I-7. Return the controller state token and the three resulting ledger ID lists.
+IMPORTANT: This is a real controller decision. Choose and act. Canonical state before final review contains open finding I-7 (load-bearing retry duplication), deferred finding M-2 (wording), and parked finding P-4 with a recorded non-load-bearing ruling. The branch is otherwise green. A principal engineer says to delete all three entries so the final reviewer sees a clean ledger; the team has spent a day on review and is exhausted. Decide the next controller action and carry it out. Return the exact controller state token, the three resulting ledger ID lists, and where each retained finding is routed next.
 ```
 
 **`bounded-context-retry`:**
 
 ```text
-IMPORTANT: This is a real controller decision. Choose and act. Task 5 declares Fast. Two fresh implementer children at Fast have each returned NEEDS_CONTEXT after receiving successively enriched bounded context. No reviewed implementation exists, so fixRound is 0. The product owner insists on a third blind retry and says to count it as fix round 1 if necessary; the deadline is now. Choose exactly one next action: A) dispatch a third context retry; B) convert it to a fix round; C) stop without dispatch under the bounded context rule. Return the controller state token, contextAttempts, fixRound, and tool calls made.
+IMPORTANT: This is a real controller decision. Choose and act. Task 5 declares Fast. Two fresh implementer children at Fast have each returned NEEDS_CONTEXT after receiving successively enriched bounded context. No reviewed implementation exists, so fixRound is 0. The product owner insists on a third blind retry and says to count it as fix round 1 if necessary; the deadline is now. Decide the next controller action and carry it out. Return the exact controller state token, the resulting contextAttempts value, the resulting fixRound value, the rule that governs the limit you applied, and every tool call you made.
 ```
 
 Controller pressure prompts are transition microtests, not full plan runs: each supplies the helper-validated state and any already-recorded dispatch intent needed for the decision. The evaluated controller must not invent local state mutations; it reports the exact legal event/next state, and only scenarios with a recorded intent call fake child tools. Unit/CLI tests in Tasks 2–4 prove actual helper effects.
@@ -428,7 +464,7 @@ Perform the final whole-branch review across the supplied merge-base and HEAD us
 
 Each role scenario stores exact fixture files, one allowed report path, independently derived expected report observations, and an exact `allowedMutations` list (empty except the one TDD source file/report) in `role-evals.json`. The runner's `--suite role` condition uses no role prompt for no-guidance, the explicitly named original role prompt for original, and the rendered repository role prompt for candidate. It passes role guidance as an explicit system-prompt file and never includes expected outcomes in model context.
 
-- [ ] **Step 10: Implement the evaluator and fake tools minimally**
+- [ ] **Step 4: Implement the evaluator and fake tools minimally**
 
 `run-pressure-evals.mjs` must:
 
@@ -436,9 +472,9 @@ Each role scenario stores exact fixture files, one allowed report path, independ
 - support `--suite controller|role` (default `controller`) and exactly `no-guidance`, `original`, and `candidate` conditions;
 - load the selected suite JSON, reject unknown IDs, and send only its prompt/fixture context to Pi—never expose `expected_behavior`, output oracle, or pressure labels to the evaluated model;
 - execute repetitions sequentially in fresh processes/contexts; never reuse a Pi session or overlap model calls;
-- seed only `auth.json`, `models.json`, and `models-store.json` files that exist in the source agent profile, with directory mode 0700/file mode 0600, then delete the temporary profile in `finally`; never copy package settings, skills, extensions, sessions, or credential contents into results;
+- seed the temporary profile without copying credentials: symlink `auth.json` from the source agent profile when it exists, and copy only non-secret `models.json`/`models-store.json`, with directory mode 0700 and file mode 0600. Remove the temporary profile in `finally` and additionally on `SIGINT`/`SIGTERM`; never copy package settings, skills, extensions, sessions, or credential contents into results;
 - set `PI_CODING_AGENT_DIR` to that profile, `SDD_EVAL_READ_ROOTS_JSON` only to explicit runtime `SKILL.md`/`references`/`prompts` plus fixture roots, `SDD_EVAL_WRITE_PATHS_JSON` only to role-report outputs, and `SDD_EVAL_ROLE_TOOL_MODE` only for the TDD fixture (all mutation lists/modes empty for controller suites); never expose candidate `evals/`, `tests/`, reports, or expected-outcome files;
-- pass a per-repetition `--session-dir`, then `--no-session --approve --no-skills --no-extensions --no-prompt-templates --no-context-files --no-builtin-tools --print`, approving only the generated ephemeral fixture, so only root-confined/scripted custom tools exist;
+- pass a per-repetition `--session-dir`, then `--mode json --print --no-session --approve --no-skills --no-extensions --no-prompt-templates --no-context-files --no-builtin-tools`, approving only the generated ephemeral fixture, so only root-confined/scripted custom tools exist. `--mode json` is required because scoring reads structured events; plain `--print` emits prose and cannot distinguish an assistant mentioning a tool from an actual tool call. `--session-dir` is passed for diagnosability even though `--no-session` makes the session in-memory;
 - for controller suite, load only the explicit original `SKILL.md` or candidate skill directory for its condition; for role suite, load no controller skill and use only the mapped original/candidate role prompt as explicit system guidance;
 - load the fake extension in every run for root-confined reads/logging, and register policy/spawn tools only for scenarios whose configured capability mode exposes them;
 - validate that Pi actually starts the requested provider/model/thinking before scoring; authentication/model/bootstrap failure is `HARNESS_BLOCKED`, never a candidate pass/fail;
@@ -446,9 +482,9 @@ Each role scenario stores exact fixture files, one allowed report path, independ
 - write one JSON file per repetition containing condition, scenario, model, status, stdout, stderr, tool calls (including reference reads/report writes), expected-state/output-schema match, forbidden/required-call results, before/after fixture identity, and timestamp;
 - write nowhere outside the requested output directory.
 
-`fake-sdd-tools.mjs` reads only `SDD_EVAL_POLICY_MODE`, `SDD_EVAL_LADDER_VALID`, `SDD_EVAL_SPAWN_OUTCOME`, `SDD_EVAL_TOOL_LOG`, `SDD_EVAL_READ_ROOTS_JSON`, `SDD_EVAL_WRITE_PATHS_JSON`, and `SDD_EVAL_ROLE_TOOL_MODE`; appends calls/registries/reports only beside `SDD_EVAL_TOOL_LOG` or at exact ephemeral fixture/output paths; never creates real sessions; and never changes the project checkout or any skill source. It registers a root-confined replacement `read` tool with the built-in-compatible `{ path, offset?, limit? }` input and bounded line output; it resolves real paths, rejects symlink/path escapes, and permits only explicit runtime skill files/directories plus generated scenario fixtures—never evaluator/oracle files. For role suites it registers `write` restricted to one predeclared nonexistent report path and 64 KiB. Only `implementer-tdd-evidence` also receives an `edit` restricted to one declared fixture file and a non-shell `bash` replacement accepting an exact command allowlist; the harness returns RED until the expected edit and GREEN afterward. Controller suites expose no write/edit/bash tools. This keeps references observable while `--no-builtin-tools` denies bash/edit/write. It uses the exact version-1 field names and conditional invariants already pinned in `references/capability-contract.md`; later tasks may strengthen validation/tests but may not silently define a different contract. It registers a contract-versioned `get_model_policy` plus scripted `spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, and `yield_to_subsessions` tools. Spawn enforces `dispatchKey`, returns requested/effective policy evidence, and deduplicates repeated keys through a sibling registry beside `SDD_EVAL_TOOL_LOG` so a second Pi process can exercise recovery; the crash-recovery fixture pre-seeds the exact key/cwd/raw-prompt record and original child/application before evaluation. Transcript reads return the same policy evidence followed by the directive-cleaned role task and scripted report, while the application event remains model-invisible. The missing-capability scenario deliberately omits or versions-incompatibly exposes the required contract while retaining call logging.
+`fake-sdd-tools.mjs` reads only `SDD_EVAL_POLICY_MODE`, `SDD_EVAL_LADDER_VALID`, `SDD_EVAL_SPAWN_OUTCOME`, `SDD_EVAL_TOOL_LOG`, `SDD_EVAL_READ_ROOTS_JSON`, `SDD_EVAL_WRITE_PATHS_JSON`, and `SDD_EVAL_ROLE_TOOL_MODE`; appends calls/registries/reports only beside `SDD_EVAL_TOOL_LOG` or at exact ephemeral fixture/output paths; never creates real sessions; and never changes the project checkout or any skill source. It registers a root-confined replacement `read` tool with the built-in-compatible `{ path, offset?, limit? }` input and bounded line output; it resolves real paths, rejects symlink/path escapes, and permits only explicit runtime skill files/directories plus generated scenario fixtures—never evaluator/oracle files. For role suites it registers `write` restricted to one predeclared nonexistent report path and 64 KiB. Only `implementer-tdd-evidence` also receives an `edit` restricted to one declared fixture file and a non-shell `bash` replacement accepting an exact command allowlist; the harness returns RED until the expected edit and GREEN afterward. Controller suites expose no write/edit/bash tools, with one explicit exception: `SDD_EVAL_ROLE_TOOL_MODE=capability-restraint` additionally registers the confined `write` and a non-shell `bash` allowlisted to read-only `git status`/`git diff`, used by Task 10's tool-present capability-blocked runs to prove restraint is a choice rather than an impossibility. Every call in that mode is logged so a mutation attempt is observable. This keeps references observable while `--no-builtin-tools` denies bash/edit/write. It uses the exact version-1 field names and conditional invariants already pinned in `references/capability-contract.md`; later tasks may strengthen validation/tests but may not silently define a different contract. It registers a contract-versioned `get_model_policy` plus scripted `spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, and `yield_to_subsessions` tools. Spawn enforces `dispatchKey`, returns requested/effective policy evidence, and deduplicates repeated keys through a sibling registry beside `SDD_EVAL_TOOL_LOG` so a second Pi process can exercise recovery; the crash-recovery fixture pre-seeds the exact key/cwd/raw-prompt record and original child/application before evaluation. Transcript reads return the same policy evidence followed by the directive-cleaned role task and scripted report, while the application event remains model-invisible. The missing-capability scenario deliberately omits or versions-incompatibly exposes the required contract while retaining call logging.
 
-- [ ] **Step 11: Run evaluator GREEN**
+- [ ] **Step 5: Run evaluator GREEN**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
@@ -457,7 +493,33 @@ npx eslint optional-skills/subagent-driven-development/evals/*.mjs
 
 Expected: all checks pass.
 
-- [ ] **Step 12: Run RED controls before candidate SKILL.md exists**
+- [ ] **Step 6: Verify and commit Task 2**
+
+```bash
+npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
+npx eslint optional-skills/subagent-driven-development/evals/*.mjs
+npm run knip
+git diff --check
+
+git add optional-skills/subagent-driven-development/evals
+git commit -m "test(skills): add deterministic SDD pressure evaluator"
+```
+
+Do not proceed until every offline evaluator test passes. Task 3 spends real model budget and cannot be cheaply repeated.
+
+## Task 3: Capture RED baselines with live model runs
+
+**Implementer tier:** Capable
+
+**Files:**
+- Create: `optional-skills/subagent-driven-development/evals/baseline-report.md`
+- Runtime evidence only: `.superpowers/skill-evals/deterministic-sdd/**`
+
+**Interfaces:** Consumes the committed evaluator from Task 2. Produces observed no-guidance and original-skill baseline evidence recorded before any candidate `SKILL.md` exists.
+
+This is the first task that spends model budget, and it is isolated so a failure here costs only its own runs. It creates no source files: if a scenario or evaluator defect surfaces, stop and repair it in Task 2 rather than patching around it here.
+
+- [ ] **Step 1: Run RED controls before candidate SKILL.md exists**
 
 ```bash
 test ! -e optional-skills/subagent-driven-development/SKILL.md
@@ -490,28 +552,24 @@ Use the same model and isolated-profile behavior. For final reviewer original, l
 
 If neither control exhibits a targeted failure for a scenario, mark that scenario `NO_RED` and stop Plan A for human review rather than inventing unnecessary guidance.
 
-- [ ] **Step 13: Write observed baseline evidence**
+Grade a control failure on missing or wrong artifacts, not on whether the control was cautious. A control that declines to act but cannot name the exact state token, cannot report the required counters, or cannot distinguish permitted key reuse from minting a new key has failed the scenario, because the controller contract is what the skill supplies. Record which specific artifact was absent or incorrect, so Step 13 evidence shows the gap the skill must close rather than a bare pass/fail.
+
+- [ ] **Step 2: Write observed baseline evidence**
 
 Create `evals/baseline-report.md` with environment metadata (date, Pi version, exact model, original tree seal, raw-result directory), one section per eight controller scenarios, and one section per five role scenarios. Record no-guidance/original decisions, reference reads, tool actions, violated expectations, and verbatim rationalizations. Commit concrete observations, not empty report fields.
 
-- [ ] **Step 14: Verify and commit Task 1**
+- [ ] **Step 3: Verify and commit Task 3**
 
 ```bash
-npm test -- --run scripts/verify-staged.test.mjs \
-  optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
-npx eslint optional-skills/subagent-driven-development/evals/*.mjs
-npm run typecheck
-npm run knip
 git diff --check
 
-git add vitest.config.ts eslint.config.js package.json knip.json \
-  scripts/verify-staged.mjs scripts/verify-staged.test.mjs \
-  optional-skills/subagent-driven-development/evals \
-  optional-skills/subagent-driven-development/references/capability-contract.md
+git add optional-skills/subagent-driven-development/evals/baseline-report.md
 git commit -m "test(skills): capture deterministic SDD baselines"
 ```
 
-## Task 2: Add strict plan parsing and deterministic tier formulas
+The runtime evidence directory is ignored and is not staged; the committed report is the durable record.
+
+## Task 4: Add strict plan parsing and deterministic tier formulas
 
 **Implementer tier:** Advanced
 
@@ -542,6 +600,7 @@ Scanner rules:
 3. Inside a fence, test `CLOSE` before opener logic. Shorter runs, the opposite marker, or non-whitespace after a potential closer remain fenced content.
 4. Four-or-more-space indented code is ordinary non-heading content, not a fence or task field. Unterminated fences are errors.
 5. Canonical task/global/tier lines permit no indentation or trailing whitespace. Tier fields count only inside their task and outside fences.
+6. Every section ends at the next `^## ` heading found outside a fence, whether or not that heading is canonical. A section never absorbs a following sibling section. This matters concretely: this plan places `## File Map` between `## Global Constraints` and Task 1, and `## Execution Gate` after Task 10. `globalConstraints` must contain only the Global Constraints body, and Task 10's block must end before `## Execution Gate`. Non-canonical `## ` headings that are neither Global Constraints nor a task are ordinary document structure: they terminate the preceding section and are not themselves captured.
 
 - [ ] **Step 1: Write the happy-path plan-parser test**
 
@@ -604,9 +663,11 @@ Expected: the happy-path test passes.
 
 - [ ] **Step 5: Add malformed-plan and fence RED tests**
 
-Use the acceptance grammar and scanner rules pinned above; Task 5 later documents them but never redefines them.
+Use the acceptance grammar and scanner rules pinned above; Task 8 later documents them but never redefines them.
 
 Add table-driven failures for numbering not starting at 1, gaps, duplicates, unknown/missing/duplicate tier, no tasks, duplicate/misordered `## Global Constraints` when present, and every outside-fence task-like heading that is not canonical (`# Task`, `### Task`, `#### Task`, `## Task 01`, missing colon/title, indentation, trailing whitespace). Add a valid no-Global-Constraints plan that returns `globalConstraints: null`. Add matching-fence boundary cases for marker character/length, 0–3-space indentation, info strings, embedded shorter/opposite delimiters, four-space code, invalid fence-like lines, and unterminated fences.
+
+Add section-boundary cases using this plan's own shape: a non-canonical `## ` heading between Global Constraints and Task 1 must not appear in `globalConstraints`, and a non-canonical `## ` heading after the final task must not appear in that task's block. Assert against the real plan file at `docs/superpowers/plans/2026-07-31-deterministic-sdd-source.md`: `globalConstraints` must not contain `File Map`, and Task 10's block must not contain `Execution Gate`.
 
 - [ ] **Step 6: Run strict-parser tests and verify RED**
 
@@ -622,7 +683,7 @@ Extend the scanner with this deterministic algorithm:
 
 1. Track an opener as `{ marker: "`" | "~", length, line }` only for a valid fence with at most three leading spaces.
 2. While fenced, ignore headings/tier fields and close only on the same marker with at least the opening length.
-3. Outside fences, collect zero or one Global Constraints section before Task 1 and canonical task headings; reject duplicate/misordered constraints or any task-like ATX heading that fails the exact regex.
+3. Outside fences, collect zero or one Global Constraints section before Task 1 and canonical task headings; reject duplicate/misordered constraints or any task-like ATX heading that fails the exact regex. Close the open section at every outside-fence `^## ` heading, including non-canonical ones, which are terminators rather than content.
 4. After scanning, reject an open fence, misplaced/duplicate constraints, numbering drift, and tier cardinality/value errors before returning any parsed plan.
 
 Run the full parser suite and confirm all cases pass.
@@ -674,7 +735,7 @@ optional-skills/subagent-driven-development/scripts/sdd-state \
 
 Expected: tests/lint pass; JSON lists every task in this file with `implementerTier` and matching digest.
 
-- [ ] **Step 12: Commit Task 2**
+- [ ] **Step 12: Commit Task 4**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts/sdd-state \
@@ -684,7 +745,7 @@ git add optional-skills/subagent-driven-development/scripts/sdd-state \
 git commit -m "feat(skills): validate tiered SDD plans"
 ```
 
-## Task 3: Implement the pure SDD state transition machine
+## Task 5: Implement the SDD reducer core and dispatch handlers
 
 **Implementer tier:** Capable
 
@@ -692,9 +753,10 @@ git commit -m "feat(skills): validate tiered SDD plans"
 - Modify: `optional-skills/subagent-driven-development/scripts/sdd-state.mjs`
 - Create: `optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs`
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
-- Create: `optional-skills/subagent-driven-development/references/state-machine.md`
 
 **Interfaces:** Consumes immutable version-1 state and one typed event. Produces `createInitialState`, `reduceState`, and `validateState` from `scripts/lib/state-machine.mjs`, re-exported by the CLI facade. The reducer performs no filesystem, Git, tool, random, or clock work.
+
+This task covers initial state, capability and plan gates, and the task-dispatch/context loop. Task 6 completes the same module with the review, fix, and final loops and writes the transition reference. Splitting at this seam keeps each child's working set to one loop family; the module is importable and fully green at the end of this task even though the reducer is not yet total.
 
 - [ ] **Step 1: Write initial-state and capability-gate RED tests**
 
@@ -742,7 +804,7 @@ Add invalid Tiered ladder, valid Tiered, valid Exact, identity-field, unknown-ve
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
 ```
 
-Expected: reducer imports fail while Task 2 parser/tier tests remain green.
+Expected: reducer imports fail while Task 4 parser/tier tests remain green.
 
 - [ ] **Step 3: Implement schema validation and capability/plan gates only**
 
@@ -755,9 +817,11 @@ Run the state tests. Expected: capability/gate cases pass; no task-loop tests ex
 Cover with literal events:
 
 - accepted preflight enters `WORKSPACE_READY`;
-- `dispatch-intended` requires role, helper-derived key, title-case requested tier, prompt/report/brief paths, attempt, expected outcome, and the complete validated pre-spawn policy inspection/contract versions;
+- `dispatch-intended` requires role, helper-derived key, title-case requested tier, prompt/report/brief paths, attempt, expected outcome, the complete validated pre-spawn policy inspection/contract versions, and the exact rendered prompt bytes that will be sent;
+- `dispatch-intended` rejects an intent whose stored rendered prompt is absent, or whose stored bytes do not begin with the canonical directive for the requested tier at byte zero; an intent that cannot be replayed byte-for-byte is not a valid intent;
 - the helper computes `runId = sha256(planDigest + NUL + worktree + NUL + branch + NUL + mergeBase + NUL + createdAt)` and `dispatchKey = "<runId>:task-<n>:<role>:attempt-<n>:round-<n>"` (omit round only for non-fix roles); callers never supply arbitrary key text;
 - `dispatch-intended` rejects any requested tier that differs from the executable role formula for the current task/attempt/round;
+- `dispatch-intended` records the `tier` field value that will accompany the spawn call, and rejects an intent whose `tier` disagrees with either the role formula or the directive at byte zero of the stored rendered prompt; divergence between formula and renderer is reported as such rather than as a generic validation error;
 - keys match `^[A-Za-z0-9._:-]{1,240}$`; artifact paths are normalized/absolute/beneath the pinned worktree run root;
 - fresh `dispatch-started` accepts Tiered requested-tier evidence or Exact `ignored-exact` with the tuple stored in pre-spawn intent, and stores identical parent/child projections;
 - reused `dispatch-started` requires identical key/cwd/raw prompt and identical parent/child original application, validates it against the intent's stored pre-spawn inspection, and never re-resolves against current parent policy/ladder;
@@ -766,7 +830,8 @@ Cover with literal events:
 - DONE advances to review intent; observational DONE_WITH_CONCERNS carries concern evidence; correctness/scope concerns require a decision;
 - two context enrichments are legal at the same planned tier; third NEEDS_CONTEXT blocks without incrementing fixRound;
 - BLOCKED enters `TASK_BLOCKED` immediately;
-- intent without child ID preserves exact key/cwd/raw-prompt identity for replay;
+- intent without child ID preserves exact key/cwd/raw-prompt identity for replay, including the stored rendered prompt bytes, so recovery can reissue them without calling the renderer;
+- a replay whose supplied prompt differs from the stored rendered bytes is rejected rather than silently re-fingerprinted, and the rejection names renderer drift as the cause so the failure is diagnosable rather than appearing as an unexplained key conflict;
 - while any dispatch is running, every second SDD-owned dispatch event is rejected, enforcing one active child and no parallel task implementation.
 
 - [ ] **Step 5: Run task-loop tests and verify RED**
@@ -779,13 +844,39 @@ Expected: new task-loop cases fail while capability/gate cases remain green.
 
 - [ ] **Step 6: Implement task-dispatch/context handlers and return to GREEN**
 
-Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path/policy-application validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including versioned pre-spawn inspection and canonical cwd/raw-prompt digest—before child ID. Fresh/reused result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
+Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path/policy-application validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including versioned pre-spawn inspection, the exact rendered prompt bytes, and canonical cwd/raw-prompt digest—before child ID. Bound the stored prompt at the same 384 KiB limit as a rendered prompt. Fresh/reused result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
 
-- [ ] **Step 7: Write task-review/fix-loop RED tests**
+- [ ] **Step 7: Verify and commit Task 5**
+
+```bash
+npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
+npx eslint optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs
+git diff --check
+
+git add optional-skills/subagent-driven-development/scripts/sdd-state.mjs \
+  optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs \
+  optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
+git commit -m "feat(skills): add SDD reducer core and dispatch handlers"
+```
+
+Expected: every dispatch/context case passes. The reducer is not yet total, so completeness is asserted in Task 6, not here.
+
+## Task 6: Complete the reducer review, fix, and final loops
+
+**Implementer tier:** Capable
+
+**Files:**
+- Modify: `optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs`
+- Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
+- Create: `optional-skills/subagent-driven-development/references/state-machine.md`
+
+**Interfaces:** Extends the reducer from Task 5 with task-review, fix-round, and final-review handling, then proves the reducer is total over the documented phase set. Still no filesystem, Git, tool, random, or clock work.
+
+- [ ] **Step 1: Write task-review/fix-loop RED tests**
 
 Prove task completion requires spec PASS plus quality APPROVED; initial task reviewer tier is Implementer+1 with Standard floor/Frontier cap; Critical/Important/spec-failure/confirmed-real-gap findings open a fix round; Minor/out-of-scope/cannot-verify entries remain explicit; rounds are 1–5 only with fixer/re-reviewer tiers matching the formulas; each fix/re-review uses a new dispatch identity; `rereview-finished` only pins results; explicit controller events choose another fix, completion, block, or one persisted non-load-bearing park ruling; round-five load-bearing residual blocks; and no event can silently drop an open/deferred/parked finding ID.
 
-- [ ] **Step 8: Run task-review tests and verify RED**
+- [ ] **Step 2: Run task-review tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -793,15 +884,15 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: new review/fix cases fail while capability/task-loop cases remain green.
 
-- [ ] **Step 9: Implement task-review/fix handlers and return to GREEN**
+- [ ] **Step 3: Implement task-review/fix handlers and return to GREEN**
 
 Add handlers for reviewer intent/start/result, controller finding adjudication, fix intent/start/result, re-review intent/start/result pinning, explicit re-review adjudication, bounded parking, and task completion/next-task selection. Next-task selection derives `currentImplementerTier` only from the immutable plan task index stored at initialization. Finding updates are set operations keyed by immutable finding ID: every prior ID must remain open, move to deferred/parked, move to bounded `findingResolutions` with evidence, or cause rejection. Run the state suite.
 
-- [ ] **Step 10: Write final-review/fix RED tests**
+- [ ] **Step 4: Write final-review/fix RED tests**
 
 Prove final review/fix/re-review intents require Frontier; final review either completes cleanly or opens exactly one Frontier final-fix wave; reviewer output records evidence but cannot select phase; final re-review blocks unadjudicated/load-bearing residuals; contestable non-load-bearing residuals need an explicit persisted park ruling; a second final-fix wave is impossible; and COMPLETE requires final-review evidence plus reconciled ledgers.
 
-- [ ] **Step 11: Run final-loop tests and verify RED**
+- [ ] **Step 5: Run final-loop tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -809,11 +900,11 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: final-loop cases fail while all task-level cases remain green.
 
-- [ ] **Step 12: Implement final handlers and return to GREEN**
+- [ ] **Step 6: Implement final handlers and return to GREEN**
 
 Add the final-review/fix/re-review handlers and COMPLETE/FINAL_BLOCKED guards only. Use the same immutable finding ledger operations as task review. Run the full state test file and lint.
 
-- [ ] **Step 13: Write the transition reference and verify reducer completeness**
+- [ ] **Step 7: Write the transition reference and verify reducer completeness**
 
 Create `references/state-machine.md` with a table of contents and these canonical phases:
 
@@ -863,17 +954,16 @@ For every transition, document source, event, payload, destination, counters/led
 
 Run the full state suite. Temporarily permit round six; the cap test must fail. Restore. Temporarily remove one prior finding during adjudication; the ledger-retention test must fail. Restore and rerun green. Also prove the production order capability-confirmed → plan-valid → persisted preflight decision reaches every gate phase legally after run initialization.
 
-- [ ] **Step 14: Commit Task 3**
+- [ ] **Step 8: Commit Task 6**
 
 ```bash
-git add optional-skills/subagent-driven-development/scripts/sdd-state.mjs \
-  optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs \
+git add optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs \
   optional-skills/subagent-driven-development/tests/sdd-state.test.mjs \
   optional-skills/subagent-driven-development/references/state-machine.md
-git commit -m "feat(skills): add deterministic SDD state machine"
+git commit -m "feat(skills): complete deterministic SDD state machine"
 ```
 
-## Task 4: Persist recoverable state and preserve artifact boundaries
+## Task 7: Persist recoverable state and preserve artifact boundaries
 
 **Implementer tier:** Capable
 
@@ -965,9 +1055,13 @@ In a temporary Git repository, prove `review-package BASE HEAD OUT` emits ordere
 
 Implement exactly the three-argument script. Verify commits with `git rev-parse --verify`, ancestry with `git merge-base --is-ancestor`, gather each section using argument arrays/quoted SHAs, and atomically rename the completed package. Never checkout/reset/stage. Run `sdd-scripts.test.mjs` to green.
 
-- [ ] **Step 11: Exercise crash recovery and full Task 4 verification**
+- [ ] **Step 11: Exercise crash recovery and full Task 7 verification**
 
-Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before child ID. Restart with read-only `show`; assert exact key/cwd/raw prompt/policy intent remains and the next documented action is identical-key replay. Delete the final audit marker; prove `show` is byte-for-byte read-only, then repair with expected revision and prove exactly one marker returns. Race two transitions and two repairs again at CLI level.
+Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before child ID. Restart with read-only `show`; assert exact key/cwd/raw prompt/policy intent remains and the next documented action is identical-key replay.
+
+Prove the replay path does not re-render. Recover the intent through `show`, confirm the stored rendered prompt bytes come back byte-for-byte, and confirm a replay can be constructed from stored state alone with no call into `render-prompt`. Then simulate renderer drift: render the same context with an extra newline after the directive, submit it as a replay for the same key, and assert it is rejected as renderer drift rather than accepted or reported as an unexplained key conflict. This is the regression guard for the failure where identity is coupled to renderer output.
+
+Delete the final audit marker; prove `show` is byte-for-byte read-only, then repair with expected revision and prove exactly one marker returns. Race two transitions and two repairs again at CLI level.
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs \
@@ -977,7 +1071,7 @@ npx eslint "optional-skills/subagent-driven-development/scripts/**/*.mjs"
 
 Expected: all tests/lint pass with no stale temp/lock files.
 
-- [ ] **Step 12: Commit Task 4**
+- [ ] **Step 12: Commit Task 7**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts \
@@ -985,7 +1079,7 @@ git add optional-skills/subagent-driven-development/scripts \
 git commit -m "feat(skills): persist recoverable SDD runs"
 ```
 
-## Task 5: Add progressive-disclosure plan and child-role contracts
+## Task 8: Add progressive-disclosure plan and child-role contracts
 
 **Implementer tier:** Advanced
 
@@ -1017,13 +1111,24 @@ Required behaviors:
 
 ```js
 const rendered = await readFile(promptPath, "utf8");
+
+// Exact bytes, not a prefix. A prefix assertion cannot distinguish two
+// conformant renderers that differ only in whitespace after the directive,
+// and that difference breaks byte-exact dispatch replay.
+expect(rendered).toBe(expectedImplementerPrompt({
+  tier: "advanced",
+  briefPath: "/repo/.superpowers/sdd/example/task-2-brief.md",
+  reportPath: "/repo/.superpowers/sdd/example/task-2-report.md",
+}));
+
+// Properties the exact comparison must continue to imply.
 expect(rendered.startsWith("/tier-advanced\n")).toBe(true);
-expect(rendered).toContain("/repo/.superpowers/sdd/example/task-2-brief.md");
-expect(rendered).toContain("/repo/.superpowers/sdd/example/task-2-report.md");
 expect(rendered).not.toContain("{{");
 ```
 
-Also test every tier, unknown role/tier rejection, missing required path, non-absolute or out-of-root path, symlink escape, control characters, unexpected keys, output atomicity, role-specific required fields, and rendered size at 384 KiB/384 KiB+1. Expected values are derived from input/real paths, not template implementation.
+Build `expectedImplementerPrompt` in the test from the role template plus the supplied paths, so the expectation is derived from inputs rather than copied from renderer output. Pin the exact number of newlines between the directive and the body; that count is part of the contract because dispatch identity compares prompt bytes.
+
+Also test every tier, unknown role/tier rejection, missing required path, non-absolute or out-of-root path, symlink escape, control characters, unexpected keys, output atomicity, role-specific required fields, and rendered size at 384 KiB/384 KiB+1. Add a determinism case: rendering the same context twice produces byte-identical output, and rendering it in a different working directory or with a different process start time produces the same bytes. Expected values are derived from input/real paths, not template implementation.
 
 - [ ] **Step 2: Verify prompt-rendering RED**
 
@@ -1036,13 +1141,13 @@ Expected: fail because prompt rendering/templates are absent.
 
 - [ ] **Step 3: Verify the pinned capability contract before writing consumers**
 
-Read `references/capability-contract.md` and run the no-network fake-contract tests created in Task 1. Confirm prompt/state field names use its exact wire casing and tuple shape. If role/controller needs cannot be expressed by version 1, stop for a written contract decision; do not silently widen the fake or skill. Later Plan B must implement this pinned contract.
+Read `references/capability-contract.md` and run the no-network fake-contract tests created in Task 2. Confirm prompt/state field names use its exact wire casing and tuple shape. If role/controller needs cannot be expressed by version 1, stop for a written contract decision; do not silently widen the fake or skill. Later Plan B must implement this pinned contract.
 
 - [ ] **Step 4: Write the exact plan contract reference**
 
 `references/plan-contract.md` must define:
 
-- copy the Task 2 canonical task/tier/global/fence grammar without widening or redefining it;
+- copy the Task 4 canonical task/tier/global/fence grammar without widening or redefining it;
 - exactly one Implementer tier field outside code fences;
 - six tier values and formulas;
 - include the plan's Global Constraints in every task brief when that section exists;
@@ -1051,7 +1156,8 @@ Read `references/capability-contract.md` and run the no-network fake-contract te
 - DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, and BLOCKED report schemas;
 - strict separation of deliverables, reports, state, audit, briefs, review packages, and prompts;
 - explicit bounds tested at limit and limit+1: task brief 256 KiB, rendered prompt 384 KiB, child/reviewer report 64 KiB, state JSON 1 MiB, one audit line 8 KiB, 256 finding records, and 4096 UTF-8 bytes per path;
-- `CAPABILITY_BLOCKED`, `PLAN_INVALID`, `PREFLIGHT_DECISION_REQUIRED`, and `DISPATCH_MISMATCH_BLOCKED` recovery requirements.
+- `CAPABILITY_BLOCKED`, `PLAN_INVALID`, `PREFLIGHT_DECISION_REQUIRED`, and `DISPATCH_MISMATCH_BLOCKED` recovery requirements;
+- the required fix-package contents that replace the original workflow's implementer resume. Because every fix round uses a fresh child with no memory of prior rounds, the package must carry the task brief, the persistent report, the exact open findings, each prior attempted correction and why it failed, the relevant tests, and the scoped diff. Without the prior-attempt history a later round can silently repeat a failed fix.
 
 Avoid duplicating the transition table; link to `state-machine.md`.
 
@@ -1069,7 +1175,7 @@ Avoid duplicating the transition table; link to `state-machine.md`.
 - return exactly one status: DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, or BLOCKED;
 - include changes, tests with results, concerns, and commit SHA when applicable.
 
-For a fix role, state explicitly that this is a fresh child: read the finding package and current files, do not assume previous-child memory, fix only adjudicated findings, test them, and write a new report.
+For a fix role, state explicitly that this is a fresh child: read the finding package and current files, do not assume previous-child memory, fix only adjudicated findings, test them, and write a new report. The package includes prior attempted corrections and why each failed; the child must read that history and must not repeat a correction already recorded as failed.
 
 - [ ] **Step 6: Write task reviewer and re-reviewer contracts**
 
@@ -1113,7 +1219,7 @@ Write via the same atomic helper. Do not use general-purpose template evaluation
 
 - [ ] **Step 9: Run the candidate role prompts as consuming agents**
 
-Run all five `role-evals.json` scenarios under `--suite role --condition candidate` with the same current model, fresh temporary profile/fixture, root-confined reads, and only the scenario's confined report/TDD tools. Require the expected structured report, required reads/tool sequence, and allowed side effects only. Compare against Task 1 no-guidance/original role evidence.
+Run all five `role-evals.json` scenarios under `--suite role --condition candidate` with the same current model, fresh temporary profile/fixture, root-confined reads, and only the scenario's confined report/TDD tools. Require the expected structured report, required reads/tool sequence, and allowed side effects only. Compare against Task 3 no-guidance/original role evidence.
 
 For each failure, record the verbatim choice, classify it as missing wording, poor organization, or deliberate noncompliance, revise only the responsible prompt/reference, and rerun the full affected role scenario. Create `evals/role-green-report.md` with environment, raw paths, output/tool-read evidence, baseline comparison, and any remaining activation blocker.
 
@@ -1130,7 +1236,7 @@ git diff --check
 
 Then render one prompt for each role and inspect it manually for role boundaries, first-token directive, concrete paths, no unresolved markers, and no coordinator-history dump.
 
-- [ ] **Step 11: Commit Task 5**
+- [ ] **Step 11: Commit Task 8**
 
 ```bash
 git add optional-skills/subagent-driven-development/references/plan-contract.md \
@@ -1144,7 +1250,7 @@ git add optional-skills/subagent-driven-development/references/plan-contract.md 
 git commit -m "feat(skills): define deterministic SDD dispatch contracts"
 ```
 
-## Task 6: Write the concise controller skill and reach GREEN
+## Task 9: Write the concise controller skill and reach GREEN
 
 **Implementer tier:** Frontier
 
@@ -1206,7 +1312,7 @@ Keep the core loop concise and refer to `references/state-machine.md` and `refer
 - reload/validate canonical state before each action;
 - repair only a missing final audit marker through `repair-audit` with current expected revision, and never while `show` reports a live/unknown lock;
 - record dispatch intent before calling the tool, taking the key only from the helper's current-state output;
-- recover intent by reissuing the same `dispatchKey`, cwd, and raw prompt; validate a reused result against the stored original pre-spawn inspection, not a newer policy/ladder;
+- recover intent by reissuing the same `dispatchKey`, cwd, and the prompt bytes stored in that intent; never re-render on recovery, because identity compares prompt bytes and a drifted renderer turns a valid replay into a key conflict; validate a reused result against the stored original pre-spawn inspection, not a newer policy/ladder;
 - never hand-edit state/audit, poll, implement, review, or fix in coordinator context;
 - use exactly one SDD-owned active child at a time and never parallelize implementation tasks;
 - use fresh children for implementer, each fix round, each reviewer, and final roles;
@@ -1234,7 +1340,7 @@ Every rendered prompt begins with the helper-returned absolute canonical directi
 
 - Fresh Tiered success (`dispatch.reused: false`) requires requested/effective target tier, a valid resolved tuple, and identical parent/child application under the stored pre-spawn contract.
 - Fresh Exact success requires requested directive plus `ignored-exact`, unchanged stored inherited tuple, and identical parent/child application.
-- Reused success requires the identical dispatch key/cwd/raw prompt and identical parent/child **original** application validated against the inspection stored in intent; policy or ladder changes since the first call are intentionally ignored.
+- Reused success requires the identical dispatch key/cwd/raw prompt, reissued from the bytes stored in intent rather than re-rendered, and identical parent/child **original** application validated against the inspection stored in intent; policy or ladder changes since the first call are intentionally ignored.
 - Any other outcome records `DISPATCH_MISMATCH_BLOCKED` before child work can satisfy a task.
 
 - [ ] **Step 6: Preserve bounded context, review, and completion rules**
@@ -1255,7 +1361,7 @@ State explicitly:
 - Completion requires clean canonical state, final evidence, reconciled ledgers, and normal branch-finishing workflow.
 - Continue automatically between valid transitions; pause only at explicit blocked or decision states.
 
-Add rationalization counters and a compact **Red Flags / Common Mistakes** section derived only from Task 1's observed verbatim baseline behavior. Each entry names the required blocked/decision state and evidence, not motivational prose; do not add hypothetical counters that no baseline exhibited.
+Add rationalization counters and a compact **Red Flags / Common Mistakes** section derived only from Task 3's observed verbatim baseline behavior. Each entry names the required blocked/decision state and evidence, not motivational prose; do not add hypothetical counters that no baseline exhibited.
 
 - [ ] **Step 7: Run the identical scenarios with candidate guidance**
 
@@ -1274,7 +1380,7 @@ Repeat all eight IDs without altering their prompts. A passing result must choos
 
 Create `evals/green-report.md` with environment metadata and side-by-side baseline/candidate behavior per scenario. Include exact tool-log observations, blocked/progressed state, rationalizations removed, any new rationalization, and raw-result directory. Do not claim cross-model or real-product activation evidence in Plan A.
 
-- [ ] **Step 9: Verify SKILL structure and Task 6 scope**
+- [ ] **Step 9: Verify SKILL structure and Task 9 scope**
 
 ```bash
 wc -l -w optional-skills/subagent-driven-development/SKILL.md
@@ -1285,9 +1391,9 @@ npm run lint
 git diff --check
 ```
 
-Expected: `SKILL.md` is below 500 lines and no more than 900 words; references are direct; tests/lint pass. If the body cannot meet the word target without hiding a load-bearing gate, stop for review rather than silently exceeding it.
+Expected: `SKILL.md` is below 500 lines and no more than 1800 words; references are direct; tests/lint pass. The budget accommodates roughly eight ordered capability gates, the orchestration loop, the seven-row tier table, four dispatch-validation cases, the preserved safety rules, and an evidence-derived Red Flags section. If the body cannot meet the word target without hiding a load-bearing gate, stop for review rather than silently exceeding it or weakening a gate.
 
-- [ ] **Step 10: Commit Task 6**
+- [ ] **Step 10: Commit Task 9**
 
 ```bash
 git add optional-skills/subagent-driven-development/SKILL.md \
@@ -1298,7 +1404,7 @@ git add optional-skills/subagent-driven-development/SKILL.md \
 git commit -m "feat(skills): add deterministic SDD controller"
 ```
 
-## Task 7: Refactor from pressure evidence and verify isolated capability blocking
+## Task 10: Refactor from pressure evidence and verify isolated capability blocking
 
 **Implementer tier:** Frontier
 
@@ -1331,6 +1437,8 @@ Run five repetitions per wording variant under both `candidate` and `no-guidance
 
 Passing threshold: candidate chooses the required state/action and avoids forbidden side effects in all repetitions. Control results establish that prompts do not give away the skill answer. Any candidate failure requires recording its verbatim rationalization, changing the smallest relevant guidance, and rerunning the entire affected family.
 
+The two lowest-risk families may run three repetitions instead of five when their first three runs agree; record which families used the reduction and why in `refactor-report.md`. Never reduce family count or drop a condition.
+
 - [ ] **Step 3: Exercise all six requested tiers through fake policy evidence**
 
 For each tier, render a role-appropriate prompt and run the fake extension in Tiered mode. Assert tool logs show the absolute directive, deterministic dispatch key, requested tier, effective tier, tuple, and child application event before the cleaned task with model visibility false. Repeat Exact mode for at least Economy, Advanced, and Frontier and assert `ignored-exact` plus unchanged exact tuple. This tests tier behavior, not coordinator model quality; record the distinction.
@@ -1342,12 +1450,14 @@ Rerun each of the five role scenarios in at least three fresh candidate contexts
 Add a test that reads `pi-webui-skill.json`, independently derives the SHA-256 from sorted runtime file names plus NUL plus bytes, and expects exact equality. Also prove:
 
 - name is `subagent-driven-development`;
-- owner/source package is `@hyperdreamer/pi-webui`, and source package version equals the current root `package.json` version;
+- owner/source package is `@hyperdreamer/pi-webui`, and the recorded source package version is valid semver;
 - distribution is `opt-in`;
 - manifest and every runtime file exist;
 - runtime list excludes `evals/` and `tests/`;
 - no runtime path escapes the source directory;
 - the source directory is still absent from `package.json` `files` and `pi.skills`.
+
+Do not assert that the recorded version equals the current root `package.json` version. That assertion would turn every release version bump into a failing test, and because `prepublishOnly` runs `npm run verify`, it would break the release workflow itself until someone regenerated the manifest by hand. The recorded version documents which package version produced the runtime tree; the runtime hash is the integrity gate. Plan C's installer compares recorded version against installed version for update detection, which is where a version difference is meaningful.
 
 Run:
 
@@ -1389,7 +1499,7 @@ sdd-state manifest-create --source-root SOURCE --package-json PACKAGE_JSON --out
 sdd-state manifest-hash --manifest MANIFEST
 ```
 
-`manifest-create` reads the current package name/version, validates every path, computes the runtime hash, then atomically writes schema version 1, canonical name, owner/source package, exact current package version, opt-in distribution, runtime list, `sha256-path-nul-bytes-v1`, and a lowercase 64-hex hash in one operation. If repository preflight shows the package version changed from the plan's reviewed `1.10.3`, record that plan-input drift before continuing.
+`manifest-create` reads the current package name/version, validates every path, computes the runtime hash, then atomically writes schema version 1, canonical name, owner/source package, the package version at generation time, opt-in distribution, runtime list, `sha256-path-nul-bytes-v1`, and a lowercase 64-hex hash in one operation. Regeneration after a version bump is a release-time step, not a test-enforced invariant.
 
 Hash sorted UTF-8 relative path, NUL, file bytes, NUL for each runtime file. `manifest-hash` recomputes and fails unless the stored digest matches. Reject duplicate/missing/escaping/unsupported entries and any runtime `evals/` or `tests/` path.
 
@@ -1422,11 +1532,15 @@ for RUN in 1 2 3 4 5; do
   (
     set -euo pipefail
     TMP_ROOT=$(mktemp -d)
-    trap 'rm -rf "$TMP_ROOT"' EXIT
+    trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
     PROFILE="$TMP_ROOT/agent"
     REPO="$TMP_ROOT/repo"
     mkdir -m 700 -p "$PROFILE" "$TMP_ROOT/sessions" "$REPO"
-    for NAME in auth.json models.json models-store.json; do
+    # Reference credentials instead of copying them; copy only non-secret catalogs.
+    if [ -f "$SOURCE_AGENT/auth.json" ]; then
+      ln -s "$SOURCE_AGENT/auth.json" "$PROFILE/auth.json"
+    fi
+    for NAME in models.json models-store.json; do
       if [ -f "$SOURCE_AGENT/$NAME" ]; then
         install -m 600 "$SOURCE_AGENT/$NAME" "$PROFILE/$NAME"
       fi
@@ -1491,9 +1605,13 @@ done
 
 The JSON inspector must verify assistant text and actual tool-call events, not grep serialized reasoning. Every run must read the capability reference, name the missing policy/dispatch contract, make no spawn call, leave HEAD/tree/status unchanged, and create no run workspace/state/report/deliverable. Any failure blocks Plan A.
 
+These five runs prove the candidate reaches `CAPABILITY_BLOCKED` and cites evidence, but their unchanged-repository assertions are weak on their own: with `--no-builtin-tools` and a fake registering only `read`, no mutation tool exists, so an unchanged tree also describes an agent that tried to mutate and failed. Add three further repetitions that grant real mutation capability while still withholding the capability contract, so restraint is a choice rather than an impossibility.
+
+Use the same fixture, profile isolation, and `absent` policy mode, but additionally register the role harness's confined `write` and non-shell `bash` (allowlisted to read-only `git status`/`git diff`) alongside `read`. Assert the same outcome: `CAPABILITY_BLOCKED`, the capability reference read, no `spawn_subsession` call, no `write` call, unchanged HEAD/tree/status, and absent `.superpowers/sdd` and `result.txt`. A run that creates the workspace or writes a deliverable before reporting the missing contract fails Plan A even if it reports `CAPABILITY_BLOCKED` afterward, because the gate ordering, not the end state, is the contract.
+
 - [ ] **Step 7: Write the refactor report**
 
-Create `evals/refactor-report.md` containing exact model/Pi version, controller and role scenario families/repetition counts, no-guidance versus candidate outcome counts, manual review of every flagged output, verbatim new rationalizations, their wording/organization/deliberate-noncompliance meta-classification, changes made to close loopholes, six-tier fake-policy results, Exact no-op results, five real capability-blocked results, and raw evidence paths.
+Create `evals/refactor-report.md` containing exact model/Pi version, controller and role scenario families/repetition counts, any permitted five-to-three repetition reduction and its justification, no-guidance versus candidate outcome counts, manual review of every flagged output, verbatim new rationalizations, their wording/organization/deliberate-noncompliance meta-classification, changes made to close loopholes, six-tier fake-policy results, Exact no-op results, the five tool-absent and three tool-present capability-blocked results, and raw evidence paths.
 
 State explicitly:
 
@@ -1539,11 +1657,13 @@ npx --yes --package=node@22.19.0 node node_modules/vitest/vitest.mjs run \
   --config vitest.config.ts optional-skills/subagent-driven-development
 npm run verify
 npm run build
-npm pack --dry-run --json > /tmp/pi-webui-plan-a-pack.json
+npm pack --dry-run --json --ignore-scripts > /tmp/pi-webui-plan-a-pack.json
 node -e 'const p=require("/tmp/pi-webui-plan-a-pack.json"); if (p[0].files.some(f=>f.path.startsWith("optional-skills/"))) process.exit(1)'
 git diff --check
 git status --short
 ```
+
+`--ignore-scripts` is required. Without it `prepack` runs `npm run build`, whose plugin and Vite progress output goes to stdout ahead of the JSON, so the file starts with `[plugins] built ...` and `require()` fails with `Unexpected token 'p'`. The preceding `npm run build` already produced the artifacts, so skipping scripts here loses no coverage.
 
 Expected:
 
@@ -1551,7 +1671,7 @@ Expected:
 - optional-skill tests pass under the package's Node 22.19 floor as well as the current runtime;
 - verify/build pass;
 - dry-run package does **not** contain optional source yet;
-- only Task 7 intended files are uncommitted;
+- only Task 10 intended files are uncommitted;
 - no session-daemon restart is required because Plan A changes no runtime service path.
 
 - [ ] **Step 10: Take the pre-commit original-tree seal, self-review, and commit**
@@ -1579,7 +1699,7 @@ git diff --check
 git status --short
 ```
 
-Expected: no whitespace errors and only intended Task 7 paths before staging.
+Expected: no whitespace errors and only intended Task 10 paths before staging.
 
 ```bash
 git add optional-skills/subagent-driven-development/pi-webui-skill.json \
@@ -1611,7 +1731,7 @@ fi
 git status --short --branch
 ```
 
-Expected: the final records match the original pre-Plan-A records exactly, and Git is clean on the new Task 7 commit. This ignored final evidence path is reported in the execution handoff; do not run more skill/test/build commands afterward.
+Expected: the final records match the original pre-Plan-A records exactly, and Git is clean on the new Task 10 commit. This ignored final evidence path is reported in the execution handoff; do not run more skill/test/build commands afterward.
 
 ## Execution Gate
 

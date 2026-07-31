@@ -27,7 +27,7 @@ The feature must also provide an opt-in deterministic replacement for the common
 2. Exact/Tiered is an independent, always-visible session choice controlled only through the UI.
 3. Tier commands act only in Tiered mode and are visible no-ops in Exact mode.
 4. A recognized leading directive applies its exact resolved tuple before any subsequent model request.
-5. Busy-session directives remain queued and cannot alter in-flight work.
+5. Busy-session directives are held in a PI WEBUI-owned queue and cannot alter in-flight work.
 6. Root sessions start Exact; independent and tracked children inherit their parent's complete policy.
 7. Child initial directives validate before child creation, so failure leaves no stray child.
 8. Requested and effective policy are visible in the child and returned structurally to its parent.
@@ -181,10 +181,11 @@ The following invariants are mandatory:
 6. Exact directives do not consult or require a valid tier mapping; they record `ignored-exact` and continue under the exact tuple.
 7. Tiered requests resolve against the latest mapping before any provider call.
 8. Failed resolution changes no policy/runtime state and does not process the request remainder.
-9. No provider call observes an intermediate model/thinking pair.
+9. No provider call observes an intermediate model/thinking pair. Pi's internal re-clamp does produce a transient thinking write that extensions and the transcript may observe; that transient is bounded to before the request and never published as a confirmed application.
 10. A malformed latest policy entry is authoritative failure, not permission to revive older intent.
 11. Requested and effective dispatch policy must agree according to mode-specific rules.
 12. No audit entry contains credentials, resolved headers, tokens, or provider secrets.
+13. A directive-bearing request is never handed to Pi's steering or follow-up delivery. PI WEBUI holds it until the session settles, then submits it as a fresh request that crosses the policy seam.
 
 ## Per-machine configuration
 
@@ -315,7 +316,7 @@ Tiered:
 
 The mode button is always first and always visible. The Tiered resolution is read-only. Full provider/model/thinking text remains available through accessible text and a title when abbreviated.
 
-While agent, bash, compaction, tree-exclusive, queued, or session-entry mutation work is active, policy controls remain inspectable but disabled. Tier directives submitted during work use the queue semantics below instead of the UI mutation path.
+While agent, bash, compaction, tree-exclusive, queued, or session-entry mutation work is active, policy controls remain inspectable but disabled. Tier directives submitted during work are retained by the server under the queue semantics below instead of the UI mutation path.
 
 Archived sessions are read-only.
 
@@ -394,7 +395,15 @@ Relative directives are user conveniences. The deterministic SDD skill never emi
 
 ### Busy input
 
-A leading tier directive submitted while the session is busy is queued as one intact follow-up with its remainder and attachments. It cannot steer or alter the current run. Directive parsing and policy application happen only when that queued input reaches the request boundary.
+Pi owns steering and follow-up delivery for ordinary prompts, and it delivers a follow-up *inside* the run that is already streaming. That delivery path cannot carry a tier directive: there is no point in it where PI WEBUI can apply a model and thinking change before the next provider call, so a directive routed through it would either be ignored or land mid-run.
+
+A directive-bearing request therefore never enters Pi's queue. PI WEBUI recognizes the leading directive at submission, and if the session has active work it retains the whole request — directive text, cleaned remainder, and attachments — in its own per-session FIFO queue on the session daemon. It is not forwarded to `session.prompt`, so it cannot steer, cannot join the current turn, and cannot alter in-flight work.
+
+The queue drains when the session settles: on agent end, bash end, compaction end, and session-entry-mutation release, PI WEBUI schedules a drain, confirms no active work remains, then submits exactly one retained request as an ordinary fresh request through the full policy seam. Only after that request settles does the next queued item drain. Directive parsing and policy application happen at that submission, never at enqueue time.
+
+One FIFO queue per session holds both directive-bearing and ordinary retained requests, so a directive cannot overtake an earlier user message and an ordinary message cannot overtake an earlier directive. Ordinary prompts with no leading directive keep today's behavior and continue to use Pi's steer and follow-up semantics when the session is busy.
+
+Retained requests appear in session status as queued, count toward active work, and are discarded by the existing clear-queue action. The queue is in-memory daemon state: a session-daemon restart drops retained requests rather than replaying them, and the client resubmits.
 
 ## Atomic request processing
 
@@ -402,7 +411,9 @@ All active request paths cross one policy-processing seam:
 
 ```text
 receive raw request
-→ queue intact when busy
+→ detect a leading directive
+→ retain intact in the PI WEBUI queue when the session has active work
+→ (on settle) submit exactly one retained request as a fresh request
 → parse at most one leading directive
 → inspect active-branch policy
 → compute candidate policy
@@ -417,12 +428,32 @@ receive raw request
 Atomicity is defined at the agent/request interface:
 
 - no provider call begins before the complete target tuple is active;
+- a retained request reaches the provider only through a fresh submission after the session settles, never through steering or follow-up delivery;
 - no combined status reports success before model, thinking, and policy persistence succeed;
 - validation failure leaves the previous state untouched;
 - unexpected apply/persistence failure attempts restoration of the previous exact runtime tuple;
 - if restoration cannot be proven, the session enters `MODEL_POLICY_BLOCKED` and refuses prompts rather than running ambiguously.
 
-The runtime adapter may internally cross Pi's separate model/thinking setters, but intermediate state is not observable to an agent request or published as a confirmed policy application.
+The runtime adapter crosses Pi's separate model/thinking setters in one fixed order, and the atomicity claim is scoped to what that ordering can actually guarantee.
+
+### Setter order is model, then thinking
+
+Apply `setModel` first, then `setThinkingLevel`. The order is not interchangeable: `setThinkingLevel` clamps against the *currently selected* model's supported levels, so calling it first clamps against the outgoing model and can silently discard a level the incoming model supports.
+
+### Thinking levels must be pre-validated, never clamped
+
+`setThinkingLevel` clamps silently rather than failing. Tier mappings forbid clamping, so the adapter validates the target level against the incoming model's available levels *before* applying anything, and verifies the effective level afterward. A mismatch between requested and effective level is a failed application: it restores the previous tuple and reports the error rather than accepting a clamped substitute.
+
+### Provider-visible versus observer-visible state
+
+Pi's `setModel` re-clamps thinking internally as part of switching models, carrying the previous level forward under the new model before the adapter's own `setThinkingLevel` lands. One tier application therefore performs two thinking writes, the first of which is a level nobody requested.
+
+That transient is not observable to a provider call, because both writes complete before any request is submitted. It is observable elsewhere, and the design accepts this explicitly rather than claiming otherwise:
+
+- extensions subscribed to thinking-level changes may observe the intermediate level;
+- the session transcript may record an intermediate thinking-level entry.
+
+What remains guaranteed is narrower and sufficient: no provider call observes an intermediate pair, and no confirmed policy application is published for an intermediate state. Exactly one `pi-webui.model-policy-application` entry is appended per application, describing the final resolved tuple. Implementations may suppress the redundant intermediate write if Pi later offers a combined setter, but must not report success before the final tuple is confirmed active.
 
 ## Policy persistence and audit
 
@@ -531,15 +562,25 @@ Tracked children retain existing lineage, same-project workspace validation, com
 
 ## Idempotent tracked dispatch
 
-### Public field
+### Public fields
 
-Add an optional bounded `dispatchKey` to `spawn_subsession`.
+Add two optional fields to `spawn_subsession`.
 
-The deterministic SDD writes its dispatch intent before invoking the tool and derives a key from stable state, for example:
+`dispatchKey` is a bounded string of at most 240 characters drawn from `[A-Za-z0-9._:-]`.
+
+`tier` is an optional `ModelTier` enum naming the tier the caller intends for the child. It is a declaration of intent, not a second way to request a tier: the prompt directive remains the only mechanism that applies policy, and `tier` is compared against the directive the server parsed. Agreement is required; a `tier` that names a different tier than the leading directive fails validation before the child spawns, and a `tier` supplied with no leading directive is also a failure.
+
+The field exists because the directive bytes serve two roles at once. They apply policy *and* they participate in dispatch identity. Inferring machine-checkable intent from bytes that are simultaneously an identity fingerprint is the coupling that makes renderer drift dangerous, so the intended tier is stated separately in a form the server can compare as an enum rather than reparse from text. A caller that omits `tier` keeps the original single-source behavior; a caller that supplies it gets a cross-check that turns a silent tier substitution into a loud rejection.
+
+The deterministic SDD always supplies both. Its `tier` is derived from the executable role formula for the current task, attempt, and round, so a mismatch between `tier` and the rendered directive means the renderer and the formula have diverged, which is exactly the failure the check is for.
+
+The deterministic SDD writes its dispatch intent before invoking the tool and derives a key from stable state. The skill's derivation is run-scoped, so the same plan executed as a new run never collides with an earlier one:
 
 ```text
-<plan-digest>:task-4:review:attempt-1
+<run-id>:task-4:review:attempt-1
 ```
+
+Fix roles append `:round-<n>`. `<run-id>` is derived once at run initialization from plan digest, worktree, branch, merge-base, and creation time. The server treats the key as an opaque bounded string and never parses its structure.
 
 ### Semantics
 
@@ -556,6 +597,10 @@ child session ID
 confirmed model-policy application
 ```
 
+The raw prompt is canonical *before* directive stripping. The directive bytes must remain in the identity input: strip them first and two dispatches differing only in tier become byte-identical, so a reused key would return the earlier child for a request that asked for a different tier and report success with the earlier policy application. A false conflict halts a run visibly; a false replay substitutes a weaker model with a clean audit trail. Identity therefore covers the directive.
+
+Because identity includes rendered bytes, a caller must not re-derive them on retry. Callers store the rendered prompt with their dispatch intent and reissue the stored bytes verbatim. The fingerprint normalizes a leading byte-order mark, CRLF to LF, and outer whitespace so transport rewriting cannot manufacture a conflict; normalization applies only to the compared copy, never to the bytes delivered to the child, which keep the directive at byte zero.
+
 A retry performs idempotency lookup before re-reading the parent's current policy or latest ladder:
 
 - same key and same canonical caller inputs return the original child and original policy application;
@@ -566,7 +611,9 @@ The registry survives session-daemon restart. Records live in PI WEBUI-managed s
 
 ### Recovery
 
-If SDD state contains a dispatch intent but no child ID after compaction/crash, the controller repeats the same spawn call. It receives the existing child rather than creating a duplicate.
+If SDD state contains a dispatch intent but no child ID after compaction/crash, the controller repeats the same spawn call using the prompt bytes stored in that intent. It does not re-render. It receives the existing child rather than creating a duplicate.
+
+The intent covers both crash cases the controller cannot distinguish on its own: a spawn that never registered, and a spawn that succeeded before the child ID was persisted. The server resolves which occurred, creating a child in the first case and returning the original in the second.
 
 ## Architecture
 
@@ -627,6 +674,8 @@ interface PolicyApplicationPlan {
 ### Runtime adapter
 
 One thin adapter consumes a validated application plan and owns serialized model/thinking application, restoration, custom-entry append, and combined status publication.
+
+The same adapter owns the directive-bearing request queue: retention while active work exists, settle detection, single-item drain, status projection, and clear-queue discard. Detection of a leading directive at submission is pure and lives with `SessionModelPolicy`; retention and drain scheduling are effectful and live here, next to the existing compaction-queue drain this mechanism is modeled on.
 
 No route, command, or child-spawn caller independently sequences `setModel`, `setThinkingLevel`, and policy persistence.
 
@@ -747,6 +796,7 @@ optional-skills/
 └── subagent-driven-development/
     ├── SKILL.md
     ├── references/
+    │   ├── capability-contract.md
     │   ├── state-machine.md
     │   └── plan-contract.md
     ├── prompts/
@@ -756,17 +806,28 @@ optional-skills/
     │   └── final-reviewer.md
     ├── scripts/
     │   ├── sdd-state
+    │   ├── sdd-state.mjs
+    │   ├── lib/
+    │   │   ├── plan-policy.mjs
+    │   │   ├── state-machine.mjs
+    │   │   ├── state-store.mjs
+    │   │   ├── prompt-renderer.mjs
+    │   │   └── manifest.mjs
     │   ├── sdd-workspace
     │   ├── task-brief
     │   └── review-package
     ├── pi-webui-skill.json
     ├── tests/
-    │   └── sdd-state.test.mjs
+    │   ├── sdd-state.test.mjs
+    │   └── sdd-scripts.test.mjs
     └── evals/
-        └── pressure-scenarios.md
+        ├── evals.json
+        ├── role-evals.json
+        ├── fake-sdd-tools.mjs
+        └── run-pressure-evals.mjs
 ```
 
-`SKILL.md` stays concise. The exhaustive transition table and plan schema live in focused references. Mechanical constraints live in `sdd-state` and its tests.
+`SKILL.md` stays concise. The exhaustive transition table, plan schema, and version-1 capability schemas live in focused references. Mechanical constraints live in `sdd-state` and its tests. Executable logic lives in `scripts/lib/*.mjs` behind a thin CLI facade; `evals/` and `tests/` are repository-only and never part of the installable runtime.
 
 ### Opt-in installer
 
@@ -844,6 +905,8 @@ Outcomes:
 - Exact with valid exact selection → proceed, recording that directives should be ignored;
 - ambiguous/blocked session policy → `CAPABILITY_BLOCKED`.
 
+Exact mode is a deliberate reduction in guarantees, and the skill must say so where the user can see it. In Exact mode the tier formulas still run and every requested tier is still recorded, so the audit trail, dispatch idempotency, review gates, and bounded fix loop are unchanged. But every child inherits the parent's one exact tuple, so reviewers do not actually run above implementers and round 4/5 fixers do not actually escalate. Exact mode therefore delivers deterministic *bookkeeping* without deterministic *escalation*. The controller records this once per run and reports it in the completion handoff rather than implying escalation occurred.
+
 ### Canonical state
 
 Each plan owns its existing isolated workspace under:
@@ -862,7 +925,7 @@ phase
 task number + Implementer tier
 context-attempt and fix-round counts
 requested tier and expected outcome
-dispatch key and child session ID
+dispatch key, rendered prompt bytes, and child session ID
 effective mode/tier/exact tuple
 base/head commit ranges
 open/deferred/parked findings
@@ -892,9 +955,10 @@ task
 attempt or round
 requested tier
 prompt/brief/report paths
+rendered prompt bytes
 ```
 
-If state recovery finds intent without a child ID, the controller repeats the same idempotent tool call.
+If state recovery finds intent without a child ID, the controller repeats the same idempotent tool call, reissuing the stored rendered prompt rather than rendering it again.
 
 After spawn, the controller validates requested versus effective application and records the child ID and exact tuple. Expected Exact `ignored-exact` is accepted. Any unexplained mismatch enters `DISPATCH_MISMATCH_BLOCKED`.
 
@@ -1017,9 +1081,11 @@ Tier resolution fails with exact provider/model/tier details. The prior session 
 
 Save or request application fails; no clamping occurs in tier mapping. Settings retains the attempted row for correction.
 
+This requires a pre-check, because Pi's `setThinkingLevel` clamps silently instead of throwing. Validate the target level against the incoming model's available levels before applying, and verify the effective level afterward; treat a clamped result as a failed application rather than a success.
+
 ### Busy UI mutation
 
-Mode/model/tier controls are disabled. A stale forged request remains subject to server-side active-work guards.
+Mode/model/tier controls are disabled. A stale forged request remains subject to server-side active-work guards. A directive-bearing prompt is retained rather than rejected, and a session-daemon restart discards retained requests instead of replaying them at an unexpected policy.
 
 ### Policy persistence failure
 
@@ -1083,6 +1149,10 @@ Then:
 - add rationalization counters only for failures observed;
 - re-test until behavior converges.
 
+These are real model invocations and the totals matter. The full sequence is on the order of 150 runs, mostly at high thinking levels, which is hours of wall time and real spend. Budget it explicitly before starting. The permitted reduction is repetition count, never scenario coverage: the two lowest-risk rationalization families may drop from five repetitions to three when their first three runs agree, and that reduction must be recorded in the refactor report. Skipping a scenario, a condition, or a role is not a permitted reduction.
+
+Evaluation harnesses handle real credentials. A harness that seeds an isolated agent profile must not copy secret material when it can reference it: prefer symlinking `auth.json` into the temporary profile, keep directory mode 0700 and file mode 0600, and never write credential contents into results, logs, or reports. Cleanup must not depend only on a normal-exit trap, because an abnormal termination would otherwise leave credentials in a temporary directory.
+
 ### Tier-registry tests
 
 1. Parse/serialize exactly six tiers.
@@ -1113,14 +1183,19 @@ Then:
 ### Runtime/session tests
 
 1. Model and thinking apply before any provider request.
-2. Validation failure changes nothing.
-3. Persistence/apply failure restores previous selection.
-4. Failed restoration enters MODEL_POLICY_BLOCKED.
-5. Busy directives remain queued intact.
-6. Exact model/thinking set and cycle routes update remembered Exact only in Exact mode.
-7. UI mode switch applies a complete policy.
-8. Resume/fork/clone/tree navigation use active-branch policy.
-9. Mapping changes apply at next request boundary, not mid-run.
+2. Setters run in model-then-thinking order; reversing the order is rejected by test, since thinking would clamp against the outgoing model.
+3. A target thinking level unsupported by the incoming model fails the application and restores the previous tuple instead of accepting a clamped substitute.
+4. Exactly one policy-application entry is appended per application, describing the final tuple, even though Pi's internal re-clamp performs two thinking writes.
+5. Validation failure changes nothing.
+6. Persistence/apply failure restores previous selection.
+7. Failed restoration enters MODEL_POLICY_BLOCKED.
+8. Busy directives are retained intact and never reach Pi's steer or follow-up delivery.
+9. A retained request drains one at a time after the session settles and applies policy at that submission.
+10. Clear-queue discards retained requests; a daemon restart drops them without replay.
+11. Exact model/thinking set and cycle routes update remembered Exact only in Exact mode.
+12. UI mode switch applies a complete policy.
+13. Resume/fork/clone/tree navigation use active-branch policy.
+14. Mapping changes apply at next request boundary, not mid-run.
 
 ### Child and idempotency tests
 
@@ -1133,7 +1208,8 @@ Then:
 7. Conflicting key reuse fails.
 8. Dedup survives daemon recreation.
 9. Retry lookup returns original outcome despite later mapping/policy changes.
-10. Existing lineage, completion, transcript, workspace, and recursion rules remain green.
+10. A `tier` field agreeing with the leading directive is accepted; a `tier` naming a different tier fails before child creation; a `tier` with no leading directive fails; an omitted `tier` preserves directive-only behavior.
+11. Existing lineage, completion, transcript, workspace, and recursion rules remain green.
 
 ### Route/protocol tests
 
@@ -1321,7 +1397,9 @@ Rejected. Free-form ledger parsing is vulnerable to compaction and formatting dr
 
 ### Resuming fix children
 
-Rejected for current scope. Existing tracked tools cannot prompt an idle child. Fresh fixers with persistent file handoff avoid adding an unrelated continuation tool.
+Rejected for current scope. Existing tracked tools cannot prompt an idle child: `SubsessionToolDeps` exposes only spawn, list, check, and read. Fresh fixers with persistent file handoff avoid adding an unrelated continuation tool.
+
+This replaces the original workflow's rounds 1–3 implementer resume, and it gives up that design's implicit context continuity, including its heuristic that a finding surviving three resumes indicates the implementer cannot see its own error. The fix package must carry that continuity explicitly: the task brief, the persistent report, the exact open findings with prior attempted corrections and why each failed, the relevant tests, and the scoped diff. `references/plan-contract.md` owns that required package content.
 
 ### Non-idempotent child recovery
 
@@ -1347,7 +1425,7 @@ Production work is expected to touch focused areas including:
 - `src/config.ts` and selected-machine config parsing;
 - focused server model-tier and session-policy modules;
 - `src/server/sessions/sessionCommandService.ts` and built-in command listing;
-- `src/server/sessions/piSessionService.ts` runtime/start/prompt orchestration;
+- `src/server/sessions/piSessionService.ts` runtime/start/prompt orchestration, including the directive-bearing request queue and its settle-driven drain, modeled on the existing compaction prompt queue;
 - `src/server/sessions/spawnSessionTool.ts` and `spawnSubsessionTool.ts`;
 - session routes, session-daemon protocol/client, proxy allowlists, and capabilities;
 - client API parsers/clients and session controller;
