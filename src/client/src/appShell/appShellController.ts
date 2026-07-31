@@ -4,36 +4,44 @@ import { createPwaDisplayModeMedia, detectPwaDisplayMode } from "../pwaDisplayMo
 import { ViewportPositionRepairer } from "./viewportPositionRepair";
 
 export const MOBILE_NAVIGATION_MEDIA_QUERY = "(max-width: 760px)";
+export const ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY = "(min-width: 1181px)";
 
 export interface AppShellControllerOptions {
   mobileNavigationMedia?: MediaQueryList | undefined;
+  activityRailDesktopMedia?: MediaQueryList | undefined;
   pwaDisplayModeMedia?: MediaQueryList[] | undefined;
   viewportPositionRepairer?: ViewportPositionRepairer | undefined;
 }
 
 export class AppShellController implements ReactiveController {
   private readonly mobileNavigationMedia: MediaQueryList | undefined;
+  private readonly activityRailDesktopMedia: MediaQueryList | undefined;
   private readonly pwaDisplayModeMedia: MediaQueryList[];
   private readonly viewportPositionRepairer: ViewportPositionRepairer;
   isMobileNavigationLayout: boolean;
+  isDesktopActivityRailLayout: boolean;
   isPwaDisplayMode: boolean;
 
   constructor(private readonly host: ReactiveControllerHost, options: AppShellControllerOptions = {}) {
     host.addController(this);
     this.mobileNavigationMedia = options.mobileNavigationMedia ?? createMobileNavigationMedia();
+    this.activityRailDesktopMedia = options.activityRailDesktopMedia ?? createActivityRailDesktopMedia();
     this.pwaDisplayModeMedia = options.pwaDisplayModeMedia ?? createPwaDisplayModeMedia();
     this.viewportPositionRepairer = options.viewportPositionRepairer ?? new ViewportPositionRepairer();
     this.isMobileNavigationLayout = this.mobileNavigationMedia?.matches ?? false;
+    this.isDesktopActivityRailLayout = this.activityRailDesktopMedia?.matches ?? false;
     this.isPwaDisplayMode = detectPwaDisplayMode(this.pwaDisplayModeMedia);
   }
 
   hostConnected(): void {
     this.mobileNavigationMedia?.addEventListener("change", this.onMobileNavigationMediaChange);
+    this.activityRailDesktopMedia?.addEventListener("change", this.onActivityRailDesktopMediaChange);
     for (const media of this.pwaDisplayModeMedia) media.addEventListener("change", this.onPwaDisplayModeChange);
   }
 
   hostDisconnected(): void {
     this.mobileNavigationMedia?.removeEventListener("change", this.onMobileNavigationMediaChange);
+    this.activityRailDesktopMedia?.removeEventListener("change", this.onActivityRailDesktopMediaChange);
     for (const media of this.pwaDisplayModeMedia) media.removeEventListener("change", this.onPwaDisplayModeChange);
     this.viewportPositionRepairer.clear();
   }
@@ -68,12 +76,23 @@ export class AppShellController implements ReactiveController {
     this.host.requestUpdate();
   };
 
+  private readonly onActivityRailDesktopMediaChange = (event: MediaQueryListEvent) => {
+    if (this.isDesktopActivityRailLayout === event.matches) return;
+    this.isDesktopActivityRailLayout = event.matches;
+    this.host.requestUpdate();
+  };
+
   private readonly onPwaDisplayModeChange = () => {
     const isPwaDisplayMode = detectPwaDisplayMode(this.pwaDisplayModeMedia);
     if (this.isPwaDisplayMode === isPwaDisplayMode) return;
     this.isPwaDisplayMode = isPwaDisplayMode;
     this.host.requestUpdate();
   };
+}
+
+function createActivityRailDesktopMedia(): MediaQueryList | undefined {
+  if (typeof window === "undefined" || !("matchMedia" in window)) return undefined;
+  return window.matchMedia(ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY);
 }
 
 function createMobileNavigationMedia(): MediaQueryList | undefined {
