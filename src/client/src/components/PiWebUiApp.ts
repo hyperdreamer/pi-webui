@@ -2256,7 +2256,15 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly closeCompactActivityRail = (): void => {
-    if (this.compactRailOpen) this.compactRailOpen = false;
+    if (!this.compactRailOpen) return;
+    this.compactRailOpen = false;
+    const launcher = this.compactActivityRailLauncher;
+    void this.updateComplete.then(() => {
+      if (!this.compactRailOpen && this.activeActivityRailId === undefined) {
+        if (launcher !== undefined) this.restoreActivityRailFocus(launcher);
+        else this.currentCompactActivityRailLauncher()?.focus();
+      }
+    });
   };
 
   private readonly toggleCompactActivityRail = (source?: HTMLElement): void => {
@@ -3072,31 +3080,31 @@ export class PiWebUiApp extends LitElement {
     const activeActivity = this.activeActivityRailItem();
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
+        <activity-rail
+          .onOpenTerminal=${this.handleOpenTerminalFromRail}
+          .onOpenGitUpdateManager=${this.handleOpenGitUpdateManagerFromRail}
+          .onOpenTheme=${this.handleOpenThemeFromRail}
+          .terminalCount=${this.state.activeTerminalCount}
+          .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
+          .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
+          .onOpenSystemPrompt=${() => {
+            this.closeCompactActivityRail();
+            if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
+          }}
+          .historyEnabled=${this.canOpenSessionHistory()}
+          .onOpenHistory=${() => { this.closeCompactActivityRail(); this.openSessionHistory(); }}
+          .onOpenInfo=${() => { this.closeCompactActivityRail(); this.openWorkspaceTool("core:workspace.info"); }}
+          .onOpenSettings=${() => { this.closeCompactActivityRail(); this.openSettings(); }}
+          .railOrder=${this.railOrder}
+          .onRailOrderChange=${this.handleRailOrderChange}
+          .pluginItems=${this.activityRailItems()}
+          .onOpenPluginActivity=${(id: QualifiedContributionId, source: HTMLElement) => {
+            this.openActivityRailItem(id, () => { this.restoreActivityRailFocus(source); });
+          }}
+          .compactOpen=${this.compactRailOpen}
+          .onCloseCompact=${this.closeCompactActivityRail}
+        ></activity-rail>
         <aside id="navigation-panel">
-          <activity-rail
-            .onOpenTerminal=${this.handleOpenTerminalFromRail}
-            .onOpenGitUpdateManager=${this.handleOpenGitUpdateManagerFromRail}
-            .onOpenTheme=${this.handleOpenThemeFromRail}
-            .terminalCount=${this.state.activeTerminalCount}
-            .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
-            .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
-            .onOpenSystemPrompt=${() => {
-              this.closeCompactActivityRail();
-              if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
-            }}
-            .historyEnabled=${this.canOpenSessionHistory()}
-            .onOpenHistory=${() => { this.closeCompactActivityRail(); this.openSessionHistory(); }}
-            .onOpenInfo=${() => { this.closeCompactActivityRail(); this.openWorkspaceTool("core:workspace.info"); }}
-            .onOpenSettings=${() => { this.closeCompactActivityRail(); this.openSettings(); }}
-            .railOrder=${this.railOrder}
-            .onRailOrderChange=${this.handleRailOrderChange}
-            .pluginItems=${this.activityRailItems()}
-            .onOpenPluginActivity=${(id: QualifiedContributionId, source: HTMLElement) => {
-              this.openActivityRailItem(id, () => { this.restoreActivityRailFocus(source); });
-            }}
-            .compactOpen=${this.compactRailOpen}
-            .onCloseCompact=${this.closeCompactActivityRail}
-          ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
         ${this.renderNavigationPanelEdgeControl()}

@@ -29,7 +29,7 @@ export class AppShellController implements ReactiveController {
     this.pwaDisplayModeMedia = options.pwaDisplayModeMedia ?? createPwaDisplayModeMedia();
     this.viewportPositionRepairer = options.viewportPositionRepairer ?? new ViewportPositionRepairer();
     this.isMobileNavigationLayout = this.mobileNavigationMedia?.matches ?? false;
-    this.isDesktopActivityRailLayout = this.activityRailDesktopMedia?.matches ?? false;
+    this.isDesktopActivityRailLayout = this.activityRailDesktopMedia?.matches ?? true;
     this.isPwaDisplayMode = detectPwaDisplayMode(this.pwaDisplayModeMedia);
   }
 

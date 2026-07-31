@@ -107,6 +107,60 @@ describe("PiWebUiApp compact activity focus restoration", () => {
     expect(launcher.isConnected).toBe(true);
     expect(contextBar.shadowRoot?.activeElement).toBe(launcher);
   });
+
+  it("returns focus to the connected compact launcher when the compact drawer is closed standalone", async () => {
+    vi.stubGlobal("matchMedia", () => compactMediaQuery());
+    const app = new PiWebUiApp();
+    registerActivityPlugin(app);
+    setAppState(app, initialAppState());
+    setCompactActivityRailLayout(app);
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    const contextBar = appContextBar(app);
+    await contextBar.updateComplete;
+    const launcher = activityRailLauncher(contextBar);
+    launcher.focus();
+    expect(contextBar.shadowRoot?.activeElement).toBe(launcher);
+
+    launcher.click();
+    await app.updateComplete;
+    const rail = activityRail(app);
+    await rail.updateComplete;
+
+    const drawerClose = rail.shadowRoot?.querySelector<HTMLButtonElement>(".compact-rail-close");
+    if (drawerClose === null || drawerClose === undefined) throw new Error("Expected compact drawer close button");
+    drawerClose.click();
+    await app.updateComplete;
+    await Promise.resolve();
+
+    expect(launcher.isConnected).toBe(true);
+    expect(contextBar.shadowRoot?.activeElement).toBe(launcher);
+  });
+
+  it("renders the compact activity rail overlay outside the navigation panel so mobile layout cannot hide it", async () => {
+    vi.stubGlobal("matchMedia", () => compactMediaQuery());
+    const app = new PiWebUiApp();
+    registerActivityPlugin(app);
+    setAppState(app, initialAppState());
+    setMobileActivityRailLayout(app);
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    const contextBar = appContextBar(app);
+    await contextBar.updateComplete;
+    const launcher = activityRailLauncher(contextBar);
+
+    launcher.click();
+    await app.updateComplete;
+
+    const rail = activityRail(app);
+    await rail.updateComplete;
+    const backdrop = rail.shadowRoot?.querySelector<HTMLElement>(".compact-rail-backdrop");
+    expect(backdrop).not.toBeNull();
+    const navPanel = app.renderRoot.querySelector("#navigation-panel");
+    expect(navPanel?.contains(rail)).toBe(false);
+  });
 });
 
 function mountWithoutAppSideEffects(app: PiWebUiAppElement): void {
@@ -156,6 +210,15 @@ function setCompactActivityRailLayout(app: PiWebUiAppElement): void {
     || !Reflect.set(appShell, "isDesktopActivityRailLayout", false)
     || !Reflect.set(appShell, "isMobileNavigationLayout", false)) {
     throw new Error("Could not configure PiWebUiApp compact activity-rail layout");
+  }
+}
+
+function setMobileActivityRailLayout(app: PiWebUiAppElement): void {
+  const appShell: unknown = Reflect.get(app, "appShell");
+  if (typeof appShell !== "object" || appShell === null
+    || !Reflect.set(appShell, "isDesktopActivityRailLayout", false)
+    || !Reflect.set(appShell, "isMobileNavigationLayout", true)) {
+    throw new Error("Could not configure PiWebUiApp mobile activity-rail layout");
   }
 }
 
