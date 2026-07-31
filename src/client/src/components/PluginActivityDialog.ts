@@ -7,6 +7,23 @@ const defaultReportActivityRailError: ReportActivityRailError = (phase, contribu
   console.warn("Plugin activity rail contribution failed", phase, contributionId, error);
 };
 
+const sequentialTabStopSelector = [
+  "a[href]",
+  "area[href]",
+  "button",
+  "input:not([type='hidden'])",
+  "select",
+  "textarea",
+  "summary",
+  "iframe",
+  "object",
+  "embed",
+  "audio[controls]",
+  "video[controls]",
+  "[contenteditable]",
+  "[tabindex]",
+].join(", ");
+
 @customElement("plugin-activity-dialog")
 export class PluginActivityDialog extends LitElement {
   @property({ attribute: false }) activity!: QualifiedActivityRailContribution;
@@ -70,16 +87,36 @@ export class PluginActivityDialog extends LitElement {
   private trapTabFocus(event: KeyboardEvent): void {
     const frame = this.renderRoot.querySelector<HTMLElement>(".plugin-activity-frame");
     if (frame === null) return;
-    const focusable = [...frame.querySelectorAll<HTMLElement>("a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])")];
-    if (focusable.length === 0) return;
+    const tabStops = this.sequentialTabStops(frame);
+    if (tabStops.length === 0) return;
 
-    const activeIndex = focusable.findIndex((element) => element === this.shadowRoot?.activeElement);
-    const movingPastEnd = !event.shiftKey && activeIndex === focusable.length - 1;
-    const movingBeforeStart = event.shiftKey && activeIndex <= 0;
+    const activeIndex = tabStops.findIndex((element) => element === this.shadowRoot?.activeElement);
+    const movingPastEnd = !event.shiftKey && activeIndex === tabStops.length - 1;
+    const movingBeforeStart = event.shiftKey && activeIndex === 0;
     if (!movingPastEnd && !movingBeforeStart) return;
 
     event.preventDefault();
-    (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus();
+    (event.shiftKey ? tabStops.at(-1) : tabStops[0])?.focus();
+  }
+
+  private sequentialTabStops(frame: HTMLElement): HTMLElement[] {
+    // This boundary models direct controls in the dialog's shadow tree. A
+    // sequential stop has a non-negative tabIndex and is not disabled or in a
+    // hidden/inert subtree. Nested component shadow roots own their focus
+    // navigation scopes. Positive tabIndex values come before zero; equal
+    // values retain DOM order.
+    return [...frame.querySelectorAll<HTMLElement>(sequentialTabStopSelector)]
+      .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && element.closest("[hidden], [inert]") === null)
+      .map((element, domIndex) => ({ element, domIndex }))
+      .sort((left, right) => {
+        const leftTabIndex = left.element.tabIndex;
+        const rightTabIndex = right.element.tabIndex;
+        if (leftTabIndex === rightTabIndex) return left.domIndex - right.domIndex;
+        if (leftTabIndex === 0) return 1;
+        if (rightTabIndex === 0) return -1;
+        return leftTabIndex - rightTabIndex;
+      })
+      .map(({ element }) => element);
   }
 
   private renderFailure(): TemplateResult {
