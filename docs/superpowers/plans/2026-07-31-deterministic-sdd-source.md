@@ -18,7 +18,7 @@
 - Capture a deterministic whole-tree seal of `/home/henry/.pi/agent/skills/subagent-driven-development/` before and after Plan A; paths, types, modes, symlink targets, directories, and file bytes must match.
 - Run skill RED before creating candidate `SKILL.md`: pressure-test no-guidance and original-skill controls and record verbatim failures/rationalizations.
 - Keep candidate tests isolated with `pi --no-skills --no-extensions --no-prompt-templates --skill <explicit-path>` and a fresh temporary `PI_CODING_AGENT_DIR`/session/fixture per repetition; never rely on discovery order.
-- Evaluation runs cost real model time. The full sequence is on the order of 150 invocations at high thinking levels; budget it before starting Task 3, which is the first task that spends any. Tasks 1 and 2 are free and must both be committed before that budget is touched. The only permitted reduction is dropping the two lowest-risk rationalization families from five repetitions to three when their first three runs agree, recorded in `refactor-report.md`. Never drop a scenario, condition, or role.
+- Evaluation runs consume real model time; the full sequence is on the order of 150 invocations. Select models for capability, not for price: pick the strongest available model appropriate to each role and record the exact model and thinking level used in every run record. Never reduce repetitions, scenarios, conditions, or roles to save cost. The only permitted reduction is dropping the two lowest-risk rationalization families from five repetitions to three when their first three runs agree, recorded in `refactor-report.md`, and only because three agreeing runs already establish the finding — never as an economy measure.
 - Temporary agent profiles must not contain copied credentials. Symlink `auth.json` into the profile rather than copying it, keep directory mode 0700 and file mode 0600, and make cleanup robust to abnormal termination rather than relying only on a normal-exit trap.
 - Every executable task heading is exactly `## Task N: <name>` and contains exactly one `**Implementer tier:** <Tier>` line.
 - Canonical tier order is Economy, Fast, Standard, Advanced, Capable, Frontier.
@@ -97,7 +97,7 @@
 
 **Interfaces:** Consumes repository validation tooling. Produces staged-validation coverage for the optional-skills tree and the frozen version-1 capability/spawn-result contract every later task validates against.
 
-This task spends no model budget. It must be complete and committed before Task 2, because the contract sealed in Step 6 is the reference the evaluator and all later validation compare against.
+This task runs entirely offline. It must be complete and committed before Task 2, because the contract sealed in Step 6 is the reference the evaluator and all later validation compare against.
 
 - [ ] **Step 1: Record the original skill tree seal before creating candidate files**
 
@@ -293,7 +293,7 @@ git commit -m "test(skills): add optional-skill validation and seal SDD contract
 
 **Interfaces:** Consumes the version-1 contract sealed in Task 1 and isolated Pi CLI invocations. Produces a repeatable three-condition evaluator plus scripted fake tools, all exercised offline.
 
-This task spends no model budget: every step runs against fakes with no network. Task 3 is the first task that pays for live runs, so any evaluator or scenario defect must be caught here where retries are free.
+This task runs entirely offline against fakes with no network. Task 3 is the first task that invokes a live model, so any evaluator or scenario defect must be caught here where retries are instant and repeatable.
 
 - [ ] **Step 1: Write evaluator RED tests**
 
@@ -506,7 +506,7 @@ git add optional-skills/subagent-driven-development/evals
 git commit -m "test(skills): add deterministic SDD pressure evaluator"
 ```
 
-Do not proceed until every offline evaluator test passes. Task 3 spends real model budget and cannot be cheaply repeated.
+Do not proceed until every offline evaluator test passes. Task 3 produces the baseline evidence every later comparison depends on, and a harness defect discovered afterward invalidates the whole baseline rather than one run.
 
 ## Task 3: Capture RED baselines with live model runs
 
@@ -518,7 +518,7 @@ Do not proceed until every offline evaluator test passes. Task 3 spends real mod
 
 **Interfaces:** Consumes the committed evaluator from Task 2. Produces observed no-guidance and original-skill baseline evidence recorded before any candidate `SKILL.md` exists.
 
-This is the first task that spends model budget, and it is isolated so a failure here costs only its own runs. It creates no source files: if a scenario or evaluator defect surfaces, stop and repair it in Task 2 rather than patching around it here.
+This is the first task that invokes a live model, and it is isolated so a defect here forces re-running only its own controls. It creates no source files: if a scenario or evaluator defect surfaces, stop and repair it in Task 2 rather than patching around it here.
 
 - [ ] **Step 1: Run RED controls before candidate SKILL.md exists**
 
