@@ -1,4 +1,4 @@
-import { LitElement, css, html, nothing, type TemplateResult } from "lit";
+import { LitElement, css, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY } from "../appShell/appShellController";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
@@ -53,6 +53,11 @@ export class ActivityRail extends LitElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this.desktopMedia?.removeEventListener("change", this.onDesktopMediaChange);
+  }
+
+  protected override updated(changed: PropertyValues<this>): void {
+    if (!changed.has("compactOpen") || !this.compactOpen || this.isDesktopRailLayout()) return;
+    this.renderRoot.querySelector<HTMLButtonElement>(".compact-rail-close")?.focus();
   }
 
   private onDesktopMediaChange = (event: MediaQueryListEvent): void => {
