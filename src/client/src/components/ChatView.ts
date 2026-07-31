@@ -77,16 +77,30 @@ interface PendingNotificationFocus {
 
 export interface QueuedMessageSection {
   source: "client" | "server";
+  kind?: "steer" | "followUp";
   heading: string;
   detail: string;
   messages: QueuedSessionMessage[];
 }
 
 export function chatQueuedMessageSections(clientQueued: QueuedSessionMessage[], serverQueued: QueuedSessionMessage[]): QueuedMessageSection[] {
-  return [
+  const serverSections = (["steer", "followUp"] as const).flatMap((kind): QueuedMessageSection[] => {
+    const messages = serverQueued.filter((message) => message.kind === kind);
+    if (messages.length === 0) return [];
+    return [{
+      source: "server",
+      kind,
+      heading: kind === "steer" ? "Steered" : "Follow-up",
+      detail: kind === "steer" ? "Sent together at the next turn" : "Sent together after the agent finishes",
+      messages,
+    }];
+  });
+
+  const sections: (QueuedMessageSection | undefined)[] = [
     clientQueued.length === 0 ? undefined : { source: "client", heading: "Queued until session starts", detail: "Will send once the backend session is ready", messages: clientQueued },
-    serverQueued.length === 0 ? undefined : { source: "server", heading: "Queued messages", detail: `${String(serverQueued.length)} pending`, messages: serverQueued },
-  ].filter((section): section is QueuedMessageSection => section !== undefined);
+    ...serverSections,
+  ];
+  return sections.filter((section): section is QueuedMessageSection => section !== undefined);
 }
 
 export type ChatImagePart = Extract<ChatPart, { type: "image" }>;
@@ -131,9 +145,30 @@ export function chatMessageGroupLabel(defaultOpen: boolean): string {
   return defaultOpen ? "live events" : "events";
 }
 
-/** Whether a queued-message section shows the server clear-queue action. */
-export function chatQueuedSectionShowsClearAction(section: QueuedMessageSection, canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
-  return section.source === "server" && canClearServerQueue && hasClearHandler;
+/** Whether the complete queue presentation contains both live Pi queue kinds. */
+export function chatQueuedSectionsHaveBothServerKinds(sections: QueuedMessageSection[]): boolean {
+  return sections.some((section) => section.source === "server" && section.kind === "steer" && section.messages.length > 0)
+    && sections.some((section) => section.source === "server" && section.kind === "followUp" && section.messages.length > 0);
+}
+
+/** Whether the shared live-queue clear action is available. */
+export function chatQueuedSectionsShowClearAction(sections: QueuedMessageSection[], canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
+  return chatQueuedSectionsHaveBothServerKinds(sections) && canClearServerQueue && hasClearHandler;
+}
+
+/** Copy heading for a live queue section, distinct from its visual group heading. */
+function chatQueuedSectionCopyHeading(section: QueuedMessageSection): string {
+  if (section.kind === "steer") return "Steered queue";
+  if (section.kind === "followUp") return "Follow-up queue";
+  return section.heading;
+}
+
+/** Aggregate-copy text for the non-empty live Pi queue sections. */
+export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): string {
+  return sections
+    .filter((section) => section.source === "server" && section.messages.length > 0)
+    .map((section) => `${chatQueuedSectionCopyHeading(section)}\n${section.messages.map((message) => message.text).join("\n\n")}`)
+    .join("\n\n");
 }
 
 /** A rendered session-warning row derived from live status warnings. */
@@ -358,6 +393,9 @@ export class ChatView extends LitElement {
   };
   private readonly handleClearServerQueue = (): void => {
     this.onClearServerQueue?.();
+  };
+  private readonly handleCopyAllQueuedMessages = (): void => {
+    void this.copyAllQueuedMessages();
   };
   private readonly handleToggleWarnings = (): void => {
     this.onToggleWarnings?.();
@@ -911,12 +949,32 @@ export class ChatView extends LitElement {
   }
 
   private renderQueuedMessages() {
-    const serverQueued = this.status?.queuedMessages ?? [];
-    return html`${chatQueuedMessageSections(this.clientQueuedMessages, serverQueued).map((section) => this.renderQueuedMessageList(section))}`;
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const clientSection = sections.find((section) => section.source === "client");
+    const serverSections = sections.filter((section) => section.source === "server");
+    const showCopyAll = chatQueuedSectionsHaveBothServerKinds(serverSections);
+    const showClearAll = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
+    return html`
+      ${clientSection === undefined ? null : this.renderQueuedMessageList(clientSection)}
+      ${showCopyAll ? html`
+        <div class="queued-actions">
+          <button type="button" class="queued-action-button" title="Copy all queued messages" @click=${this.handleCopyAllQueuedMessages}>Copy all queues</button>
+          ${showClearAll ? html`
+            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear all queues</button>
+          ` : null}
+        </div>
+      ` : null}
+      ${serverSections.map((section) => this.renderQueuedMessageList(section))}
+    `;
+  }
+
+  private async copyAllQueuedMessages(): Promise<void> {
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const serverSections = sections.filter((section) => section.source === "server");
+    await writeClipboardText(chatQueuedMessagesCopyText(serverSections));
   }
 
   private renderQueuedMessageList(section: QueuedMessageSection) {
-    const canClear = chatQueuedSectionShowsClearAction(section, this.canClearServerQueue, this.onClearServerQueue !== undefined);
     return html`
       <aside class="queued-messages" aria-live="polite">
         <div class="queued-header">
@@ -924,13 +982,24 @@ export class ChatView extends LitElement {
             <strong>${section.heading}</strong>
             <small>${section.detail}</small>
           </div>
-          ${canClear ? html`
-            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear queue</button>
-          ` : null}
         </div>
         ${section.messages.map((message, index) => html`
           <div class="queued-message">
-            <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+            <div class="queued-message-header">
+              <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+              <button
+                type="button"
+                class="queued-copy-button"
+                title="Copy message"
+                aria-label=${`Copy ${message.kind === "steer" ? "steered" : "follow-up"} message ${String(index + 1)}`}
+                @click=${(event: MouseEvent) => { event.stopPropagation(); void writeClipboardText(message.text); }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+            </div>
             <formatted-text .text=${message.text}></formatted-text>
           </div>
         `)}

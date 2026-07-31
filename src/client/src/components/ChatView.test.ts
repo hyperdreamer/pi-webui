@@ -1,5 +1,6 @@
 import type { TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import { writeClipboardText } from "../clipboard";
 import type { QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
 import {
   notificationTargetKey,
@@ -20,11 +21,16 @@ import {
   chatMessageMetadataLabel,
   chatMessageEditText,
   chatQueuedMessageSections,
-  chatQueuedSectionShowsClearAction,
+  chatQueuedMessagesCopyText,
+  chatQueuedSectionsHaveBothServerKinds,
+  chatQueuedSectionsShowClearAction,
   chatSessionWarningRows,
   chatUserMessageActionAvailability,
 } from "./ChatView";
-import { findOptionalTemplateEventHandlerAfterMarker, templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerAfterMarker, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+
+// eslint-disable-next-line @typescript-eslint/require-await -- Keep the mocked adapter promise-shaped for handler tests.
+vi.mock("../clipboard", () => ({ writeClipboardText: vi.fn(async () => true) }));
 
 describe("chatUserMessageActionAvailability", () => {
   const message: ChatLine = {
@@ -103,10 +109,14 @@ describe("ChatView per-message action wiring", () => {
 });
 
 describe("chatQueuedMessageSections", () => {
-  it("labels client-side pending-start sends separately from server queued messages", () => {
+  it("keeps client startup messages separate and partitions live messages by kind", () => {
     const sections = chatQueuedMessageSections(
       [{ kind: "followUp", text: "queued before start" }],
-      [{ kind: "steer", text: "server queued" }],
+      [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+        { kind: "steer", text: "keep the tests" },
+      ],
     );
 
     expect(sections).toEqual([
@@ -118,11 +128,275 @@ describe("chatQueuedMessageSections", () => {
       },
       {
         source: "server",
-        heading: "Queued messages",
-        detail: "1 pending",
-        messages: [{ kind: "steer", text: "server queued" }],
+        kind: "steer",
+        heading: "Steered",
+        detail: "Sent together at the next turn",
+        messages: [
+          { kind: "steer", text: "adjust" },
+          { kind: "steer", text: "keep the tests" },
+        ],
+      },
+      {
+        source: "server",
+        kind: "followUp",
+        heading: "Follow-up",
+        detail: "Sent together after the agent finishes",
+        messages: [{ kind: "followUp", text: "then inspect" }],
       },
     ]);
+  });
+
+  it("omits empty live queue kinds", () => {
+    expect(chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }])).toEqual([
+      {
+        source: "server",
+        kind: "steer",
+        heading: "Steered",
+        detail: "Sent together at the next turn",
+        messages: [{ kind: "steer", text: "adjust" }],
+      },
+    ]);
+  });
+});
+
+describe("chatQueuedSectionsHaveBothServerKinds", () => {
+  it("requires both live queue kinds to be present", () => {
+    expect(chatQueuedSectionsHaveBothServerKinds([])).toBe(false);
+    expect(chatQueuedSectionsHaveBothServerKinds(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+    )).toBe(true);
+    expect(chatQueuedSectionsHaveBothServerKinds(
+      chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }]),
+    )).toBe(false);
+  });
+});
+
+describe("chatQueuedSectionsShowClearAction", () => {
+  it("requires both live kinds, clear capability, and a clear handler", () => {
+    expect(chatQueuedSectionsShowClearAction([], true, true)).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      true,
+      true,
+    )).toBe(true);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }]),
+      true,
+      true,
+    )).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      false,
+      true,
+    )).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      true,
+      false,
+    )).toBe(false);
+  });
+});
+
+describe("chatQueuedMessagesCopyText", () => {
+  it("formats live groups with headings and blank lines between messages", () => {
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "steer", text: "keep the tests" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+    )).toBe([
+      "Steered queue",
+      "adjust",
+      "",
+      "keep the tests",
+      "",
+      "Follow-up queue",
+      "then inspect",
+    ].join("\n"));
+  });
+
+  it("ignores client startup messages and returns empty text without live groups", () => {
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections(
+        [{ kind: "followUp", text: "queued before start" }],
+        [
+          { kind: "steer", text: "adjust" },
+          { kind: "followUp", text: "then inspect" },
+        ],
+      ),
+    )).toBe([
+      "Steered queue",
+      "adjust",
+      "",
+      "Follow-up queue",
+      "then inspect",
+    ].join("\n"));
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections([{ kind: "followUp", text: "queued before start" }], []),
+    )).toBe("");
+  });
+});
+
+describe("ChatView queued-message rendering and copy wiring", () => {
+  it("renders a single Steered section with its individual Copy control only", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Steered");
+    expect(rendered).toContain("Sent together at the next turn");
+    expect(rendered).toContain("Copy steered message 1");
+    expect(rendered).not.toContain("Copy all queues");
+    expect(rendered).not.toContain("Clear all queues");
+  });
+
+  it("renders both live queue details with Copy all before Clear all", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = vi.fn();
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Steered");
+    expect(rendered).toContain("Sent together at the next turn");
+    expect(rendered).toContain("Follow-up");
+    expect(rendered).toContain("Sent together after the agent finishes");
+    expect(rendered.indexOf("Copy all queues")).toBeLessThan(rendered.indexOf("Clear all queues"));
+  });
+
+  it("copies an individual row or all live queues and wires the shared clear action", async () => {
+    const view = new ChatView();
+    const onClearServerQueue = vi.fn();
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = onClearServerQueue;
+    const rendered = renderQueuedMessages(view);
+
+    const copySteered = templateClickHandlerForText(rendered, "Copy steered message 1");
+    vi.mocked(writeClipboardText).mockClear();
+    copySteered(new Event("click"));
+    await Promise.resolve();
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith("server queued");
+
+    const copyAll = templateClickHandlerForText(rendered, "Copy all queues");
+    vi.mocked(writeClipboardText).mockClear();
+    copyAll(new Event("click"));
+    await Promise.resolve();
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith([
+      "Steered queue",
+      "server queued",
+      "",
+      "Follow-up queue",
+      "then inspect",
+    ].join("\n"));
+
+    templateClickHandlerForText(rendered, "Clear all queues")(new Event("click"));
+    expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+
+  it("leaves queue state and Copy UI unchanged when an individual clipboard write fails", async () => {
+    const view = new ChatView();
+    const status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    const clientQueuedMessages = [{ kind: "followUp" as const, text: "queued before start" }];
+    view.status = status;
+    view.clientQueuedMessages = clientQueuedMessages;
+    const statusBefore = { ...status, queuedMessages: [...status.queuedMessages] };
+    const clientQueuedMessagesBefore = [...clientQueuedMessages];
+    const beforeText = templateText(renderQueuedMessages(view));
+    const clipboard = vi.mocked(writeClipboardText);
+    clipboard.mockClear();
+    clipboard.mockResolvedValue(false);
+
+    try {
+      const copySteered = templateClickHandlerForText(renderQueuedMessages(view), "Copy steered message 1");
+      expect(() => { copySteered(new Event("click")); }).not.toThrow();
+      await Promise.resolve();
+
+      expect(clipboard).toHaveBeenCalledExactlyOnceWith("server queued");
+      expect(view.status).toEqual(statusBefore);
+      expect(view.clientQueuedMessages).toEqual(clientQueuedMessagesBefore);
+      const afterText = templateText(renderQueuedMessages(view));
+      expect(afterText).toBe(beforeText);
+      expect(afterText).toContain("Copy steered message 1");
+      expect(afterText).not.toContain("Copied");
+      expect(Reflect.get(view, "copiedMessageKey")).toBeUndefined();
+    } finally {
+      clipboard.mockResolvedValue(true);
+    }
+  });
+
+  it("leaves queue state and Copy UI unchanged when aggregate clipboard write fails", async () => {
+    const view = new ChatView();
+    const status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    const clientQueuedMessages = [{ kind: "followUp" as const, text: "queued before start" }];
+    view.status = status;
+    view.clientQueuedMessages = clientQueuedMessages;
+    const statusBefore = { ...status, queuedMessages: [...status.queuedMessages] };
+    const clientQueuedMessagesBefore = [...clientQueuedMessages];
+    const beforeText = templateText(renderQueuedMessages(view));
+    const clipboard = vi.mocked(writeClipboardText);
+    clipboard.mockClear();
+    clipboard.mockResolvedValue(false);
+
+    try {
+      const copyAll = templateClickHandlerForText(renderQueuedMessages(view), "Copy all queues");
+      expect(() => { copyAll(new Event("click")); }).not.toThrow();
+      await Promise.resolve();
+
+      expect(clipboard).toHaveBeenCalledExactlyOnceWith([
+        "Steered queue",
+        "server queued",
+        "",
+        "Follow-up queue",
+        "then inspect",
+      ].join("\n"));
+      expect(view.status).toEqual(statusBefore);
+      expect(view.clientQueuedMessages).toEqual(clientQueuedMessagesBefore);
+      const afterText = templateText(renderQueuedMessages(view));
+      expect(afterText).toBe(beforeText);
+      expect(afterText).toContain("Copy all queues");
+      expect(afterText).not.toContain("Copied");
+      expect(Reflect.get(view, "copiedMessageKey")).toBeUndefined();
+    } finally {
+      clipboard.mockResolvedValue(true);
+    }
+  });
+
+  it("keeps client startup messages in their section with an individual Copy control", () => {
+    const view = new ChatView();
+    view.clientQueuedMessages = [{ kind: "followUp", text: "queued before start" }];
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Queued until session starts");
+    expect(rendered).toContain("Will send once the backend session is ready");
+    expect(rendered).toContain("Copy follow-up message 1");
+    expect(rendered).not.toContain("Copy all queues");
+    expect(rendered).not.toContain("Clear all queues");
   });
 });
 
@@ -228,45 +502,35 @@ describe("activityDockWarningControlContent", () => {
   });
 });
 
-describe("chatQueuedSectionShowsClearAction", () => {
-  // The show/hide decision for the server clear-queue button is content/layout,
-  // so it lives in a pure exported seam instead of scraping rendered markup.
-  const serverSection = requireSection(chatQueuedMessageSections([], [{ kind: "steer", text: "server queued" }])[0]);
-  const clientSection = requireSection(chatQueuedMessageSections([{ kind: "followUp", text: "waiting" }], [])[0]);
-
-  it("shows the action for the server queue when clearing is supported and wired", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, true, true)).toBe(true);
-  });
-
-  it("hides the action when the runtime does not support clearing", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, false, true)).toBe(false);
-  });
-
-  it("hides the action when no clear handler is wired", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, true, false)).toBe(false);
-  });
-
-  it("never shows the server action for the separate client pending-start queue", () => {
-    expect(chatQueuedSectionShowsClearAction(clientSection, true, true)).toBe(false);
-  });
-});
 
 describe("ChatView queued-message clear wiring", () => {
-  // Escape hatch: this case verifies the Clear queue button's Lit event wiring,
-  // whose only observable effect is invoking the injected callback. Vitest runs
-  // with no DOM environment here, so a shadow-DOM click harness would add
-  // disproportionate setup; handler extraction anchored to the user-facing
-  // "Clear queue" button text is proportionate.
-  it("invokes onClearServerQueue when the server-queue action is activated", () => {
+  // Escape hatch: this case verifies the Clear all queues button's Lit event
+  // wiring, whose only observable effect is invoking the injected callback.
+  // Vitest runs with no DOM environment here, so a shadow-DOM click harness
+  // would add disproportionate setup; handler extraction anchored to the
+  // user-facing "Clear all queues" button text is proportionate.
+  it("invokes onClearServerQueue when both live queue kinds are present", () => {
     const view = new ChatView();
     const onClearServerQueue = vi.fn();
-    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
     view.canClearServerQueue = true;
     view.onClearServerQueue = onClearServerQueue;
 
-    templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear queue")(new Event("click"));
+    templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear all queues")(new Event("click"));
 
     expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+
+  it("does not expose the clear action for a single live queue kind", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = vi.fn();
+
+    expect(findOptionalTemplateEventHandlerAfterMarker(renderQueuedMessages(view), "Clear all queues")).toBeUndefined();
   });
 });
 
@@ -637,11 +901,6 @@ function dispatchDetailsToggle(handler: TemplateEventHandler, open: boolean): vo
     if (hadDetailsElement) Reflect.set(globalThis, "HTMLDetailsElement", previousDetailsElement);
     else Reflect.deleteProperty(globalThis, "HTMLDetailsElement");
   }
-}
-
-function requireSection(section: ReturnType<typeof chatQueuedMessageSections>[number] | undefined): ReturnType<typeof chatQueuedMessageSections>[number] {
-  if (section === undefined) throw new Error("expected a queued-message section");
-  return section;
 }
 
 function withStatus(view: ChatView, status: SessionStatus): ChatView {
