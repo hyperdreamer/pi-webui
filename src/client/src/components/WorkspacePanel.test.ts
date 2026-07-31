@@ -15,7 +15,7 @@ const workspace: Workspace = {
   isGitWorktree: false,
 };
 
-function panel(id: "core:workspace.files" | "core:workspace.info", title: string, content: string): QualifiedWorkspacePanelContribution {
+function panel(id: "core:workspace.files" | "core:workspace.info" | "core:workspace.terminal", title: string, content: string): QualifiedWorkspacePanelContribution {
   return {
     id,
     pluginId: "core",
@@ -42,6 +42,24 @@ describe("WorkspacePanel", () => {
     expect(text).toContain("hidden-info-content");
     expect(text).toContain("Files");
     expect(text).not.toContain("System details");
+  });
+
+  it("renders a selected hidden Terminal panel without showing its tab", () => {
+    const element = new WorkspacePanel();
+    element.workspace = workspace;
+    if (!Reflect.set(element, "panelContext", {})) throw new Error("Could not supply workspace panel context");
+    element.panels = [
+      panel("core:workspace.files", "Files", "files-content"),
+      panel("core:workspace.terminal", "Terminal", "hidden-terminal-content"),
+    ];
+    element.tool = "core:workspace.terminal";
+    Reflect.set(element, "hiddenTools", ["core:workspace.terminal"]);
+
+    const text = templateText(element.render());
+
+    expect(text).toContain("hidden-terminal-content");
+    expect(text).toContain("Files");
+    expect(text).not.toContain("Terminal");
   });
 
   it("renders a tab-badge and accessible numeric label when badge returns a positive count", () => {

@@ -1705,10 +1705,7 @@ export class PiWebUiApp extends LitElement {
     const context = this.createWorkspacePanelContext(workspace);
     const panels = this.plugins.getWorkspacePanels();
     this.synchronizeMemoryPolling(panels, context);
-    return panels.filter((panel) => {
-      if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
-      return panel.visible?.(context) ?? true;
-    });
+    return panels.filter((panel) => panel.visible?.(context) ?? true);
   }
 
   private synchronizeMemoryPollingForSelectedWorkspace(): void {
@@ -1728,11 +1725,15 @@ export class PiWebUiApp extends LitElement {
   }
 
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
-    return this.workspacePanels().filter((panel) => !this.infoTabHidden || panel.id !== "core:workspace.info");
+    const hiddenTools = this.hiddenWorkspacePanelTools();
+    return this.workspacePanels().filter((panel) => !hiddenTools.includes(panel.id));
   }
 
   private hiddenWorkspacePanelTools(): QualifiedContributionId[] {
-    return this.infoTabHidden ? ["core:workspace.info"] : [];
+    const hiddenTools: QualifiedContributionId[] = [];
+    if (this.terminalTabHidden) hiddenTools.push("core:workspace.terminal");
+    if (this.infoTabHidden) hiddenTools.push("core:workspace.info");
+    return hiddenTools;
   }
 
   private workspacePanelEmptyState(): WorkspacePanelEmptyState {
