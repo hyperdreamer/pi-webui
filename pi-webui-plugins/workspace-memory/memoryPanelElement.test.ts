@@ -266,7 +266,7 @@ describe("memory panel element", () => {
 });
 
 function memoryGroups(html: string): string[] {
-  return html.split('<details class="memory-group">').slice(1);
+  return html.split(/<details class="memory-group"(?: data-memory-group="(?:global|project)")?(?: open)?>/).slice(1);
 }
 
 function groupWithTitle(groups: string[], title: string): string {
@@ -300,9 +300,36 @@ class FakeButton {
   }
 }
 
+class FakeDetails {
+  open: boolean;
+  readonly dataset: { memoryGroup?: string };
+
+  constructor(open: boolean, memoryGroup: string | undefined) {
+    this.open = open;
+    this.dataset = memoryGroup === undefined ? {} : { memoryGroup };
+  }
+}
+
 class FakeShadowRoot {
-  innerHTML = "";
+  private html = "";
+  renderCount = 0;
   private readonly elements = new Map<string, FakeButton>();
+  private details: FakeDetails[] = [];
+
+  get innerHTML(): string {
+    return this.html;
+  }
+
+  set innerHTML(value: string) {
+    this.html = value;
+    this.renderCount += 1;
+    this.elements.clear();
+    this.details = [...value.matchAll(/<details class="memory-group"([^>]*)>/g)].map((match) => {
+      const attributes = match[1] ?? "";
+      const scope = /data-memory-group="([^"]+)"/.exec(attributes)?.[1];
+      return new FakeDetails(attributes.includes(" open"), scope);
+    });
+  }
 
   querySelector(selector: string): FakeButton | null {
     // Support attribute-only selectors like button[data-retry] by checking
@@ -321,6 +348,10 @@ class FakeShadowRoot {
     const button = new FakeButton();
     this.elements.set(selector, button);
     return button;
+  }
+
+  querySelectorAll(selector: string): FakeDetails[] {
+    return selector === "details.memory-group" ? this.details : [];
   }
 }
 
@@ -347,7 +378,12 @@ class FakeCustomElementRegistry {
 interface MemoryPanelElementInstance extends HTMLElement {
   memoryState: { kind: string; globalEntries?: { id: string; content: string }[]; projectEntries?: { id: string; content: string }[]; refreshError?: string; message?: string } | undefined;
   onRetry: (() => void) | undefined;
-  readonly root: { innerHTML: string; querySelector(selector: string): { click(): void } | null };
+  readonly root: {
+    innerHTML: string;
+    renderCount: number;
+    querySelector(selector: string): { click(): void } | null;
+    querySelectorAll(selector: string): { open: boolean }[];
+  };
   disconnectedCallback(): void;
 }
 
@@ -442,6 +478,43 @@ describe("memory panel lifecycle", () => {
     expect(html).toContain("Project-specific memory");
     expect(html).toContain("global");
     expect(html).toContain("project");
+  });
+
+  it("does not replace memory DOM when assigned its current state again", () => {
+    const state = {
+      kind: "data",
+      globalEntries: [{ id: "g", content: "global" }],
+      projectEntries: [{ id: "p", content: "project" }],
+    };
+
+    panel.memoryState = state;
+    const renderCount = panel.root.renderCount;
+    panel.memoryState = state;
+
+    expect(panel.root.renderCount).toBe(renderCount);
+  });
+
+  it("preserves expanded memory groups when a new snapshot is rendered", () => {
+    const initial = {
+      kind: "data",
+      globalEntries: [{ id: "g", content: "global" }],
+      projectEntries: [{ id: "p", content: "project" }],
+    };
+
+    panel.memoryState = initial;
+    const groups = panel.root.querySelectorAll("details.memory-group");
+    const globalGroup = groups[0];
+    if (globalGroup === undefined) throw new Error("Expected the global memory group to be present");
+    globalGroup.open = true;
+
+    panel.memoryState = {
+      ...initial,
+      globalEntries: [{ id: "g", content: "updated global" }],
+    };
+
+    const nextGroups = panel.root.querySelectorAll("details.memory-group");
+    expect(nextGroups[0]?.open).toBe(true);
+    expect(nextGroups[1]?.open).toBe(false);
   });
 
   it("calls the supplied retry callback once when Retry button is clicked", () => {

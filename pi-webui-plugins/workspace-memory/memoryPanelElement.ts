@@ -13,6 +13,9 @@ const CATEGORY_CLASS: Record<string, string> = {
 };
 
 const TRUNCATE_LENGTH = 120;
+const MEMORY_GROUP_SELECTOR = "details.memory-group";
+
+type MemoryGroupScope = "global" | "project";
 
 export function categoryBadgeLabel(category: string | undefined): string {
   return category ?? "uncategorized";
@@ -116,6 +119,7 @@ class PiWebUiMemoryPanel extends _BaseElement {
 
   /** Accept the core-owned memory state and render synchronously. */
   set memoryState(value: MemoryWorkspaceState) {
+    if (this.state === value) return;
     this.state = value;
     this.render();
   }
@@ -134,8 +138,18 @@ class PiWebUiMemoryPanel extends _BaseElement {
   }
 
   private render(): void {
-    this.root.innerHTML = `${panelStyles()}${renderPanelState(this.state)}`;
+    const expandedGroups = this.expandedMemoryGroups();
+    this.root.innerHTML = `${panelStyles()}${renderPanelState(this.state, expandedGroups)}`;
     this.attachEventListeners();
+  }
+
+  private expandedMemoryGroups(): ReadonlySet<MemoryGroupScope> {
+    const expanded = new Set<MemoryGroupScope>();
+    for (const group of this.root.querySelectorAll<HTMLDetailsElement>(MEMORY_GROUP_SELECTOR)) {
+      const scope = group.dataset["memoryGroup"];
+      if (group.open && isMemoryGroupScope(scope)) expanded.add(scope);
+    }
+    return expanded;
   }
 
   private attachEventListeners(): void {
@@ -147,7 +161,7 @@ class PiWebUiMemoryPanel extends _BaseElement {
   }
 }
 
-export function renderPanelState(state: MemoryWorkspaceState): string {
+export function renderPanelState(state: MemoryWorkspaceState, expandedGroups: ReadonlySet<MemoryGroupScope> = new Set()): string {
   switch (state.kind) {
     case "unavailable":
       return `<section class="empty">Select a workspace.</section>`;
@@ -162,14 +176,18 @@ export function renderPanelState(state: MemoryWorkspaceState): string {
       return `<section class="viewer">
         ${state.refreshError === undefined ? "" : `<div class="status warning">${escapeHtml(state.refreshError)}</div>`}
         ${renderMemoryGroupHtml({
+          scope: "global",
           title: "Global memory",
           entries: state.globalEntries,
           emptyMessage: "No global memories found.",
+          open: expandedGroups.has("global"),
         })}
         ${renderMemoryGroupHtml({
+          scope: "project",
           title: "Project-specific memory",
           entries: state.projectEntries,
           emptyMessage: "No project-specific memories found.",
+          open: expandedGroups.has("project"),
           ...(state.projectUnavailableMessage === undefined
             ? {}
             : { unavailableMessage: state.projectUnavailableMessage }),
@@ -180,9 +198,11 @@ export function renderPanelState(state: MemoryWorkspaceState): string {
 }
 
 interface MemoryGroupRenderOptions {
+  readonly scope: MemoryGroupScope;
   readonly title: string;
   readonly entries: MemoryEntry[];
   readonly emptyMessage: string;
+  readonly open: boolean;
   readonly unavailableMessage?: string;
 }
 
@@ -197,7 +217,7 @@ function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
       : `${hasPartialWarning ? `<p class="memory-group-message warning">${escapeHtml(options.unavailableMessage)}</p>` : ""}${options.entries.map((entry) => renderEntryHtml(entry)).join("")}`;
 
   return `
-    <details class="memory-group">
+    <details class="memory-group" data-memory-group="${options.scope}"${options.open ? " open" : ""}>
       <summary>
         <svg class="memory-group-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"></path></svg>
         <span class="memory-group-title">${escapeHtml(options.title)}</span>
@@ -206,6 +226,10 @@ function renderMemoryGroupHtml(options: MemoryGroupRenderOptions): string {
       <div class="memory-group-body">${body}</div>
     </details>
   `;
+}
+
+function isMemoryGroupScope(value: string | undefined): value is MemoryGroupScope {
+  return value === "global" || value === "project";
 }
 
 function panelStyles(): string {
