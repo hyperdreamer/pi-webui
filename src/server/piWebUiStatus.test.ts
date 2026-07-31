@@ -149,8 +149,8 @@ describe("PI WEBUI status", () => {
     const daemon = daemonWithComponent({
       component: "sessiond",
       label: "Session daemon",
-      runtimeVersion: "1.202607.0",
-      installedVersion: "1.202607.0",
+      runtimeVersion: "1.10.4",
+      installedVersion: "1.10.4",
       stale: false,
       available: true,
       installation: { kind: "docker", dockerMode: "runtime" },
