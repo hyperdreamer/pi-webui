@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.5
+
+### Patch Changes
+
+- 9bb74e7: Reduce the passive npm release-check cache window to 15 minutes so active PI WEBUI clients discover available updates sooner.
+
 ## 1.10.4
 
 ### Patch Changes
