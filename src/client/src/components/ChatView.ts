@@ -156,22 +156,11 @@ export function chatQueuedSectionsShowClearAction(sections: QueuedMessageSection
   return sections.some((section) => section.source === "server" && section.messages.length > 0) && canClearServerQueue && hasClearHandler;
 }
 
-/** Copy heading for a live queue section, distinct from its visual group heading. */
-function chatQueuedSectionCopyHeading(section: QueuedMessageSection): string {
-  if (section.kind === "steer") return "Steered queue";
-  if (section.kind === "followUp") return "Follow-up queue";
-  return section.heading;
-}
-
 /** Aggregate-copy text for the non-empty live Pi queue sections. */
 export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): string {
-  const serverSections = sections.filter((section) => section.source === "server" && section.messages.length > 0);
-  const includeHeadings = serverSections.length > 1;
-  return serverSections
-    .map((section) => {
-      const body = section.messages.map((message) => message.text).join("\n\n");
-      return includeHeadings ? `${chatQueuedSectionCopyHeading(section)}\n${body}` : body;
-    })
+  return sections
+    .filter((section) => section.source === "server" && section.messages.length > 0)
+    .flatMap((section) => section.messages.map((message) => message.text))
     .join("\n\n");
 }
 

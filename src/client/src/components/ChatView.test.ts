@@ -210,7 +210,7 @@ describe("chatQueuedSectionsShowClearAction", () => {
 });
 
 describe("chatQueuedMessagesCopyText", () => {
-  it("formats live groups with headings and blank lines between messages", () => {
+  it("formats live groups with blank lines between messages and without headings", () => {
     expect(chatQueuedMessagesCopyText(
       chatQueuedMessageSections([], [
         { kind: "steer", text: "adjust" },
@@ -218,23 +218,12 @@ describe("chatQueuedMessagesCopyText", () => {
         { kind: "followUp", text: "then inspect" },
       ]),
     )).toBe([
-      "Steered queue",
       "adjust",
       "",
       "keep the tests",
       "",
-      "Follow-up queue",
       "then inspect",
     ].join("\n"));
-  });
-
-  it("omits section headings when only a single queue section is present", () => {
-    expect(chatQueuedMessagesCopyText(
-      chatQueuedMessageSections([], [
-        { kind: "followUp", text: "hello" },
-        { kind: "followUp", text: "hi!" },
-      ]),
-    )).toBe("hello\n\nhi!");
   });
 
   it("ignores client startup messages and returns empty text without live groups", () => {
@@ -247,10 +236,8 @@ describe("chatQueuedMessagesCopyText", () => {
         ],
       ),
     )).toBe([
-      "Steered queue",
       "adjust",
       "",
-      "Follow-up queue",
       "then inspect",
     ].join("\n"));
     expect(chatQueuedMessagesCopyText(
@@ -315,10 +302,8 @@ describe("ChatView queued-message rendering and copy wiring", () => {
     copyAll(new Event("click"));
     await Promise.resolve();
     expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith([
-      "Steered queue",
       "server queued",
       "",
-      "Follow-up queue",
       "then inspect",
     ].join("\n"));
 
@@ -379,10 +364,8 @@ describe("ChatView queued-message rendering and copy wiring", () => {
       await Promise.resolve();
 
       expect(clipboard).toHaveBeenCalledExactlyOnceWith([
-        "Steered queue",
         "server queued",
         "",
-        "Follow-up queue",
         "then inspect",
       ].join("\n"));
       expect(view.status).toEqual(statusBefore);
