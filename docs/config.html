@@ -100,6 +100,7 @@
             <a href="#manual-uploads">Manual uploads</a>
             <a href="#agent-runtime">Agent profile and companion CLI</a>
             <a href="#models-and-skills">Models and skills</a>
+            <a href="#model-tiers">Model tiers</a>
             <a href="#session-tools">Session tools</a>
             <a href="#completion-tools">Completion tools</a>
           </aside>
@@ -115,7 +116,7 @@
               <p>
                 Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected
                 machine for config that affects work running there: the Pi-compatible agent profile and companion CLI,
-                session daemon tools, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
+                session daemon tools, model tier routing ladder, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
                 keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers
                 that do not advertise selected-machine settings support report those settings as unavailable instead of
                 silently falling back to the gateway.
@@ -173,6 +174,7 @@
                 <li><code>host</code> / <code>port</code>: restart the gateway web/API service or process.</li>
                 <li><code>maxUploadBytes</code>: restart both the web/API process and the session daemon on that machine.</li>
                 <li><code>agent.command</code> / <code>agent.dir</code> / <code>spawnSessions</code> / <code>subsessions</code>: restart the session daemon on that machine.</li>
+                <li><code>modelTiers</code>: saved settings apply immediately in <strong>Settings → Model tiers</strong>; validates all six ladder rows atomically.</li>
                 <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
                 <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
                 <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
@@ -185,10 +187,11 @@
               <h2>Global config example</h2>
               <p>
                 <code>pi-webui install</code> creates the initial file. You can also save PI WEBUI config settings from
-                <strong>Settings → General</strong>, <strong>Settings → PI WEBUI plugins</strong>,
-                <strong>Settings → Keyboard</strong>, and <strong>Settings → Session daemon</strong>. Machine-affecting
-                Settings fields target the selected machine; gateway host/port/allowed-hosts and keyboard shortcuts stay
-                local. Pi package operations live separately under <strong>Settings → Pi packages</strong>.
+                <strong>Settings → General</strong>, <strong>Settings → Model tiers</strong>,
+                <strong>Settings → PI WEBUI plugins</strong>, <strong>Settings → Keyboard</strong>, and
+                <strong>Settings → Session daemon</strong>. Machine-affecting Settings fields target the selected machine;
+                gateway host/port/allowed-hosts and keyboard shortcuts stay local. Pi package operations live separately under
+                <strong>Settings → Pi packages</strong>.
               </p>
               <div class="code-card">
                 <div class="copy-row">
@@ -208,6 +211,14 @@
   "agent": {
     "command": "pi",
     "dir": "~/agent-profiles/research"
+  },
+  "modelTiers": {
+    "economy": { "provider": "anthropic", "modelId": "claude-3-5-haiku-20241022", "thinkingLevel": "off" },
+    "fast": { "provider": "anthropic", "modelId": "claude-3-5-haiku-20241022", "thinkingLevel": "off" },
+    "standard": { "provider": "anthropic", "modelId": "claude-3-5-sonnet-20241022", "thinkingLevel": "off" },
+    "advanced": { "provider": "openai", "modelId": "gpt-4o", "thinkingLevel": "off" },
+    "capable": { "provider": "anthropic", "modelId": "claude-3-7-sonnet-20250219", "thinkingLevel": "high" },
+    "frontier": { "provider": "openai", "modelId": "o3-mini", "thinkingLevel": "high" }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -268,9 +279,9 @@
                 it, and whether project-local config overrides or merges with global config. Rows with JSON key
                 <code>—</code> are runtime-only environment variables, not config-file keys. <code>Global</code> means
                 machine-global. In Settings, selected-machine-safe global keys (<code>pathAccess</code>, <code>uploads</code>,
-                <code>maxUploadBytes</code>, <code>agent</code>, <code>spawnSessions</code>, <code>subsessions</code>, and <code>plugins</code>)
-                are edited for the selected machine; gateway host/port/allowed-hosts, keyboard shortcuts, and machine
-                registry/tokens stay local.
+                <code>maxUploadBytes</code>, <code>agent</code>, <code>spawnSessions</code>, <code>subsessions</code>,
+                <code>modelTiers</code>, and <code>plugins</code>) are edited for the selected machine; gateway host/port/allowed-hosts,
+                keyboard shortcuts, and machine registry/tokens stay local.
               </p>
               <div class="table-scroll" role="region" aria-label="PI WEBUI configuration matrix" tabindex="0">
                 <table class="config-matrix">
@@ -365,6 +376,14 @@
                       <td>Global/session daemon</td>
                       <td>Not supported locally; also requires <code>spawnSessions</code></td>
                       <td>Restart session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>Model tier routing ladder</td>
+                      <td><code>modelTiers</code></td>
+                      <td>—</td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Saved settings apply immediately on save; requires remote peer capability <code>settings.modelTiers</code></td>
                     </tr>
                     <tr>
                       <td>PI WEBUI plugin enablement/settings</td>
@@ -618,6 +637,27 @@
                 them. After changing, installing, or updating a skill, use <code>/reload</code> in each idle session that
                 should pick up the changed resource.
               </p>
+            </section>
+
+            <section id="model-tiers">
+              <h2>Model tiers</h2>
+              <p>
+                <code>modelTiers</code> is a machine-global setting stored in <code>$PI_WEBUI_CONFIG</code> or
+                <code>~/.config/pi-webui/config.json</code> that configures tier-based model routing for sessions.
+              </p>
+              <p>
+                In <strong>Settings → Model tiers</strong>, you edit one complete six-rung ladder:
+                <code>economy</code>, <code>fast</code>, <code>standard</code>, <code>advanced</code>,
+                <code>capable</code>, and <code>frontier</code>.
+              </p>
+              <ul>
+                <li><strong>Row configuration:</strong> Each row selects an authenticated model available on that machine (provider and model ID) and a supported thinking level.</li>
+                <li><strong>Duplicate tuples:</strong> Selecting the same model and thinking level tuple in multiple tiers is valid.</li>
+                <li><strong>Stale models:</strong> If a configured model or provider is no longer in the authenticated model catalog, it remains visible as a stale entry in the ladder editor and must be explicitly repaired before saving.</li>
+                <li><strong>Atomic validation:</strong> Save validates all six rows atomically against the authenticated model catalog. Invalid or incomplete ladder configurations are rejected without silent clamping or fallback.</li>
+                <li><strong>Missing or malformed ladder:</strong> If <code>modelTiers</code> is missing or malformed, Exact-mode model selection remains usable, but tiered model routing becomes unavailable.</li>
+                <li><strong>Machine federation:</strong> Model tier settings are saved for the selected machine. Editing remote machine settings requires a remote peer advertising the additive <code>settings.modelTiers</code> capability.</li>
+              </ul>
             </section>
 
             <section id="session-tools">
