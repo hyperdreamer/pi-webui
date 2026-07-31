@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.7
+
+### Patch Changes
+
+- 9dab752: Bind tracked child sessions to typed machine model tiers, including the configured thinking level, instead of relying on prompt text for model selection.
+- 7c271bc: Show Steered and Follow-up queues separately and add individual and aggregate copy controls for queued messages.
+
 ## 1.10.6
 
 ### Patch Changes
