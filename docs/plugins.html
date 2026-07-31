@@ -277,11 +277,13 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
                 detail-view error.
               </p>
               <p>
-                The Memory activity appears only for a selected workspace when a compatible memory provider is detected for
-                the active agent profile and project scope. A compatible provider with zero entries still shows the activity
-                but omits its count badge. A positive count badge totals global and project-specific memory entries. PI WEBUI
-                refreshes the badge immediately after a selected project or workspace change and then checks approximately every
-                30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
+                With a workspace selected, the Memory activity remains visible while memory loads, when data is available,
+                and if a memory request fails. It is hidden only after the provider confirms that the whole memory capability
+                is unavailable. A project-specific unavailable response is a separate scoped detail state; it does not mean
+                the whole provider is unavailable. The count badge appears only for data with one or more entries, so it is
+                omitted in all non-data states and for zero data; when shown, it totals global and project-specific memory
+                entries. PI WEBUI refreshes the badge immediately after a selected project or workspace change and then checks
+                approximately every 30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
               </p>
               <ul>
                 <li>Plugin id: <code>workspace-memory</code></li>
