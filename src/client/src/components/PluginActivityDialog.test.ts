@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { html } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
-import { templateEventHandlerAfterValue, templateText } from "../templateInspection.testSupport";
+import type { ReportActivityRailError } from "../plugins/activityRail";
 import type { ActivityRailContext, QualifiedActivityRailContribution } from "../plugins/types";
 import { PluginActivityDialog } from "./PluginActivityDialog";
 
@@ -16,44 +16,37 @@ const activity: QualifiedActivityRailContribution = {
   render: () => html`<p>Body</p>`,
 };
 
-const focusOrderActivity: QualifiedActivityRailContribution = {
-  ...activity,
-  render: () => html`
-    <form aria-label="Memory controls">
-      <button id="priority-three" type="button" tabindex="3">Review saved memories</button>
-      <button id="priority-one" type="button" tabindex="1">Save memory</button>
-      <button id="cancel-memory" type="button">Cancel</button>
-      <button id="reset-memory" type="button" tabindex="-1">Reset memory</button>
-    </form>
-  `,
-};
-
-const openShadowPluginBodyTag = "test-open-shadow-plugin-body";
+const openShadowPluginBodyTag = "native-dialog-open-shadow-plugin-body";
 
 if (customElements.get(openShadowPluginBodyTag) === undefined) {
   customElements.define(openShadowPluginBodyTag, class extends HTMLElement {
     constructor() {
       super();
       const root = this.attachShadow({ mode: "open" });
-      root.innerHTML = `
-        <button id="nested-retry" type="button">Retry</button>
-        <details open>
-          <summary id="nested-summary">Saved memory details</summary>
-          <p>Memory body</p>
-        </details>
-        <button id="nested-negative" type="button" tabindex="-1">Reset memory</button>
-        <button id="nested-disabled" type="button" disabled>Unavailable retry</button>
-        <div hidden><button id="nested-hidden" type="button">Hidden retry</button></div>
-        <div inert><button id="nested-inert" type="button">Inert retry</button></div>
-      `;
+      root.innerHTML = `<button id="nested-action" type="button">Retry</button>`;
     }
   });
 }
 
 const openShadowActivity: QualifiedActivityRailContribution = {
   ...activity,
-  render: () => html`<test-open-shadow-plugin-body></test-open-shadow-plugin-body>`,
+  render: () => html`<native-dialog-open-shadow-plugin-body></native-dialog-open-shadow-plugin-body>`,
 };
+
+const dialogPrototype = HTMLDialogElement.prototype;
+const originalShowModal = Object.getOwnPropertyDescriptor(dialogPrototype, "showModal");
+const originalClose = Object.getOwnPropertyDescriptor(dialogPrototype, "close");
+const showModal = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = true;
+});
+const close = vi.fn(function (this: HTMLDialogElement): void {
+  this.open = false;
+});
+
+function restoreDialogMethod(name: "showModal" | "close", descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor === undefined) Reflect.deleteProperty(dialogPrototype, name);
+  else Object.defineProperty(dialogPrototype, name, descriptor);
+}
 
 function createActivityRailContext(): ActivityRailContext {
   const noop = () => undefined;
@@ -92,236 +85,177 @@ function createActivityRailContext(): ActivityRailContext {
   };
 }
 
-function createDialog(contribution = activity): PluginActivityDialog {
+interface DialogFixtureOptions {
+  contribution?: QualifiedActivityRailContribution;
+  onClose?: () => void;
+  onReportError?: ReportActivityRailError;
+}
+
+async function attachDialog({
+  contribution = activity,
+  onClose,
+  onReportError,
+}: DialogFixtureOptions = {}): Promise<PluginActivityDialog> {
   const dialog = new PluginActivityDialog();
   dialog.activity = contribution;
   dialog.context = createActivityRailContext();
-  return dialog;
-}
-
-async function attachDialog(contribution = activity): Promise<PluginActivityDialog> {
-  const dialog = createDialog(contribution);
+  if (onClose !== undefined) dialog.onClose = onClose;
+  if (onReportError !== undefined) dialog.onReportError = onReportError;
   document.body.append(dialog);
   await dialog.updateComplete;
   return dialog;
 }
 
-function dialogButton(dialog: PluginActivityDialog, selector: string): HTMLButtonElement {
-  const button = dialog.shadowRoot?.querySelector<HTMLButtonElement>(selector);
-  if (button === null || button === undefined) throw new Error(`Expected dialog button ${selector}`);
+function nativeDialog(component: PluginActivityDialog): HTMLDialogElement {
+  const dialog = component.shadowRoot?.querySelector<HTMLDialogElement>("dialog.plugin-activity-backdrop");
+  if (dialog === null || dialog === undefined) throw new Error("Expected a native plugin activity dialog");
+  return dialog;
+}
+
+function closeButton(component: PluginActivityDialog): HTMLButtonElement {
+  const button = component.shadowRoot?.querySelector<HTMLButtonElement>(".plugin-activity-close");
+  if (button === null || button === undefined) throw new Error("Expected a plugin activity close control");
   return button;
 }
 
-function dialogRoot(dialog: PluginActivityDialog): ShadowRoot {
-  const root = dialog.shadowRoot;
-  if (root === null) throw new Error("Expected dialog shadow root");
-  return root;
+function frame(component: PluginActivityDialog): HTMLElement {
+  const element = component.shadowRoot?.querySelector<HTMLElement>(".plugin-activity-frame");
+  if (element === null || element === undefined) throw new Error("Expected a plugin activity frame");
+  return element;
 }
 
-function openShadowPluginBody(dialog: PluginActivityDialog): HTMLElement {
-  const body = dialogRoot(dialog).querySelector<HTMLElement>(openShadowPluginBodyTag);
-  if (body === null) throw new Error("Expected open-shadow plugin body");
-  return body;
-}
-
-function openShadowControl(dialog: PluginActivityDialog, selector: string): HTMLElement {
-  const control = openShadowPluginBody(dialog).shadowRoot?.querySelector<HTMLElement>(selector);
-  if (control === null || control === undefined) throw new Error(`Expected open-shadow control ${selector}`);
+function openShadowControl(component: PluginActivityDialog): HTMLButtonElement {
+  const pluginBody = component.shadowRoot?.querySelector<HTMLElement>(openShadowPluginBodyTag);
+  const control = pluginBody?.shadowRoot?.querySelector<HTMLButtonElement>("#nested-action");
+  if (control === null || control === undefined) throw new Error("Expected an open-shadow plugin control");
   return control;
 }
 
-function deeplyActiveElement(root: ShadowRoot): Element | null {
-  let activeElement = root.activeElement;
-  while (activeElement !== null) {
-    const nestedActiveElement = activeElement.shadowRoot?.activeElement;
-    if (nestedActiveElement === null || nestedActiveElement === undefined) return activeElement;
-    activeElement = nestedActiveElement;
-  }
-  return null;
-}
-
-function applyUncancelledBrowserTabDefault(event: KeyboardEvent, nextStop: HTMLElement): void {
-  // jsdom dispatches Tab key events but does not perform the browser's native
-  // focus movement. Apply that default only after the dialog leaves it uncancelled.
-  if (!event.defaultPrevented) nextStop.focus();
-}
-
-function dispatchTabKeydown(element: HTMLElement, shiftKey = false): KeyboardEvent {
-  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, composed: true, key: "Tab", shiftKey });
-  element.dispatchEvent(event);
-  return event;
-}
-
-function clickEvent(target: EventTarget, currentTarget: EventTarget): Event {
-  const event = new Event("click");
-  Object.defineProperties(event, {
-    target: { value: target },
-    currentTarget: { value: currentTarget },
-  });
-  return event;
-}
-
-function keydownEvent(key: string): Event {
-  const event = new Event("keydown", { cancelable: true });
-  Object.defineProperty(event, "key", { value: key });
-  return event;
-}
+beforeEach(() => {
+  showModal.mockClear();
+  close.mockClear();
+  Object.defineProperty(dialogPrototype, "showModal", { configurable: true, writable: true, value: showModal });
+  Object.defineProperty(dialogPrototype, "close", { configurable: true, writable: true, value: close });
+});
 
 afterEach(() => {
   document.body.replaceChildren();
+  restoreDialogMethod("showModal", originalShowModal);
+  restoreDialogMethod("close", originalClose);
   vi.restoreAllMocks();
 });
 
 describe("PluginActivityDialog", () => {
-  it("renders host-owned dialog chrome for an activity", () => {
-    const markup = templateText(createDialog().render());
+  it("opens a native modal dialog with host-owned chrome after first update", async () => {
+    const component = await attachDialog();
+    const dialog = nativeDialog(component);
 
-    expect(markup).toContain('role="dialog"');
-    expect(markup).toContain('aria-modal="true"');
-    expect(markup).toContain('aria-label="Memory"');
-    expect(markup).toContain('aria-label="Close Memory"');
-    expect(markup).toContain("Body");
+    expect(dialog.localName).toBe("dialog");
+    expect(dialog.getAttribute("class")).toBe("plugin-activity-backdrop");
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-label")).toBe("Memory");
+    expect(dialog.textContent).toContain("Body");
+    expect(showModal).toHaveBeenCalledOnce();
+    expect(dialog.open).toBe(true);
   });
 
-  it("delegates the close button, Escape key, and exact backdrop click", () => {
-    const onClose = vi.fn();
-    const dialog = createDialog();
-    dialog.onClose = onClose;
-    const rendered = dialog.render();
+  it("focuses the host close control after the native dialog opens", async () => {
+    const component = await attachDialog();
+    const button = closeButton(component);
 
-    // Node component tests inspect the stable accessible labels to exercise Lit event wiring.
-    templateEventHandlerAfterValue(rendered, "Close Memory", "@click")(new Event("click"));
+    expect(component.shadowRoot?.activeElement).toBe(button);
+  });
+
+  it("delegates close button, native cancel, and exact dialog-surface clicks to onClose", async () => {
+    const onClose = vi.fn();
+    const component = await attachDialog({ onClose });
+    const dialog = nativeDialog(component);
+
+    closeButton(component).click();
     expect(onClose).toHaveBeenCalledOnce();
 
     onClose.mockClear();
-    const escape = keydownEvent("Escape");
-    templateEventHandlerAfterValue(rendered, "Memory", "@keydown")(escape);
+    const cancel = new Event("cancel", { cancelable: true });
+    dialog.dispatchEvent(cancel);
+    expect(cancel.defaultPrevented).toBe(true);
     expect(onClose).toHaveBeenCalledOnce();
-    expect(escape.defaultPrevented).toBe(true);
 
     onClose.mockClear();
-    const backdrop = new EventTarget();
-    templateEventHandlerAfterValue(rendered, "Memory", "@click")(clickEvent(backdrop, backdrop));
+    dialog.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
     expect(onClose).toHaveBeenCalledOnce();
-  });
 
-  it("does not close when a click bubbles from inside the dialog", () => {
-    const onClose = vi.fn();
-    const dialog = createDialog();
-    dialog.onClose = onClose;
-    const backdrop = new EventTarget();
-
-    templateEventHandlerAfterValue(dialog.render(), "Memory", "@click")(clickEvent(new EventTarget(), backdrop));
-
+    onClose.mockClear();
+    frame(component).dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("contains a failed plugin body render without removing the close control", () => {
-    const error = new Error("broken body");
-    const renderFailure: QualifiedActivityRailContribution = {
-      ...activity,
-      render: () => {
-        throw error;
-      },
-    };
-    const onReportError = vi.fn();
-    const dialog = createDialog(renderFailure);
-    dialog.onReportError = onReportError;
+  it("leaves composed Tab events from an open-shadow plugin body to native dialog navigation", async () => {
+    const component = await attachDialog({ contribution: openShadowActivity });
+    const control = openShadowControl(component);
 
-    const markup = templateText(dialog.render());
+    control.focus();
+    const tab = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      key: "Tab",
+    });
+    control.dispatchEvent(tab);
 
-    expect(markup).toContain("This plugin activity could not be rendered.");
-    expect(markup).toContain('aria-label="Close Memory"');
-    expect(onReportError).toHaveBeenCalledWith("render", "memory:memory", error);
+    expect(tab.defaultPrevented).toBe(false);
   });
 
-  it("reports an unhandled plugin render failure through the component-edge default reporter", () => {
+  it("contains plugin render failures behind a usable host close control", async () => {
+    const error = new Error("broken body");
+    const onClose = vi.fn();
+    const onReportError = vi.fn();
+    const component = await attachDialog({
+      contribution: {
+        ...activity,
+        render: () => {
+          throw error;
+        },
+      },
+      onClose,
+      onReportError,
+    });
+    const fallback = component.shadowRoot?.querySelector(".plugin-activity-render-failure");
+
+    expect(fallback?.textContent).toBe("This plugin activity could not be rendered.");
+    expect(onReportError).toHaveBeenCalledWith("render", "memory:memory", error);
+
+    closeButton(component).click();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("uses the component-edge default reporter for plugin render failures", async () => {
     const error = new Error("broken body");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const dialog = createDialog({
-      ...activity,
-      render: () => {
-        throw error;
+
+    await attachDialog({
+      contribution: {
+        ...activity,
+        render: () => {
+          throw error;
+        },
       },
     });
-
-    dialog.render();
 
     expect(warn).toHaveBeenCalledWith("Plugin activity rail contribution failed", "render", "memory:memory", error);
   });
 
-  it("focuses the close button after its first DOM update", async () => {
-    const dialog = await attachDialog(focusOrderActivity);
-    const closeButton = dialogButton(dialog, ".plugin-activity-close");
+  it("cleans up an open native dialog without mapping native close events to app close", async () => {
+    const onClose = vi.fn();
+    const component = await attachDialog({ onClose });
+    const dialog = nativeDialog(component);
 
-    expect(dialog.shadowRoot?.activeElement).toBe(closeButton);
-  });
+    dialog.dispatchEvent(new Event("close"));
+    expect(onClose).not.toHaveBeenCalled();
 
-  it("keeps open-shadow plugin controls in the dialog tab sequence", async () => {
-    const dialog = await attachDialog(openShadowActivity);
-    const root = dialogRoot(dialog);
-    const closeButton = dialogButton(dialog, ".plugin-activity-close");
-    const pluginBody = openShadowPluginBody(dialog);
-    const nestedRetry = openShadowControl(dialog, "#nested-retry");
-    const nestedSummary = openShadowControl(dialog, "#nested-summary");
-
-    expect(root.activeElement).toBe(closeButton);
-    expect(deeplyActiveElement(root)).toBe(closeButton);
-
-    const tabFromClose = dispatchTabKeydown(closeButton);
-    expect(tabFromClose.defaultPrevented).toBe(false);
-    applyUncancelledBrowserTabDefault(tabFromClose, nestedRetry);
-    expect(root.activeElement).toBe(pluginBody);
-    expect(deeplyActiveElement(root)).toBe(nestedRetry);
-
-    nestedSummary.focus();
-    expect(root.activeElement).toBe(pluginBody);
-    expect(deeplyActiveElement(root)).toBe(nestedSummary);
-    const tabFromNestedLastStop = dispatchTabKeydown(nestedSummary);
-    expect(tabFromNestedLastStop.defaultPrevented).toBe(true);
-    expect(root.activeElement).toBe(closeButton);
-    expect(deeplyActiveElement(root)).toBe(closeButton);
-
-    const shiftTabFromFirstStop = dispatchTabKeydown(closeButton, true);
-    expect(shiftTabFromFirstStop.defaultPrevented).toBe(true);
-    expect(root.activeElement).toBe(pluginBody);
-    expect(deeplyActiveElement(root)).toBe(nestedSummary);
-  });
-
-  it("wraps Tab from the actual last sequential stop past a tabindex=-1 control", async () => {
-    const dialog = await attachDialog(focusOrderActivity);
-    const firstTabStop = dialogButton(dialog, "#priority-one");
-    const lastTabStop = dialogButton(dialog, "#cancel-memory");
-    const excludedControl = dialogButton(dialog, "#reset-memory");
-
-    expect(excludedControl.tabIndex).toBe(-1);
-    lastTabStop.focus();
-    const tab = dispatchTabKeydown(lastTabStop);
-
-    expect(tab.defaultPrevented).toBe(true);
-    expect(dialog.shadowRoot?.activeElement).toBe(firstTabStop);
-  });
-
-  it("does not treat a programmatically focused tabindex=-1 control as the first stop", async () => {
-    const dialog = await attachDialog(focusOrderActivity);
-    const excludedControl = dialogButton(dialog, "#reset-memory");
-
-    excludedControl.focus();
-    const shiftTab = dispatchTabKeydown(excludedControl, true);
-
-    expect(shiftTab.defaultPrevented).toBe(false);
-    expect(dialog.shadowRoot?.activeElement).toBe(excludedControl);
-  });
-
-  it("wraps Shift+Tab from the actual first positive-tabindex stop to the last", async () => {
-    const dialog = await attachDialog(focusOrderActivity);
-    const firstTabStop = dialogButton(dialog, "#priority-one");
-    const lastTabStop = dialogButton(dialog, "#cancel-memory");
-
-    firstTabStop.focus();
-    const shiftTab = dispatchTabKeydown(firstTabStop, true);
-
-    expect(shiftTab.defaultPrevented).toBe(true);
-    expect(dialog.shadowRoot?.activeElement).toBe(lastTabStop);
+    component.remove();
+    expect(close).toHaveBeenCalledOnce();
+    expect(dialog.open).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
