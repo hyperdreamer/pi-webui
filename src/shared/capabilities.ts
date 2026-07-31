@@ -22,6 +22,7 @@ export const WEB_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.piPackagesManage,
   PI_WEBUI_CAPABILITIES.selectedMachineSettings,
   PI_WEBUI_CAPABILITIES.agentProfileConfig,
+  PI_WEBUI_CAPABILITIES.modelTierSettings,
 ] as const satisfies readonly PiWebUiCapability[];
 
 export const SESSIOND_RUNTIME_CAPABILITIES = [
@@ -36,6 +37,7 @@ export const SESSIOND_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.sessionsNotifications,
   PI_WEBUI_CAPABILITIES.sessionsUnread,
   PI_WEBUI_CAPABILITIES.promptAttachments,
+  PI_WEBUI_CAPABILITIES.modelTierSettings,
 ] as const satisfies readonly PiWebUiCapability[];
 
 const EFFECTIVE_CAPABILITY_REQUIREMENTS = {

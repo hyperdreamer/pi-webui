@@ -16,6 +16,30 @@ describe("PI WEBUI capabilities", () => {
     })).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, PI_WEBUI_CAPABILITIES.agentProfileConfig]);
   });
 
+  it("requires web and session daemon support for model-tier settings", () => {
+    const modelTiers = PI_WEBUI_CAPABILITIES.modelTierSettings;
+    expect(modelTiers).toBe("settings.modelTiers");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(modelTiers);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(modelTiers);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [modelTiers] },
+      sessiond: { available: false, capabilities: [modelTiers] },
+    })).not.toContain(modelTiers);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: false, capabilities: [modelTiers] },
+      sessiond: { available: true, capabilities: [modelTiers] },
+    })).not.toContain(modelTiers);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [modelTiers] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(modelTiers);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [modelTiers] },
+      sessiond: { available: true, capabilities: [modelTiers] },
+    })).toContain(modelTiers);
+  });
+
   it("requires web and session daemon support for authoritative session persistence", () => {
     expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
     expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
