@@ -11,19 +11,21 @@
  * requested output directory.
  */
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative as relative_, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CONDITIONS = new Set(["no-guidance", "original", "candidate"]);
@@ -239,6 +241,50 @@ export function buildPiInvocation(args, repetition) {
  * output with no error text, which is indistinguishable from a model that
  * simply produced nothing.
  */
+/**
+ * Hash every file under a fixture root, keyed by forward-slash relative path.
+ *
+ * Recorded before and after each run so "only declared files changed" is a
+ * checkable claim rather than an inference from whatever is left on disk.
+ */
+export function captureFixtureIdentity(fixtureDir) {
+  const identity = {};
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relative = relative_(fixtureDir, absolute).replaceAll("\\", "/");
+      // Harness bookkeeping is not part of scenario fixture identity.
+      if (relative === "tool-log.jsonl" || relative === "dispatch-registry.json") continue;
+      identity[relative] = createHash("sha256").update(readFileSync(absolute)).digest("hex");
+    }
+  };
+  if (existsSync(fixtureDir)) walk(fixtureDir);
+  return identity;
+}
+
+/** Compare two fixture-identity snapshots. */
+export function diffFixtureIdentity(before, after) {
+  const added = Object.keys(after).filter((path) => !(path in before)).sort();
+  const removed = Object.keys(before).filter((path) => !(path in after)).sort();
+  const changed = Object.keys(after)
+    .filter((path) => path in before && before[path] !== after[path])
+    .sort();
+  return {
+    added,
+    removed,
+    changed,
+    unauthorized(allowedMutations) {
+      const allowed = new Set(allowedMutations ?? []);
+      return [...added, ...removed, ...changed].filter((path) => !allowed.has(path)).sort();
+    },
+  };
+}
+
 export function spawnOptions() {
   return { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 };
 }
@@ -416,6 +462,7 @@ function runRepetition(args, repetition) {
   const sourceProfile = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi/agent");
 
   prepareRepetitionWorkspace(args, invocation);
+  const fixtureBefore = captureFixtureIdentity(invocation.fixtureDir);
   seedTemporaryProfile(invocation.profileDir, sourceProfile);
 
   const cleanup = () => { removeTemporaryProfile(invocation.profileDir); };
@@ -431,6 +478,8 @@ function runRepetition(args, repetition) {
     });
     const inspection = inspectPiJsonEvents(String(result.stdout ?? ""));
     const score = scoreRun(args.scenario, inspection);
+    const fixtureAfter = captureFixtureIdentity(invocation.fixtureDir);
+    const fixtureDiff = diffFixtureIdentity(fixtureBefore, fixtureAfter);
     const record = {
       condition: args.condition,
       suite: args.suite,
@@ -444,6 +493,12 @@ function runRepetition(args, repetition) {
       provider: inspection.provider,
       resolvedModel: inspection.model,
       rolePromptSource: invocation.rolePromptSource,
+      fixtureBefore,
+      fixtureAfter,
+      fixtureAdded: fixtureDiff.added,
+      fixtureRemoved: fixtureDiff.removed,
+      fixtureChanged: fixtureDiff.changed,
+      unauthorizedMutations: fixtureDiff.unauthorized(args.scenario.allowedMutations),
       ...score,
       at: new Date().toISOString(),
     };

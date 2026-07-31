@@ -15,6 +15,8 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import fakeSddTools from "./fake-sdd-tools.mjs";
 import {
   buildPiInvocation,
+  captureFixtureIdentity,
+  diffFixtureIdentity,
   inspectPiJsonEvents,
   parseEvaluatorArgs,
   prepareRepetitionWorkspace,
@@ -596,6 +598,45 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(existsSync(stale)).toBe(false);
     // The scenario's own fixtures are present and unmodified.
     expect(readFileSync(join(invocation.fixtureDir, "src/is-even.mjs"), "utf8")).toContain("not implemented");
+  });
+
+  it("captures before and after fixture identity so mutations are provable", () => {
+    // Without a per-run identity snapshot, "only allowed files changed" cannot be
+    // checked after the fact: the shared fixture root is reseeded per scenario,
+    // so leftover files on disk say nothing about which run created them.
+    const root = makeTemporaryDirectory();
+    const args = parseEvaluatorArgs([
+      "--suite", "role", "--condition", "original", "--scenario", "implementer-tdd-evidence",
+      "--repetitions", "1", "--model", "p/m:max", "--output", root,
+    ]);
+    const invocation = buildPiInvocation(args, 1);
+    prepareRepetitionWorkspace(args, invocation);
+
+    const before = captureFixtureIdentity(invocation.fixtureDir);
+    expect(Object.keys(before).sort()).toEqual([
+      "src/is-even.mjs",
+      "task-brief.md",
+      "tests/is-even.test.mjs",
+    ]);
+
+    writeFileSync(join(invocation.fixtureDir, "src/is-even.mjs"), "export const isEven = (v) => v % 2 === 0;\n");
+    mkdirSync(join(invocation.fixtureDir, "reports"), { recursive: true });
+    writeFileSync(join(invocation.fixtureDir, "reports/implementer-report.md"), "# report");
+
+    const after = captureFixtureIdentity(invocation.fixtureDir);
+    const diff = diffFixtureIdentity(before, after);
+    expect(diff.changed).toEqual(["src/is-even.mjs"]);
+    expect(diff.added).toEqual(["reports/implementer-report.md"]);
+    expect(diff.removed).toEqual([]);
+    // Both touched paths are declared, so this run mutated nothing unauthorized.
+    expect(diff.unauthorized(args.scenario.allowedMutations)).toEqual([]);
+  });
+
+  it("flags a mutation outside the declared allowedMutations list", () => {
+    const before = { "a.md": "h1", "b.md": "h2" };
+    const after = { "a.md": "h1", "b.md": "CHANGED", "c.md": "new" };
+    const diff = diffFixtureIdentity(before, after);
+    expect(diff.unauthorized(["c.md"])).toEqual(["b.md"]);
   });
 
   it("writes nothing outside the requested output directory", () => {
