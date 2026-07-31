@@ -79,12 +79,12 @@ expect(chatQueuedMessagesCopyText(
     { kind: "followUp", text: "then inspect" },
   ]),
 )).toBe([
-  "Steered",
+  "Steered queue",
   "adjust",
   "",
   "keep the tests",
   "",
-  "Follow-up",
+  "Follow-up queue",
   "then inspect",
 ].join("\\n"));
 ```
@@ -121,7 +121,7 @@ Use the exact live group details `Sent together at the next turn` and `Sent toge
 
 Add `chatQueuedSectionsHaveBothServerKinds(sections)` returning true only when both non-empty server kinds are present. Replace the section-level clear predicate with `chatQueuedSectionsShowClearAction(sections, canClearServerQueue, hasClearHandler)`, returning true only when `chatQueuedSectionsHaveBothServerKinds(sections)`, `canClearServerQueue`, and `hasClearHandler` are all true. Keep the existing exported name if that minimizes call-site churn, but its first argument must be the complete section list so a single queue can no longer expose the global clear action.
 
-Add `chatQueuedMessagesCopyText(sections)` that filters to non-empty `source: "server"` sections and joins each section as `${section.heading}\\n${message texts joined by "\\n\\n"}`, then joins sections with `\\n\\n`. It must not include the client-local startup section and must return `""` when no live sections exist.
+Add `chatQueuedMessagesCopyText(sections)` that filters to non-empty `source: "server"` sections, maps `steer` and `followUp` to the exact copy headings `Steered queue` and `Follow-up queue` without changing the visual headings, and joins each section as `${copy heading}\\n${message texts joined by "\\n\\n"}`, then joins sections with `\\n\\n`. It must not include the client-local startup section and must return `""` when no live sections exist.
 
 - [ ] **Step 4: Run the focused tests and verify the pure seam is green.**
 

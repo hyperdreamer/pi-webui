@@ -218,12 +218,12 @@ describe("chatQueuedMessagesCopyText", () => {
         { kind: "followUp", text: "then inspect" },
       ]),
     )).toBe([
-      "Steered",
+      "Steered queue",
       "adjust",
       "",
       "keep the tests",
       "",
-      "Follow-up",
+      "Follow-up queue",
       "then inspect",
     ].join("\n"));
   });
@@ -238,10 +238,10 @@ describe("chatQueuedMessagesCopyText", () => {
         ],
       ),
     )).toBe([
-      "Steered",
+      "Steered queue",
       "adjust",
       "",
-      "Follow-up",
+      "Follow-up queue",
       "then inspect",
     ].join("\n"));
     expect(chatQueuedMessagesCopyText(
@@ -304,15 +304,86 @@ describe("ChatView queued-message rendering and copy wiring", () => {
     copyAll(new Event("click"));
     await Promise.resolve();
     expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith([
-      "Steered",
+      "Steered queue",
       "server queued",
       "",
-      "Follow-up",
+      "Follow-up queue",
       "then inspect",
     ].join("\n"));
 
     templateClickHandlerForText(rendered, "Clear all queues")(new Event("click"));
     expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+
+  it("leaves queue state and Copy UI unchanged when an individual clipboard write fails", async () => {
+    const view = new ChatView();
+    const status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    const clientQueuedMessages = [{ kind: "followUp" as const, text: "queued before start" }];
+    view.status = status;
+    view.clientQueuedMessages = clientQueuedMessages;
+    const statusBefore = { ...status, queuedMessages: [...status.queuedMessages] };
+    const clientQueuedMessagesBefore = [...clientQueuedMessages];
+    const beforeText = templateText(renderQueuedMessages(view));
+    const clipboard = vi.mocked(writeClipboardText);
+    clipboard.mockClear();
+    clipboard.mockResolvedValue(false);
+
+    try {
+      const copySteered = templateClickHandlerForText(renderQueuedMessages(view), "Copy steered message 1");
+      expect(() => { copySteered(new Event("click")); }).not.toThrow();
+      await Promise.resolve();
+
+      expect(clipboard).toHaveBeenCalledExactlyOnceWith("server queued");
+      expect(view.status).toEqual(statusBefore);
+      expect(view.clientQueuedMessages).toEqual(clientQueuedMessagesBefore);
+      const afterText = templateText(renderQueuedMessages(view));
+      expect(afterText).toBe(beforeText);
+      expect(afterText).toContain("Copy steered message 1");
+      expect(afterText).not.toContain("Copied");
+      expect(Reflect.get(view, "copiedMessageKey")).toBeUndefined();
+    } finally {
+      clipboard.mockResolvedValue(true);
+    }
+  });
+
+  it("leaves queue state and Copy UI unchanged when aggregate clipboard write fails", async () => {
+    const view = new ChatView();
+    const status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    const clientQueuedMessages = [{ kind: "followUp" as const, text: "queued before start" }];
+    view.status = status;
+    view.clientQueuedMessages = clientQueuedMessages;
+    const statusBefore = { ...status, queuedMessages: [...status.queuedMessages] };
+    const clientQueuedMessagesBefore = [...clientQueuedMessages];
+    const beforeText = templateText(renderQueuedMessages(view));
+    const clipboard = vi.mocked(writeClipboardText);
+    clipboard.mockClear();
+    clipboard.mockResolvedValue(false);
+
+    try {
+      const copyAll = templateClickHandlerForText(renderQueuedMessages(view), "Copy all queues");
+      expect(() => { copyAll(new Event("click")); }).not.toThrow();
+      await Promise.resolve();
+
+      expect(clipboard).toHaveBeenCalledExactlyOnceWith([
+        "Steered queue",
+        "server queued",
+        "",
+        "Follow-up queue",
+        "then inspect",
+      ].join("\n"));
+      expect(view.status).toEqual(statusBefore);
+      expect(view.clientQueuedMessages).toEqual(clientQueuedMessagesBefore);
+      const afterText = templateText(renderQueuedMessages(view));
+      expect(afterText).toBe(beforeText);
+      expect(afterText).toContain("Copy all queues");
+      expect(afterText).not.toContain("Copied");
+      expect(Reflect.get(view, "copiedMessageKey")).toBeUndefined();
+    } finally {
+      clipboard.mockResolvedValue(true);
+    }
   });
 
   it("keeps client startup messages in their section with an individual Copy control", () => {
