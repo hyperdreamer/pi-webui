@@ -165,9 +165,13 @@ function chatQueuedSectionCopyHeading(section: QueuedMessageSection): string {
 
 /** Aggregate-copy text for the non-empty live Pi queue sections. */
 export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): string {
-  return sections
-    .filter((section) => section.source === "server" && section.messages.length > 0)
-    .map((section) => `${chatQueuedSectionCopyHeading(section)}\n${section.messages.map((message) => message.text).join("\n\n")}`)
+  const serverSections = sections.filter((section) => section.source === "server" && section.messages.length > 0);
+  const includeHeadings = serverSections.length > 1;
+  return serverSections
+    .map((section) => {
+      const body = section.messages.map((message) => message.text).join("\n\n");
+      return includeHeadings ? `${chatQueuedSectionCopyHeading(section)}\n${body}` : body;
+    })
     .join("\n\n");
 }
 

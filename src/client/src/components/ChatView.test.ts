@@ -228,6 +228,15 @@ describe("chatQueuedMessagesCopyText", () => {
     ].join("\n"));
   });
 
+  it("omits section headings when only a single queue section is present", () => {
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections([], [
+        { kind: "followUp", text: "hello" },
+        { kind: "followUp", text: "hi!" },
+      ]),
+    )).toBe("hello\n\nhi!");
+  });
+
   it("ignores client startup messages and returns empty text without live groups", () => {
     expect(chatQueuedMessagesCopyText(
       chatQueuedMessageSections(
