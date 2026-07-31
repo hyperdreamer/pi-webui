@@ -92,6 +92,19 @@ export function parseEvaluatorArgs(argv) {
   };
 }
 
+/**
+ * Replace `/eval/...` path tokens with per-repetition fixture paths.
+ *
+ * Only the token is rewritten. Every behavioral sentence in the prompt is left
+ * byte-identical, so scenario semantics cannot drift when fixtures move.
+ */
+export function rewriteEvalTokens(prompt, fixtureDir) {
+  return String(prompt).replaceAll(/\/eval(\/[A-Za-z0-9_.-]+)*/gu, (token) => {
+    const relative = token.slice("/eval".length);
+    return relative.length === 0 ? fixtureDir : `${fixtureDir}${relative}`;
+  });
+}
+
 export function buildPiInvocation(args, repetition) {
   const runSuffix = `run-${String(repetition)}`;
   const sessionDir = `${args.output}/.sessions/${runSuffix}`;
@@ -129,7 +142,7 @@ export function buildPiInvocation(args, repetition) {
 
   piArgs.push("--extension", FAKE_TOOLS_RELATIVE);
   piArgs.push("--model", args.model);
-  piArgs.push(args.scenario.prompt);
+  piArgs.push(rewriteEvalTokens(args.scenario.prompt, fixtureDir));
 
   const readRoots = [
     `${SKILL_ROOT_RELATIVE}/SKILL.md`,
@@ -293,12 +306,40 @@ export function removeTemporaryProfile(profileDir) {
   rmSync(profileDir, { recursive: true, force: true });
 }
 
+/**
+ * Materialize a repetition's fixture root and pre-seed any scripted dispatch
+ * registry the scenario requires, so a recovery scenario can observe a genuine
+ * prior dispatch rather than a fresh one.
+ */
+export function prepareRepetitionWorkspace(args, invocation) {
+  mkdirSync(invocation.fixtureDir, { recursive: true });
+  writeScenarioFixtures(args.scenario, invocation.fixtureDir);
+
+  const seed = args.scenario.seedDispatchRegistry;
+  if (seed === undefined) return invocation.fixtureDir;
+
+  // The seeded cwd and prompt must match what the controller will reissue, so
+  // `/eval` tokens are rewritten here exactly as they are in the prompt.
+  const registryPath = join(invocation.fixtureDir, "dispatch-registry.json");
+  const cwd = rewriteEvalTokens(seed.cwd, invocation.fixtureDir);
+  const renderedPrompt = rewriteEvalTokens(seed.renderedPrompt, invocation.fixtureDir);
+  const registry = {
+    [seed.key]: {
+      cwd,
+      normalizedPrompt: renderedPrompt.replace(/^\uFEFF/u, "").replaceAll("\r\n", "\n").trim(),
+      sessionId: seed.sessionId,
+      policyApplication: seed.policyApplication,
+    },
+  };
+  writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+  return invocation.fixtureDir;
+}
+
 function runRepetition(args, repetition) {
   const invocation = buildPiInvocation(args, repetition);
   const sourceProfile = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi/agent");
 
-  mkdirSync(invocation.fixtureDir, { recursive: true });
-  writeScenarioFixtures(args.scenario, invocation.fixtureDir);
+  prepareRepetitionWorkspace(args, invocation);
   seedTemporaryProfile(invocation.profileDir, sourceProfile);
 
   const cleanup = () => { removeTemporaryProfile(invocation.profileDir); };

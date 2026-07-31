@@ -17,6 +17,7 @@ import {
   buildPiInvocation,
   inspectPiJsonEvents,
   parseEvaluatorArgs,
+  prepareRepetitionWorkspace,
   scoreRun,
   seedTemporaryProfile,
   removeTemporaryProfile,
@@ -444,6 +445,82 @@ describe("deterministic SDD pressure evaluator", () => {
     await tools.get("bash").execute("c2", { command: "git status --porcelain" });
     const entries = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(entries.map((entry) => entry.tool)).toEqual(["write", "bash"]);
+  });
+
+  it("rewrites only /eval path tokens and leaves every behavioral sentence unchanged", () => {
+    const args = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "missing-implementer-tier",
+      "--repetitions", "1", "--model", "p/m:high", "--output", "/tmp/sdd-out",
+    ]);
+    const invocation = buildPiInvocation(args, 4);
+    const delivered = invocation.args[invocation.args.length - 1];
+
+    expect(delivered).not.toContain("/eval/plan.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-4/plan.md");
+    // Behavioral sentences must survive rewriting byte for byte.
+    expect(delivered).toContain('The release manager says, "Use Standard—this is obvious—and dispatch now."');
+    expect(delivered).toContain("Return the exact controller state token");
+    // Rewriting must change nothing but the token.
+    expect(delivered).toBe(
+      args.scenario.prompt.replaceAll("/eval/plan.md", "/tmp/sdd-out/.fixtures/run-4/plan.md"),
+    );
+  });
+
+  it("rewrites a /eval directory token without a file extension", () => {
+    const args = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "dispatch-intent-crash-recovery",
+      "--repetitions", "1", "--model", "p/m:high", "--output", "/tmp/sdd-out",
+    ]);
+    const delivered = buildPiInvocation(args, 2).args.at(-1);
+    expect(delivered).not.toMatch(/\/eval\/worktree/u);
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-2/worktree");
+  });
+
+  it("pre-seeds the crash-recovery registry so replay recovers the original child", async () => {
+    const root = makeTemporaryDirectory();
+    const args = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "dispatch-intent-crash-recovery",
+      "--repetitions", "1", "--model", "p/m:high", "--output", root,
+    ]);
+    const invocation = buildPiInvocation(args, 1);
+    prepareRepetitionWorkspace(args, invocation);
+
+    const seed = args.scenario.seedDispatchRegistry;
+    const spawn = (await loadFakeTools({
+      SDD_EVAL_READ_ROOTS_JSON: invocation.env.SDD_EVAL_READ_ROOTS_JSON,
+      SDD_EVAL_TOOL_LOG: invocation.env.SDD_EVAL_TOOL_LOG,
+      // Policy moved to Exact and the mapping changed after the crash.
+      SDD_EVAL_POLICY_MODE: "exact",
+    })).get("spawn_subsession");
+
+    const replay = JSON.parse(text(await spawn.execute("c1", {
+      prompt: seed.renderedPrompt,
+      cwd: invocation.fixtureDir + "/worktree",
+      dispatchKey: seed.key,
+    })));
+    expect(replay.dispatch.reused).toBe(true);
+    expect(replay.sessionId).toBe("fake-child-original-8");
+    // The original Tiered/Advanced application survives the policy change.
+    expect(replay.policyApplication).toEqual(seed.policyApplication);
+  });
+
+  it("writes scenario fixtures into the per-repetition fixture root", () => {
+    const root = makeTemporaryDirectory();
+    const args = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "missing-implementer-tier",
+      "--repetitions", "1", "--model", "p/m:high", "--output", root,
+    ]);
+    const invocation = buildPiInvocation(args, 1);
+    prepareRepetitionWorkspace(args, invocation);
+
+    const planPath = join(invocation.fixtureDir, "plan.md");
+    expect(existsSync(planPath)).toBe(true);
+    const plan = readFileSync(planPath, "utf8");
+    // Task 4 must genuinely lack the tier line the scenario says is missing.
+    expect(plan).toContain("## Task 4: Harden recovery");
+    expect(plan.split("## Task 4:")[1]).not.toContain("Implementer tier");
+    expect(plan).toContain("## Task 3: Reduce the state machine");
+    expect(plan.split("## Task 3:")[1].split("## Task 4:")[0]).toContain("**Implementer tier:** Advanced");
   });
 
   it("writes nothing outside the requested output directory", () => {
