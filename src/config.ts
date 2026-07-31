@@ -195,6 +195,11 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
   return { path, exists: true, config: normalized };
 }
 
+export function replacePiWebUiModelTiers(modelTiers: ModelTierLadder, options: LoadOptions = {}): LoadedPiWebUiConfig {
+  const loaded = loadPiWebUiConfig(options);
+  return savePiWebUiConfig({ ...loaded.config, modelTiers }, options);
+}
+
 function readExistingConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));

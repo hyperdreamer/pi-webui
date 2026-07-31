@@ -30,7 +30,7 @@ import { TerminalService } from "./terminals/terminalService.js";
 import { registerTerminalRoutes } from "./terminals/terminalRoutes.js";
 import { getPiWebUiRuntimeComponent } from "./piWebUiStatus.js";
 import { SESSIOND_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
-import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes, savePiWebUiConfig } from "../config.js";
+import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes, replacePiWebUiModelTiers } from "../config.js";
 import { createActiveAgentProfileDescriptor } from "../sessiond/activeAgentProfile.js";
 import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
@@ -95,7 +95,7 @@ await runSessionDaemonStartup({
         };
       },
       saveConfig: ({ modelTiers: ladder }) => {
-        savePiWebUiConfig({ modelTiers: ladder }, { env: daemonEnvironment });
+        replacePiWebUiModelTiers(ladder, { env: daemonEnvironment });
       },
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
