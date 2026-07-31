@@ -1,7 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Machine } from "../../api";
 import { templateClickHandlerForText, templateText } from "../../templateInspection.testSupport";
 import { AppContextBar, shouldShowMachineContext } from "./AppContextBar";
+
+class FakeActivityRailLauncher extends EventTarget {}
+
+function eventFromCurrentTarget(currentTarget: EventTarget): Event {
+  const event = new Event("click");
+  Object.defineProperty(event, "currentTarget", { value: currentTarget });
+  return event;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("shouldShowMachineContext", () => {
   it("hides the machine crumb when there is no machine choice", () => {
@@ -15,18 +27,21 @@ describe("shouldShowMachineContext", () => {
 });
 
 describe("AppContextBar activity rail launcher", () => {
-  it("invokes the activity rail callback from its labelled launcher", () => {
+  it("invokes the activity rail callback with its labelled launcher", () => {
+    vi.stubGlobal("HTMLElement", FakeActivityRailLauncher);
     const contextBar = new AppContextBar();
     const onToggleActivityRail = vi.fn();
+    const launcher = new FakeActivityRailLauncher();
     contextBar.onToggleActivityRail = onToggleActivityRail;
 
     const template = contextBar.render();
     expect(templateText(template)).toContain('aria-label="Open activity rail"');
     // The node test environment has no DOM; this narrowly exercises the labelled
     // public template callback rather than a component implementation detail.
-    templateClickHandlerForText(template, "Open activity rail")(new Event("click"));
+    templateClickHandlerForText(template, "Open activity rail")(eventFromCurrentTarget(launcher));
 
     expect(onToggleActivityRail).toHaveBeenCalledOnce();
+    expect(onToggleActivityRail).toHaveBeenCalledWith(launcher);
   });
 
   it("labels the launcher to close an open activity rail", () => {

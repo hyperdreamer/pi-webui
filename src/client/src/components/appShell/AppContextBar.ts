@@ -15,7 +15,7 @@ export class AppContextBar extends LitElement {
   @property({ attribute: false }) onOpenSection?: (section: NavigationSection) => void;
   @property({ attribute: false }) onShowActions?: () => void;
   @property({ type: Boolean }) activityRailOpen = false;
-  @property({ attribute: false }) onToggleActivityRail?: () => void;
+  @property({ attribute: false }) onToggleActivityRail?: (source: HTMLElement) => void;
   @query(".context-items") private contextItems?: HTMLElement | null;
   @state() private canScrollLeft = false;
   @state() private canScrollRight = false;
@@ -85,13 +85,20 @@ export class AppContextBar extends LitElement {
     if (this.onToggleActivityRail === undefined) return null;
     const label = this.activityRailOpen ? "Close activity rail" : "Open activity rail";
     return html`
-      <button type="button" class="context-action-button activity-rail-action-button" title="${label}" aria-label="${label}" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onToggleActivityRail?.(); }}>
+      <button type="button" class="context-action-button activity-rail-action-button" title="${label}" aria-label="${label}" @click=${this.handleToggleActivityRail}>
         <svg class="context-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M5 4h14v3H5zm0 6h14v3H5zm0 6h14v3H5z"></path>
         </svg>
       </button>
     `;
   }
+
+  private readonly handleToggleActivityRail = (event: MouseEvent): void => {
+    event.stopPropagation();
+    const source = event.currentTarget;
+    if (typeof HTMLElement === "undefined" || !(source instanceof HTMLElement)) return;
+    this.onToggleActivityRail?.(source);
+  };
 
   private renderActionsButton() {
     if (this.onShowActions === undefined) return null;

@@ -4,7 +4,7 @@ import type { Machine, Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import type { ActivityRailDisplayItem } from "../plugins/activityRail";
 import { PluginRegistry } from "../plugins/registry";
-import type { ActivityRailContext, QualifiedContributionId } from "../plugins/types";
+import type { ActivityRailContext, QualifiedActivityRailContribution, QualifiedContributionId } from "../plugins/types";
 import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
@@ -51,6 +51,75 @@ describe("PiWebUiApp activity rail orchestration", () => {
     await updateComplete;
 
     expect(restoreFocus).toHaveBeenCalledOnce();
+  });
+
+  it("scopes retained activity callbacks to A's instance after B becomes active", () => {
+    const app = createApp();
+    let closeFromVisible: (() => void) | undefined;
+    let closeFromBadge: (() => void) | undefined;
+    let closeFromRender: (() => void) | undefined;
+    pluginRegistry(app).register({
+      id: "example",
+      plugin: {
+        apiVersion: 1,
+        name: "Example activities",
+        activate: () => ({
+          contributions: {
+            activityRailItems: [
+              {
+                id: "a",
+                title: "Activity A",
+                icon: html`<svg aria-hidden="true"></svg>`,
+                visible: (context) => {
+                  closeFromVisible = () => { context.host.close(); };
+                  return true;
+                },
+                badge: (context) => {
+                  closeFromBadge = () => { context.host.close(); };
+                  return 1;
+                },
+                render: (context) => {
+                  closeFromRender = () => { context.host.close(); };
+                  return html`<p>Activity A</p>`;
+                },
+              },
+              {
+                id: "b",
+                title: "Activity B",
+                icon: html`<svg aria-hidden="true"></svg>`,
+                render: () => html`<p>Activity B</p>`,
+              },
+            ],
+          },
+        }),
+      },
+    });
+    setAppState(app, selectedActivityState());
+
+    openActivityRailItem(app, "example:a", vi.fn());
+    activityRailItems(app);
+    renderActiveActivity(app);
+    if (closeFromVisible === undefined || closeFromBadge === undefined || closeFromRender === undefined) {
+      throw new Error("Expected Activity A callbacks to retain host.close");
+    }
+
+    closeFromRender();
+    expect(activeActivityId(app)).toBeUndefined();
+
+    openActivityRailItem(app, "example:b", vi.fn());
+    expect(activeActivityId(app)).toBe("example:b");
+
+    closeFromRender();
+    expect(activeActivityId(app)).toBe("example:b");
+    closeFromVisible();
+    expect(activeActivityId(app)).toBe("example:b");
+    closeFromBadge();
+    expect(activeActivityId(app)).toBe("example:b");
+
+    openActivityRailItem(app, "example:a", vi.fn());
+    expect(activeActivityId(app)).toBe("example:a");
+    closeFromRender();
+    expect(activeActivityId(app)).toBe("example:a");
   });
 
   it("does not expose workspace scope when no workspace is selected", () => {
@@ -172,9 +241,14 @@ describe("PiWebUiApp activity rail orchestration", () => {
 });
 
 type ActivityRailItems = (this: PiWebUiApp) => ActivityRailDisplayItem[];
-type CreateActivityRailContext = (this: PiWebUiApp) => ActivityRailContext;
+interface ActiveActivityRailItem {
+  activity: QualifiedActivityRailContribution;
+  context: ActivityRailContext;
+}
+type ActiveActivityRailItemResolver = (this: PiWebUiApp) => ActiveActivityRailItem | undefined;
+
+type CreateActivityRailContext = (this: PiWebUiApp, contributionId: QualifiedContributionId) => ActivityRailContext;
 type OpenActivityRailItem = (this: PiWebUiApp, id: QualifiedContributionId, restoreFocus: () => void) => void;
-type CloseActivityRailItem = (this: PiWebUiApp) => void;
 type UpdatedHook = (this: PiWebUiApp) => void;
 type RenderContextBar = (this: PiWebUiApp) => TemplateResult | null;
 type IsChatObscured = (this: PiWebUiApp) => boolean;
@@ -247,10 +321,22 @@ function activityRailItems(app: PiWebUiApp): ActivityRailDisplayItem[] {
   return method.call(app);
 }
 
-function createActivityRailContext(app: PiWebUiApp): ActivityRailContext {
+function activeActivityRailItem(app: PiWebUiApp): ActiveActivityRailItem {
+  const method: unknown = Reflect.get(app, "activeActivityRailItem");
+  if (!isActiveActivityRailItemResolver(method)) throw new Error("PiWebUiApp.activeActivityRailItem is not callable");
+  const active = method.call(app);
+  if (active === undefined) throw new Error("PiWebUiApp has no active activity");
+  return active;
+}
+
+function renderActiveActivity(app: PiWebUiApp): void {
+  const active = activeActivityRailItem(app);
+  active.activity.render(active.context);
+}
+function createActivityRailContext(app: PiWebUiApp, contributionId = dashboardId): ActivityRailContext {
   const method: unknown = Reflect.get(app, "createActivityRailContext");
   if (!isCreateActivityRailContext(method)) throw new Error("PiWebUiApp.createActivityRailContext is not callable");
-  return method.call(app);
+  return method.call(app, contributionId);
 }
 
 function openActivityRailItem(app: PiWebUiApp, id: QualifiedContributionId, restoreFocus: () => void): void {
@@ -260,9 +346,7 @@ function openActivityRailItem(app: PiWebUiApp, id: QualifiedContributionId, rest
 }
 
 function closeActivityRailItem(app: PiWebUiApp): void {
-  const method: unknown = Reflect.get(app, "closeActivityRailItem");
-  if (!isCloseActivityRailItem(method)) throw new Error("PiWebUiApp.closeActivityRailItem is not callable");
-  method.call(app);
+  activeActivityRailItem(app).context.host.close();
 }
 
 function activeActivityId(app: PiWebUiApp): QualifiedContributionId | undefined {
@@ -355,15 +439,15 @@ function isActivityRailItems(value: unknown): value is ActivityRailItems {
   return typeof value === "function";
 }
 
+function isActiveActivityRailItemResolver(value: unknown): value is ActiveActivityRailItemResolver {
+  return typeof value === "function";
+}
+
 function isCreateActivityRailContext(value: unknown): value is CreateActivityRailContext {
   return typeof value === "function";
 }
 
 function isOpenActivityRailItem(value: unknown): value is OpenActivityRailItem {
-  return typeof value === "function";
-}
-
-function isCloseActivityRailItem(value: unknown): value is CloseActivityRailItem {
   return typeof value === "function";
 }
 
