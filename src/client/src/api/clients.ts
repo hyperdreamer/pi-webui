@@ -1,6 +1,7 @@
 import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
+import type { ModelTierLadder } from "../../../shared/apiTypes";
 import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
@@ -30,6 +31,7 @@ import {
   parseModelConnectionTestResponse,
   parseModelDiscoveryResponse,
   parseModelSelectionResponse,
+  parseModelTierSettingsResponse,
   parseModelsConfigDocument,
   parseModelsConfigSaveResponse,
   parseSkillMutationResponse,
@@ -179,6 +181,15 @@ export const modelsConfigApi = {
   save: (config: ModelsConfigDocument, machineId = "local") => request(modelsConfigPath(machineId), parseModelsConfigSaveResponse, { method: "PUT", body: JSON.stringify(config) }),
   test: (input: ModelConnectionTestRequest, machineId = "local") => request(`${modelsConfigPath(machineId)}/test`, parseModelConnectionTestResponse, { method: "POST", body: JSON.stringify(input) }),
   discover: (input: ModelDiscoveryRequest, machineId = "local") => request(`${modelsConfigPath(machineId)}/discover`, parseModelDiscoveryResponse, { method: "POST", body: JSON.stringify(input) }),
+};
+
+function modelTiersPath(machineId = "local"): string {
+  return `${machinePrefix(machineId)}/model-tiers`;
+}
+
+export const modelTiersApi = {
+  settings: (machineId = "local") => request(modelTiersPath(machineId), parseModelTierSettingsResponse),
+  save: (ladder: ModelTierLadder, machineId = "local") => request(modelTiersPath(machineId), parseModelTierSettingsResponse, { method: "PUT", body: JSON.stringify({ ladder }) }),
 };
 
 function skillsConfigPath(machineId = "local"): string {
@@ -427,6 +438,7 @@ export const api = {
   ...piWebUiApi,
   ...machinesApi,
   ...memoryApi,
+  ...modelTiersApi,
   ...configApi,
   ...pluginsApi,
   ...piPackagesApi,
