@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.6
+
+### Patch Changes
+
+- 784cd90: Keep the Workspace Tasks plugin's **Open Terminal** command working when the Terminal tab is hidden.
+
 ## 1.10.5
 
 ### Patch Changes
