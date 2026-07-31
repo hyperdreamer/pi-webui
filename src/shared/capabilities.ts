@@ -54,6 +54,7 @@ const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
   [PI_WEBUI_CAPABILITIES.piPackagesManage]: ["web"],
   [PI_WEBUI_CAPABILITIES.selectedMachineSettings]: ["web"],
   [PI_WEBUI_CAPABILITIES.agentProfileConfig]: ["web"],
+  [PI_WEBUI_CAPABILITIES.modelTierSettings]: ["web", "sessiond"],
 } as const satisfies Record<PiWebUiCapability, readonly PiWebUiServiceComponent[]>;
 
 export function isPiWebUiCapability(value: unknown): value is PiWebUiCapability {
