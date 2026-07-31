@@ -639,6 +639,69 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(diff.unauthorized(["c.md"])).toEqual(["b.md"]);
   });
 
+  it("configures each scenario's policy mode so the fake cannot contradict its prompt", () => {
+    // exact-mode-dispatch states Exact mode with an invalid ladder in its prompt.
+    // With policyMode unset the fake defaulted to tiered/directive-applied, so
+    // the scenario could never observe the ignored-exact outcome it tests.
+    const exact = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "exact-mode-dispatch",
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/o",
+    ]);
+    const exactEnv = buildPiInvocation(exact, 1).env;
+    expect(exactEnv.SDD_EVAL_POLICY_MODE).toBe("exact");
+    expect(exactEnv.SDD_EVAL_LADDER_VALID).toBe("false");
+
+    // The recovery scenario says the parent moved to Exact after the crash.
+    const recovery = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "dispatch-intent-crash-recovery",
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/o",
+    ]);
+    expect(buildPiInvocation(recovery, 1).env.SDD_EVAL_POLICY_MODE).toBe("exact");
+
+    // The mismatch scenario needs parent and child projections to disagree.
+    const mismatch = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "dispatch-policy-mismatch",
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/o",
+    ]);
+    expect(buildPiInvocation(mismatch, 1).env.SDD_EVAL_CHILD_TIER_OVERRIDE).toBe("fast");
+  });
+
+  it("returns ignored-exact and the inherited tuple in exact mode", async () => {
+    const root = makeTemporaryDirectory();
+    const spawn = (await loadFakeTools({
+      SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
+      SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
+      SDD_EVAL_POLICY_MODE: "exact",
+      SDD_EVAL_LADDER_VALID: "false",
+    })).get("spawn_subsession");
+    const result = JSON.parse(text(await spawn.execute("c1", {
+      prompt: "/tier-advanced\nImplement Task 2.", cwd: "/w", dispatchKey: "k-exact-1",
+    })));
+    expect(result.policyApplication.outcome).toBe("ignored-exact");
+    expect(result.policyApplication.mode).toBe("exact");
+    // The directive is still recorded as requested even though it did not apply.
+    expect(result.policyApplication.requestedDirective).toBe("/tier-advanced");
+  });
+
+  it("projects a child tier that disagrees with the parent when configured", async () => {
+    const root = makeTemporaryDirectory();
+    const tools = await loadFakeTools({
+      SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
+      SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
+      SDD_EVAL_CHILD_TIER_OVERRIDE: "fast",
+    });
+    const parent = JSON.parse(text(await tools.get("spawn_subsession").execute("c1", {
+      prompt: "/tier-standard\nReview Task 3.", cwd: "/w", dispatchKey: "k-mismatch-1",
+    })));
+    const child = JSON.parse(text(await tools.get("read_subsession").execute("c2", {
+      sessionId: parent.sessionId,
+    })));
+    const projected = child.entries.find((entry) => entry.kind === "policy-application");
+    expect(parent.policyApplication.tier).toBe("standard");
+    expect(projected.policyApplication.tier).toBe("fast");
+    expect(projected.modelVisible).toBe(false);
+  });
+
   it("writes nothing outside the requested output directory", () => {
     const args = parseEvaluatorArgs([
       "--condition", "candidate", "--scenario", "missing-implementer-tier",

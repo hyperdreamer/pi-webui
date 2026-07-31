@@ -222,6 +222,12 @@ export function buildPiInvocation(args, repetition) {
     env.SDD_EVAL_ROLE_TOOL_MODE = args.scenario.roleToolMode;
   }
 
+  if (typeof args.scenario.childTierOverride === "string") {
+    // Makes the child's projected application disagree with the parent result,
+    // which is the condition the dispatch-mismatch scenario exists to test.
+    env.SDD_EVAL_CHILD_TIER_OVERRIDE = args.scenario.childTierOverride;
+  }
+
   if (typeof args.scenario.editableFixture === "string") {
     env.SDD_EVAL_EDITABLE_FIXTURE = join(fixtureDir, args.scenario.editableFixture);
   }
