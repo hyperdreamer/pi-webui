@@ -104,9 +104,9 @@ const THEME_OPTION_PREFIX = "theme:";
 const FILES_ROUTE_NAMESPACE = queryNamespace("core:workspace.files");
 const GIT_ROUTE_NAMESPACE = queryNamespace("core:workspace.git");
 const TERMINAL_ROUTE_NAMESPACE = queryNamespace("core:workspace.terminal");
-const MEMORY_WORKSPACE_PLUGIN_ID: PluginId = "workspace-memory";
-const MEMORY_WORKSPACE_PANEL_LOCAL_ID: LocalContributionId = "workspace.memory";
-const MEMORY_WORKSPACE_PANEL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
+const MEMORY_ACTIVITY_RAIL_PLUGIN_ID: PluginId = "workspace-memory";
+const MEMORY_ACTIVITY_RAIL_LOCAL_ID: LocalContributionId = "workspace.memory";
+const MEMORY_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -1734,23 +1734,26 @@ export class PiWebUiApp extends LitElement {
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
     const panels = this.plugins.getWorkspacePanels();
-    this.synchronizeMemoryPolling(panels, context);
     return panels.filter((panel) => panel.visible?.(context) ?? true);
   }
 
-  private synchronizeMemoryPollingForSelectedWorkspace(): void {
-    const workspace = this.state.selectedWorkspace;
-    if (workspace === undefined) {
+  private synchronizeMemoryPollingForSelectedWorkspace(
+    activities: readonly QualifiedActivityRailContribution[] = this.plugins.getActivityRailItems(),
+  ): void {
+    if (this.state.selectedWorkspace === undefined) {
       this.memory.updatePolling(false);
       return;
     }
-    const context = this.createWorkspacePanelContext(workspace);
-    this.synchronizeMemoryPolling(this.plugins.getWorkspacePanels(), context);
+    const context = this.createActivityRailContext(MEMORY_ACTIVITY_RAIL_ID);
+    this.synchronizeMemoryPolling(activities, context);
   }
 
-  private synchronizeMemoryPolling(panels: readonly QualifiedWorkspacePanelContribution[], context: WorkspacePanelContext): void {
-    const observed = panels.some((panel) => isMemoryWorkspacePanel(panel)
-      && (panel.visible?.(context) ?? true));
+  private synchronizeMemoryPolling(
+    activities: readonly QualifiedActivityRailContribution[],
+    context: ActivityRailContext,
+  ): void {
+    const observed = activities.some((activity) => isMemoryActivityRailItem(activity)
+      && this.projectActivityRailItems([activity], context).some((item) => item.id === activity.id));
     this.memory.updatePolling(observed);
   }
 
@@ -2094,6 +2097,7 @@ export class PiWebUiApp extends LitElement {
           console.warn(`Failed to register PI WEBUI plugin ${registration.id}`, error);
         }
       }
+      this.synchronizeMemoryPollingForSelectedWorkspace();
       this.applyPreferredTheme(false);
       this.requestUpdate();
       return true;
@@ -2201,7 +2205,9 @@ export class PiWebUiApp extends LitElement {
   }
 
   private activityRailItems(): ActivityRailDisplayItem[] {
-    return this.plugins.getActivityRailItems().flatMap((activity) => this.projectActivityRailItems(
+    const activities = this.plugins.getActivityRailItems();
+    this.synchronizeMemoryPollingForSelectedWorkspace(activities);
+    return activities.flatMap((activity) => this.projectActivityRailItems(
       [activity],
       this.createActivityRailContext(activity.id),
     ));
@@ -3175,9 +3181,9 @@ function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selecte
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
 }
 
-function isMemoryWorkspacePanel(panel: QualifiedWorkspacePanelContribution): boolean {
-  return panel.id === MEMORY_WORKSPACE_PANEL_ID
-    || (panel.sourcePluginId === MEMORY_WORKSPACE_PLUGIN_ID && panel.localId === MEMORY_WORKSPACE_PANEL_LOCAL_ID);
+function isMemoryActivityRailItem(activity: QualifiedActivityRailContribution): boolean {
+  return activity.id === MEMORY_ACTIVITY_RAIL_ID
+    || (activity.sourcePluginId === MEMORY_ACTIVITY_RAIL_PLUGIN_ID && activity.localId === MEMORY_ACTIVITY_RAIL_LOCAL_ID);
 }
 
 function memoryPollingScopeChanged(previous: AppState, next: AppState): boolean {

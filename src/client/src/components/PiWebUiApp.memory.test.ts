@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import type { Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
+import type { ActivityRailDisplayItem } from "../plugins/activityRail";
 import { PluginRegistry } from "../plugins/registry";
-import type { WorkspacePanelContext } from "../plugins/types";
+import type { ActivityRailContext, PiWebUiPluginRegistration, QualifiedContributionId } from "../plugins/types";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 const project: Project = { id: "project-a", name: "Project A", path: "/work/project-a", createdAt: "now" };
@@ -17,16 +18,17 @@ const workspace: Workspace = {
   isGitRepo: true,
   isGitWorktree: false,
 };
+const memoryActivityId: QualifiedContributionId = "workspace-memory:workspace.memory";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("PiWebUiApp memory lifecycle wiring", () => {
-  it("restarts memory polling when the selected workspace path changes and the Memory contribution is enabled", () => {
+describe("PiWebUiApp Memory activity-Rail lifecycle wiring", () => {
+  it("restarts Memory polling when the selected workspace path changes and the local activity is enabled", () => {
     const app = createApp();
-    registerMemoryWorkspacePanel(app);
+    registerMemoryActivityRail(app);
     const previous: AppState = {
       ...initialAppState(),
       selectedProject: project,
@@ -44,9 +46,9 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     expect(updatePolling).toHaveBeenCalledWith(true);
   });
 
-  it("starts selected-workspace memory polling for an enabled contribution, exposes its internal retry callback, and disposes it on disconnect", () => {
+  it("starts selected-workspace Memory polling for a visible local activity, exposes its internal retry callback, and disposes it on disconnect", () => {
     const app = createApp();
-    registerMemoryWorkspacePanel(app);
+    registerMemoryActivityRail(app);
     const next: AppState = {
       ...initialAppState(),
       selectedProject: project,
@@ -63,8 +65,9 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
 
     handleWorkspaceChange(app, initialAppState(), next);
 
+    expect(activityRailItems(app).map((item) => item.id)).toContain(memoryActivityId);
     expect(updatePolling).toHaveBeenCalledWith(true);
-    const context = createWorkspacePanelContext(app, workspace);
+    const context = createActivityRailContext(app, memoryActivityId);
     const onRefreshMemory: unknown = Reflect.get(context, "onRefreshMemory");
     if (!isVoidCallback(onRefreshMemory)) throw new Error("PiWebUiApp did not expose an internal memory refresh callback");
     onRefreshMemory();
@@ -75,7 +78,7 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("observes an enabled visible Memory contribution from the selected remote machine", () => {
+  it("observes an enabled visible Memory activity from the selected remote machine", () => {
     const app = createApp();
     const remoteMachine = {
       id: "remote-1",
@@ -84,7 +87,7 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
       createdAt: "now",
       updatedAt: "now",
     };
-    registerRemoteMemoryWorkspacePanel(app, remoteMachine.id);
+    registerRemoteMemoryActivityRail(app, remoteMachine.id);
     const next: AppState = {
       ...initialAppState(),
       selectedMachine: remoteMachine,
@@ -100,19 +103,20 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     setRouteRestoreInProgress(app);
     stubWorkspaceChangeSideEffects(app);
     const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
-    const context = createWorkspacePanelContext(app, workspace);
-    const remotePanelId = `${machineScopedPluginId(remoteMachine.id, "workspace-memory")}:workspace.memory`;
-    const remoteMemoryPanel = pluginRegistry(app).getWorkspacePanels().find((panel) => panel.id === remotePanelId);
+    const remoteActivityId = `${machineScopedPluginId(remoteMachine.id, "workspace-memory")}:workspace.memory`;
+    const remoteMemoryActivity = pluginRegistry(app).getActivityRailItems().find((activity) => activity.id === remoteActivityId);
+    if (remoteMemoryActivity === undefined) throw new Error("Expected a selected remote Memory activity");
+    const context = createActivityRailContext(app, remoteMemoryActivity.id);
 
-    expect(remoteMemoryPanel?.visible?.(context)).toBe(true);
-    expect(remoteMemoryPanel?.badge?.(context)).toBe(2);
+    expect(remoteMemoryActivity.visible?.(context)).toBe(true);
+    expect(remoteMemoryActivity.badge?.(context)).toBe(2);
 
     handleWorkspaceChange(app, initialAppState(), next);
 
     expect(updatePolling).toHaveBeenCalledWith(true);
   });
 
-  it("observes the selected remote Memory contribution when its machine-specific gateway counterpart is hidden", () => {
+  it("observes the selected remote Memory activity when a machine-specific gateway activity is replaced", () => {
     const app = createApp();
     const remoteMachine = {
       id: "remote-1",
@@ -121,8 +125,8 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
       createdAt: "now",
       updatedAt: "now",
     };
-    registerMemoryWorkspacePanel(app, true);
-    registerRemoteMemoryWorkspacePanel(app, remoteMachine.id, true);
+    registerMemoryActivityRail(app, true);
+    registerRemoteMemoryActivityRail(app, remoteMachine.id, true);
     const next: AppState = {
       ...initialAppState(),
       selectedMachine: remoteMachine,
@@ -139,7 +143,27 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     expect(updatePolling).toHaveBeenCalledWith(true);
   });
 
-  it("deactivates memory polling when the Memory contribution is absent", () => {
+  it("deactivates Memory polling when safe activity visibility reports confirmed unavailability", () => {
+    const app = createApp();
+    registerMemoryActivityRail(app);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+      selectedWorkspace: workspace,
+      memory: { kind: "unavailable" },
+    };
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+
+    expect(activityRailItems(app)).toEqual([]);
+    expect(updatePolling).toHaveBeenCalledWith(false);
+  });
+
+  it("deactivates Memory polling when the activity is absent", () => {
     const app = createApp();
     const next: AppState = {
       ...initialAppState(),
@@ -156,9 +180,9 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
     expect(updatePolling).toHaveBeenCalledWith(false);
   });
 
-  it("deactivates polling after an enabled Memory contribution is removed", () => {
+  it("deactivates Memory polling after a visible activity is removed", () => {
     const app = createApp();
-    registerMemoryWorkspacePanel(app);
+    registerMemoryActivityRail(app);
     const next: AppState = {
       ...initialAppState(),
       selectedProject: project,
@@ -171,10 +195,46 @@ describe("PiWebUiApp memory lifecycle wiring", () => {
 
     handleWorkspaceChange(app, initialAppState(), next);
     setPluginRegistry(app, new PluginRegistry());
-    workspacePanels(app);
+    activityRailItems(app);
 
     expect(updatePolling).toHaveBeenNthCalledWith(1, true);
     expect(updatePolling).toHaveBeenNthCalledWith(2, false);
+  });
+
+  it("deactivates Memory polling and hides its activity when no workspace is selected", () => {
+    const app = createApp();
+    registerMemoryActivityRail(app);
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+    };
+    setAppState(app, next);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+
+    expect(activityRailItems(app)).toEqual([]);
+    expect(updatePolling).toHaveBeenCalledWith(false);
+  });
+
+  it("re-evaluates Memory polling after external activity registration for the active workspace", async () => {
+    const app = createApp();
+    const next: AppState = {
+      ...initialAppState(),
+      selectedProject: project,
+      selectedWorkspace: workspace,
+    };
+    setAppState(app, next);
+    stubExternalPluginRegistrationSideEffects(app);
+    const updatePolling = vi.spyOn(memoryController(app), "updatePolling").mockImplementation(() => undefined);
+
+    const registered = await registerExternalPlugins(app, "Memory", () => Promise.resolve([{
+      id: "workspace-memory",
+      plugin: memoryActivityPlugin(),
+    }]));
+
+    expect(registered).toBe(true);
+    expect(updatePolling).toHaveBeenCalledWith(true);
   });
 });
 
@@ -185,9 +245,11 @@ interface MemoryLifecycleController {
 }
 
 type HandleWorkspaceChange = (this: PiWebUiApp, previous: AppState, next: AppState) => void;
-type CreateWorkspacePanelContext = (this: PiWebUiApp, workspace: Workspace) => WorkspacePanelContext;
+type CreateActivityRailContext = (this: PiWebUiApp, contributionId: QualifiedContributionId) => ActivityRailContext;
+type ActivityRailItems = (this: PiWebUiApp) => ActivityRailDisplayItem[];
+type RegisterExternalPlugins = (this: PiWebUiApp, label: string, load: () => Promise<PiWebUiPluginRegistration[]>) => Promise<boolean>;
 type DisconnectedHook = (this: PiWebUiApp) => void;
-type WorkspacePanels = (this: PiWebUiApp) => unknown[];
+type MemoryActivityVisibility = (context: ActivityRailContext) => boolean;
 
 function createApp(): PiWebUiApp {
   const storage = { getItem: () => null, setItem: () => undefined, removeItem: () => undefined };
@@ -207,48 +269,45 @@ function createApp(): PiWebUiApp {
   return new PiWebUiApp();
 }
 
-function registerMemoryWorkspacePanel(app: PiWebUiApp, machineSpecific = false): void {
+function registerMemoryActivityRail(app: PiWebUiApp, machineSpecific = false): void {
   pluginRegistry(app).register({
     id: "workspace-memory",
     machineSpecific,
-    plugin: {
-      apiVersion: 1,
-      name: "Memory",
-      activate: () => ({
-        contributions: {
-          workspacePanels: [{
-            id: "workspace.memory",
-            title: "Memory",
-            render: () => html``,
-          }],
-        },
-      }),
-    },
+    plugin: memoryActivityPlugin(),
   });
 }
 
-function registerRemoteMemoryWorkspacePanel(app: PiWebUiApp, machineId: string, machineSpecific = false): void {
+function registerRemoteMemoryActivityRail(app: PiWebUiApp, machineId: string, machineSpecific = false): void {
   pluginRegistry(app).register({
     id: machineScopedPluginId(machineId, "workspace-memory"),
     machineId,
     sourcePluginId: "workspace-memory",
     machineSpecific,
-    plugin: {
-      apiVersion: 1,
-      name: "Memory",
-      activate: () => ({
-        contributions: {
-          workspacePanels: [{
-            id: "workspace.memory",
-            title: "Memory",
-            visible: (context) => context.state.memory.kind !== "unavailable",
-            badge: (context) => context.state.memory.kind === "data" ? 2 : undefined,
-            render: () => html``,
-          }],
-        },
-      }),
-    },
+    plugin: memoryActivityPlugin(),
   });
+}
+
+function memoryActivityPlugin(visible: MemoryActivityVisibility = visibleMemoryActivity): PiWebUiPluginRegistration["plugin"] {
+  return {
+    apiVersion: 1,
+    name: "Memory",
+    activate: () => ({
+      contributions: {
+        activityRailItems: [{
+          id: "workspace.memory",
+          title: "Memory",
+          icon: html`<svg aria-hidden="true"></svg>`,
+          visible,
+          badge: (context) => context.state.memory.kind === "data" ? 2 : undefined,
+          render: () => html``,
+        }],
+      },
+    }),
+  };
+}
+
+function visibleMemoryActivity(context: ActivityRailContext): boolean {
+  return context.workspaceScope !== undefined && context.state.memory.kind !== "unavailable";
 }
 
 function pluginRegistry(app: PiWebUiApp): PluginRegistry {
@@ -274,6 +333,11 @@ function stubWorkspaceChangeSideEffects(app: PiWebUiApp): void {
   if (!Reflect.set(app, "refreshWorkspaceDeletionRuns", () => Promise.resolve())) throw new Error("Could not stub workspace deletion refresh");
 }
 
+function stubExternalPluginRegistrationSideEffects(app: PiWebUiApp): void {
+  if (!Reflect.set(app, "applyPreferredTheme", () => undefined)) throw new Error("Could not stub theme application");
+  if (!Reflect.set(app, "requestUpdate", () => undefined)) throw new Error("Could not stub update request");
+}
+
 function memoryController(app: PiWebUiApp): MemoryLifecycleController {
   const value: unknown = Reflect.get(app, "memory");
   if (!isMemoryLifecycleController(value)) throw new Error("PiWebUiApp memory controller is unavailable");
@@ -286,16 +350,22 @@ function handleWorkspaceChange(app: PiWebUiApp, previous: AppState, next: AppSta
   method.call(app, previous, next);
 }
 
-function createWorkspacePanelContext(app: PiWebUiApp, selectedWorkspace: Workspace): WorkspacePanelContext {
-  const method: unknown = Reflect.get(app, "createWorkspacePanelContext");
-  if (!isCreateWorkspacePanelContext(method)) throw new Error("PiWebUiApp.createWorkspacePanelContext is not callable");
-  return method.call(app, selectedWorkspace);
+function createActivityRailContext(app: PiWebUiApp, contributionId: QualifiedContributionId): ActivityRailContext {
+  const method: unknown = Reflect.get(app, "createActivityRailContext");
+  if (!isCreateActivityRailContext(method)) throw new Error("PiWebUiApp.createActivityRailContext is not callable");
+  return method.call(app, contributionId);
 }
 
-function workspacePanels(app: PiWebUiApp): void {
-  const method: unknown = Reflect.get(app, "workspacePanels");
-  if (!isWorkspacePanels(method)) throw new Error("PiWebUiApp.workspacePanels is not callable");
-  method.call(app);
+function activityRailItems(app: PiWebUiApp): ActivityRailDisplayItem[] {
+  const method: unknown = Reflect.get(app, "activityRailItems");
+  if (!isActivityRailItems(method)) throw new Error("PiWebUiApp.activityRailItems is not callable");
+  return method.call(app);
+}
+
+function registerExternalPlugins(app: PiWebUiApp, label: string, load: () => Promise<PiWebUiPluginRegistration[]>): Promise<boolean> {
+  const method: unknown = Reflect.get(app, "registerExternalPlugins");
+  if (!isRegisterExternalPlugins(method)) throw new Error("PiWebUiApp.registerExternalPlugins is not callable");
+  return method.call(app, label, load);
 }
 
 function invokeDisconnected(app: PiWebUiApp): void {
@@ -319,11 +389,15 @@ function isHandleWorkspaceChange(value: unknown): value is HandleWorkspaceChange
   return typeof value === "function";
 }
 
-function isCreateWorkspacePanelContext(value: unknown): value is CreateWorkspacePanelContext {
+function isCreateActivityRailContext(value: unknown): value is CreateActivityRailContext {
   return typeof value === "function";
 }
 
-function isWorkspacePanels(value: unknown): value is WorkspacePanels {
+function isActivityRailItems(value: unknown): value is ActivityRailItems {
+  return typeof value === "function";
+}
+
+function isRegisterExternalPlugins(value: unknown): value is RegisterExternalPlugins {
   return typeof value === "function";
 }
 
