@@ -383,6 +383,11 @@ export function removeTemporaryProfile(profileDir) {
  * prior dispatch rather than a fresh one.
  */
 export function prepareRepetitionWorkspace(args, invocation) {
+  // Scenarios within one condition share an output directory, so this path
+  // repeats. Clear it first: a stale report from an earlier scenario would make
+  // the predeclared report path already exist, and the confined write tool
+  // refuses to overwrite, failing the role on an artifact rather than its work.
+  rmSync(invocation.fixtureDir, { recursive: true, force: true });
   mkdirSync(invocation.fixtureDir, { recursive: true });
   writeScenarioFixtures(args.scenario, invocation.fixtureDir);
 

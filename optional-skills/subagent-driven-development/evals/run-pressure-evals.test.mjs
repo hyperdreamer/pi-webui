@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import fakeSddTools from "./fake-sdd-tools.mjs";
 import {
@@ -573,6 +573,29 @@ describe("deterministic SDD pressure evaluator", () => {
       "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/sdd-out",
     ]);
     expect(buildPiInvocation(args, 1).args.at(-1)).toBe(args.scenario.prompt);
+  });
+
+  it("clears a stale fixture root so each repetition starts fresh", () => {
+    // Scenarios in one condition share an output directory, so the fixture root
+    // path repeats. A report left by an earlier scenario made the predeclared
+    // report path already exist, and the confined write tool correctly refuses
+    // to overwrite — so the role failed on a stale artifact, not its contract.
+    const root = makeTemporaryDirectory();
+    const args = parseEvaluatorArgs([
+      "--suite", "role", "--condition", "original", "--scenario", "implementer-tdd-evidence",
+      "--repetitions", "1", "--model", "p/m:max", "--output", root,
+    ]);
+    const invocation = buildPiInvocation(args, 1);
+
+    const stale = join(invocation.fixtureDir, "reports", "implementer-report.md");
+    mkdirSync(dirname(stale), { recursive: true });
+    writeFileSync(stale, "a previous scenario's report");
+
+    prepareRepetitionWorkspace(args, invocation);
+
+    expect(existsSync(stale)).toBe(false);
+    // The scenario's own fixtures are present and unmodified.
+    expect(readFileSync(join(invocation.fixtureDir, "src/is-even.mjs"), "utf8")).toContain("not implemented");
   });
 
   it("writes nothing outside the requested output directory", () => {
