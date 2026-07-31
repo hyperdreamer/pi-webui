@@ -105,6 +105,40 @@ export function rewriteEvalTokens(prompt, fixtureDir) {
   });
 }
 
+/**
+ * Append the exact fixture paths available to the role, plus the single path its
+ * report must be written to, so it can act without guessing. The role prompts
+ * say "the supplied task brief" and "the required structured report" but name no
+ * paths, and the fixture root is a fresh directory per repetition.
+ *
+ * The manifest lists paths only. It must never carry expected outcomes.
+ */
+function buildRolePromptWithManifest(prompt, fixtureDir, scenario) {
+  const sections = [];
+
+  const fixturePaths = Object.keys(scenario.fixtures ?? {});
+  if (fixturePaths.length > 0) {
+    const listed = fixturePaths.map((relative) => `  - ${join(fixtureDir, relative)}`).join("\n");
+    sections.push(`## Available fixture files\n\n${listed}`);
+  }
+
+  if (typeof scenario.allowedReportPath === "string") {
+    sections.push(`## Report path\n\nWrite your report to exactly this path:\n\n  ${join(fixtureDir, scenario.allowedReportPath)}`);
+  }
+
+  if (typeof scenario.editableFixture === "string") {
+    sections.push(`## Editable file\n\nOnly this file may be edited:\n\n  ${join(fixtureDir, scenario.editableFixture)}`);
+  }
+
+  const allowlist = scenario.commandAllowlist ?? [];
+  if (allowlist.length > 0) {
+    const listed = allowlist.map((command) => `  - ${command}`).join("\n");
+    sections.push(`## Allowed commands\n\nOnly these exact commands may be run:\n\n${listed}`);
+  }
+
+  return sections.length === 0 ? prompt : `${prompt}\n\n${sections.join("\n\n")}`;
+}
+
 export function buildPiInvocation(args, repetition) {
   const runSuffix = `run-${String(repetition)}`;
   const sessionDir = `${args.output}/.sessions/${runSuffix}`;
@@ -146,7 +180,15 @@ export function buildPiInvocation(args, repetition) {
 
   piArgs.push("--extension", FAKE_TOOLS_RELATIVE);
   piArgs.push("--model", args.model);
-  piArgs.push(rewriteEvalTokens(args.scenario.prompt, fixtureDir));
+
+  // For role suites, append a fixture manifest so the model can discover the
+  // exact available paths without guessing. The prompt body never names paths —
+  // it says "the supplied task brief" — and the fixture root is ephemeral.
+  const prompt = rewriteEvalTokens(args.scenario.prompt, fixtureDir);
+  const delivered = args.suite === "role"
+    ? buildRolePromptWithManifest(prompt, fixtureDir, args.scenario)
+    : prompt;
+  piArgs.push(delivered);
 
   const readRoots = [
     `${SKILL_ROOT_RELATIVE}/SKILL.md`,
@@ -176,6 +218,13 @@ export function buildPiInvocation(args, repetition) {
     env.SDD_EVAL_ROLE_TOOL_MODE = args.scenario.roleToolMode;
   } else if (typeof args.scenario.roleToolMode === "string") {
     env.SDD_EVAL_ROLE_TOOL_MODE = args.scenario.roleToolMode;
+  }
+
+  if (typeof args.scenario.editableFixture === "string") {
+    env.SDD_EVAL_EDITABLE_FIXTURE = join(fixtureDir, args.scenario.editableFixture);
+  }
+  if (Array.isArray(args.scenario.commandAllowlist)) {
+    env.SDD_EVAL_COMMAND_ALLOWLIST_JSON = JSON.stringify(args.scenario.commandAllowlist);
   }
 
   return { command: "pi", args: piArgs, env, sessionDir, profileDir, fixtureDir, rolePromptSource };

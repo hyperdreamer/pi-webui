@@ -545,6 +545,36 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(inspection.truncated).toBe(true);
   });
 
+  it("tells role runs where their fixtures are without altering the prompt body", () => {
+    // Role prompts say "the supplied task brief" but name no path, and the
+    // fixture root is a fresh temporary directory. Without a manifest the model
+    // guesses paths, every read is refused, and the run fails on discovery
+    // rather than on the role contract under test.
+    const args = parseEvaluatorArgs([
+      "--suite", "role", "--condition", "original", "--scenario", "implementer-needs-context",
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/sdd-out",
+    ]);
+    const delivered = buildPiInvocation(args, 1).args.at(-1);
+
+    expect(delivered.startsWith(args.scenario.prompt)).toBe(true);
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/task-brief.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/CONTEXT.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/reports/implementer-report.md");
+    expect(delivered).toContain("## Available fixture files");
+    expect(delivered).toContain("## Report path");
+    // The manifest must not leak the oracle.
+    expect(delivered).not.toContain(args.scenario.expected_behavior);
+    expect(delivered).not.toContain("NEEDS_CONTEXT");
+  });
+
+  it("adds no fixture manifest to controller runs", () => {
+    const args = parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", "finding-ledger-retention",
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/sdd-out",
+    ]);
+    expect(buildPiInvocation(args, 1).args.at(-1)).toBe(args.scenario.prompt);
+  });
+
   it("writes nothing outside the requested output directory", () => {
     const args = parseEvaluatorArgs([
       "--condition", "candidate", "--scenario", "missing-implementer-tier",
