@@ -251,7 +251,7 @@ describe("chatQueuedMessagesCopyText", () => {
 });
 
 describe("ChatView queued-message rendering and copy wiring", () => {
-  it("renders a single Steered section with individual Copy and Clear all queues", () => {
+  it("renders a single Steered section with individual Copy, Copy all, and Clear all", () => {
     const view = new ChatView();
     view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
     view.canClearServerQueue = true;
@@ -262,7 +262,7 @@ describe("ChatView queued-message rendering and copy wiring", () => {
     expect(rendered).toContain("Steered");
     expect(rendered).toContain("Sent together at the next turn");
     expect(rendered).toContain("Copy steered message 1");
-    expect(rendered).not.toContain("Copy all queues");
+    expect(rendered).toContain("Copy all queues");
     expect(rendered).toContain("Clear all queues");
   });
 

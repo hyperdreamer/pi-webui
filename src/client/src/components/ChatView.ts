@@ -952,7 +952,8 @@ export class ChatView extends LitElement {
     const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
     const clientSection = sections.find((section) => section.source === "client");
     const serverSections = sections.filter((section) => section.source === "server");
-    const showCopyAll = chatQueuedSectionsHaveBothServerKinds(serverSections);
+    const hasServerMessages = serverSections.length > 0;
+    const showCopyAll = hasServerMessages;
     const showClearAll = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
     return html`
       ${clientSection === undefined ? null : this.renderQueuedMessageList(clientSection)}
