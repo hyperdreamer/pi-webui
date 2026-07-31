@@ -387,6 +387,9 @@ export class ChatView extends LitElement {
   private readonly handleClearServerQueue = (): void => {
     this.onClearServerQueue?.();
   };
+  private readonly handleCopyAllQueuedMessages = (): void => {
+    void this.copyAllQueuedMessages();
+  };
   private readonly handleToggleWarnings = (): void => {
     this.onToggleWarnings?.();
   };
@@ -939,13 +942,32 @@ export class ChatView extends LitElement {
   }
 
   private renderQueuedMessages() {
-    const serverQueued = this.status?.queuedMessages ?? [];
-    const sections = chatQueuedMessageSections(this.clientQueuedMessages, serverQueued);
-    return html`${sections.map((section) => this.renderQueuedMessageList(section, sections))}`;
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const clientSection = sections.find((section) => section.source === "client");
+    const serverSections = sections.filter((section) => section.source === "server");
+    const showCopyAll = chatQueuedSectionsHaveBothServerKinds(serverSections);
+    const showClearAll = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
+    return html`
+      ${clientSection === undefined ? null : this.renderQueuedMessageList(clientSection)}
+      ${showCopyAll ? html`
+        <div class="queued-actions">
+          <button type="button" class="queued-action-button" title="Copy all queued messages" @click=${this.handleCopyAllQueuedMessages}>Copy all queues</button>
+          ${showClearAll ? html`
+            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear all queues</button>
+          ` : null}
+        </div>
+      ` : null}
+      ${serverSections.map((section) => this.renderQueuedMessageList(section))}
+    `;
   }
 
-  private renderQueuedMessageList(section: QueuedMessageSection, sections: QueuedMessageSection[]) {
-    const canClear = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
+  private async copyAllQueuedMessages(): Promise<void> {
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const serverSections = sections.filter((section) => section.source === "server");
+    await writeClipboardText(chatQueuedMessagesCopyText(serverSections));
+  }
+
+  private renderQueuedMessageList(section: QueuedMessageSection) {
     return html`
       <aside class="queued-messages" aria-live="polite">
         <div class="queued-header">
@@ -953,13 +975,24 @@ export class ChatView extends LitElement {
             <strong>${section.heading}</strong>
             <small>${section.detail}</small>
           </div>
-          ${canClear ? html`
-            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear queue</button>
-          ` : null}
         </div>
         ${section.messages.map((message, index) => html`
           <div class="queued-message">
-            <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+            <div class="queued-message-header">
+              <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+              <button
+                type="button"
+                class="queued-copy-button"
+                title="Copy message"
+                aria-label=${`Copy ${message.kind === "steer" ? "steered" : "follow-up"} message ${String(index + 1)}`}
+                @click=${(event: MouseEvent) => { event.stopPropagation(); void writeClipboardText(message.text); }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+            </div>
             <formatted-text .text=${message.text}></formatted-text>
           </div>
         `)}

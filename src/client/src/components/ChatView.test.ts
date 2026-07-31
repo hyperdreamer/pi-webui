@@ -1,5 +1,6 @@
 import type { TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import { writeClipboardText } from "../clipboard";
 import type { QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
 import {
   notificationTargetKey,
@@ -26,7 +27,10 @@ import {
   chatSessionWarningRows,
   chatUserMessageActionAvailability,
 } from "./ChatView";
-import { findOptionalTemplateEventHandlerAfterMarker, templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerAfterMarker, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+
+// eslint-disable-next-line @typescript-eslint/require-await -- Keep the mocked adapter promise-shaped for handler tests.
+vi.mock("../clipboard", () => ({ writeClipboardText: vi.fn(async () => true) }));
 
 describe("chatUserMessageActionAvailability", () => {
   const message: ChatLine = {
@@ -246,6 +250,85 @@ describe("chatQueuedMessagesCopyText", () => {
   });
 });
 
+describe("ChatView queued-message rendering and copy wiring", () => {
+  it("renders a single Steered section with its individual Copy control only", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Steered");
+    expect(rendered).toContain("Sent together at the next turn");
+    expect(rendered).toContain("Copy steered message 1");
+    expect(rendered).not.toContain("Copy all queues");
+    expect(rendered).not.toContain("Clear all queues");
+  });
+
+  it("renders both live queue details with Copy all before Clear all", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = vi.fn();
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Steered");
+    expect(rendered).toContain("Sent together at the next turn");
+    expect(rendered).toContain("Follow-up");
+    expect(rendered).toContain("Sent together after the agent finishes");
+    expect(rendered.indexOf("Copy all queues")).toBeLessThan(rendered.indexOf("Clear all queues"));
+  });
+
+  it("copies an individual row or all live queues and wires the shared clear action", async () => {
+    const view = new ChatView();
+    const onClearServerQueue = vi.fn();
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = onClearServerQueue;
+    const rendered = renderQueuedMessages(view);
+
+    const copySteered = templateClickHandlerForText(rendered, "Copy steered message 1");
+    vi.mocked(writeClipboardText).mockClear();
+    copySteered(new Event("click"));
+    await Promise.resolve();
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith("server queued");
+
+    const copyAll = templateClickHandlerForText(rendered, "Copy all queues");
+    vi.mocked(writeClipboardText).mockClear();
+    copyAll(new Event("click"));
+    await Promise.resolve();
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith([
+      "Steered",
+      "server queued",
+      "",
+      "Follow-up",
+      "then inspect",
+    ].join("\n"));
+
+    templateClickHandlerForText(rendered, "Clear all queues")(new Event("click"));
+    expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+
+  it("keeps client startup messages in their section with an individual Copy control", () => {
+    const view = new ChatView();
+    view.clientQueuedMessages = [{ kind: "followUp", text: "queued before start" }];
+
+    const rendered = templateText(renderQueuedMessages(view));
+
+    expect(rendered).toContain("Queued until session starts");
+    expect(rendered).toContain("Will send once the backend session is ready");
+    expect(rendered).toContain("Copy follow-up message 1");
+    expect(rendered).not.toContain("Copy all queues");
+    expect(rendered).not.toContain("Clear all queues");
+  });
+});
+
 describe("activityDockMetrics", () => {
   it("formats session flow, usage, and paid-cost values for the activity dock", () => {
     expect(activityDockMetrics({
@@ -350,11 +433,11 @@ describe("activityDockWarningControlContent", () => {
 
 
 describe("ChatView queued-message clear wiring", () => {
-  // Escape hatch: this case verifies the Clear queue button's Lit event wiring,
-  // whose only observable effect is invoking the injected callback. Vitest runs
-  // with no DOM environment here, so a shadow-DOM click harness would add
-  // disproportionate setup; handler extraction anchored to the user-facing
-  // "Clear queue" button text is proportionate.
+  // Escape hatch: this case verifies the Clear all queues button's Lit event
+  // wiring, whose only observable effect is invoking the injected callback.
+  // Vitest runs with no DOM environment here, so a shadow-DOM click harness
+  // would add disproportionate setup; handler extraction anchored to the
+  // user-facing "Clear all queues" button text is proportionate.
   it("invokes onClearServerQueue when both live queue kinds are present", () => {
     const view = new ChatView();
     const onClearServerQueue = vi.fn();
@@ -365,7 +448,7 @@ describe("ChatView queued-message clear wiring", () => {
     view.canClearServerQueue = true;
     view.onClearServerQueue = onClearServerQueue;
 
-    templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear queue")(new Event("click"));
+    templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear all queues")(new Event("click"));
 
     expect(onClearServerQueue).toHaveBeenCalledOnce();
   });
@@ -376,7 +459,7 @@ describe("ChatView queued-message clear wiring", () => {
     view.canClearServerQueue = true;
     view.onClearServerQueue = vi.fn();
 
-    expect(findOptionalTemplateEventHandlerAfterMarker(renderQueuedMessages(view), "Clear queue")).toBeUndefined();
+    expect(findOptionalTemplateEventHandlerAfterMarker(renderQueuedMessages(view), "Clear all queues")).toBeUndefined();
   });
 });
 

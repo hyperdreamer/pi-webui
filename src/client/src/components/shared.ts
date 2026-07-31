@@ -621,10 +621,16 @@ export const chatStyles = css`
   .queued-heading { min-width: 0; flex: 1 1 180px; display: grid; gap: 2px; }
   .queued-heading strong { color: var(--pi-warning); }
   .queued-heading small { color: var(--pi-muted); }
-  .queued-clear-button { flex: 0 0 auto; border: 1px solid var(--pi-warning-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-warning); padding: 5px 10px; font: 12px system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
-  .queued-clear-button:hover, .queued-clear-button:focus { border-color: var(--pi-warning); color: var(--pi-text-bright); }
+  .queued-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
+  .queued-action-button, .queued-clear-button { flex: 0 0 auto; border: 1px solid var(--pi-warning-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-warning); padding: 5px 10px; font: 12px system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+  .queued-action-button:hover, .queued-action-button:focus-visible, .queued-clear-button:hover, .queued-clear-button:focus-visible { border-color: var(--pi-accent); color: var(--pi-text-bright); }
+  .queued-action-button:focus-visible, .queued-clear-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
   .queued-message { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--pi-border); }
   .queued-message:first-of-type { padding-top: 0; border-top: 0; }
+  .queued-message-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  .queued-copy-button { flex: 0 0 auto; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--pi-border); border-radius: 4px; background: transparent; color: var(--pi-text-dim); cursor: pointer; }
+  .queued-copy-button:hover, .queued-copy-button:focus-visible { color: var(--pi-accent); border-color: var(--pi-accent); background: var(--pi-surface-hover); }
+  .queued-copy-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
   .queued-kind { color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
   .session-activity { max-width: 100%; min-width: 0; box-sizing: border-box; display: grid; gap: 4px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); color: var(--pi-text); overflow: hidden; }
   .session-activity.compacting { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
