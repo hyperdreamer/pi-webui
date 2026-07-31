@@ -33,12 +33,13 @@ import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPer
 import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
-import type { LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "../plugins/types";
+import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal } from "../plugins/types";
+import { visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebUiTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
 import { corePlugin } from "../plugins/core";
 import { themePackPlugin } from "../plugins/themes";
 import { loadExternalPlugins } from "../plugins/external";
-import { PluginRegistry, installPluginRuntimeScope, installWorkspacePanelScope } from "../plugins/registry";
+import { PluginRegistry, installActivityRailScope, installPluginRuntimeScope, installWorkspacePanelScope } from "../plugins/registry";
 import { queryNamespace, readNamespacedString, setNamespacedQueryKey } from "../namespacedQueryArgs";
 import { AppShellController } from "../appShell/appShellController";
 import { BrowserResumeController } from "../appShell/browserResumeController";
@@ -87,6 +88,7 @@ import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocu
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import "./ActivityRail";
+import "./PluginActivityDialog";
 import "./GitUpdateManagerPanel";
 import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ReorderableRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
@@ -142,6 +144,10 @@ interface TerminalModalPointerEvent {
   currentTarget: EventTarget | null;
   preventDefault(): void;
   stopPropagation(): void;
+}
+
+interface InternalActivityRailContext extends ActivityRailContext {
+  onRefreshMemory: () => void;
 }
 
 @customElement("pi-webui-app")
@@ -318,6 +324,9 @@ export class PiWebUiApp extends LitElement {
   private remoteRouteRestoreInProgress = false;
   private windowTitleCleanup: (() => void) | undefined;
   private readonly plugins = createPluginRegistry();
+  private readonly reportActivityRailError: ReportActivityRailError = (phase, contributionId, error) => {
+    console.warn("Plugin activity rail contribution failed", phase, contributionId, error);
+  };
   private readonly loadedMachinePluginIds = new Set<string>();
   private readonly machinePluginLoadPromises = new Map<string, Promise<void>>();
   private gatewayPluginLoadPromise: Promise<void> | undefined;
@@ -346,6 +355,9 @@ export class PiWebUiApp extends LitElement {
   @state() private terminalTabHidden = readTerminalTabHidden();
   @state() private infoTabHidden = readInfoTabHidden();
   @state() private railOrder: ReorderableRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
+  @state() private compactRailOpen = false;
+  @state() private activeActivityRailId: QualifiedContributionId | undefined;
+  private activityRailRestoreFocus: (() => void) | undefined;
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -371,7 +383,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
-    if (this.settingsSection !== undefined || this.state.treeDialog !== undefined) return;
+    if (this.compactRailOpen || this.activeActivityRailId !== undefined || this.settingsSection !== undefined || this.state.treeDialog !== undefined) return;
     if (this.keyboard.handle(event, this.getDefaultActions(), { shortcuts: this.shortcutConfig })) {
       event.preventDefault();
       event.stopPropagation();
@@ -389,6 +401,8 @@ export class PiWebUiApp extends LitElement {
     // deduplicates acknowledgements for the observed completion order.
     this.committedChatIdentity = selectedChatIdentity(this.state);
     this.syncSelectedSessionReadState();
+    if (this.compactRailOpen && this.appShell.isDesktopActivityRailLayout) this.closeCompactActivityRail();
+    if (this.activeActivityRailId !== undefined && this.activeActivityRailItem() === undefined) this.closeActivityRailItem();
   }
 
   private syncSessionWarningVisibility(): void {
@@ -449,7 +463,9 @@ export class PiWebUiApp extends LitElement {
   }
 
   private isChatObscured(): boolean {
-    return this.settingsSection !== undefined
+    return this.compactRailOpen
+      || this.activeActivityRailId !== undefined
+      || this.settingsSection !== undefined
       || this.sessionCleanupDialog !== undefined
       || this.historyWindow !== undefined
       || this.modelsConfigDialogOpen
@@ -1868,6 +1884,14 @@ export class PiWebUiApp extends LitElement {
     };
   }
 
+  private createWorkspacePanelTerminal(workspace: Workspace, machineId: string, origin: string): WorkspacePanelTerminal {
+    const terminalCommandRuns = this.terminalCommandRunsForOrigin(origin, machineId);
+    return {
+      open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
+      runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
+    };
+  }
+
   private createWorkspacePanelContext(workspace: Workspace): WorkspacePanelContext {
     const machine = pluginMachineFromState(this.state);
     const machineId = machine.id;
@@ -1879,10 +1903,7 @@ export class PiWebUiApp extends LitElement {
         state: this.state,
         files: this.createWorkspaceFiles(workspace, machineId),
         prompt: this.createPromptEditor(),
-        terminal: {
-          open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
-          runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
-        },
+        terminal: this.createWorkspacePanelTerminal(workspace, machineId, origin),
         openTerminal: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
         host: this.createWorkspaceHost(),
         piWebUiUnstable: { terminalCommandRuns },
@@ -2094,11 +2115,15 @@ export class PiWebUiApp extends LitElement {
   }
 
   private createPluginRuntimeContext(): PluginRuntimeContext {
-    const createContext = (origin: string): PluginRuntimeContext => installPluginRuntimeScope({
+    return this.createPluginRuntimeContextForOrigin("core", selectedMachineId(this.state));
+  }
+
+  private createPluginRuntimeContextForOrigin(origin: string, machineId: string): PluginRuntimeContext {
+    const createContext = (scopedOrigin: string): PluginRuntimeContext => installPluginRuntimeScope({
       state: this.state,
       prompt: this.createPromptEditor(),
       piWebUiUnstable: {
-        terminalCommandRuns: this.terminalCommandRunsForOrigin(origin),
+        terminalCommandRuns: this.terminalCommandRunsForOrigin(scopedOrigin, machineId),
         openSettings: (section) => { this.openSettings(section); },
       },
       openActionPalette: () => { this.setState({ actionPaletteOpen: true }); },
@@ -2128,8 +2153,81 @@ export class PiWebUiApp extends LitElement {
       deleteCachedNewSession: () => this.sessions.deleteCachedNewSession(),
       stopActiveWork: () => this.sessions.stopActiveWork(),
     }, createContext);
+    return createContext(origin);
+  }
+
+  private createActivityRailContext(): ActivityRailContext {
+    const machine = pluginMachineFromState(this.state);
+    const workspace = this.state.selectedWorkspace;
+    const createContext = (origin: string): InternalActivityRailContext => installActivityRailScope({
+      ...this.createPluginRuntimeContextForOrigin(origin, machine.id),
+      machine,
+      ...(workspace === undefined ? {} : {
+        workspaceScope: {
+          workspace,
+          files: this.createWorkspaceFiles(workspace, machine.id),
+          terminal: this.createWorkspacePanelTerminal(workspace, machine.id, origin),
+        },
+      }),
+      host: {
+        requestRender: () => { this.requestUpdate(); },
+        close: () => { this.closeActivityRailItem(); },
+      },
+      onRefreshMemory: () => { void this.memory.refresh(); },
+    }, createContext);
     return createContext("core");
   }
+
+  private activityRailItems(): ActivityRailDisplayItem[] {
+    const context = this.createActivityRailContext();
+    return this.projectActivityRailItems(this.plugins.getActivityRailItems(), context);
+  }
+
+  private projectActivityRailItems(
+    items: readonly QualifiedActivityRailContribution[],
+    context: ActivityRailContext,
+  ): ActivityRailDisplayItem[] {
+    return visibleActivityRailItems(items, context, this.reportActivityRailError);
+  }
+
+  private activeActivityRailItem(): { activity: QualifiedActivityRailContribution; context: ActivityRailContext } | undefined {
+    const id = this.activeActivityRailId;
+    return id === undefined ? undefined : this.resolveActivityRailItem(id);
+  }
+
+  private openActivityRailItem(id: QualifiedContributionId, restoreFocus: () => void): void {
+    if (this.resolveActivityRailItem(id) === undefined) return;
+    this.closeCompactActivityRail();
+    this.activityRailRestoreFocus = restoreFocus;
+    this.activeActivityRailId = id;
+  }
+
+  private resolveActivityRailItem(id: QualifiedContributionId): { activity: QualifiedActivityRailContribution; context: ActivityRailContext } | undefined {
+    const context = this.createActivityRailContext();
+    const activities = this.plugins.getActivityRailItems();
+    if (!this.projectActivityRailItems(activities, context).some((item) => item.id === id)) return undefined;
+    const activity = activities.find((item) => item.id === id);
+    return activity === undefined ? undefined : { activity, context };
+  }
+
+  private readonly closeActivityRailItem = (): void => {
+    if (this.activeActivityRailId === undefined) return;
+    const restoreFocus = this.activityRailRestoreFocus;
+    this.activityRailRestoreFocus = undefined;
+    this.activeActivityRailId = undefined;
+    if (restoreFocus !== undefined) void this.updateComplete.then(() => {
+      if (this.activeActivityRailId === undefined) restoreFocus();
+    });
+  };
+
+  private readonly closeCompactActivityRail = (): void => {
+    if (this.compactRailOpen) this.compactRailOpen = false;
+  };
+
+  private readonly toggleCompactActivityRail = (): void => {
+    if (this.appShell.isDesktopActivityRailLayout) return;
+    this.compactRailOpen = !this.compactRailOpen;
+  };
 
   private async deleteWorkspace(workspace = this.state.selectedWorkspace): Promise<void> {
     if (workspace === undefined) return;
@@ -2551,11 +2649,13 @@ export class PiWebUiApp extends LitElement {
   };
 
   private readonly handleOpenTerminalFromRail = (): void => {
+    this.closeCompactActivityRail();
     if (this.state.selectedWorkspace === undefined) return;
     this.terminalModalOpen = true;
   };
 
   private readonly handleOpenGitUpdateManagerFromRail = (): void => {
+    this.closeCompactActivityRail();
     if (this.state.selectedWorkspace === undefined) return;
     this.gitUpdateManagerPanelOpen = true;
   };
@@ -2571,6 +2671,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly handleOpenThemeFromRail = (): void => {
+    this.closeCompactActivityRail();
     this.openThemeDialog();
   };
 
@@ -2766,7 +2867,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private renderContextBar() {
-    if (!this.appShell.isMobileNavigationLayout) return null;
+    if (this.appShell.isDesktopActivityRailLayout) return null;
     return html`
       <app-context-bar
         .machines=${this.state.machines}
@@ -2777,6 +2878,8 @@ export class PiWebUiApp extends LitElement {
         .refreshControl=${this.appShell.shouldShowAppRefreshInContextBar() ? this.renderAppRefresh() : undefined}
         .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
         .onShowActions=${() => { this.setState({ actionPaletteOpen: true }); }}
+        .activityRailOpen=${this.compactRailOpen}
+        .onToggleActivityRail=${this.toggleCompactActivityRail}
       ></app-context-bar>
     `;
   }
@@ -2911,6 +3014,7 @@ export class PiWebUiApp extends LitElement {
     const showCompact = state.selectedSession !== undefined
       && state.selectedSession.archived !== true;
     const gitUpdateManagerWorkspace = this.gitUpdateManagerPanelOpen ? state.selectedWorkspace : undefined;
+    const activeActivity = this.activeActivityRailItem();
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <aside id="navigation-panel">
@@ -2922,14 +3026,21 @@ export class PiWebUiApp extends LitElement {
             .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
             .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
             .onOpenSystemPrompt=${() => {
+              this.closeCompactActivityRail();
               if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
             }}
             .historyEnabled=${this.canOpenSessionHistory()}
-            .onOpenHistory=${() => { this.openSessionHistory(); }}
-            .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
-            .onOpenSettings=${() => { this.openSettings(); }}
+            .onOpenHistory=${() => { this.closeCompactActivityRail(); this.openSessionHistory(); }}
+            .onOpenInfo=${() => { this.closeCompactActivityRail(); this.openWorkspaceTool("core:workspace.info"); }}
+            .onOpenSettings=${() => { this.closeCompactActivityRail(); this.openSettings(); }}
             .railOrder=${this.railOrder}
             .onRailOrderChange=${this.handleRailOrderChange}
+            .pluginItems=${this.activityRailItems()}
+            .onOpenPluginActivity=${(id: QualifiedContributionId, source: HTMLElement) => {
+              this.openActivityRailItem(id, () => { source.focus(); });
+            }}
+            .compactOpen=${this.compactRailOpen}
+            .onCloseCompact=${this.closeCompactActivityRail}
           ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
@@ -2984,6 +3095,7 @@ export class PiWebUiApp extends LitElement {
         ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
+        ${activeActivity === undefined ? null : html`<plugin-activity-dialog .activity=${activeActivity.activity} .context=${activeActivity.context} .onClose=${this.closeActivityRailItem} .onReportError=${this.reportActivityRailError}></plugin-activity-dialog>`}
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}

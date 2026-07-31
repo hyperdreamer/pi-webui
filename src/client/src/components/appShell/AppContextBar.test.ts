@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Machine } from "../../api";
-import { shouldShowMachineContext } from "./AppContextBar";
+import { templateClickHandlerForText, templateText } from "../../templateInspection.testSupport";
+import { AppContextBar, shouldShowMachineContext } from "./AppContextBar";
 
 describe("shouldShowMachineContext", () => {
   it("hides the machine crumb when there is no machine choice", () => {
@@ -10,6 +11,30 @@ describe("shouldShowMachineContext", () => {
 
   it("shows the machine crumb when multiple machines exist", () => {
     expect(shouldShowMachineContext([machine("local"), machine("remote-a")])).toBe(true);
+  });
+});
+
+describe("AppContextBar activity rail launcher", () => {
+  it("invokes the activity rail callback from its labelled launcher", () => {
+    const contextBar = new AppContextBar();
+    const onToggleActivityRail = vi.fn();
+    contextBar.onToggleActivityRail = onToggleActivityRail;
+
+    const template = contextBar.render();
+    expect(templateText(template)).toContain('aria-label="Open activity rail"');
+    // The node test environment has no DOM; this narrowly exercises the labelled
+    // public template callback rather than a component implementation detail.
+    templateClickHandlerForText(template, "Open activity rail")(new Event("click"));
+
+    expect(onToggleActivityRail).toHaveBeenCalledOnce();
+  });
+
+  it("labels the launcher to close an open activity rail", () => {
+    const contextBar = new AppContextBar();
+    contextBar.onToggleActivityRail = vi.fn();
+    contextBar.activityRailOpen = true;
+
+    expect(templateText(contextBar.render())).toContain('aria-label="Close activity rail"');
   });
 });
 

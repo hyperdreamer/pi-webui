@@ -14,6 +14,8 @@ export class AppContextBar extends LitElement {
   @property({ attribute: false }) refreshControl: unknown;
   @property({ attribute: false }) onOpenSection?: (section: NavigationSection) => void;
   @property({ attribute: false }) onShowActions?: () => void;
+  @property({ type: Boolean }) activityRailOpen = false;
+  @property({ attribute: false }) onToggleActivityRail?: () => void;
   @query(".context-items") private contextItems?: HTMLElement | null;
   @state() private canScrollLeft = false;
   @state() private canScrollRight = false;
@@ -74,8 +76,20 @@ export class AppContextBar extends LitElement {
             </button>
           </li>
         </ol>
-        ${this.hasContextActions() ? html`<div class="context-actions">${this.renderActionsButton()}${this.refreshControl}</div>` : null}
+        ${this.hasContextActions() ? html`<div class="context-actions">${this.renderActivityRailButton()}${this.renderActionsButton()}${this.refreshControl}</div>` : null}
       </nav>
+    `;
+  }
+
+  private renderActivityRailButton() {
+    if (this.onToggleActivityRail === undefined) return null;
+    const label = this.activityRailOpen ? "Close activity rail" : "Open activity rail";
+    return html`
+      <button type="button" class="context-action-button activity-rail-action-button" title="${label}" aria-label="${label}" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onToggleActivityRail?.(); }}>
+        <svg class="context-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 4h14v3H5zm0 6h14v3H5zm0 6h14v3H5z"></path>
+        </svg>
+      </button>
     `;
   }
 
@@ -92,15 +106,23 @@ export class AppContextBar extends LitElement {
 
   private contextBarClass(): string {
     const classes = ["context-bar"];
-    if (this.hasContextActions()) classes.push("has-context-actions");
-    if (this.refreshControl !== undefined && this.onShowActions !== undefined) classes.push("has-context-actions-double");
+    const actionCount = this.contextActionCount();
+    if (actionCount > 0) classes.push("has-context-actions");
+    if (actionCount === 2) classes.push("has-context-actions-double");
+    if (actionCount >= 3) classes.push("has-context-actions-triple");
     if (this.canScrollLeft) classes.push("can-scroll-left");
     if (this.canScrollRight) classes.push("can-scroll-right");
     return classes.join(" ");
   }
 
   private hasContextActions(): boolean {
-    return this.refreshControl !== undefined || this.onShowActions !== undefined;
+    return this.contextActionCount() > 0;
+  }
+
+  private contextActionCount(): number {
+    return Number(this.refreshControl !== undefined)
+      + Number(this.onShowActions !== undefined)
+      + Number(this.onToggleActivityRail !== undefined);
   }
 
   private observeContextItems(): void {
@@ -146,6 +168,7 @@ export class AppContextBar extends LitElement {
     .context-items { flex: 1 1 auto; min-width: 0; display: flex; align-items: stretch; gap: 5px; margin: 0; padding: 0 8px; list-style: none; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-padding-inline: 8px; scrollbar-width: thin; }
     .context-bar.has-context-actions .context-items { padding-right: 58px; scroll-padding-inline: 8px 58px; }
     .context-bar.has-context-actions-double .context-items { padding-right: 102px; scroll-padding-inline: 8px 102px; }
+    .context-bar.has-context-actions-triple .context-items { padding-right: 146px; scroll-padding-inline: 8px 146px; }
     .context-item { flex: 0 0 auto; min-width: 0; display: flex; }
     .context-actions { position: absolute; top: 6px; right: 0; bottom: 6px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: var(--pi-bg); pointer-events: none; }
     .context-actions::before { content: ""; position: absolute; top: 0; bottom: 0; left: -24px; z-index: 0; width: 24px; background: linear-gradient(90deg, transparent, var(--pi-bg)); pointer-events: none; }
@@ -153,6 +176,7 @@ export class AppContextBar extends LitElement {
     .context-action-button { box-sizing: border-box; width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 0; line-height: 1; }
     .context-action-button:hover, .context-action-button:focus-visible { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .context-action-icon { width: 18px; height: 18px; fill: currentColor; pointer-events: none; }
+    @media (min-width: 1181px) { .activity-rail-action-button { display: none; } }
     .context-chip { flex: 0 0 auto; min-width: 0; display: inline-flex; align-items: baseline; gap: 5px; border: 1px solid var(--pi-border-muted); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 8px; font: inherit; text-align: left; }
     .context-chip:hover { background: var(--pi-surface-hover); }
     .context-chip:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
