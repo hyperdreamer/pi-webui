@@ -194,6 +194,14 @@ describe("chatQueuedSectionsShowClearAction", () => {
       false,
       true,
     )).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      true,
+      false,
+    )).toBe(false);
   });
 });
 
@@ -347,16 +355,28 @@ describe("ChatView queued-message clear wiring", () => {
   // with no DOM environment here, so a shadow-DOM click harness would add
   // disproportionate setup; handler extraction anchored to the user-facing
   // "Clear queue" button text is proportionate.
-  it("invokes onClearServerQueue when the server-queue action is activated", () => {
+  it("invokes onClearServerQueue when both live queue kinds are present", () => {
     const view = new ChatView();
     const onClearServerQueue = vi.fn();
-    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.status = queuedStatus([
+      { kind: "steer", text: "server queued" },
+      { kind: "followUp", text: "then inspect" },
+    ]);
     view.canClearServerQueue = true;
     view.onClearServerQueue = onClearServerQueue;
 
     templateEventHandlerNearMarker(renderQueuedMessages(view), "Clear queue")(new Event("click"));
 
     expect(onClearServerQueue).toHaveBeenCalledOnce();
+  });
+
+  it("does not expose the clear action for a single live queue kind", () => {
+    const view = new ChatView();
+    view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = vi.fn();
+
+    expect(findOptionalTemplateEventHandlerAfterMarker(renderQueuedMessages(view), "Clear queue")).toBeUndefined();
   });
 });
 

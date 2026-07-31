@@ -164,11 +164,6 @@ export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): st
     .join("\n\n");
 }
 
-/** Whether a queued-message section shows the server clear-queue action. */
-export function chatQueuedSectionShowsClearAction(section: QueuedMessageSection, canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
-  return section.source === "server" && canClearServerQueue && hasClearHandler;
-}
-
 /** A rendered session-warning row derived from live status warnings. */
 export interface ChatSessionWarningRow {
   severity: SessionWarningSeverity;
@@ -945,11 +940,12 @@ export class ChatView extends LitElement {
 
   private renderQueuedMessages() {
     const serverQueued = this.status?.queuedMessages ?? [];
-    return html`${chatQueuedMessageSections(this.clientQueuedMessages, serverQueued).map((section) => this.renderQueuedMessageList(section))}`;
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, serverQueued);
+    return html`${sections.map((section) => this.renderQueuedMessageList(section, sections))}`;
   }
 
-  private renderQueuedMessageList(section: QueuedMessageSection) {
-    const canClear = chatQueuedSectionShowsClearAction(section, this.canClearServerQueue, this.onClearServerQueue !== undefined);
+  private renderQueuedMessageList(section: QueuedMessageSection, sections: QueuedMessageSection[]) {
+    const canClear = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
     return html`
       <aside class="queued-messages" aria-live="polite">
         <div class="queued-header">
