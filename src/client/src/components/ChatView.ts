@@ -153,7 +153,7 @@ export function chatQueuedSectionsHaveBothServerKinds(sections: QueuedMessageSec
 
 /** Whether the shared live-queue clear action is available. */
 export function chatQueuedSectionsShowClearAction(sections: QueuedMessageSection[], canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
-  return chatQueuedSectionsHaveBothServerKinds(sections) && canClearServerQueue && hasClearHandler;
+  return sections.some((section) => section.source === "server" && section.messages.length > 0) && canClearServerQueue && hasClearHandler;
 }
 
 /** Copy heading for a live queue section, distinct from its visual group heading. */
@@ -956,9 +956,11 @@ export class ChatView extends LitElement {
     const showClearAll = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
     return html`
       ${clientSection === undefined ? null : this.renderQueuedMessageList(clientSection)}
-      ${showCopyAll ? html`
+      ${(showCopyAll || showClearAll) ? html`
         <div class="queued-actions">
-          <button type="button" class="queued-action-button" title="Copy all queued messages" @click=${this.handleCopyAllQueuedMessages}>Copy all queues</button>
+          ${showCopyAll ? html`
+            <button type="button" class="queued-action-button" title="Copy all queued messages" @click=${this.handleCopyAllQueuedMessages}>Copy all queues</button>
+          ` : null}
           ${showClearAll ? html`
             <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear all queues</button>
           ` : null}

@@ -175,7 +175,7 @@ describe("chatQueuedSectionsHaveBothServerKinds", () => {
 });
 
 describe("chatQueuedSectionsShowClearAction", () => {
-  it("requires both live kinds, clear capability, and a clear handler", () => {
+  it("requires any live server messages, clear capability, and a clear handler", () => {
     expect(chatQueuedSectionsShowClearAction([], true, true)).toBe(false);
     expect(chatQueuedSectionsShowClearAction(
       chatQueuedMessageSections([], [
@@ -189,7 +189,7 @@ describe("chatQueuedSectionsShowClearAction", () => {
       chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }]),
       true,
       true,
-    )).toBe(false);
+    )).toBe(true);
     expect(chatQueuedSectionsShowClearAction(
       chatQueuedMessageSections([], [
         { kind: "steer", text: "adjust" },
@@ -251,9 +251,11 @@ describe("chatQueuedMessagesCopyText", () => {
 });
 
 describe("ChatView queued-message rendering and copy wiring", () => {
-  it("renders a single Steered section with its individual Copy control only", () => {
+  it("renders a single Steered section with individual Copy and Clear all queues", () => {
     const view = new ChatView();
     view.status = queuedStatus([{ kind: "steer", text: "server queued" }]);
+    view.canClearServerQueue = true;
+    view.onClearServerQueue = vi.fn();
 
     const rendered = templateText(renderQueuedMessages(view));
 
@@ -261,7 +263,7 @@ describe("ChatView queued-message rendering and copy wiring", () => {
     expect(rendered).toContain("Sent together at the next turn");
     expect(rendered).toContain("Copy steered message 1");
     expect(rendered).not.toContain("Copy all queues");
-    expect(rendered).not.toContain("Clear all queues");
+    expect(rendered).toContain("Clear all queues");
   });
 
   it("renders both live queue details with Copy all before Clear all", () => {
