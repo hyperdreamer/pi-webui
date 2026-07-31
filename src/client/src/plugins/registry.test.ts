@@ -1,4 +1,4 @@
-import { html } from "lit";
+import { html, svg } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { DeleteWorkspaceFileResponse, FileContentResponse, MoveWorkspaceFileResponse, SessionInfo, SessionStatus, WriteWorkspaceFileResponse, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
@@ -6,9 +6,9 @@ import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import { corePlugin } from "./core";
-import { PluginRegistry } from "./registry";
+import { installActivityRailScope, PluginRegistry } from "./registry";
 import { themePackPlugin } from "./themes";
-import type { PluginRuntimeContext, ThemeTokens, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "./types";
+import type { ActivityRailContext, PiWebUiPlugin, PluginRuntimeContext, ThemeTokens, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "./types";
 
 function createContext(statePatch: Partial<AppState> = {}) {
   const calls: string[] = [];
@@ -90,6 +90,112 @@ describe("PluginRegistry", () => {
 
     expect(panel?.icon).toBeDefined();
     expect(panel?.render(createWorkspacePanelContext("local"))).toBeDefined();
+  });
+
+  it("qualifies activity Rail items, passes the host capability, and scopes remote items", () => {
+    const registry = new PluginRegistry();
+    let capability: boolean | undefined;
+    registry.register({
+      id: "example",
+      plugin: {
+        apiVersion: 1,
+        name: "Example",
+        activate: (context) => {
+          capability = context.capabilities?.activityRailItems;
+          return {
+            contributions: {
+              activityRailItems: [
+                { id: "late", title: "Zulu", icon: html`<svg></svg>`, order: 20, render: () => html`<p>Zulu</p>` },
+                { id: "early", title: "Alpha", icon: html`<svg></svg>`, order: 10, render: () => html`<p>Alpha</p>` },
+              ],
+            },
+          };
+        },
+      },
+    });
+    const remotePluginId = machineScopedPluginId("remote-1", "example");
+    const remoteVisible = vi.fn((context: ActivityRailContext) => {
+      context.host.requestRender();
+      return true;
+    });
+    const remoteBadge = vi.fn((context: ActivityRailContext) => {
+      context.host.close();
+      return 1;
+    });
+    const remoteRender = vi.fn(() => html`<p>Remote</p>`);
+    registry.register({
+      id: remotePluginId,
+      machineId: "remote-1",
+      sourcePluginId: "example",
+      machineSpecific: true,
+      plugin: {
+        apiVersion: 1,
+        name: "Remote Example",
+        activate: () => ({
+          contributions: {
+            activityRailItems: [
+              { id: "remote", title: "Remote", icon: html`<svg></svg>`, visible: remoteVisible, badge: remoteBadge, render: remoteRender },
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(capability).toBe(true);
+    expect(registry.getActivityRailItems().map((item) => item.id)).toEqual([
+      "example:early",
+      "example:late",
+      `${remotePluginId}:remote`,
+    ]);
+    const remoteItem = registry.getActivityRailItems().find((item) => item.id === `${remotePluginId}:remote`);
+    const localContext = createActivityRailContext();
+    expect(remoteItem?.visible?.(localContext)).toBe(false);
+    expect(remoteItem?.badge?.(localContext)).toBeUndefined();
+    remoteItem?.render(localContext);
+    expect(remoteVisible).not.toHaveBeenCalled();
+    expect(remoteBadge).not.toHaveBeenCalled();
+    expect(remoteRender).not.toHaveBeenCalled();
+
+    const remoteContext = createActivityRailContext("remote-1");
+    const scopedHost = { requestRender: vi.fn(), close: vi.fn() };
+    const scopedRemoteContext: ActivityRailContext = { ...remoteContext, host: scopedHost };
+    installActivityRailScope(remoteContext, () => scopedRemoteContext);
+    expect(remoteItem?.visible?.(remoteContext)).toBe(true);
+    expect(remoteItem?.badge?.(remoteContext)).toBe(1);
+    remoteItem?.render(remoteContext);
+    expect(remoteVisible).toHaveBeenCalledWith(scopedRemoteContext);
+    expect(remoteBadge).toHaveBeenCalledWith(scopedRemoteContext);
+    expect(remoteRender).toHaveBeenCalledWith(scopedRemoteContext);
+    expect(scopedHost.requestRender).toHaveBeenCalledOnce();
+    expect(scopedHost.close).toHaveBeenCalledOnce();
+  });
+
+  it("lets plugins fall back when activation capabilities are absent", () => {
+    const plugin: PiWebUiPlugin = {
+      apiVersion: 1,
+      name: "Fallback",
+      activate: (context) => ({
+        contributions: context.capabilities?.activityRailItems === true
+          ? {
+            activityRailItems: [
+              { id: "activity", title: "Activity", icon: html`<svg></svg>`, render: () => html`<p>Activity</p>` },
+            ],
+          }
+          : {
+            workspacePanels: [
+              { id: "workspace.fallback", title: "Fallback", render: () => html`<p>Fallback</p>` },
+            ],
+          },
+      }),
+    };
+
+    const fallback = plugin.activate({ apiVersion: 1, pluginId: "fallback", html, svg });
+    expect(fallback.contributions.workspacePanels?.map((panel) => panel.id)).toEqual(["workspace.fallback"]);
+
+    const registry = new PluginRegistry();
+    registry.register({ id: "fallback", plugin });
+
+    expect(registry.getActivityRailItems().map((item) => item.id)).toEqual(["fallback:activity"]);
   });
 
   it("exposes the prompt helper to workspace panel callbacks", () => {
@@ -670,6 +776,15 @@ function createWorkspacePanelContext(machineId: string, prompt: WorkspacePanelCo
     onRefreshMemory: vi.fn(),
     onSelectDiff: vi.fn(),
     onSelectTerminal: vi.fn(),
+  };
+}
+
+function createActivityRailContext(machineId = "local"): ActivityRailContext {
+  const { context } = createContext({ selectedMachine: testMachine(machineId) });
+  return {
+    ...context,
+    machine: { id: machineId, name: machineId, kind: machineId === "local" ? "local" : "remote" },
+    host: { requestRender: vi.fn(), close: vi.fn() },
   };
 }
 
