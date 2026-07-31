@@ -105,7 +105,8 @@ This task spends no model budget. It must be complete and committed before Task 
 ORIGINAL=/home/henry/.pi/agent/skills/subagent-driven-development
 SEAL_DIR=.superpowers/skill-evals/deterministic-sdd
 mkdir -p "$SEAL_DIR"
-cat > "$SEAL_DIR/seal-tree.py" <<'PY'import hashlib, json, os, stat, sys
+cat > "$SEAL_DIR/seal-tree.py" <<'PY'
+import hashlib, json, os, stat, sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
