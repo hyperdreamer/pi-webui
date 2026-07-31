@@ -230,7 +230,7 @@ interface GetModelPolicyV1 {
     dispatchKey: true;
     tierField: true;
     scope: "parent-session";
-    canonicalInputs: readonly ["cwd", "rawPrompt"];
+    canonicalInputs: readonly ["cwd", "rawPrompt", "tier"];
     resultPolicyApplication: true;
   };
 }
@@ -256,15 +256,15 @@ interface SpawnSubsessionDetailsV1 {
 }
 ```
 
-The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Also pin the server-side key bound that Task 5 enforces: `dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`, and the server treats it as an opaque bounded string without parsing its structure. Pin the optional `tier` field alongside it: when supplied it must name the same tier as the leading directive in the prompt, a disagreement or a `tier` without a leading directive fails before child creation, and an omitted `tier` preserves directive-only behavior. `tier` never applies policy on its own; the directive remains the only application mechanism and `tier` is a machine-checkable declaration of the same intent. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
+The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Also pin the server-side key bound that Task 5 enforces: `dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`, and the server treats it as an opaque bounded string without parsing its structure. Pin the `tier` field as the **binding** channel: a supplied `tier` resolves the child's model and thinking level before its first request, an unresolvable `tier` fails the spawn without creating a child and without substituting a neighbouring tier, and an omitted `tier` inherits the parent's policy unchanged rather than falling back to parsing prompt text. A leading `/tier-*` line in the prompt is a human-readable echo only; when both are present they must agree, and prompt text alone never applies policy. Assert this negatively as well: a prompt body naming a different tier, or naming none, must not change the model that runs. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
 
 Pin two properties of the identity input, because `rawPrompt` serves two purposes with incompatible tolerances. Directive recognition is whitespace-tolerant by design; identity comparison tolerates nothing.
 
-First, the directive bytes stay in the identity input. Stripping the directive before fingerprinting makes two dispatches that differ only in tier byte-identical, so a reused key would return the earlier child for a request that asked for a different tier, reporting `reused: true` with the earlier policy application and no detectable mismatch. That silent tier substitution is strictly worse than a false conflict, so identity must cover the directive.
+First, `tier` is a typed identity input alongside `cwd` and `rawPrompt`. Two dispatches differing only in tier are distinguishable because the tier is a structured field, not because a directive substring happens to be present in the prompt. The prompt bytes are still compared verbatim, so a renderer change is still a visible conflict, but the tier-substitution hazard is closed by the typed field rather than by fingerprinting prose. The fake must therefore read the tier from the `tier` parameter and must **not** parse it out of `rawPrompt`; a fake that recovers the tier by splitting the prompt validates a channel the runtime does not implement and cannot detect a child ignoring the directive.
 
 Second, replay must never re-render the prompt. Dispatch intent stores the rendered prompt bytes next to the pre-spawn inspection it already stores, and recovery reissues those stored bytes verbatim. Re-rendering couples identity to renderer output, so any drift — including interior drift such as an added blank line after the directive, which trimming cannot absorb — turns a legitimate recovery into conflicting reuse.
 
-Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child, which must keep the directive at byte zero. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
+Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child. Identity covers the raw prompt bytes plus the typed `tier` as a structured field, so two dispatches differing only in tier stay distinguishable without relying on directive bytes being present in the prompt. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
 
 - [ ] **Step 7: Verify and commit Task 1**
 
@@ -1098,7 +1098,7 @@ git commit -m "feat(skills): persist recoverable SDD runs"
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs`
 
-**Interfaces:** Consumes a canonical tier, one static role template, and validated path-only context JSON. Produces a prompt whose first non-whitespace token is exactly `/tier-<lowercase-tier>` and whose report contract is bounded and file-based.
+**Interfaces:** Consumes a canonical tier, one static role template, and validated path-only context JSON. Produces a prompt whose first non-whitespace token is exactly `/tier-<lowercase-tier>` as a human-readable echo of the tier passed as the typed `tier` dispatch parameter. The echo has no control effect; it exists so a human reading a transcript can see the intended tier, and so a renderer/formula divergence is detectable by comparison.
 
 - [ ] **Step 1: Write prompt-rendering RED tests**
 
@@ -1211,7 +1211,7 @@ The controller then applies the state-machine rule: unadjudicated or load-bearin
 
 Implement the role-to-template mapping in `scripts/lib/prompt-renderer.mjs` and expose it through the `sdd-state.mjs` CLI facade. Context JSON includes pinned `worktree`/`runRoot` and may contain only documented scalar/path fields and arrays of finding IDs/paths; reject unexpected keys, existing-input realpath escapes, and output paths whose real parent escapes. Render:
 
-1. `/tier-<lowercase-tier>` at byte zero;
+1. `/tier-<lowercase-tier>` at byte zero, as a human-readable echo of the typed `tier` parameter, never as the mechanism that selects the model;
 2. the static role contract;
 3. `## Dispatch Context` with escaped, validated absolute artifact paths and scalar identifiers;
 4. `## Return Channel` requiring the report path and bounded status result.
