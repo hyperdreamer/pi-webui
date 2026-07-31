@@ -77,16 +77,30 @@ interface PendingNotificationFocus {
 
 export interface QueuedMessageSection {
   source: "client" | "server";
+  kind?: "steer" | "followUp";
   heading: string;
   detail: string;
   messages: QueuedSessionMessage[];
 }
 
 export function chatQueuedMessageSections(clientQueued: QueuedSessionMessage[], serverQueued: QueuedSessionMessage[]): QueuedMessageSection[] {
-  return [
+  const serverSections = (["steer", "followUp"] as const).flatMap((kind): QueuedMessageSection[] => {
+    const messages = serverQueued.filter((message) => message.kind === kind);
+    if (messages.length === 0) return [];
+    return [{
+      source: "server",
+      kind,
+      heading: kind === "steer" ? "Steered" : "Follow-up",
+      detail: kind === "steer" ? "Sent together at the next turn" : "Sent together after the agent finishes",
+      messages,
+    }];
+  });
+
+  const sections: (QueuedMessageSection | undefined)[] = [
     clientQueued.length === 0 ? undefined : { source: "client", heading: "Queued until session starts", detail: "Will send once the backend session is ready", messages: clientQueued },
-    serverQueued.length === 0 ? undefined : { source: "server", heading: "Queued messages", detail: `${String(serverQueued.length)} pending`, messages: serverQueued },
-  ].filter((section): section is QueuedMessageSection => section !== undefined);
+    ...serverSections,
+  ];
+  return sections.filter((section): section is QueuedMessageSection => section !== undefined);
 }
 
 export type ChatImagePart = Extract<ChatPart, { type: "image" }>;
@@ -129,6 +143,25 @@ export function chatMessageGroupClassName(defaultOpen: boolean): string {
 /** The disclosure summary label for an event group, distinguishing the live tail. */
 export function chatMessageGroupLabel(defaultOpen: boolean): string {
   return defaultOpen ? "live events" : "events";
+}
+
+/** Whether the complete queue presentation contains both live Pi queue kinds. */
+export function chatQueuedSectionsHaveBothServerKinds(sections: QueuedMessageSection[]): boolean {
+  return sections.some((section) => section.source === "server" && section.kind === "steer" && section.messages.length > 0)
+    && sections.some((section) => section.source === "server" && section.kind === "followUp" && section.messages.length > 0);
+}
+
+/** Whether the shared live-queue clear action is available. */
+export function chatQueuedSectionsShowClearAction(sections: QueuedMessageSection[], canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
+  return chatQueuedSectionsHaveBothServerKinds(sections) && canClearServerQueue && hasClearHandler;
+}
+
+/** Aggregate-copy text for the non-empty live Pi queue sections. */
+export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): string {
+  return sections
+    .filter((section) => section.source === "server" && section.messages.length > 0)
+    .map((section) => `${section.heading}\n${section.messages.map((message) => message.text).join("\n\n")}`)
+    .join("\n\n");
 }
 
 /** Whether a queued-message section shows the server clear-queue action. */

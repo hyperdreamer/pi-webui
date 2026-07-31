@@ -20,7 +20,9 @@ import {
   chatMessageMetadataLabel,
   chatMessageEditText,
   chatQueuedMessageSections,
-  chatQueuedSectionShowsClearAction,
+  chatQueuedMessagesCopyText,
+  chatQueuedSectionsHaveBothServerKinds,
+  chatQueuedSectionsShowClearAction,
   chatSessionWarningRows,
   chatUserMessageActionAvailability,
 } from "./ChatView";
@@ -103,10 +105,14 @@ describe("ChatView per-message action wiring", () => {
 });
 
 describe("chatQueuedMessageSections", () => {
-  it("labels client-side pending-start sends separately from server queued messages", () => {
+  it("keeps client startup messages separate and partitions live messages by kind", () => {
     const sections = chatQueuedMessageSections(
       [{ kind: "followUp", text: "queued before start" }],
-      [{ kind: "steer", text: "server queued" }],
+      [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+        { kind: "steer", text: "keep the tests" },
+      ],
     );
 
     expect(sections).toEqual([
@@ -118,11 +124,117 @@ describe("chatQueuedMessageSections", () => {
       },
       {
         source: "server",
-        heading: "Queued messages",
-        detail: "1 pending",
-        messages: [{ kind: "steer", text: "server queued" }],
+        kind: "steer",
+        heading: "Steered",
+        detail: "Sent together at the next turn",
+        messages: [
+          { kind: "steer", text: "adjust" },
+          { kind: "steer", text: "keep the tests" },
+        ],
+      },
+      {
+        source: "server",
+        kind: "followUp",
+        heading: "Follow-up",
+        detail: "Sent together after the agent finishes",
+        messages: [{ kind: "followUp", text: "then inspect" }],
       },
     ]);
+  });
+
+  it("omits empty live queue kinds", () => {
+    expect(chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }])).toEqual([
+      {
+        source: "server",
+        kind: "steer",
+        heading: "Steered",
+        detail: "Sent together at the next turn",
+        messages: [{ kind: "steer", text: "adjust" }],
+      },
+    ]);
+  });
+});
+
+describe("chatQueuedSectionsHaveBothServerKinds", () => {
+  it("requires both live queue kinds to be present", () => {
+    expect(chatQueuedSectionsHaveBothServerKinds([])).toBe(false);
+    expect(chatQueuedSectionsHaveBothServerKinds(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+    )).toBe(true);
+    expect(chatQueuedSectionsHaveBothServerKinds(
+      chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }]),
+    )).toBe(false);
+  });
+});
+
+describe("chatQueuedSectionsShowClearAction", () => {
+  it("requires both live kinds, clear capability, and a clear handler", () => {
+    expect(chatQueuedSectionsShowClearAction([], true, true)).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      true,
+      true,
+    )).toBe(true);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [{ kind: "steer", text: "adjust" }]),
+      true,
+      true,
+    )).toBe(false);
+    expect(chatQueuedSectionsShowClearAction(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+      false,
+      true,
+    )).toBe(false);
+  });
+});
+
+describe("chatQueuedMessagesCopyText", () => {
+  it("formats live groups with headings and blank lines between messages", () => {
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections([], [
+        { kind: "steer", text: "adjust" },
+        { kind: "steer", text: "keep the tests" },
+        { kind: "followUp", text: "then inspect" },
+      ]),
+    )).toBe([
+      "Steered",
+      "adjust",
+      "",
+      "keep the tests",
+      "",
+      "Follow-up",
+      "then inspect",
+    ].join("\n"));
+  });
+
+  it("ignores client startup messages and returns empty text without live groups", () => {
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections(
+        [{ kind: "followUp", text: "queued before start" }],
+        [
+          { kind: "steer", text: "adjust" },
+          { kind: "followUp", text: "then inspect" },
+        ],
+      ),
+    )).toBe([
+      "Steered",
+      "adjust",
+      "",
+      "Follow-up",
+      "then inspect",
+    ].join("\n"));
+    expect(chatQueuedMessagesCopyText(
+      chatQueuedMessageSections([{ kind: "followUp", text: "queued before start" }], []),
+    )).toBe("");
   });
 });
 
@@ -228,28 +340,6 @@ describe("activityDockWarningControlContent", () => {
   });
 });
 
-describe("chatQueuedSectionShowsClearAction", () => {
-  // The show/hide decision for the server clear-queue button is content/layout,
-  // so it lives in a pure exported seam instead of scraping rendered markup.
-  const serverSection = requireSection(chatQueuedMessageSections([], [{ kind: "steer", text: "server queued" }])[0]);
-  const clientSection = requireSection(chatQueuedMessageSections([{ kind: "followUp", text: "waiting" }], [])[0]);
-
-  it("shows the action for the server queue when clearing is supported and wired", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, true, true)).toBe(true);
-  });
-
-  it("hides the action when the runtime does not support clearing", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, false, true)).toBe(false);
-  });
-
-  it("hides the action when no clear handler is wired", () => {
-    expect(chatQueuedSectionShowsClearAction(serverSection, true, false)).toBe(false);
-  });
-
-  it("never shows the server action for the separate client pending-start queue", () => {
-    expect(chatQueuedSectionShowsClearAction(clientSection, true, true)).toBe(false);
-  });
-});
 
 describe("ChatView queued-message clear wiring", () => {
   // Escape hatch: this case verifies the Clear queue button's Lit event wiring,
@@ -637,11 +727,6 @@ function dispatchDetailsToggle(handler: TemplateEventHandler, open: boolean): vo
     if (hadDetailsElement) Reflect.set(globalThis, "HTMLDetailsElement", previousDetailsElement);
     else Reflect.deleteProperty(globalThis, "HTMLDetailsElement");
   }
-}
-
-function requireSection(section: ReturnType<typeof chatQueuedMessageSections>[number] | undefined): ReturnType<typeof chatQueuedMessageSections>[number] {
-  if (section === undefined) throw new Error("expected a queued-message section");
-  return section;
 }
 
 function withStatus(view: ChatView, status: SessionStatus): ChatView {
