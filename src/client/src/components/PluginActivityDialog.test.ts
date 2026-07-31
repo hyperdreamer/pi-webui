@@ -28,6 +28,33 @@ const focusOrderActivity: QualifiedActivityRailContribution = {
   `,
 };
 
+const openShadowPluginBodyTag = "test-open-shadow-plugin-body";
+
+if (customElements.get(openShadowPluginBodyTag) === undefined) {
+  customElements.define(openShadowPluginBodyTag, class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <button id="nested-retry" type="button">Retry</button>
+        <details open>
+          <summary id="nested-summary">Saved memory details</summary>
+          <p>Memory body</p>
+        </details>
+        <button id="nested-negative" type="button" tabindex="-1">Reset memory</button>
+        <button id="nested-disabled" type="button" disabled>Unavailable retry</button>
+        <div hidden><button id="nested-hidden" type="button">Hidden retry</button></div>
+        <div inert><button id="nested-inert" type="button">Inert retry</button></div>
+      `;
+    }
+  });
+}
+
+const openShadowActivity: QualifiedActivityRailContribution = {
+  ...activity,
+  render: () => html`<test-open-shadow-plugin-body></test-open-shadow-plugin-body>`,
+};
+
 function createActivityRailContext(): ActivityRailContext {
   const noop = () => undefined;
   return {
@@ -83,6 +110,40 @@ function dialogButton(dialog: PluginActivityDialog, selector: string): HTMLButto
   const button = dialog.shadowRoot?.querySelector<HTMLButtonElement>(selector);
   if (button === null || button === undefined) throw new Error(`Expected dialog button ${selector}`);
   return button;
+}
+
+function dialogRoot(dialog: PluginActivityDialog): ShadowRoot {
+  const root = dialog.shadowRoot;
+  if (root === null) throw new Error("Expected dialog shadow root");
+  return root;
+}
+
+function openShadowPluginBody(dialog: PluginActivityDialog): HTMLElement {
+  const body = dialogRoot(dialog).querySelector<HTMLElement>(openShadowPluginBodyTag);
+  if (body === null) throw new Error("Expected open-shadow plugin body");
+  return body;
+}
+
+function openShadowControl(dialog: PluginActivityDialog, selector: string): HTMLElement {
+  const control = openShadowPluginBody(dialog).shadowRoot?.querySelector<HTMLElement>(selector);
+  if (control === null || control === undefined) throw new Error(`Expected open-shadow control ${selector}`);
+  return control;
+}
+
+function deeplyActiveElement(root: ShadowRoot): Element | null {
+  let activeElement = root.activeElement;
+  while (activeElement !== null) {
+    const nestedActiveElement = activeElement.shadowRoot?.activeElement;
+    if (nestedActiveElement === null || nestedActiveElement === undefined) return activeElement;
+    activeElement = nestedActiveElement;
+  }
+  return null;
+}
+
+function applyUncancelledBrowserTabDefault(event: KeyboardEvent, nextStop: HTMLElement): void {
+  // jsdom dispatches Tab key events but does not perform the browser's native
+  // focus movement. Apply that default only after the dialog leaves it uncancelled.
+  if (!event.defaultPrevented) nextStop.focus();
 }
 
 function dispatchTabKeydown(element: HTMLElement, shiftKey = false): KeyboardEvent {
@@ -194,6 +255,37 @@ describe("PluginActivityDialog", () => {
     const closeButton = dialogButton(dialog, ".plugin-activity-close");
 
     expect(dialog.shadowRoot?.activeElement).toBe(closeButton);
+  });
+
+  it("keeps open-shadow plugin controls in the dialog tab sequence", async () => {
+    const dialog = await attachDialog(openShadowActivity);
+    const root = dialogRoot(dialog);
+    const closeButton = dialogButton(dialog, ".plugin-activity-close");
+    const pluginBody = openShadowPluginBody(dialog);
+    const nestedRetry = openShadowControl(dialog, "#nested-retry");
+    const nestedSummary = openShadowControl(dialog, "#nested-summary");
+
+    expect(root.activeElement).toBe(closeButton);
+    expect(deeplyActiveElement(root)).toBe(closeButton);
+
+    const tabFromClose = dispatchTabKeydown(closeButton);
+    expect(tabFromClose.defaultPrevented).toBe(false);
+    applyUncancelledBrowserTabDefault(tabFromClose, nestedRetry);
+    expect(root.activeElement).toBe(pluginBody);
+    expect(deeplyActiveElement(root)).toBe(nestedRetry);
+
+    nestedSummary.focus();
+    expect(root.activeElement).toBe(pluginBody);
+    expect(deeplyActiveElement(root)).toBe(nestedSummary);
+    const tabFromNestedLastStop = dispatchTabKeydown(nestedSummary);
+    expect(tabFromNestedLastStop.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(closeButton);
+    expect(deeplyActiveElement(root)).toBe(closeButton);
+
+    const shiftTabFromFirstStop = dispatchTabKeydown(closeButton, true);
+    expect(shiftTabFromFirstStop.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(pluginBody);
+    expect(deeplyActiveElement(root)).toBe(nestedSummary);
   });
 
   it("wraps Tab from the actual last sequential stop past a tabindex=-1 control", async () => {

@@ -90,7 +90,7 @@ export class PluginActivityDialog extends LitElement {
     const tabStops = this.sequentialTabStops(frame);
     if (tabStops.length === 0) return;
 
-    const activeIndex = tabStops.findIndex((element) => element === this.shadowRoot?.activeElement);
+    const activeIndex = tabStops.findIndex((element) => element === this.deeplyFocusedElement());
     const movingPastEnd = !event.shiftKey && activeIndex === tabStops.length - 1;
     const movingBeforeStart = event.shiftKey && activeIndex === 0;
     if (!movingPastEnd && !movingBeforeStart) return;
@@ -99,24 +99,71 @@ export class PluginActivityDialog extends LitElement {
     (event.shiftKey ? tabStops.at(-1) : tabStops[0])?.focus();
   }
 
+  private deeplyFocusedElement(): Element | null {
+    let activeElement = this.shadowRoot?.activeElement ?? null;
+    while (activeElement !== null) {
+      const nestedActiveElement = activeElement.shadowRoot?.activeElement;
+      if (nestedActiveElement === null || nestedActiveElement === undefined) return activeElement;
+      activeElement = nestedActiveElement;
+    }
+    return null;
+  }
+
   private sequentialTabStops(frame: HTMLElement): HTMLElement[] {
-    // This boundary models direct controls in the dialog's shadow tree. A
-    // sequential stop has a non-negative tabIndex and is not disabled or in a
-    // hidden/inert subtree. Nested component shadow roots own their focus
-    // navigation scopes. Positive tabIndex values come before zero; equal
-    // values retain DOM order.
-    return [...frame.querySelectorAll<HTMLElement>(sequentialTabStopSelector)]
-      .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && element.closest("[hidden], [inert]") === null)
-      .map((element, domIndex) => ({ element, domIndex }))
+    const candidates: { element: HTMLElement; composedIndex: number }[] = [];
+    this.collectComposedTabStopCandidates(frame, false, candidates);
+
+    // Positive tabIndex values precede zero/default controls. Within either
+    // group, the composed tree order is the browser-visible tie breaker.
+    return candidates
       .sort((left, right) => {
         const leftTabIndex = left.element.tabIndex;
         const rightTabIndex = right.element.tabIndex;
-        if (leftTabIndex === rightTabIndex) return left.domIndex - right.domIndex;
-        if (leftTabIndex === 0) return 1;
-        if (rightTabIndex === 0) return -1;
-        return leftTabIndex - rightTabIndex;
+        const leftIsPositive = leftTabIndex > 0;
+        const rightIsPositive = rightTabIndex > 0;
+        if (leftIsPositive && rightIsPositive) return leftTabIndex - rightTabIndex || left.composedIndex - right.composedIndex;
+        if (leftIsPositive !== rightIsPositive) return leftIsPositive ? -1 : 1;
+        return left.composedIndex - right.composedIndex;
       })
       .map(({ element }) => element);
+  }
+
+  private collectComposedTabStopCandidates(
+    root: ParentNode,
+    excludedByAncestor: boolean,
+    candidates: { element: HTMLElement; composedIndex: number }[],
+  ): void {
+    this.collectComposedTabStopElements(root.children, excludedByAncestor, candidates);
+  }
+
+  private collectComposedTabStopElements(
+    elements: Iterable<Element>,
+    excludedByAncestor: boolean,
+    candidates: { element: HTMLElement; composedIndex: number }[],
+  ): void {
+    for (const element of elements) {
+      const excluded = excludedByAncestor || element.matches("[hidden], [inert]");
+      if (
+        element instanceof HTMLElement
+        && !excluded
+        && element.matches(sequentialTabStopSelector)
+        && element.tabIndex >= 0
+        && !element.matches(":disabled")
+      ) {
+        candidates.push({ element, composedIndex: candidates.length });
+      }
+
+      if (element instanceof HTMLSlotElement) {
+        const assigned = element.assignedElements({ flatten: true });
+        this.collectComposedTabStopElements(assigned.length === 0 ? [...element.children] : assigned, excluded, candidates);
+        continue;
+      }
+
+      // An open root is the browser-visible boundary for plugin controls.
+      // A closed root is intentionally opaque: its active descendant cannot
+      // be observed or included in a dialog-owned focus loop.
+      this.collectComposedTabStopCandidates(element.shadowRoot ?? element, excluded, candidates);
+    }
   }
 
   private renderFailure(): TemplateResult {
