@@ -3,6 +3,8 @@ import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse,
 import type { SessionDefaultsResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
+import { MODEL_TIERS } from "../../../shared/apiTypes";
+import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
 
@@ -1210,6 +1212,102 @@ export function parseWorkspaceActivity(value: unknown): WorkspaceActivity {
 export function parseWorkspaceActivityResponse(value: unknown): WorkspaceActivityResponse {
   const record = requireRecord(value);
   return { workspaces: arrayOf(parseWorkspaceActivity)(record["workspaces"]), generatedAt: requireString(record, "generatedAt") };
+}
+
+export function parseModelTierSettingsResponse(value: unknown): ModelTierSettingsResponse {
+  const record = requireRecord(value);
+  if (record["contractVersion"] !== 1) throw new Error("Invalid model-tier settings contract version");
+  const ladder = record["ladder"] === undefined ? undefined : parseModelTierLadder(record["ladder"]);
+  const configError = optionalString(record, "configError");
+  return {
+    contractVersion: 1,
+    ...optionalField("ladder", ladder),
+    models: arrayOf(parseModelTierModelOption)(record["models"]),
+    rows: parseModelTierRows(record["rows"]),
+    valid: requireBoolean(record, "valid"),
+    ...optionalField("configError", configError),
+  };
+}
+
+function parseModelTierLadder(value: unknown): ModelTierLadder {
+  const record = requireCanonicalModelTierRecord(value, "ladder");
+  return {
+    economy: parseModelTierEntry(record["economy"], "ladder.economy"),
+    fast: parseModelTierEntry(record["fast"], "ladder.fast"),
+    standard: parseModelTierEntry(record["standard"], "ladder.standard"),
+    advanced: parseModelTierEntry(record["advanced"], "ladder.advanced"),
+    capable: parseModelTierEntry(record["capable"], "ladder.capable"),
+    frontier: parseModelTierEntry(record["frontier"], "ladder.frontier"),
+  };
+}
+
+function parseModelTierEntry(value: unknown, field: string): ModelTierEntry {
+  const record = requireObjectRecord(value, field);
+  const unknownKey = Object.keys(record).find((key) => key !== "model" && key !== "thinkingLevel");
+  if (unknownKey !== undefined) throw new Error(`Invalid model-tier entry field: ${field}.${unknownKey}`);
+  return {
+    model: parseTierModelRef(record["model"], `${field}.model`),
+    thinkingLevel: requireNonEmptyString(record, "thinkingLevel"),
+  };
+}
+
+function parseTierModelRef(value: unknown, field: string): TierModelRef {
+  const record = requireObjectRecord(value, field);
+  const unknownKey = Object.keys(record).find((key) => key !== "provider" && key !== "id");
+  if (unknownKey !== undefined) throw new Error(`Invalid model reference field: ${field}.${unknownKey}`);
+  return {
+    provider: requireNonEmptyString(record, "provider"),
+    id: requireNonEmptyString(record, "id"),
+  };
+}
+
+function parseModelTierModelOption(value: unknown): ModelTierModelOption {
+  const record = requireObjectRecord(value, "models");
+  return {
+    model: parseTierModelRef(record["model"], "models.model"),
+    ...optionalField("name", optionalString(record, "name")),
+    thinkingLevels: arrayOfString(record["thinkingLevels"], "models.thinkingLevels"),
+  };
+}
+
+function parseModelTierRows(value: unknown): Record<ModelTier, ModelTierRowValidation> {
+  const record = requireCanonicalModelTierRecord(value, "rows");
+  return {
+    economy: parseModelTierRowValidation(record["economy"], "rows.economy"),
+    fast: parseModelTierRowValidation(record["fast"], "rows.fast"),
+    standard: parseModelTierRowValidation(record["standard"], "rows.standard"),
+    advanced: parseModelTierRowValidation(record["advanced"], "rows.advanced"),
+    capable: parseModelTierRowValidation(record["capable"], "rows.capable"),
+    frontier: parseModelTierRowValidation(record["frontier"], "rows.frontier"),
+  };
+}
+
+function parseModelTierRowValidation(value: unknown, field: string): ModelTierRowValidation {
+  const record = requireObjectRecord(value, field);
+  const unknownKey = Object.keys(record).find((key) => key !== "valid" && key !== "reason");
+  if (unknownKey !== undefined) throw new Error(`Invalid model-tier row field: ${field}.${unknownKey}`);
+  return {
+    valid: requireBoolean(record, "valid"),
+    ...optionalField("reason", optionalString(record, "reason")),
+  };
+}
+
+function isModelTier(value: string): value is ModelTier {
+  return MODEL_TIERS.some((tier) => tier === value);
+}
+
+function requireCanonicalModelTierRecord(value: unknown, field: string): Record<string, unknown> {
+  const record = requireObjectRecord(value, field);
+  const unknownTier = Object.keys(record).find((key) => !isModelTier(key));
+  if (unknownTier !== undefined) throw new Error(`Invalid model-tier ${field} field: unknown tier ${unknownTier}`);
+  const missingTier = MODEL_TIERS.find((tier) => record[tier] === undefined);
+  if (missingTier !== undefined) throw new Error(`Invalid model-tier ${field} field: missing tier ${missingTier}`);
+  return record;
+}
+
+function requireObjectRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error(`Expected object field: ${field}`);
+  return value;
 }
 
 export function parsePiWebUiConfigResponse(value: unknown): PiWebUiConfigResponse {

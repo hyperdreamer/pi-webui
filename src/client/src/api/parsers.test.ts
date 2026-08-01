@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -795,6 +795,39 @@ describe("API parsers", () => {
       delta: { kind: "cleared", reason: "future-reason" },
     })).toThrow("Invalid notification clear reason");
   });
+
+  it("parses model-tier settings snapshots with stale ladders and separate provider/model IDs", () => {
+    const wire = modelTierSettingsWire();
+
+    expect(parseModelTierSettingsResponse(wire)).toEqual(wire);
+    expect(parseModelTierSettingsResponse(wire).ladder?.frontier.model).toEqual({
+      provider: "openai",
+      id: "org/gpt-5.6-luna/medium",
+    });
+  });
+
+  it("accepts missing ladders and optional configuration errors", () => {
+    const missing = modelTierSettingsWire({ ladder: undefined, valid: false });
+    const malformed = modelTierSettingsWire({ ladder: undefined, configError: "missing frontier tier", valid: false });
+
+    expect(parseModelTierSettingsResponse(missing)).not.toHaveProperty("ladder");
+    expect(parseModelTierSettingsResponse(malformed)).toMatchObject({ configError: "missing frontier tier", valid: false });
+    expect(parseModelTierSettingsResponse(malformed)).not.toHaveProperty("ladder");
+  });
+
+  it("rejects malformed model-tier references, thinking arrays, row maps, and contract versions", () => {
+    expect(() => parseModelTierSettingsResponse(modelTierSettingsWire({
+      models: [{ model: { provider: "openai" }, thinkingLevels: ["off"] }],
+    }))).toThrow("id");
+    expect(() => parseModelTierSettingsResponse(modelTierSettingsWire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off", 1] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseModelTierSettingsResponse(modelTierSettingsWire({ rows: [] }))).toThrow("rows");
+    expect(() => parseModelTierSettingsResponse(modelTierSettingsWire({
+      rows: { economy: { valid: true } },
+    }))).toThrow("rows");
+    expect(() => parseModelTierSettingsResponse(modelTierSettingsWire({ contractVersion: 2 }))).toThrow("contract version");
+  });
 });
 
 function sessionTreeWire() {
@@ -852,5 +885,32 @@ function notificationInboxWire() {
     },
     notifications: [notificationWire(1)],
     dismissThrough: { order: 1, overflowWatermark: 0 },
+  };
+}
+
+function modelTierSettingsWire(overrides: Record<string, unknown> = {}) {
+  return {
+    contractVersion: 1,
+    ladder: {
+      economy: { model: { provider: "openai", id: "gpt-5.6-luna" }, thinkingLevel: "medium" },
+      fast: { model: { provider: "openai", id: "gpt-5.6-luna" }, thinkingLevel: "medium" },
+      standard: { model: { provider: "openai", id: "gpt-5.6-luna" }, thinkingLevel: "high" },
+      advanced: { model: { provider: "openai", id: "gpt-5.6-luna" }, thinkingLevel: "high" },
+      capable: { model: { provider: "openai", id: "gpt-5.6-luna" }, thinkingLevel: "max" },
+      frontier: { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" }, thinkingLevel: "max" },
+    },
+    models: [
+      { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna", thinkingLevels: ["off", "medium", "high", "max"] },
+    ],
+    rows: {
+      economy: { valid: true },
+      fast: { valid: true },
+      standard: { valid: true },
+      advanced: { valid: true },
+      capable: { valid: true },
+      frontier: { valid: false, reason: "tier frontier names unavailable model openai/org/gpt-5.6-luna/medium" },
+    },
+    valid: false,
+    ...overrides,
   };
 }

@@ -11,7 +11,7 @@ PI WEBUI uses two config files:
 - **Global PI WEBUI config:** `$PI_WEBUI_CONFIG`, or `$XDG_CONFIG_HOME/pi-webui/config.json`, or `~/.config/pi-webui/config.json`.
 - **Project-local PI WEBUI config:** `<project>/.pi-webui/config.json` for commit-able project settings.
 
-Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected machine for config that affects work running there: the Pi-compatible agent profile and companion CLI, session daemon tools, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway: keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers that do not advertise selected-machine settings support report those settings as unavailable instead of silently falling back to the gateway.
+Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected machine for config that affects work running there: the Pi-compatible agent profile and companion CLI, session daemon tools, model tier routing ladder, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway: keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers that do not advertise selected-machine settings support report those settings as unavailable instead of silently falling back to the gateway.
 
 Pi package settings are separate from PI WEBUI config. They live in Pi's package-manager settings on the target machine and are managed by Pi (`pi install`, `pi remove`, `pi update`) or **Settings → Pi packages**. In a federated setup, **Settings → Pi packages** targets the currently selected machine. The PI WEBUI `plugins` config key only enables or disables discovered PI WEBUI browser plugins on the machine whose config you are editing; it does not install, remove, or update Pi packages.
 
@@ -40,6 +40,7 @@ Process restarts depend on the key:
 - `host` / `port`: restart the gateway web/API service or process.
 - `maxUploadBytes`: restart both the web/API process and the session daemon on that machine.
 - `agent.command` / `agent.dir` / `spawnSessions` / `subsessions`: restart the session daemon on that machine.
+- `modelTiers`: saved settings apply immediately in **Settings → Model tiers**; validates all six ladder rows atomically.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
 - `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
 - `plugins`: reload the browser tab after changing PI WEBUI plugin enablement.
@@ -62,6 +63,14 @@ Process restarts depend on the key:
   "agent": {
     "command": "pi",
     "dir": "~/agent-profiles/research"
+  },
+  "modelTiers": {
+    "economy": { "provider": "anthropic", "modelId": "claude-3-5-haiku-20241022", "thinkingLevel": "off" },
+    "fast": { "provider": "anthropic", "modelId": "claude-3-5-haiku-20241022", "thinkingLevel": "off" },
+    "standard": { "provider": "anthropic", "modelId": "claude-3-5-sonnet-20241022", "thinkingLevel": "off" },
+    "advanced": { "provider": "openai", "modelId": "gpt-4o", "thinkingLevel": "off" },
+    "capable": { "provider": "anthropic", "modelId": "claude-3-7-sonnet-20250219", "thinkingLevel": "high" },
+    "frontier": { "provider": "openai", "modelId": "o3-mini", "thinkingLevel": "high" }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -101,7 +110,7 @@ Plugins may own separate project files, such as `.pi-webui/tasks.json` for the b
 
 ## Configuration matrix
 
-Rows with JSON key `—` are runtime-only environment variables, not config-file keys. `Global` means machine-global. In Settings, selected-machine-safe global keys (`pathAccess`, `uploads`, `maxUploadBytes`, `agent`, `spawnSessions`, `subsessions`, and `plugins`) are edited for the selected machine; gateway host/port/allowed-hosts, keyboard shortcuts, and machine registry/tokens stay local.
+Rows with JSON key `—` are runtime-only environment variables, not config-file keys. `Global` means machine-global. In Settings, selected-machine-safe global keys (`pathAccess`, `uploads`, `maxUploadBytes`, `agent`, `spawnSessions`, `subsessions`, `modelTiers`, and `plugins`) are edited for the selected machine; gateway host/port/allowed-hosts, keyboard shortcuts, and machine registry/tokens stay local.
 
 | Config | JSON key | Env var | Scope | Project-local behavior | Applies / restart |
 | --- | --- | --- | --- | --- | --- |
@@ -116,6 +125,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Agent profile state directory | `agent.dir` | `PI_WEBUI_AGENT_DIR` (`PI_CODING_AGENT_DIR` for Pi compatibility) | Global/session daemon | Not supported locally | Restart session daemon on that machine; affects auth, models, settings, sessions, Pi packages, and package-backed plugins |
 | Agent can spawn sessions | `spawnSessions` | `PI_WEBUI_SPAWN_SESSIONS` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
 | Tracked subsessions (beta) | `subsessions` | `PI_WEBUI_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon on that machine |
+| Model tier routing ladder | `modelTiers` | — | Global | Not supported locally | Saved settings apply immediately on save; requires remote peer capability `settings.modelTiers` |
 | Plugin enablement/settings | `plugins.<id>.enabled`, `plugins.<id>.settings` | — | Global | Not core local config; plugins may read their own project files | Reload browser tab |
 | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
 | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
@@ -211,6 +221,19 @@ If the session daemon cannot report a valid active profile, profile-dependent pa
 The navigation footer exposes **Models** for the selected machine and **Skills** after you select a workspace. **Models** edits custom providers and model settings in that machine's Pi-compatible profile `models.json`. Saving reloads model configuration in the session daemon, and the dialog can send a small authenticated request to test a configured model. For a provider with a Base URL, **Fetch models** retrieves its current model catalog using the unsaved provider draft and credentials on the selected machine. The fetched catalog is scoped to that provider for the open dialog: Model ID becomes a selector, and choosing a model fills its editable display-name default. Use **Refresh models** after changing provider settings or when the provider's catalog changes. This is Pi profile state, not a PI WEBUI config-file key.
 
 **Skills** lists the skills available to the selected workspace. It can toggle the `disable-model-invocation` frontmatter setting in a `SKILL.md`, search skills.sh, and install or update skills at global or project scope. Review third-party skill sources before installing them. After changing, installing, or updating a skill, use `/reload` in each idle session that should pick up the changed resource.
+
+### Model tiers
+
+`modelTiers` is a machine-global setting stored in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json` that configures tier-based model routing for sessions.
+
+In **Settings → Model tiers**, you edit one complete six-rung ladder: `economy`, `fast`, `standard`, `advanced`, `capable`, and `frontier`.
+
+- **Row configuration:** Each row selects an authenticated model available on that machine (provider and model ID) and a supported thinking level (such as `off`, `low`, `medium`, `high`, or `max`).
+- **Duplicate tuples:** Selecting the same model and thinking level tuple in multiple tiers is valid (for example, using the same fallback model across `economy` and `fast`).
+- **Stale models:** If a configured model or provider is no longer in the authenticated model catalog, it remains visible as a stale entry in the ladder editor and must be explicitly repaired before saving.
+- **Atomic validation:** Save validates all six rows atomically against the authenticated model catalog. Invalid or incomplete ladder configurations are rejected without silent clamping or fallback.
+- **Missing or malformed ladder:** If `modelTiers` is missing or malformed, Exact-mode model selection remains fully usable, but tiered model routing becomes unavailable.
+- **Machine federation:** Model tier settings are saved for the selected machine. Editing remote machine settings requires a remote daemon advertising the additive `settings.modelTiers` capability.
 
 ### Session daemon tools
 
