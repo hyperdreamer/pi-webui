@@ -10,6 +10,8 @@ import {
   reReviewerTier,
   reviewerTier,
   roleTier,
+  tierDirective,
+  tierLabel,
   TIERS,
 } from "../scripts/sdd-state.mjs";
 
@@ -37,8 +39,8 @@ describe("deterministic SDD plan contract", () => {
     const parsed = parsePlanText(VALID_PLAN, "/tmp/plan.md");
     expect(parsed.globalConstraints).toContain("Keep the interface exact");
     expect(parsed.tasks).toEqual([
-      expect.objectContaining({ number: 1, title: "Mechanical fixture", implementerTier: "Economy" }),
-      expect.objectContaining({ number: 2, title: "Integrated behavior", implementerTier: "Advanced" }),
+      expect.objectContaining({ number: 1, title: "Mechanical fixture", implementerTier: "economy" }),
+      expect.objectContaining({ number: 2, title: "Integrated behavior", implementerTier: "advanced" }),
     ]);
   });
 
@@ -110,7 +112,7 @@ describe("deterministic SDD plan contract", () => {
         "/tmp/plan.md",
       );
       expect(parsed.tasks).toHaveLength(1);
-      expect(parsed.tasks[0].implementerTier).toBe("Fast");
+      expect(parsed.tasks[0].implementerTier).toBe("fast");
       expect(parsed.tasks[0].body).toContain("## Task 9: Fake");
     });
 
@@ -238,21 +240,21 @@ describe("deterministic SDD plan contract", () => {
 
 describe("deterministic SDD tier formulas", () => {
   it("derives reviewer tiers with a Standard floor and Frontier cap", () => {
-    expect(["Economy", "Fast", "Standard", "Advanced", "Capable", "Frontier"].map(reviewerTier))
-      .toEqual(["Standard", "Standard", "Advanced", "Capable", "Frontier", "Frontier"]);
+    expect(["economy", "fast", "standard", "advanced", "capable", "frontier"].map(reviewerTier))
+      .toEqual(["standard", "standard", "advanced", "capable", "frontier", "frontier"]);
   });
 
   it("escalates only fix rounds four and five", () => {
-    expect([1, 2, 3, 4, 5].map((round) => fixerTier("Advanced", round)))
-      .toEqual(["Advanced", "Advanced", "Advanced", "Capable", "Frontier"]);
-    expect(reReviewerTier("Economy")).toBe("Standard");
-    expect(reReviewerTier("Capable")).toBe("Frontier");
+    expect([1, 2, 3, 4, 5].map((round) => fixerTier("advanced", round)))
+      .toEqual(["advanced", "advanced", "advanced", "capable", "frontier"]);
+    expect(reReviewerTier("economy")).toBe("standard");
+    expect(reReviewerTier("capable")).toBe("frontier");
   });
 
   it("caps fixer escalation at Frontier", () => {
-    expect([1, 3, 4, 5].map((round) => fixerTier("Capable", round)))
-      .toEqual(["Capable", "Capable", "Frontier", "Frontier"]);
-    expect(fixerTier("Frontier", 5)).toBe("Frontier");
+    expect([1, 3, 4, 5].map((round) => fixerTier("capable", round)))
+      .toEqual(["capable", "capable", "frontier", "frontier"]);
+    expect(fixerTier("frontier", 5)).toBe("frontier");
   });
 
   it("places the re-reviewer below the fixer at round five, as the plan specifies", () => {
@@ -261,13 +263,13 @@ describe("deterministic SDD tier formulas", () => {
     // consequence is that a round-5 fix is re-reviewed one rung below the tier
     // that produced it. This test pins that behavior so it stays a visible
     // decision rather than an accident; changing it requires changing the plan.
-    for (const implementer of ["Fast", "Standard", "Advanced"]) {
+    for (const implementer of ["fast", "standard", "advanced"]) {
       const fixer = fixerTier(implementer, 5);
       const reviewer = reReviewerTier(implementer);
       expect(TIERS.indexOf(reviewer)).toBeLessThan(TIERS.indexOf(fixer));
     }
-    expect(fixerTier("Advanced", 5)).toBe("Frontier");
-    expect(reReviewerTier("Advanced")).toBe("Capable");
+    expect(fixerTier("advanced", 5)).toBe("frontier");
+    expect(reReviewerTier("advanced")).toBe("capable");
   });
 
   it("makes reviewer and re-reviewer identical for every tier", () => {
@@ -280,40 +282,42 @@ describe("deterministic SDD tier formulas", () => {
     expect(() => reviewerTier("Turbo")).toThrow(/unknown tier/iu);
     expect(() => reReviewerTier("turbo")).toThrow(/unknown tier/iu);
     expect(() => fixerTier("Turbo", 1)).toThrow(/unknown tier/iu);
-    // Tier names are case-sensitive title case.
-    expect(() => reviewerTier("advanced")).toThrow(/unknown tier/iu);
+    // Tier identifiers are lowercase. TitleCase is display text and must not
+    // resolve, because a TitleCase value reaching a formula means it bypassed
+    // the parser's normalization rather than that it needs coercing.
+    expect(() => reviewerTier("Advanced")).toThrow(/unknown tier/iu);
   });
 
   it("rejects fix rounds outside one through five", () => {
     for (const round of [0, 6, -1, 1.5, Number.NaN, "2", null, undefined]) {
-      expect(() => fixerTier("Advanced", round), `round ${String(round)}`).toThrow(/round/iu);
+      expect(() => fixerTier("advanced", round), `round ${String(round)}`).toThrow(/round/iu);
     }
   });
 
   describe("roleTier", () => {
     it("resolves each role and emits the matching directive", () => {
-      expect(roleTier({ implementer: "Advanced", role: "implementer" }))
-        .toEqual({ tier: "Advanced", directive: "/tier-advanced" });
-      expect(roleTier({ implementer: "Advanced", role: "task-reviewer" }))
-        .toEqual({ tier: "Capable", directive: "/tier-capable" });
-      expect(roleTier({ implementer: "Advanced", role: "re-reviewer" }))
-        .toEqual({ tier: "Capable", directive: "/tier-capable" });
-      expect(roleTier({ implementer: "Advanced", role: "final" }))
-        .toEqual({ tier: "Frontier", directive: "/tier-frontier" });
-      expect(roleTier({ implementer: "Advanced", role: "fixer", round: 4 }))
-        .toEqual({ tier: "Capable", directive: "/tier-capable" });
+      expect(roleTier({ implementer: "advanced", role: "implementer" }))
+        .toEqual({ tier: "advanced", directive: "/tier-advanced" });
+      expect(roleTier({ implementer: "advanced", role: "task-reviewer" }))
+        .toEqual({ tier: "capable", directive: "/tier-capable" });
+      expect(roleTier({ implementer: "advanced", role: "re-reviewer" }))
+        .toEqual({ tier: "capable", directive: "/tier-capable" });
+      expect(roleTier({ implementer: "advanced", role: "final" }))
+        .toEqual({ tier: "frontier", directive: "/tier-frontier" });
+      expect(roleTier({ implementer: "advanced", role: "fixer", round: 4 }))
+        .toEqual({ tier: "capable", directive: "/tier-capable" });
     });
 
     it("requires a round for the fixer role and rejects it elsewhere", () => {
-      expect(() => roleTier({ implementer: "Advanced", role: "fixer" })).toThrow(/round/iu);
-      expect(() => roleTier({ implementer: "Advanced", role: "implementer", round: 2 }))
+      expect(() => roleTier({ implementer: "advanced", role: "fixer" })).toThrow(/round/iu);
+      expect(() => roleTier({ implementer: "advanced", role: "implementer", round: 2 }))
         .toThrow(/round/iu);
-      expect(() => roleTier({ implementer: "Advanced", role: "task-reviewer", round: 1 }))
+      expect(() => roleTier({ implementer: "advanced", role: "task-reviewer", round: 1 }))
         .toThrow(/round/iu);
     });
 
     it("rejects an unknown role", () => {
-      expect(() => roleTier({ implementer: "Advanced", role: "architect" })).toThrow(/unknown role/iu);
+      expect(() => roleTier({ implementer: "advanced", role: "architect" })).toThrow(/unknown role/iu);
     });
   });
 });
@@ -349,8 +353,8 @@ describe("sdd-state CLI", () => {
     const expectedDigest = createHash("sha256").update(readFileSync(planPath)).digest("hex");
     expect(payload.planDigest).toBe(expectedDigest);
     expect(payload.tasks).toEqual([
-      { number: 1, title: "Mechanical fixture", implementerTier: "Economy" },
-      { number: 2, title: "Integrated behavior", implementerTier: "Advanced" },
+      { number: 1, title: "Mechanical fixture", implementerTier: "economy" },
+      { number: 2, title: "Integrated behavior", implementerTier: "advanced" },
     ]);
   });
 
@@ -374,12 +378,12 @@ describe("sdd-state CLI", () => {
 
   it("resolves every role through role-tier", () => {
     const expectations = [
-      [["--implementer", "Advanced", "--role", "implementer"], "Advanced", "/tier-advanced"],
-      [["--implementer", "Advanced", "--role", "task-reviewer"], "Capable", "/tier-capable"],
-      [["--implementer", "Advanced", "--role", "re-reviewer"], "Capable", "/tier-capable"],
-      [["--implementer", "Advanced", "--role", "final"], "Frontier", "/tier-frontier"],
-      [["--implementer", "Advanced", "--role", "fixer", "--round", "4"], "Capable", "/tier-capable"],
-      [["--implementer", "Economy", "--role", "task-reviewer"], "Standard", "/tier-standard"],
+      [["--implementer", "advanced", "--role", "implementer"], "advanced", "/tier-advanced"],
+      [["--implementer", "advanced", "--role", "task-reviewer"], "capable", "/tier-capable"],
+      [["--implementer", "advanced", "--role", "re-reviewer"], "capable", "/tier-capable"],
+      [["--implementer", "advanced", "--role", "final"], "frontier", "/tier-frontier"],
+      [["--implementer", "advanced", "--role", "fixer", "--round", "4"], "capable", "/tier-capable"],
+      [["--implementer", "economy", "--role", "task-reviewer"], "standard", "/tier-standard"],
     ];
     for (const [args, tier, directive] of expectations) {
       const result = runCli(["role-tier", ...args]);
@@ -389,12 +393,12 @@ describe("sdd-state CLI", () => {
   });
 
   it("rejects a missing or irrelevant round through the CLI", () => {
-    const missing = runCli(["role-tier", "--implementer", "Advanced", "--role", "fixer"]);
+    const missing = runCli(["role-tier", "--implementer", "advanced", "--role", "fixer"]);
     expect(missing.status).toBe(2);
     expect(missing.stderr).toMatch(/round/iu);
 
     const irrelevant = runCli([
-      "role-tier", "--implementer", "Advanced", "--role", "implementer", "--round", "2",
+      "role-tier", "--implementer", "advanced", "--role", "implementer", "--round", "2",
     ]);
     expect(irrelevant.status).toBe(2);
     expect(irrelevant.stderr).toMatch(/round/iu);
@@ -402,7 +406,7 @@ describe("sdd-state CLI", () => {
 
   it("rejects an unknown subcommand, role, and tier", () => {
     expect(runCli(["frobnicate"]).status).toBe(2);
-    expect(runCli(["role-tier", "--implementer", "Advanced", "--role", "architect"]).status).toBe(2);
+    expect(runCli(["role-tier", "--implementer", "advanced", "--role", "architect"]).status).toBe(2);
     expect(runCli(["role-tier", "--implementer", "Turbo", "--role", "implementer"]).status).toBe(2);
   });
 
@@ -423,5 +427,49 @@ describe("sdd-state CLI", () => {
     expect(probe.status).toBe(0);
     expect(probe.stdout).toBe("IMPORT_CLEAN");
     expect(probe.stderr).toBe("");
+  });
+});
+
+describe("tier identifiers match the dispatch boundary", () => {
+  // The production tool accepts only these values. Task 4 originally emitted
+  // TitleCase, which every spawn_subsession call would have rejected at schema
+  // validation. Nothing caught it because no test crossed the boundary. This
+  // test is that crossing: it pins the exact contract the tool enforces.
+  const TOOL_ACCEPTED_TIERS = ["economy", "fast", "standard", "advanced", "capable", "frontier"];
+
+  it("uses exactly the tier values spawn_subsession accepts, in ladder order", () => {
+    expect([...TIERS]).toEqual(TOOL_ACCEPTED_TIERS);
+  });
+
+  it("resolves every role to a tool-acceptable tier for every implementer tier", () => {
+    for (const implementer of TIERS) {
+      for (const role of ["implementer", "task-reviewer", "re-reviewer", "final"]) {
+        const { tier } = roleTier({ implementer, role });
+        expect(TOOL_ACCEPTED_TIERS, `${role} from ${implementer}`).toContain(tier);
+      }
+      for (const round of [1, 2, 3, 4, 5]) {
+        const { tier } = roleTier({ implementer, role: "fixer", round });
+        expect(TOOL_ACCEPTED_TIERS, `fixer round ${String(round)} from ${implementer}`).toContain(tier);
+      }
+    }
+  });
+
+  it("parses a TitleCase plan field into a lowercase identifier", () => {
+    const parsed = parsePlanText(
+      "## Task 1: A\n\n**Implementer tier:** Frontier\n",
+      "/tmp/plan.md",
+    );
+    expect(parsed.tasks[0].implementerTier).toBe("frontier");
+    expect(TOOL_ACCEPTED_TIERS).toContain(parsed.tasks[0].implementerTier);
+  });
+
+  it("renders display labels without reintroducing them as identifiers", () => {
+    expect(tierLabel("frontier")).toBe("Frontier");
+    expect(tierLabel("economy")).toBe("Economy");
+    expect(() => tierLabel("Frontier")).toThrow(/unknown tier/iu);
+  });
+
+  it("emits a lowercase directive echo", () => {
+    expect(tierDirective("capable")).toBe("/tier-capable");
   });
 });

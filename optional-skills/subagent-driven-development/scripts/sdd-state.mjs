@@ -21,6 +21,7 @@ export {
   reviewerTier,
   roleTier,
   tierDirective,
+  tierLabel,
   TIERS,
 } from "./lib/plan-policy.mjs";
 

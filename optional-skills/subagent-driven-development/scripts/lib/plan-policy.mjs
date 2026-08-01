@@ -5,15 +5,35 @@
  * restate it but never redefines it.
  */
 
-/** The frozen tier ladder, in ascending capability order. */
+/**
+ * The frozen tier ladder, in ascending capability order.
+ *
+ * Lowercase is the identifier, matching `MODEL_TIERS` in PI WEBUI's shared API
+ * types, the `modelTiers` config keys, and the `tier` parameter that
+ * `spawn_subsession` accepts. TitleCase exists only for display: plan files
+ * write `**Implementer tier:** Advanced` because a human writes and reviews
+ * them, and the parser normalizes that to `advanced` at the boundary. Keeping
+ * one conversion point here means no dispatch site needs to remember to
+ * lowercase a tier before handing it to the tool.
+ */
 export const TIERS = Object.freeze([
-  "Economy",
-  "Fast",
-  "Standard",
-  "Advanced",
-  "Capable",
-  "Frontier",
+  "economy",
+  "fast",
+  "standard",
+  "advanced",
+  "capable",
+  "frontier",
 ]);
+
+/** Display labels, mirroring the settings panel's tier label map. */
+const TIER_LABELS = Object.freeze({
+  economy: "Economy",
+  fast: "Fast",
+  standard: "Standard",
+  advanced: "Advanced",
+  capable: "Capable",
+  frontier: "Frontier",
+});
 
 const TASK_HEADING = /^## Task ([1-9][0-9]*): (\S(?:.*\S)?)$/u;
 const TIER_FIELD = /^\*\*Implementer tier:\*\* (Economy|Fast|Standard|Advanced|Capable|Frontier)$/u;
@@ -24,17 +44,28 @@ const TILDE_OPEN = /^ {0,3}(~{3,})(.*)$/u;
 const ANY_H2 = /^## /u;
 const INDENTED_CODE = /^ {4,}/u;
 
-const STANDARD_FLOOR_INDEX = TIERS.indexOf("Standard");
+const STANDARD_FLOOR_INDEX = TIERS.indexOf("standard");
 const FRONTIER_INDEX = TIERS.length - 1;
 
 /** Rungs added to the implementer tier for each fix round. */
 const FIX_ROUND_ESCALATION = Object.freeze({ 1: 0, 2: 0, 3: 0, 4: 1, 5: 2 });
 
-/** The single validating tier lookup every formula resolves through. */
+/**
+ * The single validating tier lookup every formula resolves through.
+ *
+ * Accepts only the lowercase identifier. A TitleCase value reaching this point
+ * means a caller bypassed the parser's normalization, which is a defect worth
+ * failing on rather than silently coercing.
+ */
 function tierIndex(tier) {
   const index = TIERS.indexOf(tier);
   if (index < 0) throw new Error(`unknown tier: ${String(tier)}`);
   return index;
+}
+
+/** The display label for a tier, for prose and human-facing output. */
+export function tierLabel(tier) {
+  return TIER_LABELS[TIERS[tierIndex(tier)]];
 }
 
 function cap(index) {
@@ -68,8 +99,16 @@ export function finalReviewerTier() {
   return TIERS[FRONTIER_INDEX];
 }
 
+/**
+ * The human-readable echo for a tier.
+ *
+ * This is display text, not a control channel. `spawn_subsession` selects a
+ * model from its typed `tier` parameter; a `/tier-*` line in a rendered prompt
+ * has no effect on which model runs. It exists so a human reading a transcript
+ * can see the intended tier, and so renderer/formula divergence is detectable.
+ */
 export function tierDirective(tier) {
-  return `/tier-${TIERS[tierIndex(tier)].toLowerCase()}`;
+  return `/tier-${TIERS[tierIndex(tier)]}`;
 }
 
 const ROLES = Object.freeze({
@@ -228,7 +267,9 @@ export function parsePlanText(planText, planPath = "<plan>") {
             lineNumber,
           );
         }
-        current.implementerTier = tierMatch[1];
+        // Plan files carry TitleCase for readability; the identifier is
+        // lowercase everywhere past this boundary.
+        current.implementerTier = tierMatch[1].toLowerCase();
         current.tierLine = lineNumber;
         continue;
       }
