@@ -387,6 +387,37 @@ describe("SessionModelPolicyControl opened surface", () => {
       exact: { model: { provider: "openai", id: "gpt-repair" }, thinkingLevel: "low" },
     });
   });
+
+  it("discards an abandoned draft when Cancel closes the panel", async () => {
+    const onSave = vi.fn();
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.response = exactResponse();
+      element.catalog = validCatalog();
+      element.editable = true;
+      element.onSave = onSave;
+    });
+
+    await openPanel(control);
+    await choose(control, "policy-exact-thinking", "high");
+    expect(field(control, "policy-exact-thinking").value).toBe("high");
+
+    const cancel = shadowRoot(control).querySelector<HTMLButtonElement>(".policy-cancel");
+    if (cancel === null) throw new Error("Expected the cancel action");
+    cancel.click();
+    await control.updateComplete;
+
+    expect(optionalPanel(control)).toBeNull();
+
+    await openPanel(control);
+
+    expect(field(control, "policy-exact-thinking").value).toBe("medium");
+    saveButton(control).click();
+    expect(onSave).toHaveBeenCalledWith({
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
+    });
+  });
 });
 
 describe("SessionModelPolicyControl keyboard and error surfaces", () => {
@@ -409,6 +440,28 @@ describe("SessionModelPolicyControl keyboard and error surfaces", () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(optionalPanel(control)).toBeNull();
     expect(shadowRoot(control).activeElement).toBe(trigger(control));
+  });
+
+  it("closes on Escape when focus has returned to the trigger", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.response = exactResponse();
+      element.catalog = validCatalog();
+      element.editable = true;
+    });
+
+    await openPanel(control);
+    const controlTrigger = trigger(control);
+    controlTrigger.focus();
+    expect(shadowRoot(control).activeElement).toBe(controlTrigger);
+
+    const escape = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, composed: true, key: "Escape" });
+    controlTrigger.dispatchEvent(escape);
+    await control.updateComplete;
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(optionalPanel(control)).toBeNull();
+    expect(shadowRoot(control).activeElement).toBe(controlTrigger);
   });
 
   it("announces a save error in an assertive alert region without losing the draft", async () => {
@@ -465,14 +518,34 @@ describe("SessionModelPolicyControl keyboard and error surfaces", () => {
 
     const retry = shadowRoot(control).querySelector<HTMLButtonElement>(".policy-retry");
     expect(retry).not.toBeNull();
+    expect(shadowText(control)).toContain("The current model policy could not be loaded");
     expect(shadowText(control)).toContain("Error: policy read failed");
     retry?.click();
 
     expect(onOpen).toHaveBeenCalledTimes(2);
   });
+
+  it("identifies missing model tier settings while loading and after failure", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.response = exactResponse();
+      element.loading = true;
+    });
+
+    await openPanel(control);
+
+    expect(shadowText(control)).toContain("Loading model tier settings");
+    expect(shadowText(control)).not.toContain("Loading the current model policy");
+
+    control.loading = false;
+    await control.updateComplete;
+
+    expect(shadowText(control)).toContain("Model tier settings could not be loaded");
+    expect(shadowText(control)).not.toContain("The current model policy could not be loaded");
+  });
 });
 
-describe("SessionModelPolicyControl non-actionable states", () => {
+describe("SessionModelPolicyControl mutation gates and diagnostics", () => {
   it("disables every mutation control when the parent marks the policy read-only", async () => {
     const onSave = vi.fn();
     const control = await mountControl((element) => {
@@ -496,7 +569,7 @@ describe("SessionModelPolicyControl non-actionable states", () => {
     expect(shadowText(control).replace(/\s+/g, " ")).toContain("openai/gpt-default · medium");
   });
 
-  it("disables saving while a write is in flight but keeps the current policy readable", async () => {
+  it("disables mutation while a write is in flight but keeps the current policy readable", async () => {
     const onSave = vi.fn();
     const control = await mountControl((element) => {
       element.status = exactStatus();
@@ -509,11 +582,36 @@ describe("SessionModelPolicyControl non-actionable states", () => {
 
     await openPanel(control);
 
+    expect(field(control, "policy-mode").disabled).toBe(true);
+    expect(field(control, "policy-exact-model").disabled).toBe(true);
+    expect(field(control, "policy-exact-thinking").disabled).toBe(true);
     expect(saveButton(control).disabled).toBe(true);
     saveButton(control).click();
 
     expect(onSave).not.toHaveBeenCalled();
     expect(shadowText(control).replace(/\s+/g, " ")).toContain("openai/gpt-default · medium");
+  });
+
+  it("disables mutation while a refreshed policy read is in flight", async () => {
+    const onSave = vi.fn();
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.response = exactResponse();
+      element.catalog = validCatalog();
+      element.editable = true;
+      element.loading = true;
+      element.onSave = onSave;
+    });
+
+    await openPanel(control);
+
+    expect(field(control, "policy-mode").disabled).toBe(true);
+    expect(field(control, "policy-exact-model").disabled).toBe(true);
+    expect(field(control, "policy-exact-thinking").disabled).toBe(true);
+    expect(saveButton(control).disabled).toBe(true);
+    saveButton(control).click();
+
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it("keeps an unusable catalog non-actionable while showing its configuration error", async () => {
@@ -574,7 +672,7 @@ describe("SessionModelPolicyControl non-actionable states", () => {
     expect(saveButton(control).disabled).toBe(false);
   });
 
-  it("reuses a remembered tier when the mode returns to Tiered", async () => {
+  it("keeps a remembered tier read-only until Mode explicitly changes to Tiered", async () => {
     const onSave = vi.fn();
     const control = await mountControl((element) => {
       element.status = exactStatus();
@@ -586,24 +684,31 @@ describe("SessionModelPolicyControl non-actionable states", () => {
 
     await openPanel(control);
 
+    expect(field(control, "policy-mode").value).toBe("exact");
     expect(field(control, "policy-tier").value).toBe("frontier");
+    expect(field(control, "policy-tier").disabled).toBe(true);
 
     await choose(control, "policy-mode", "tiered");
+
+    expect(field(control, "policy-mode").value).toBe("tiered");
+    expect(field(control, "policy-tier").disabled).toBe(false);
     saveButton(control).click();
 
     expect(onSave).toHaveBeenCalledWith({ mode: "tiered", tier: "frontier" });
   });
 
-  it("renders a server-blocked confirmed policy as blocked and non-actionable", async () => {
+  it("keeps a runtime-blocked confirmed policy editable for an explicit repair update", async () => {
     const onSave = vi.fn();
     const blocked: ClientSessionModelPolicyStatus = {
-      ...tieredStatus(),
-      ladderValid: false,
-      blockedReason: "runtime rejected the configured tier model",
+      ...exactStatus(),
+      blockedReason: "runtime could not prove the previous policy was restored",
     };
     const control = await mountControl((element) => {
       element.status = blocked;
-      element.response = policyResponse({ mode: "tiered", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" }, tier: "advanced" }, blocked);
+      element.response = policyResponse(
+        { mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" } },
+        blocked,
+      );
       element.catalog = validCatalog();
       element.editable = true;
       element.onSave = onSave;
@@ -611,12 +716,60 @@ describe("SessionModelPolicyControl non-actionable states", () => {
 
     await openPanel(control);
 
-    expect(shadowText(control)).toContain("runtime rejected the configured tier model");
-    expect(field(control, "policy-mode").disabled).toBe(true);
-    expect(saveButton(control).disabled).toBe(true);
-    saveButton(control).click();
+    expect(shadowText(control)).toContain("runtime could not prove the previous policy was restored");
+    expect(field(control, "policy-mode").disabled).toBe(false);
+    expect(field(control, "policy-exact-model").disabled).toBe(false);
+    expect(field(control, "policy-exact-thinking").disabled).toBe(false);
+    expect(saveButton(control).disabled).toBe(false);
 
-    expect(onSave).not.toHaveBeenCalled();
+    await choose(control, "policy-exact-thinking", "high");
+
+    expect(saveButton(control).disabled).toBe(false);
+    saveButton(control).click();
+    expect(onSave).toHaveBeenCalledWith({
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "high" },
+    });
+  });
+
+  it("lets a blocked Tiered starter choose a valid replacement tier", async () => {
+    const onSave = vi.fn();
+    const catalog = validCatalog();
+    const blockedReason = "Choose a valid model tier before starting";
+    const blocked: ClientSessionModelPolicyStatus = {
+      ...tieredStatus(),
+      ladderValid: false,
+      blockedReason,
+    };
+    const control = await mountControl((element) => {
+      element.status = blocked;
+      element.response = policyResponse(
+        { mode: "tiered", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" }, tier: "advanced" },
+        blocked,
+      );
+      element.catalog = {
+        ...catalog,
+        rows: {
+          ...catalog.rows,
+          advanced: { valid: false, reason: "tier advanced does not resolve to a valid model" },
+        },
+      };
+      element.editable = true;
+      element.onSave = onSave;
+    });
+
+    await openPanel(control);
+
+    expect(shadowText(control)).toContain(blockedReason);
+    expect(field(control, "policy-mode").disabled).toBe(false);
+    expect(field(control, "policy-tier").disabled).toBe(false);
+    expect(saveButton(control).disabled).toBe(true);
+
+    await choose(control, "policy-tier", "capable");
+
+    expect(saveButton(control).disabled).toBe(false);
+    saveButton(control).click();
+    expect(onSave).toHaveBeenCalledWith({ mode: "tiered", tier: "capable" });
   });
 
   it("reads ladder validity from live status rather than the held response session", async () => {

@@ -101,6 +101,7 @@ export class SessionModelPolicyControl extends LitElement {
         aria-expanded=${this.open ? "true" : "false"}
         title=${triggerTitle(policyStatus, modeLabel)}
         @click=${() => { this.toggle(); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleKeydown(event); }}
       >
         <span class="policy-mode">${modeLabel}</span>
         ${policyStatus.mode === "tiered" && tier !== undefined ? html`<span class="policy-tier">${TIER_LABELS[tier]}</span>` : null}
@@ -119,7 +120,7 @@ export class SessionModelPolicyControl extends LitElement {
         class="policy-panel"
         role="dialog"
         aria-label="Session model policy"
-        @keydown=${(event: KeyboardEvent) => { this.handlePanelKeydown(event); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleKeydown(event); }}
       >
         <header class="policy-panel-header">
           <h2 class="policy-panel-title">Session model policy</h2>
@@ -127,16 +128,21 @@ export class SessionModelPolicyControl extends LitElement {
         </header>
         <p class="policy-current">Current: ${policyStatus.mode === "tiered" && policyStatus.tier !== undefined ? html`Tiered · ${TIER_LABELS[policyStatus.tier]} · ` : html`Exact · `}${describeSelection(policyStatus.resolved)}</p>
         ${this.renderDiagnostics(policyStatus, catalog)}
-        ${draft === undefined || catalog === undefined ? this.renderUnavailable() : this.renderForm(draft, catalog)}
+        ${draft === undefined || catalog === undefined
+          ? this.renderUnavailable(draft === undefined ? "policy" : "catalog")
+          : this.renderForm(draft, catalog)}
         ${this.error === "" ? null : html`<p class="policy-error" role="alert" aria-live="assertive">${this.error}</p>`}
       </section>
     `;
   }
 
-  private renderUnavailable(): TemplateResult {
+  private renderUnavailable(cause: "policy" | "catalog"): TemplateResult {
+    const message = cause === "policy"
+      ? (this.loading ? "Loading the current model policy…" : "The current model policy could not be loaded, so it cannot be changed yet.")
+      : (this.loading ? "Loading model tier settings…" : "Model tier settings could not be loaded, so the session model policy cannot be changed yet.");
     return html`
       <div class="policy-unavailable">
-        <p>${this.loading ? "Loading the current model policy…" : "The current model policy could not be loaded, so it cannot be changed yet."}</p>
+        <p>${message}</p>
         <button type="button" class="policy-retry" ?disabled=${this.loading} @click=${() => { this.onOpen?.(); }}>Retry</button>
       </div>
     `;
@@ -163,14 +169,15 @@ export class SessionModelPolicyControl extends LitElement {
   }
 
   private renderTierField(draft: SessionModelPolicyDraft, catalog: ModelTierSettingsResponse, mutable: boolean): TemplateResult {
-    // No tier is selectable while the configured ladder is unusable, so the
-    // control is disabled rather than offering choices that cannot be saved.
+    // Exact mode keeps the remembered tier visible but read-only. Selecting a
+    // Tiered policy starts with the Mode control, then this field becomes active
+    // only when the configured ladder is usable.
     const ladderUsable = catalog.valid && catalog.ladder !== undefined;
     const selected = draft.tier;
     return html`
       <div class="policy-field">
         <label for="policy-tier">Tier</label>
-        <select id="policy-tier" ?disabled=${!mutable || !ladderUsable} .value=${selected ?? ""} @change=${(event: Event) => { this.changeTier(event); }}>
+        <select id="policy-tier" ?disabled=${!mutable || draft.mode !== "tiered" || !ladderUsable} .value=${selected ?? ""} @change=${(event: Event) => { this.changeTier(event); }}>
           ${selected === undefined ? html`<option value="" disabled ?selected=${true}>Select a tier…</option>` : null}
           ${MODEL_TIERS.map((tier) => html`<option value=${tier} ?disabled=${!catalog.rows[tier].valid} ?selected=${selected === tier}>${TIER_LABELS[tier]}</option>`)}
         </select>
@@ -254,14 +261,12 @@ export class SessionModelPolicyControl extends LitElement {
   }
 
   /**
-   * A confirmed policy that the server reports as blocked is not editable from
-   * here: the block describes the applied policy, not the draft, so the only
-   * honest presentation is read-only with the reason visible. A response with no
-   * `policy` is the repair case instead, where editing is the whole point.
+   * Blocked state is diagnostic, not an authorization gate: an explicit update
+   * is how both runtime blocks and unresolved starter tiers are repaired. Only
+   * parent editability and transient reads/writes make the form non-mutable.
    */
   private canMutate(): boolean {
-    if (!this.editable || this.saving) return false;
-    return !(this.blockedReason() !== undefined && this.response?.policy !== undefined);
+    return this.editable && !this.loading && !this.saving;
   }
 
   private toggle(): void {
@@ -278,6 +283,7 @@ export class SessionModelPolicyControl extends LitElement {
 
   private close(): void {
     if (!this.open) return;
+    this.draft = draftForResponse(this.response);
     this.open = false;
     // Restore focus through the retained trigger reference so closing by Escape,
     // Cancel, or the close control never drops the user at the document root.
@@ -286,8 +292,8 @@ export class SessionModelPolicyControl extends LitElement {
     });
   }
 
-  private handlePanelKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape") return;
+  private handleKeydown(event: KeyboardEvent): void {
+    if (!this.open || event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
     this.close();
