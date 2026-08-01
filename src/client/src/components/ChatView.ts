@@ -590,9 +590,10 @@ export class ChatView extends LitElement {
             groups,
             (group) => group.kind === "group" ? this.groupRenderKey(group.startIndex) : this.messageAnchorKey(group.index),
             (group, index) => {
-              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.isLiveTailGroup(groups, index));
+              const live = this.isLiveTailGroup(groups, index);
+              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, live);
               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, group.toolName);
-              return this.renderMessage(group.message, group.index);
+              return this.renderMessage(group.message, group.index, live);
             },
           )}
           ${this.renderQueuedMessages()}
@@ -1086,13 +1087,13 @@ export class ChatView extends LitElement {
     return Math.max(this.messageEnd, this.messageStart + this.messages.length);
   }
 
-  private renderMessage(message: ChatLine, index: number) {
+  private renderMessage(message: ChatLine, index: number, live = false) {
     const toolOnly = this.isToolExecutionOnlyMessage(message);
     return html`
       ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
       <article class=${toolOnly ? "msg tool-execution-shell" : `msg ${message.role}`} data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
         ${toolOnly ? null : this.renderMessageHeader(message, String(index))}
-        ${message.parts.map((part) => this.renderPart(part, message))}
+        ${message.parts.map((part) => this.renderPart(part, message, live))}
       </article>
     `;
   }
@@ -1122,12 +1123,12 @@ export class ChatView extends LitElement {
           <b class="label">${chatMessageGroupLabel(defaultOpen)}</b>
           <span>${summarizeChatGroup(messages)}</span>
         </summary>
-        ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
+        ${open ? this.renderMessageGroupBody(messages, startIndex, defaultOpen) : null}
       </details>
     `;
   }
 
-  private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
+  private renderMessageGroupBody(messages: ChatLine[], startIndex: number, live = false) {
     return html`
       <div class="group-body">
         ${messages.map((message, offset) => {
@@ -1135,7 +1136,7 @@ export class ChatView extends LitElement {
           return html`
             <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
               ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
-              ${message.parts.map((part) => this.renderPart(part, message))}
+              ${message.parts.map((part) => this.renderPart(part, message, live))}
             </section>
           `;
         })}
@@ -1268,15 +1269,15 @@ export class ChatView extends LitElement {
     return label;
   }
 
-  private renderPart(part: ChatPart, message?: ChatLine) {
+  private renderPart(part: ChatPart, message?: ChatLine, live = false) {
     if (part.type === "text" && message?.role === "bash") return html`<pre class="part shell-output">${part.text}</pre>`;
-    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text}></formatted-text>`;
-    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text}></formatted-text></details>`;
+    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text} .live=${live}></formatted-text>`;
+    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text} .live=${live}></formatted-text></details>`;
     if (part.type === "skillInvocation") return html`
       <details class="part skill-invocation">
         <summary><b>[skill]</b> ${part.name}</summary>
         <small>${part.location}</small>
-        <formatted-text .text=${part.content}></formatted-text>
+        <formatted-text .text=${part.content} .live=${live}></formatted-text>
       </details>
     `;
     if (part.type === "skillRead") return html`
@@ -1294,7 +1295,7 @@ export class ChatView extends LitElement {
     if (part.type === "toolResult") return html`
       <details class="part" ?open=${part.isError}>
         <summary>${part.isError ? "✖" : "✓"} ${part.toolName} result</summary>
-        <formatted-text .text=${part.text}></formatted-text>
+        <formatted-text .text=${part.text} .live=${live}></formatted-text>
       </details>
     `;
     return null;
