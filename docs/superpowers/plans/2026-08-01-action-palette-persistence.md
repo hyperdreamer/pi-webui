@@ -597,14 +597,22 @@ into existence.
 Run: `npm test -- --run src/client/src/components/PiWebUiApp.actionPalette.test.ts`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 6: Two manual checks that jsdom cannot cover**
+- [ ] **Step 6: Two real-browser checks that jsdom cannot cover**
 
-jsdom has no layout or paint, so visual layering and real caret placement stay
-manual. The UI dev service autoreloads, so no session daemon restart is needed.
-Hand these two to your human partner rather than asserting them:
+jsdom has no layout or paint, so visual layering and real caret placement cannot
+be asserted there. Two checks remain:
 
 1. `Focus Prompt` closes the palette and the caret lands in the composer.
 2. `Open Settings` closes the palette and the settings dialog is fully visible, with no leftover dimming over it.
+
+These are **not** part of this task and are **not** committed. Playwright is
+installed globally on the development machine but deliberately absent from this
+repo's `package.json`, so a committed Playwright test would break `typecheck`,
+Knip, and CI for everyone else. The controller verifies these two separately via
+an ad-hoc script under `.superpowers/sdd/2026-08-01-action-palette-persistence/`
+(git-ignored), run against the dev server with `NODE_PATH=$(npm root -g)`.
+
+Skip this step as the task implementer. Leave it to the controller.
 
 - [ ] **Step 7: Commit**
 
