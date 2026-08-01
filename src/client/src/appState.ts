@@ -1,5 +1,5 @@
 import type { AuthProviderOption, CommandOption, CommandResult, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PiWebUiStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace, WorkspaceActivity } from "./api";
-import type { MemoryEntry } from "../../shared/apiTypes";
+import type { MemoryEntry, SessionModelPolicyResponse } from "../../shared/apiTypes";
 import type { ChatLine } from "./components/shared";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
@@ -38,6 +38,11 @@ export interface AppState {
   activity: SessionActivity | undefined;
   /** Thinking levels available for the selected session's current model. */
   availableThinkingLevels: readonly string[];
+  /** Confirmed policy inspection result for the selected session, from its dedicated endpoint. */
+  modelPolicy: SessionModelPolicyResponse | undefined;
+  isLoadingModelPolicy: boolean;
+  isSavingModelPolicy: boolean;
+  modelPolicyError: string | undefined;
   sessionStatuses: Record<string, SessionStatus>;
   sessionActivities: Record<string, SessionActivity>;
   workspaceActivities: Record<string, WorkspaceActivity>;
@@ -171,6 +176,10 @@ export function initialAppState(): AppState {
     status: undefined,
     activity: undefined,
     availableThinkingLevels: [],
+    modelPolicy: undefined,
+    isLoadingModelPolicy: false,
+    isSavingModelPolicy: false,
+    modelPolicyError: undefined,
     sessionStatuses: {},
     sessionActivities: {},
     workspaceActivities: {},

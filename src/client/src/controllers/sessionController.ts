@@ -11,7 +11,7 @@ import { SessionSocket, type GlobalSessionEvent, type SessionUiEvent } from "../
 import { isArchivableSessionInfo, isTransientNewSessionInfo, sessionPersistenceOptionsForRuntime } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
-import type { PromptAttachmentDelivery, SessionNotificationInboxEvent } from "../../../shared/apiTypes";
+import type { PromptAttachmentDelivery, SessionModelPolicyUpdate, SessionNotificationInboxEvent } from "../../../shared/apiTypes";
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
@@ -82,6 +82,8 @@ interface PendingSessionStart {
   session: ClientPendingStartSessionInfo;
   queuedSends: QueuedPendingSessionSend[];
   discarded: boolean;
+  /** Starter policy snapshot captured before `POST /sessions`, handed to the request unchanged. */
+  modelPolicy: SessionModelPolicyUpdate | undefined;
 }
 
 interface SuppressedCreatedSession {
@@ -94,6 +96,8 @@ interface SelectedSessionRefreshTarget {
   machineId: string;
   selectionSeq: number;
 }
+
+type SelectedModelPolicyStateReset = Pick<AppState, "modelPolicy" | "isLoadingModelPolicy" | "isSavingModelPolicy" | "modelPolicyError">;
 
 export class SessionController {
   private readonly socket: SessionEventSocket;
@@ -116,6 +120,14 @@ export class SessionController {
   private pendingFrame: number | undefined;
   private pendingSessionStartSeq = 0;
   private pendingQueuedSendSeq = 0;
+  // Model policy request ordering. `modelPolicyResultSeq` decides which settled
+  // response may still write the confirmed policy/error (newest issued request
+  // wins, whether it was a read or a write). The per-kind sequences only own
+  // their progress flag, so a read superseded by a newer save still clears its
+  // own loading indicator instead of leaving it stuck.
+  private modelPolicyResultSeq = 0;
+  private modelPolicyLoadSeq = 0;
+  private modelPolicySaveSeq = 0;
   private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
   private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
   private readonly selectedSessionRefreshes = new TrailingRefreshCoordinator<string>();
@@ -159,7 +171,7 @@ export class SessionController {
     // session must not cancel the in-flight upload indicator of the session
     // that is still sending; the per-session entry is cleared by send()'s
     // finally block when the request settles.
-    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, availableThinkingLevels: [], treeDialog: undefined });
+    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, availableThinkingLevels: [], ...this.clearSelectedModelPolicyState(), treeDialog: undefined });
   }
 
   deselectSession(options?: { forgetRememberedSelection?: boolean | undefined; updateUrl?: boolean | undefined }) {
@@ -176,23 +188,29 @@ export class SessionController {
     this.deselectSession({ forgetRememberedSelection: true });
   }
 
-  async startSession() {
+  async startSession(modelPolicy?: SessionModelPolicyUpdate) {
     const workspace = this.getState().selectedWorkspace;
     if (!workspace) return;
     const machineId = selectedMachineId(this.getState());
-    const pending = this.createPendingSessionStart(workspace, machineId);
+    const pending = this.createPendingSessionStart(workspace, machineId, modelPolicy);
     this.pendingSessionStarts.set(pending.tempId, pending);
     this.insertAndSelectPendingSession(pending.session);
     try {
-      const session = await this.api.startSession(workspace.path, machineId);
+      const session = await this.api.startSession(workspace.path, machineId, pending.modelPolicy);
       await this.resolvePendingSessionStart(pending.tempId, session);
     } catch (error) {
       this.failPendingSessionStart(pending.tempId, error);
     }
   }
 
-  async startSessionWithPrompt(text: string, streamingBehavior?: "steer" | "followUp", attachments?: PromptAttachment[], delivery: PromptAttachmentDelivery = "inline"): Promise<void> {
-    const startingSession = this.startSession();
+  async startSessionWithPrompt(
+    text: string,
+    streamingBehavior?: "steer" | "followUp",
+    attachments?: PromptAttachment[],
+    delivery: PromptAttachmentDelivery = "inline",
+    modelPolicy?: SessionModelPolicyUpdate,
+  ): Promise<void> {
+    const startingSession = this.startSession(modelPolicy);
     await this.send(text, streamingBehavior, attachments, delivery);
     await startingSession;
   }
@@ -224,6 +242,7 @@ export class SessionController {
       status: session.archived === true ? undefined : this.getState().sessionStatuses[session.id],
       activity: session.archived === true ? undefined : this.getState().sessionActivities[session.id],
       availableThinkingLevels: [],
+      ...this.clearSelectedModelPolicyState(),
     });
     let buffered: SessionUiEvent[] | undefined;
     try {
@@ -880,6 +899,92 @@ export class SessionController {
     }
   }
 
+  /**
+   * Read the selected session's persisted policy from its dedicated endpoint.
+   * A response whose `policy` is omitted is the daemon's corrupt-entry repair
+   * signal and is stored as-is: nothing here substitutes, clamps, or repairs a
+   * blocked or invalid policy client-side.
+   */
+  async loadModelPolicy(): Promise<void> {
+    const target = this.selectedModelPolicyTarget();
+    if (target === undefined) return;
+    const { session, machineId, selectionSeq } = target;
+    const resultSeq = ++this.modelPolicyResultSeq;
+    const loadSeq = resultSeq;
+    this.modelPolicyLoadSeq = loadSeq;
+    // A previous session's confirmed response must not stay visible while the
+    // new read is in flight, and a stale failure must not outlive the retry.
+    this.setState({ modelPolicy: undefined, modelPolicyError: undefined, isLoadingModelPolicy: true });
+    try {
+      const response = await this.api.modelPolicy(session, machineId);
+      if (this.canWriteModelPolicyResult(session.id, machineId, selectionSeq, resultSeq)) {
+        this.setState({ modelPolicy: response, modelPolicyError: undefined });
+        this.applyStatus(response.session);
+      }
+    } catch (error) {
+      if (this.canWriteModelPolicyResult(session.id, machineId, selectionSeq, resultSeq)) this.setState({ modelPolicyError: String(error) });
+    } finally {
+      if (this.modelPolicyLoadSeq === loadSeq && this.isCurrentSessionSelection(session.id, machineId, selectionSeq)) this.setState({ isLoadingModelPolicy: false });
+    }
+  }
+
+  /** Persist a policy choice for the selected session and adopt the confirmed response. */
+  async saveModelPolicy(update: SessionModelPolicyUpdate): Promise<void> {
+    const target = this.selectedModelPolicyTarget();
+    if (target === undefined) return;
+    const { session, machineId, selectionSeq } = target;
+    const resultSeq = ++this.modelPolicyResultSeq;
+    const saveSeq = resultSeq;
+    this.modelPolicySaveSeq = saveSeq;
+    // The currently displayed response stays visible while saving so the user
+    // keeps seeing the policy they are editing; only the stale error is dropped.
+    this.setState({ modelPolicyError: undefined, isSavingModelPolicy: true });
+    try {
+      const response = await this.api.setModelPolicy(session, update, machineId);
+      if (this.canWriteModelPolicyResult(session.id, machineId, selectionSeq, resultSeq)) {
+        this.setState({ modelPolicy: response, modelPolicyError: undefined });
+        this.applyStatus(response.session);
+      }
+    } catch (error) {
+      if (this.canWriteModelPolicyResult(session.id, machineId, selectionSeq, resultSeq)) this.setState({ modelPolicyError: String(error) });
+    } finally {
+      if (this.modelPolicySaveSeq === saveSeq && this.isCurrentSessionSelection(session.id, machineId, selectionSeq)) this.setState({ isSavingModelPolicy: false });
+    }
+  }
+
+  /**
+   * Capture the selected session identity a policy request belongs to. Returns
+   * undefined when there is nothing policy-addressable selected (no session, an
+   * archived session, or a client-pending start that has no backend session yet).
+   */
+  private selectedModelPolicyTarget(): { session: SessionRef; machineId: string; selectionSeq: number } | undefined {
+    const state = this.getState();
+    const selected = state.selectedSession;
+    if (selected === undefined || selected.archived === true || isClientPendingStartSessionInfo(selected)) return undefined;
+    return { session: { id: selected.id, cwd: selected.cwd }, machineId: selectedMachineId(state), selectionSeq: this.selectionSeq };
+  }
+
+  /**
+   * A settled policy response may write confirmed state only while it still
+   * belongs to the current selection and no newer policy request has been
+   * issued since, so an out-of-order read cannot overwrite a newer save.
+   */
+  private canWriteModelPolicyResult(sessionId: string, machineId: string, selectionSeq: number, resultSeq: number): boolean {
+    return resultSeq === this.modelPolicyResultSeq && this.isCurrentSessionSelection(sessionId, machineId, selectionSeq);
+  }
+
+  /**
+   * Selected-session policy reset, spread into the selection-lifecycle state
+   * writes that already bump `selectionSeq`. In-flight requests are abandoned by
+   * the sequence guards, so a prior session's remembered exact branch, error, or
+   * progress flag never survives a selection or machine change.
+   */
+  private clearSelectedModelPolicyState(): SelectedModelPolicyStateReset {
+    this.modelPolicyLoadSeq = 0;
+    this.modelPolicySaveSeq = 0;
+    return { modelPolicy: undefined, isLoadingModelPolicy: false, isSavingModelPolicy: false, modelPolicyError: undefined };
+  }
+
   async listModels() {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return [];
@@ -1097,7 +1202,7 @@ export class SessionController {
     });
   }
 
-  private createPendingSessionStart(workspace: Workspace, machineId: string): PendingSessionStart {
+  private createPendingSessionStart(workspace: Workspace, machineId: string, modelPolicy: SessionModelPolicyUpdate | undefined): PendingSessionStart {
     const tempId = `pending-session-${String(++this.pendingSessionStartSeq)}-${Date.now().toString(36)}`;
     const now = new Date().toISOString();
     const session: ClientPendingStartSessionInfo = {
@@ -1113,7 +1218,7 @@ export class SessionController {
       clientPendingStart: true,
       machineId,
     };
-    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false };
+    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false, modelPolicy };
   }
 
   private insertAndSelectPendingSession(session: ClientPendingStartSessionInfo): void {
@@ -1145,6 +1250,7 @@ export class SessionController {
       status: undefined,
       activity,
       availableThinkingLevels: [],
+      ...this.clearSelectedModelPolicyState(),
       treeDialog: undefined,
       ...(activity === undefined ? {} : { sessionActivities: { ...state.sessionActivities, [session.id]: activity } }),
       error: "",
