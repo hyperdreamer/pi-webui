@@ -51,7 +51,7 @@ export function agentProfileSettingsSupport(target: SettingsMachineTarget, runti
 export function modelTierSettingsSupport(target: SettingsMachineTarget, runtime: Pick<MachineRuntime, "ok" | "capabilities"> | undefined): ModelTierSettingsSupport {
   if (target.kind === "local") return { state: "supported" };
   if (runtime?.ok !== true) return { state: "unknown" };
-  if (supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.modelTierSettings) || supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.selectedMachineSettings)) return { state: "supported" };
+  if (supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.modelTierSettings)) return { state: "supported" };
   return { state: "unsupported", message: selectedMachineSettingsUnavailableMessage(target) };
 }
 

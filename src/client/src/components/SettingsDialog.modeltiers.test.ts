@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { ModelTierSettingsResponse } from "../../../shared/apiTypes";
 import { modelTiersApi } from "../api";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
@@ -143,6 +144,26 @@ describe("settings-dialog model tiers machine targeting", () => {
       ok: true,
       checkedAt: "now",
       capabilities: [],
+    };
+
+    await callDialogPromise(dialog, "loadModelTiersForTarget");
+
+    expect(settingsSpy).not.toHaveBeenCalled();
+    expect(getDialogProperty(dialog, "modelTiersLoading")).toBe(false);
+    expect(getDialogProperty(dialog, "modelTiersError")).toBe(
+      "Selected-machine settings are not available on Lab Mac. Update and restart PI WEBUI on that machine, then try again.",
+    );
+  });
+
+  it("treats remote machine advertising settings.selectedMachine without settings.modelTiers as unsupported", async () => {
+    const settingsSpy = vi.spyOn(modelTiersApi, "settings");
+    const dialog = new SettingsDialog();
+    dialog.machine = remoteMachine;
+    dialog.machineRuntime = {
+      machineId: remoteMachine.id,
+      ok: true,
+      checkedAt: "now",
+      capabilities: [PI_WEBUI_CAPABILITIES.selectedMachineSettings],
     };
 
     await callDialogPromise(dialog, "loadModelTiersForTarget");
