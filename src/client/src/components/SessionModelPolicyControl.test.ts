@@ -268,6 +268,12 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(resolutionRule.textOverflow).toBe("ellipsis");
   });
 
+  it("resets the composer action row nowrap inside the panel so the sheet cannot overflow itself", () => {
+    // The composer action row sets white-space nowrap, which inherits through
+    // the shadow boundary and pushed the panel header past the sheet width.
+    expect(componentStyleRule(".policy-panel").whiteSpace).toBe("normal");
+  });
+
   it("stays visible from live status before any policy response has loaded", async () => {
     const control = await mountControl((element) => {
       element.status = tieredStatus();

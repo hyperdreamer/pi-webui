@@ -368,7 +368,10 @@ export class SessionModelPolicyControl extends LitElement {
     .policy-tier, .policy-resolution { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-muted); }
     .policy-diagnostic { min-width: 0; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-danger); font-size: 11px; }
 
-    .policy-panel { position: absolute; z-index: 30; bottom: calc(100% + 6px); left: 0; width: min(360px, calc(100vw - 24px)); max-height: min(420px, 60dvh); overflow: auto; overscroll-behavior: contain; display: grid; gap: 10px; border: 1px solid var(--pi-border); border-radius: 12px; background: var(--pi-bg); box-shadow: 0 12px 32px var(--pi-shadow); padding: 12px; text-align: left; }
+    /* The composer action row sets white-space: nowrap, which would otherwise
+       inherit into the panel and push its header and controls past the panel's
+       own width on narrow layouts. */
+    .policy-panel { position: absolute; z-index: 30; bottom: calc(100% + 6px); left: 0; width: min(360px, calc(100vw - 24px)); max-height: min(420px, 60dvh); overflow: auto; overscroll-behavior: contain; display: grid; gap: 10px; border: 1px solid var(--pi-border); border-radius: 12px; background: var(--pi-bg); box-shadow: 0 12px 32px var(--pi-shadow); padding: 12px; text-align: left; white-space: normal; }
     .policy-panel-header { display: flex; align-items: center; gap: 8px; }
     .policy-panel-title { flex: 1 1 auto; margin: 0; font-size: 13px; font-weight: 600; }
     .policy-close { flex: 0 0 auto; display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: inherit; font-size: 15px; line-height: 1; cursor: pointer; }
