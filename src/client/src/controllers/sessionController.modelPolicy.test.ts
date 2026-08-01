@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
 import { SessionController } from "./sessionController";
-import { defaultApi, deferred, emptyPage, FakeSocket, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
+import { defaultApi, deferred, emptyPage, FakeSocket, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
 
 const exact: ExactModelSelection = { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" };
+
+/** The tuple an exact-route mutation (existing model dialog) leaves behind. */
+const switchedExact: ExactModelSelection = { model: { provider: "openai", id: "gpt-fast" }, thinkingLevel: "low" };
 
 const policyWorkspace: AppState["selectedWorkspace"] = { ...workspace, path: "/work" };
 
@@ -32,6 +35,14 @@ function policyStatus(sessionId: string, overrides: Partial<ClientSessionModelPo
 
 function tieredResponse(sessionId: string): SessionModelPolicyResponse {
   return { contractVersion: 1, policy: { mode: "tiered", exact, tier: "advanced" }, session: policyStatus(sessionId) };
+}
+
+function exactResponse(sessionId: string, selection: ExactModelSelection = exact): SessionModelPolicyResponse {
+  return {
+    contractVersion: 1,
+    policy: { mode: "exact", exact: selection, tier: "advanced" },
+    session: policyStatus(sessionId, { mode: "exact", resolved: selection }),
+  };
 }
 
 interface Harness {
@@ -235,16 +246,159 @@ describe("SessionController model policy state", () => {
     expect(setModelPolicy).not.toHaveBeenCalled();
   });
 
-  it("keeps a later live status update coherent with the loaded policy response", async () => {
-    const response = tieredResponse(selectedSession.id);
-    const { controller, state } = harness({ ...defaultApi, modelPolicy: () => Promise.resolve(response) });
+  it("re-reads the policy when a live status shows the daemon superseded the held response", async () => {
+    const loaded = tieredResponse(selectedSession.id);
+    // The existing model dialog's exact route appends a fresh Exact branch and
+    // reports it only through the status, so the held tiered response is stale.
+    const reread = exactResponse(selectedSession.id, switchedExact);
+    const responses = [loaded, reread];
+    const modelPolicy = vi.fn(() => Promise.resolve(responses.shift() ?? reread));
+    const { controller, state } = harness({ ...defaultApi, modelPolicy });
 
     await controller.loadModelPolicy();
-    const live = policyStatus(selectedSession.id, { mode: "exact", tier: "advanced" });
+    expect(state().modelPolicy).toBe(loaded);
+
+    const superseded = policyStatus(selectedSession.id, { mode: "exact", tier: "advanced", resolved: switchedExact });
+    controller.applySessionStatus(superseded);
+
+    // The stale remembered branch is dropped immediately; nothing may compose a
+    // "switch back to Exact" update from it.
+    expect(state().modelPolicy).toBeUndefined();
+    expect(state().status).toEqual(superseded);
+
+    await vi.waitFor(() => { expect(modelPolicy).toHaveBeenCalledTimes(2); });
+    await vi.waitFor(() => { expect(state().modelPolicy).toBe(reread); });
+    expect(state().modelPolicy?.policy?.exact).toEqual(switchedExact);
+    expect(state().isLoadingModelPolicy).toBe(false);
+  });
+
+  it("keeps the held response when a live status republishes the same policy", async () => {
+    const response = tieredResponse(selectedSession.id);
+    const modelPolicy = vi.fn(() => Promise.resolve(response));
+    const { controller, state } = harness({ ...defaultApi, modelPolicy });
+
+    await controller.loadModelPolicy();
+    const live = { ...policyStatus(selectedSession.id), isStreaming: true, cost: 3 };
     controller.applySessionStatus(live);
 
     expect(state().status).toEqual(live);
     expect(state().modelPolicy).toBe(response);
+    expect(modelPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a blocked response whose runtime tuple already differs from the remembered branch", async () => {
+    // A failed restore leaves the runtime tuple different from the persisted
+    // branch. That divergence is the daemon's reported state, not a superseded
+    // response, so republishing the same status must not drop or re-read it.
+    const blockedRuntime: SessionModelPolicyResponse = {
+      contractVersion: 1,
+      policy: { mode: "exact", exact, tier: "advanced" },
+      session: policyStatus(selectedSession.id, { mode: "exact", resolved: switchedExact, blockedReason: "MODEL_POLICY_BLOCKED: restore unproven" }),
+    };
+    const modelPolicy = vi.fn(() => Promise.resolve(blockedRuntime));
+    const { controller, state } = harness({ ...defaultApi, modelPolicy });
+
+    await controller.loadModelPolicy();
+    controller.applySessionStatus({ ...blockedRuntime.session, isStreaming: true });
+
+    expect(state().modelPolicy).toBe(blockedRuntime);
+    expect(modelPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a confirmed save outrank a read issued after it and flushes buffered status first", async () => {
+    const confirmed = exactResponse(selectedSession.id, switchedExact);
+    const preWrite = tieredResponse(selectedSession.id);
+    const save = deferred<SessionModelPolicyResponse>();
+    const read = deferred<SessionModelPolicyResponse>();
+    const { controller, state } = harness({
+      ...defaultApi,
+      setModelPolicy: () => save.promise,
+      modelPolicy: () => read.promise,
+    });
+
+    const saving = controller.saveModelPolicy({ mode: "exact", exact: switchedExact });
+    const loading = controller.loadModelPolicy();
+
+    // A read issued mid-save must not clear the response the save is editing.
+    expect(state().modelPolicy).toBeUndefined();
+    expect(state().isSavingModelPolicy).toBe(true);
+    expect(state().isLoadingModelPolicy).toBe(true);
+
+    // A status published before the confirmation but still frame-buffered must
+    // not flush afterwards and revert the confirmed policy.
+    controller.applyGlobalEvent({ type: "status.update", status: policyStatus(selectedSession.id) });
+
+    // The GET is served before the PUT commits.
+    read.resolve(preWrite);
+    await loading;
+
+    expect(state().modelPolicy).toBeUndefined();
+    expect(state().isLoadingModelPolicy).toBe(false);
+
+    save.resolve(confirmed);
+    await saving;
+
+    expect(state().modelPolicy).toBe(confirmed);
+    expect(state().status?.modelPolicy?.resolved).toEqual(switchedExact);
+    expect(state().isSavingModelPolicy).toBe(false);
+
+    runPendingAnimationFrames();
+
+    expect(state().status?.modelPolicy?.resolved).toEqual(switchedExact);
+    expect(state().modelPolicy).toBe(confirmed);
+  });
+
+  it("keeps a save rejection visible when a read was issued while the save was in flight", async () => {
+    const preWrite = tieredResponse(selectedSession.id);
+    const save = deferred<SessionModelPolicyResponse>();
+    const read = deferred<SessionModelPolicyResponse>();
+    const { controller, state } = harness({
+      ...defaultApi,
+      setModelPolicy: () => save.promise,
+      modelPolicy: () => read.promise,
+    }, { modelPolicy: preWrite });
+
+    const saving = controller.saveModelPolicy({ mode: "exact", exact: switchedExact });
+    const loading = controller.loadModelPolicy();
+
+    expect(state().modelPolicy).toBe(preWrite);
+
+    read.resolve(preWrite);
+    await loading;
+
+    save.reject(new Error("policy write rejected"));
+    await saving;
+
+    expect(state().modelPolicyError).toBe("Error: policy write rejected");
+    expect(state().isSavingModelPolicy).toBe(false);
+    expect(state().isLoadingModelPolicy).toBe(false);
+  });
+
+  it("clears its progress flag when the selection is replaced by an equivalent session copy", async () => {
+    const read = deferred<SessionModelPolicyResponse>();
+    const write = deferred<SessionModelPolicyResponse>();
+    const { controller, state, setSelection } = harness({
+      ...defaultApi,
+      modelPolicy: () => read.promise,
+      setModelPolicy: () => write.promise,
+    });
+
+    const loading = controller.loadModelPolicy();
+    const saving = controller.saveModelPolicy(tieredUpdate);
+
+    // A background session refresh can swap the selected object for a
+    // server-archived copy at the same id; the request must still release its
+    // progress flag rather than leaving a spinner stuck forever.
+    const archivedCopy: SessionInfo = { ...selectedSession, archived: true };
+    setSelection({ selectedSession: archivedCopy, sessions: [archivedCopy, otherSession] });
+
+    read.resolve(tieredResponse(selectedSession.id));
+    write.resolve(tieredResponse(selectedSession.id));
+    await Promise.all([loading, saving]);
+
+    expect(state().isLoadingModelPolicy).toBe(false);
+    expect(state().isSavingModelPolicy).toBe(false);
+    expect(state().modelPolicy).toBeUndefined();
   });
 
   it("does not request policy for an archived, unselected, or client-pending session", async () => {
