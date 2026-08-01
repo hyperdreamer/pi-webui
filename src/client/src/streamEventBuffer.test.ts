@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SessionUiEvent } from "./sessionSocket";
 import {
+  DEFAULT_MAX_PENDING_STREAM_BYTES,
+  DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS,
   StreamEventBuffer,
   isBufferedStreamEvent,
 } from "./streamEventBuffer";
@@ -19,6 +21,13 @@ describe("isBufferedStreamEvent", () => {
     expect(isBufferedStreamEvent({ type: "shell.chunk", chunk: "a" })).toBe(true);
     expect(isBufferedStreamEvent({ type: "tool.update", toolName: "read", toolCallId: "c1", text: "a" })).toBe(true);
     expect(isBufferedStreamEvent({ type: "tool.start", toolName: "read", toolCallId: "c1", summary: "" })).toBe(false);
+  });
+});
+
+describe("StreamEventBuffer defaults", () => {
+  it("exports the required run and byte limits", () => {
+    expect(DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS).toBe(128);
+    expect(DEFAULT_MAX_PENDING_STREAM_BYTES).toBe(262_144);
   });
 });
 
@@ -84,6 +93,92 @@ describe("StreamEventBuffer", () => {
     });
   });
 
+  it("resyncs rather than retaining a same-tool replacement larger than the byte limit", () => {
+    const earlier: BufferedStreamEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "",
+      seq: Number.MAX_SAFE_INTEGER,
+    };
+    const latest: BufferedStreamEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "123456789012345",
+      seq: 1,
+    };
+    const retained: SessionUiEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "123456789012345",
+      seq: Number.MAX_SAFE_INTEGER,
+    };
+    const maxBytes = 91;
+    const buffer = new StreamEventBuffer({ maxBytes });
+
+    expect(utf8ByteLength(earlier)).toBe(maxBytes);
+    expect(utf8ByteLength(latest)).toBe(maxBytes);
+    expect(utf8ByteLength(retained)).toBe(106);
+
+    buffer.enqueue(earlier);
+    buffer.enqueue(latest);
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.pendingBytes).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
+  });
+
+  it("accepts a same-tool replacement exactly at the byte limit", () => {
+    const earlier: BufferedStreamEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "",
+      seq: Number.MAX_SAFE_INTEGER,
+    };
+    const latest: BufferedStreamEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "123456789012345",
+      seq: 1,
+    };
+    const retained: SessionUiEvent = {
+      type: "tool.update",
+      toolName: "bash",
+      toolCallId: "c1",
+      text: "123456789012345",
+      seq: Number.MAX_SAFE_INTEGER,
+    };
+    const maxBytes = utf8ByteLength(retained);
+    const buffer = new StreamEventBuffer({ maxBytes });
+
+    buffer.enqueue(earlier);
+    buffer.enqueue(latest);
+
+    expect(buffer.eventCount).toBe(1);
+    expect(buffer.pendingBytes).toBe(maxBytes);
+    expect(buffer.drain()).toEqual({ events: [retained], resyncRequired: false });
+  });
+
+  it("accepts exactly the configured event-run limit", () => {
+    const buffer = new StreamEventBuffer({ maxEventRuns: 2, maxBytes: 10_000 });
+
+    buffer.enqueue({ type: "assistant.delta", text: "a" });
+    buffer.enqueue({ type: "assistant.thinking.delta", text: "t" });
+
+    expect(buffer.eventCount).toBe(2);
+    expect(buffer.drain()).toEqual({
+      events: [
+        { type: "assistant.delta", text: "a" },
+        { type: "assistant.thinking.delta", text: "t" },
+      ],
+      resyncRequired: false,
+    });
+  });
+
   it("returns one resync marker on event-run overflow and resumes after drain", () => {
     const buffer = new StreamEventBuffer({ maxEventRuns: 2, maxBytes: 10_000 });
 
@@ -124,6 +219,21 @@ describe("StreamEventBuffer", () => {
       events: [{ type: "assistant.delta", text: "accepted after drain" }],
       resyncRequired: false,
     });
+  });
+
+  it("resyncs when a multibyte input is one UTF-8 byte over the byte limit", () => {
+    const event: BufferedStreamEvent = { type: "assistant.delta", text: "é" };
+    const serializedLength = JSON.stringify(event).length;
+    const eventBytes = utf8ByteLength(event);
+    const buffer = new StreamEventBuffer({ maxBytes: eventBytes - 1 });
+
+    expect(eventBytes).toBe(serializedLength + 1);
+
+    buffer.enqueue(event);
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.pendingBytes).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
   });
 
   it("clear removes pending events, byte accounting, and a pending resync marker", () => {

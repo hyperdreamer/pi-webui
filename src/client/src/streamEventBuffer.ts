@@ -88,8 +88,11 @@ export class StreamEventBuffer {
     const previous = this.runs.at(-1);
     const mergesWithPrevious = previous !== undefined && canMerge(previous, event);
     const nextEventCount = this.runs.length + (mergesWithPrevious ? 0 : 1);
-    const bytesToReplace = previous !== undefined && mergesWithPrevious && previous.type === "tool.update" ? previous.bytes : 0;
-    const nextBytes = this.pendingByteCount - bytesToReplace + eventBytes;
+    const nextRunBytes = previous !== undefined && mergesWithPrevious
+      ? mergedRunBytes(previous, event, eventBytes)
+      : eventBytes;
+    const bytesToReplace = previous !== undefined && mergesWithPrevious ? previous.bytes : 0;
+    const nextBytes = this.pendingByteCount - bytesToReplace + nextRunBytes;
 
     if (nextEventCount > this.maxEventRuns || nextBytes > this.maxBytes) {
       this.markResyncRequired();
@@ -97,7 +100,7 @@ export class StreamEventBuffer {
     }
 
     if (mergesWithPrevious) {
-      mergeIntoRun(previous, event, eventBytes);
+      mergeIntoRun(previous, event, nextRunBytes);
       this.pendingByteCount = nextBytes;
       return;
     }
@@ -157,23 +160,31 @@ function createRun(event: BufferedStreamEvent, bytes: number): BufferedRun {
   };
 }
 
+function mergedRunBytes(run: BufferedRun, event: BufferedStreamEvent, eventBytes: number): number {
+  if (run.type === "tool.update" && event.type === "tool.update") {
+    const retained = withSeq(toolUpdatePayload(event), highestSeq(run.seq, event.seq));
+    return serializedEventBytes(retained);
+  }
+  return run.bytes + eventBytes;
+}
+
 function mergeIntoRun(run: BufferedRun, event: BufferedStreamEvent, bytes: number): void {
   if (run.type === "assistant.delta" && event.type === "assistant.delta") {
     run.chunks.push(event.text);
     run.seq = highestSeq(run.seq, event.seq);
-    run.bytes += bytes;
+    run.bytes = bytes;
     return;
   }
   if (run.type === "assistant.thinking.delta" && event.type === "assistant.thinking.delta") {
     run.chunks.push(event.text);
     run.seq = highestSeq(run.seq, event.seq);
-    run.bytes += bytes;
+    run.bytes = bytes;
     return;
   }
   if (run.type === "shell.chunk" && event.type === "shell.chunk") {
     run.chunks.push(event.chunk);
     run.seq = highestSeq(run.seq, event.seq);
-    run.bytes += bytes;
+    run.bytes = bytes;
     return;
   }
   if (run.type === "tool.update" && event.type === "tool.update") {
@@ -218,6 +229,6 @@ function highestSeq(left: number | undefined, right: number | undefined): number
   return Math.max(left, right);
 }
 
-function serializedEventBytes(event: BufferedStreamEvent): number {
+function serializedEventBytes(event: SessionUiEvent): number {
   return textEncoder.encode(JSON.stringify(event)).byteLength;
 }
