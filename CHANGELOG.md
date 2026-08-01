@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.0-beta.3
+
+### Patch Changes
+
+- d1b2b30: Stop the browser tab from freezing when scrolling quickly through a long conversation. Scrolling no longer re-renders the whole transcript on every scroll event, and the per-frame layout measurement that grew with conversation length has been removed.
+
 ## 1.11.0-beta.2
 
 ### Patch Changes
