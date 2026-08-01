@@ -122,9 +122,13 @@ and destructive.
 ## Testing
 
 Unit tests in `ActionPalette.test.ts` alongside the existing
-`filterActionPaletteActions` tests, against the pure helper: default action
-keeps the palette open, `closesActionPalette: true` closes it, and a disabled
-action never triggers either path since `run()` returns early.
+`filterActionPaletteActions` tests, against the pure helper: an action without
+the field keeps the palette open, `closesActionPalette: true` closes it, and an
+explicit `false` keeps it open.
+
+Disabled rows need no new coverage. `ActionPalette.run()` already returns early
+when `enabled === false`, so `onRun` never fires and neither persistence path is
+reached.
 
 A classification test over `createCoreActions()` asserts the exact set of core
 action IDs carrying the flag, so adding a core action without deciding its
