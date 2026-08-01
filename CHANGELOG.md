@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0-beta.2
+
+### Patch Changes
+
+- 819360c: Persist the existing Terminal and Info tab visibility choices across PI WEBUI restarts.
+- a7cd71a: Fix browser tabs freezing when a provider streams output very quickly. Streamed text, thinking, shell, and tool-update events are now merged before the transcript is rebuilt, live streaming text no longer fills the markdown render cache with every partial response, and rapid session status/activity updates are coalesced before they are sent to the browser.
+
 ## 1.11.0-beta.1
 
 ### Patch Changes
