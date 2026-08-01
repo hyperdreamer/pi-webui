@@ -227,11 +227,10 @@ interface GetModelPolicyV1 {
   };
   trackedDispatch: {
     contractVersion: 1;
-    dispatchKey: true;
     tierField: true;
     scope: "parent-session";
-    canonicalInputs: readonly ["cwd", "rawPrompt"];
-    resultPolicyApplication: true;
+    canonicalInputs: readonly ["cwd", "prompt", "tier"];
+    returnsSessionId: true;
   };
 }
 ```
@@ -256,13 +255,15 @@ interface SpawnSubsessionDetailsV1 {
 }
 ```
 
-The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Also pin the server-side key bound that Task 5 enforces: `dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`, and the server treats it as an opaque bounded string without parsing its structure. Pin the optional `tier` field alongside it: when supplied it must name the same tier as the leading directive in the prompt, a disagreement or a `tier` without a leading directive fails before child creation, and an omitted `tier` preserves directive-only behavior. `tier` never applies policy on its own; the directive remains the only application mechanism and `tier` is a machine-checkable declaration of the same intent. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
+Pin what the runtime actually provides. `spawn_subsession` accepts `{ prompt, cwd, tier }` and returns `{ sessionId, cwd }`. It offers no dispatch key and no server-side deduplication, so the contract cannot promise that a repeated call returns an earlier child. `tier` is the binding channel: a supplied tier resolves to the machine ladder's exact model and thinking level before the child's first request, an unresolvable tier fails the spawn without creating a child, and an omitted tier inherits the parent model. Prompt text never selects a model, so a fake that recovers a tier by splitting the prompt is testing a channel the runtime does not implement. Missing fields, unknown tier values, and unavailable models fail closed.
+
+`dispatchKey` is controller-owned. It names a row in the run's own dispatch ledger, is never sent to the tool, and exists so recovery can correlate its intent to the `sessionId` the tool returned. Correlation is a convenience for inspecting the right child; the authority for whether work happened is commits and artifacts.
 
 Pin two properties of the identity input, because `rawPrompt` serves two purposes with incompatible tolerances. Directive recognition is whitespace-tolerant by design; identity comparison tolerates nothing.
 
 First, the directive bytes stay in the identity input. Stripping the directive before fingerprinting makes two dispatches that differ only in tier byte-identical, so a reused key would return the earlier child for a request that asked for a different tier, reporting `reused: true` with the earlier policy application and no detectable mismatch. That silent tier substitution is strictly worse than a false conflict, so identity must cover the directive.
 
-Second, replay must never re-render the prompt. Dispatch intent stores the rendered prompt bytes next to the pre-spawn inspection it already stores, and recovery reissues those stored bytes verbatim. Re-rendering couples identity to renderer output, so any drift — including interior drift such as an added blank line after the directive, which trimming cannot absorb — turns a legitimate recovery into conflicting reuse.
+Second, recovery must never re-render the prompt. Dispatch intent stores the rendered prompt bytes, and recovery reissues those stored bytes verbatim if the controller rules to reissue. Re-rendering couples recovery to renderer output, so any drift — including interior drift such as an added blank line, which trimming cannot absorb — changes what the child receives on a path meant to be exact.
 
 Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child, which must keep the directive at byte zero. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
 
@@ -772,8 +773,8 @@ const initial = createInitialState({
   baseRef: "main",
   mergeBase: "b".repeat(40),
   tasks: [
-    { number: 1, implementerTier: "Economy" },
-    { number: 2, implementerTier: "Advanced" },
+    { number: 1, implementerTier: "economy" },
+    { number: 2, implementerTier: "advanced" },
   ],
   at: "2026-07-31T00:00:00.000Z",
 });
@@ -783,7 +784,7 @@ expect(initial).toMatchObject({
   revision: 0,
   phase: "CAPABILITY_CHECK",
   currentTask: 1,
-  currentImplementerTier: "Economy",
+  currentImplementerTier: "economy",
   contextAttempts: 0,
   fixRound: 0,
   finalFixUsed: false,
@@ -818,21 +819,19 @@ Run the state tests. Expected: capability/gate cases pass; no task-loop tests ex
 Cover with literal events:
 
 - accepted preflight enters `WORKSPACE_READY`;
-- `dispatch-intended` requires role, helper-derived key, title-case requested tier, prompt/report/brief paths, attempt, expected outcome, the complete validated pre-spawn policy inspection/contract versions, and the exact rendered prompt bytes that will be sent;
-- `dispatch-intended` rejects an intent whose stored rendered prompt is absent, or whose stored bytes do not begin with the canonical directive for the requested tier at byte zero; an intent that cannot be replayed byte-for-byte is not a valid intent;
-- the helper computes `runId = sha256(planDigest + NUL + worktree + NUL + branch + NUL + mergeBase + NUL + createdAt)` and `dispatchKey = "<runId>:task-<n>:<role>:attempt-<n>:round-<n>"` (omit round only for non-fix roles); callers never supply arbitrary key text;
+- `dispatch-intended` requires role, helper-derived key, lowercase requested tier, prompt/report/brief paths, attempt, expected outcome, and the exact rendered prompt bytes that will be sent;
+- `dispatch-intended` rejects an intent whose stored rendered prompt is absent; an intent that cannot be reissued verbatim is not a valid intent. It does **not** require any particular leading bytes: the typed `tier` argument selects the model, and a `/tier-*` line is an optional human-readable echo;
+- the helper computes `runId = sha256(planDigest + NUL + worktree + NUL + branch + NUL + mergeBase + NUL + createdAt)` and `dispatchKey = "<runId>:task-<n>:<role>:attempt-<n>:round-<n>"` (omit round only for non-fix roles). `dispatchKey` is **controller-owned**: it names a row in the run's own dispatch ledger and is never passed to `spawn_subsession`, which accepts only `{ prompt, cwd, tier }`;
 - `dispatch-intended` rejects any requested tier that differs from the executable role formula for the current task/attempt/round;
-- `dispatch-intended` records the `tier` field value that will accompany the spawn call, and rejects an intent whose `tier` disagrees with either the role formula or the directive at byte zero of the stored rendered prompt; divergence between formula and renderer is reported as such rather than as a generic validation error;
+- `dispatch-intended` records the `tier` value that will accompany the spawn call. If the rendered prompt happens to carry a leading `/tier-*` echo, a disagreement between echo and typed tier is reported as renderer/formula divergence; an absent echo is not an error;
 - keys match `^[A-Za-z0-9._:-]{1,240}$`; artifact paths are normalized/absolute/beneath the pinned worktree run root;
-- fresh `dispatch-started` accepts Tiered requested-tier evidence or Exact `ignored-exact` with the tuple stored in pre-spawn intent, and stores identical parent/child projections;
-- reused `dispatch-started` requires identical key/cwd/raw prompt and identical parent/child original application, validates it against the intent's stored pre-spawn inspection, and never re-resolves against current parent policy/ladder;
-- mismatched projections or effective policy enter `DISPATCH_MISMATCH_BLOCKED`;
+- `dispatch-started` records the returned `sessionId` against the intent's key, so the ledger maps controller identity to runtime identity;
 - child completion enters `IMPLEMENT_RESULT` before status classification;
 - DONE advances to review intent; observational DONE_WITH_CONCERNS carries concern evidence; correctness/scope concerns require a decision;
 - two context enrichments are legal at the same planned tier; third NEEDS_CONTEXT blocks without incrementing fixRound;
 - BLOCKED enters `TASK_BLOCKED` immediately;
-- intent without child ID preserves exact key/cwd/raw-prompt identity for replay, including the stored rendered prompt bytes, so recovery can reissue them without calling the renderer;
-- a replay whose supplied prompt differs from the stored rendered bytes is rejected rather than silently re-fingerprinted, and the rejection names renderer drift as the cause so the failure is diagnosable rather than appearing as an unexplained key conflict;
+- an intent recorded without a `sessionId` enters `DISPATCH_AMBIGUOUS` rather than claiming a replay guarantee the runtime cannot provide. The runtime has no idempotency: a crash between the spawn call and the ledger write can orphan a child. The reducer's contract is therefore **detectable** non-idempotency, not prevented duplication — the controller always knows the window was crossed and stops for a ruling;
+- resolving `DISPATCH_AMBIGUOUS` requires an explicit persisted ruling naming either an observed child session id (adopt it) or a decision to reissue the stored prompt bytes (accepting a possible orphan). The reducer never picks for the controller;
 - while any dispatch is running, every second SDD-owned dispatch event is rejected, enforcing one active child and no parallel task implementation.
 
 - [ ] **Step 5: Run task-loop tests and verify RED**
@@ -845,7 +844,7 @@ Expected: new task-loop cases fail while capability/gate cases remain green.
 
 - [ ] **Step 6: Implement task-dispatch/context handlers and return to GREEN**
 
-Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path/policy-application validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including versioned pre-spawn inspection, the exact rendered prompt bytes, and canonical cwd/raw-prompt digest—before child ID. Bound the stored prompt at the same 384 KiB limit as a rendered prompt. Fresh/reused result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
+Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including the exact rendered prompt bytes—before the session id, so a crash leaves a reissuable record. Bound the stored prompt at the same 384 KiB limit as a rendered prompt. Fresh and ambiguous result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
 
 - [ ] **Step 7: Verify and commit Task 5**
 
@@ -917,7 +916,8 @@ TASK_REVIEW_DISPATCH_INTENT TASK_REVIEW_RUNNING TASK_REVIEW_DECISION
 FIX_DISPATCH_INTENT FIX_RUNNING REREVIEW_DISPATCH_INTENT REREVIEW_RUNNING
 TASK_COMPLETE FINAL_REVIEW_DISPATCH_INTENT FINAL_REVIEW_RUNNING
 FINAL_FIX_DISPATCH_INTENT FINAL_FIX_RUNNING FINAL_REREVIEW_DISPATCH_INTENT
-FINAL_REREVIEW_RUNNING DISPATCH_MISMATCH_BLOCKED FINAL_BLOCKED COMPLETE
+FINAL_REREVIEW_RUNNING DISPATCH_MISMATCH_BLOCKED DISPATCH_AMBIGUOUS
+FINAL_BLOCKED COMPLETE
 ```
 
 Use these canonical event names and destinations; result events may choose only the listed guarded destination:
@@ -979,6 +979,8 @@ git commit -m "feat(skills): complete deterministic SDD state machine"
 
 **Interfaces:** Consumes validated plans, Git identity, expected revision, typed event JSON files, and recorded Git ranges. Produces atomic state writes, audit repair, exact task briefs, and bounded review packages. No command dispatches a child.
 
+Ground truth for "was this work done" is the same as the original SDD's: commits in Git and artifacts on disk, not session identity. The ledger correlates a controller-owned `dispatchKey` to a runtime `sessionId` so recovery can inspect the right child, but a lost correlation degrades to inspecting commits and reports rather than to an unrecoverable run.
+
 - [ ] **Step 1: Write atomic state/lock RED tests**
 
 Using real temporary directories and child processes, prove:
@@ -1010,7 +1012,7 @@ Provide CLI forms `init --plan PLAN --state STATE --progress PROGRESS --repo-roo
 
 - [ ] **Step 4: Write audit-repair/stale-lock RED tests**
 
-Add cases proving missing final marker is reported by read-only `show`; when a live lock exists, `show` reports `RUN_LOCKED` and never recommends repair; `repair-audit --expected-revision N` appends exactly one marker under lock; concurrent repairs append once; progress ahead/duplicate/conflicting markers are corruption; dispatch intent without child ID survives load; abrupt process death leaves an inspectable lock; and only a dead same-host PID plus exact token and persisted decision can clear it.
+Add cases proving missing final marker is reported by read-only `show`; when a live lock exists, `show` reports `RUN_LOCKED` and never recommends repair; `repair-audit --expected-revision N` appends exactly one marker under lock; concurrent repairs append once; progress ahead/duplicate/conflicting markers are corruption; a dispatch intent without a session id survives load as `DISPATCH_AMBIGUOUS`; abrupt process death leaves an inspectable lock; and only a dead same-host PID plus exact token and persisted decision can clear it.
 
 - [ ] **Step 5: Implement bounded recovery commands and return to GREEN**
 
@@ -1058,9 +1060,11 @@ Implement exactly the three-argument script. Verify commits with `git rev-parse 
 
 - [ ] **Step 11: Exercise crash recovery and full Task 7 verification**
 
-Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before child ID. Restart with read-only `show`; assert exact key/cwd/raw prompt/policy intent remains and the next documented action is identical-key replay.
+Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before recording a session id. Restart with read-only `show`; assert the stored key, cwd, tier, and rendered prompt bytes remain, and that the reported next action is a ruling on `DISPATCH_AMBIGUOUS` rather than an automatic replay.
 
-Prove the replay path does not re-render. Recover the intent through `show`, confirm the stored rendered prompt bytes come back byte-for-byte, and confirm a replay can be constructed from stored state alone with no call into `render-prompt`. Then simulate renderer drift: render the same context with an extra newline after the directive, submit it as a replay for the same key, and assert it is rejected as renderer drift rather than accepted or reported as an unexplained key conflict. This is the regression guard for the failure where identity is coupled to renderer output.
+Prove recovery does not re-render. Recover the intent through `show`, confirm the stored rendered prompt bytes come back byte-for-byte, and confirm a reissue can be constructed from stored state alone with no call into `render-prompt`. Re-rendering is what couples recovery to renderer output; storing the bytes is the fix.
+
+Prove the ambiguity is surfaced, not hidden. Assert `show` reports the crossed window explicitly, that no transition out of `DISPATCH_AMBIGUOUS` is possible without a persisted ruling, and that a ruling naming an observed session id and a ruling choosing reissue both produce distinct, recorded outcomes. The runtime offers no idempotency, so the guarantee under test is that a possible duplicate is always visible and never silently resolved.
 
 Delete the final audit marker; prove `show` is byte-for-byte read-only, then repair with expected revision and prove exactly one marker returns. Race two transitions and two repairs again at CLI level.
 
