@@ -313,6 +313,7 @@ export class SettingsModelTiersPanel extends LitElement {
     .table-header {
       display: grid;
       grid-template-columns: 24px 100px 1fr 140px;
+      grid-template-areas: "step tier model thinking";
       gap: 12px;
       align-items: center;
       padding: 0 12px 4px 12px;

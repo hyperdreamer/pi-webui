@@ -61,6 +61,13 @@ describe("SettingsModelTiersPanel", () => {
     expect(rendered).toContain("6");
   });
 
+  it("assigns header cells to the same named grid areas as tier rows", () => {
+    const styles = SettingsModelTiersPanel.styles.cssText;
+
+    expect(styles).toMatch(/\.table-header\s*\{[^}]*grid-template-areas:\s*"step tier model thinking";/);
+    expect(styles).toMatch(/\.tier-row\s*\{[^}]*grid-template-areas:\s*"step tier model thinking";/);
+  });
+
   it("populates model options and thinking levels for valid response", () => {
     const panel = new SettingsModelTiersPanel();
     panel.response = validResponse();
