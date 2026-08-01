@@ -19,6 +19,16 @@ export interface ChatHistoryCacheAdapter {
   remove?(sessionId: string): void;
 }
 
+export type ChatHistoryWriteScheduler = (write: () => void) => void;
+
+const browserChatHistoryWriteScheduler: ChatHistoryWriteScheduler = (write) => {
+  // Serializing a large transcript blocks the main thread, so the write is
+  // deferred to a macrotask and only the latest page is persisted. A burst of
+  // merges during a live surge therefore costs one serialization, not one per
+  // merge.
+  setTimeout(write, 0);
+};
+
 const browserChatHistoryCache: ChatHistoryCacheAdapter = {
   read: readChatHistoryCache,
   write: writeChatHistoryCache,
@@ -27,8 +37,12 @@ const browserChatHistoryCache: ChatHistoryCacheAdapter = {
 
 export class ChatTranscriptStore {
   private readonly rawHistoryPages = new Map<string, RawMessagePage>();
+  private readonly pendingWrites = new Set<string>();
 
-  constructor(private readonly cache: ChatHistoryCacheAdapter = browserChatHistoryCache) {}
+  constructor(
+    private readonly cache: ChatHistoryCacheAdapter = browserChatHistoryCache,
+    private readonly scheduleWrite: ChatHistoryWriteScheduler = browserChatHistoryWriteScheduler,
+  ) {}
 
   cachedView(sessionId: string): ChatTranscriptView {
     return transcriptViewFromHistory(this.rawHistoryPage(sessionId));
@@ -37,7 +51,7 @@ export class ChatTranscriptStore {
   mergeHistory(sessionId: string, page: RawMessagePage): ChatTranscriptView {
     const history = mergeChatHistory(this.rawHistoryPage(sessionId), page);
     this.rawHistoryPages.set(sessionId, history);
-    this.cache.write(sessionId, history);
+    this.queueCacheWrite(sessionId);
     return transcriptViewFromHistory(history);
   }
 
@@ -56,7 +70,21 @@ export class ChatTranscriptStore {
 
   discard(sessionId: string): void {
     this.rawHistoryPages.delete(sessionId);
+    this.pendingWrites.delete(sessionId);
     this.cache.remove?.(sessionId);
+  }
+
+  private queueCacheWrite(sessionId: string): void {
+    if (this.pendingWrites.has(sessionId)) return;
+    this.pendingWrites.add(sessionId);
+    this.scheduleWrite(() => { this.flushCacheWrite(sessionId); });
+  }
+
+  private flushCacheWrite(sessionId: string): void {
+    if (!this.pendingWrites.delete(sessionId)) return;
+    const history = this.rawHistoryPages.get(sessionId);
+    if (history === undefined) return;
+    this.cache.write(sessionId, history);
   }
 
   rawHistoryPage(sessionId: string): RawMessagePage | undefined {

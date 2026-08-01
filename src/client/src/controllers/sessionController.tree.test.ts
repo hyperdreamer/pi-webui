@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { ChatTranscriptStore } from "../chatTranscriptStore";
 import { machineSessionKey } from "../machineKeys";
@@ -34,6 +34,10 @@ const tree: SessionTreeSnapshot = {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, "localStorage", { value: new MemoryStorage(), configurable: true });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("SessionController session tree navigation", () => {
@@ -72,6 +76,7 @@ describe("SessionController session tree navigation", () => {
   });
 
   it("discards stale history and pending live updates, runs a trailing authoritative refresh, and replaces the user draft", async () => {
+    vi.useFakeTimers();
     const initialPage = page("initial", 1);
     const stalePage = deferred<MessagePage>();
     const staleStatus = deferred<SessionStatus>();
@@ -132,6 +137,7 @@ describe("SessionController session tree navigation", () => {
     staleStatus.resolve({ ...status(oldSession.id), messageCount: 1 });
     await Promise.all([oldRefresh, navigation]);
     runPendingAnimationFrames();
+    vi.runAllTimers();
 
     expect(navigationCalls).toEqual([{
       sessionId: oldSession.id,
@@ -444,6 +450,7 @@ describe("SessionController session tree navigation", () => {
   });
 
   it("discards only the originating cache and does not refresh or replace another session after a selection race", async () => {
+    vi.useFakeTimers();
     const navigationResult = deferred<{ cancelled: false; editorText: string }>();
     const oldCacheKey = machineSessionKey("local", oldSession.id);
     const replacementCacheKey = machineSessionKey("local", replacementSession.id);
@@ -489,6 +496,7 @@ describe("SessionController session tree navigation", () => {
     await controller.selectSession(replacementSession, { updateUrl: false });
     navigationResult.resolve({ cancelled: false, editorText: "originating draft" });
     await navigation;
+    vi.runAllTimers();
 
     expect(state.selectedSession?.id).toBe(replacementSession.id);
     expect(state.messages).toEqual([{ role: "assistant", parts: [{ type: "text", text: "replacement authoritative" }] }]);
