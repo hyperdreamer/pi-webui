@@ -2,10 +2,12 @@ import type { SessionUiEvent } from "./sessionSocket";
 
 export const DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS = 128;
 export const DEFAULT_MAX_PENDING_STREAM_BYTES = 262_144;
+export const DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS = 64;
 
 export interface StreamEventBufferLimits {
   maxEventRuns?: number;
   maxBytes?: number;
+  maxToolUpdateKeys?: number;
 }
 
 export interface DrainedStreamEvents {
@@ -47,10 +49,9 @@ interface ToolRun {
   toolCallId: string;
   latest: Omit<ToolUpdateEvent, "seq">;
   seq: number | undefined;
-  bytes: number;
 }
 
-type BufferedRun = TextRun | ShellRun | ToolRun;
+type AccumulatingRun = TextRun | ShellRun;
 
 const textEncoder = new TextEncoder();
 
@@ -64,17 +65,20 @@ export function isBufferedStreamEvent(event: SessionUiEvent): event is BufferedS
 export class StreamEventBuffer {
   private readonly maxEventRuns: number;
   private readonly maxBytes: number;
-  private runs: BufferedRun[] = [];
+  private readonly maxToolUpdateKeys: number;
+  private runs: AccumulatingRun[] = [];
+  private readonly toolUpdateRuns = new Map<string, ToolRun>();
   private pendingByteCount = 0;
   private resyncRequired = false;
 
   constructor(limits: StreamEventBufferLimits = {}) {
     this.maxEventRuns = limits.maxEventRuns ?? DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS;
     this.maxBytes = limits.maxBytes ?? DEFAULT_MAX_PENDING_STREAM_BYTES;
+    this.maxToolUpdateKeys = limits.maxToolUpdateKeys ?? DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS;
   }
 
   get eventCount(): number {
-    return this.runs.length;
+    return this.runs.length + this.toolUpdateRuns.size;
   }
 
   get pendingBytes(): number {
@@ -83,15 +87,51 @@ export class StreamEventBuffer {
 
   enqueue(event: BufferedStreamEvent): void {
     if (this.resyncRequired || !isBufferedStreamEvent(event)) return;
+    if (event.type === "tool.update") {
+      this.enqueueToolUpdate(event);
+      return;
+    }
+    this.enqueueAccumulating(event);
+  }
 
-    const eventBytes = serializedEventBytes(event);
+  /**
+   * `tool.update` carries a cumulative snapshot, so only the newest one per
+   * tool call matters. Replacement is bounded by distinct concurrently
+   * streaming tool calls, not by elapsed time, so it is capped by key count
+   * rather than charged against the falling-behind byte budget. Charging bytes
+   * here caused a false overload at ~6 concurrent tools, and the resulting
+   * resync loop froze the tab.
+   */
+  private enqueueToolUpdate(event: ToolUpdateEvent): void {
+    const existing = this.toolUpdateRuns.get(event.toolCallId);
+    if (existing !== undefined) {
+      existing.latest = toolUpdatePayload(event);
+      existing.seq = highestSeq(existing.seq, event.seq);
+      return;
+    }
+    if (this.toolUpdateRuns.size + 1 > this.maxToolUpdateKeys) {
+      this.markResyncRequired();
+      return;
+    }
+    this.toolUpdateRuns.set(event.toolCallId, {
+      type: "tool.update",
+      toolCallId: event.toolCallId,
+      latest: toolUpdatePayload(event),
+      seq: event.seq,
+    });
+  }
+
+  private enqueueAccumulating(event: Exclude<BufferedStreamEvent, ToolUpdateEvent>): void {
     const previous = this.runs.at(-1);
     const mergesWithPrevious = previous !== undefined && canMerge(previous, event);
     const nextEventCount = this.runs.length + (mergesWithPrevious ? 0 : 1);
-    const nextRunBytes = previous !== undefined && mergesWithPrevious
-      ? mergedRunBytes(previous, event, eventBytes)
-      : eventBytes;
-    const bytesToReplace = previous !== undefined && mergesWithPrevious ? previous.bytes : 0;
+    const nextRunBytes = mergesWithPrevious
+      ? mergedRunBytes(previous, event)
+      : serializedEventBytes(event);
+    // `mergedRunBytes` loses its `eventBytes` parameter here, because only
+    // accumulating runs remain and they keep charging the full serialized
+    // event exactly as before.
+    const bytesToReplace = mergesWithPrevious ? previous.bytes : 0;
     const nextBytes = this.pendingByteCount - bytesToReplace + nextRunBytes;
 
     if (nextEventCount > this.maxEventRuns || nextBytes > this.maxBytes) {
@@ -105,7 +145,7 @@ export class StreamEventBuffer {
       return;
     }
 
-    this.runs.push(createRun(event, eventBytes));
+    this.runs.push(createRun(event, nextRunBytes));
     this.pendingByteCount = nextBytes;
   }
 
@@ -117,58 +157,66 @@ export class StreamEventBuffer {
 
     const events: SessionUiEvent[] = [];
     for (const run of this.runs) events.push(materializeRun(run));
-    this.runs = [];
-    this.pendingByteCount = 0;
+    // Keyed tool updates drain after accumulating runs. Reordering is safe:
+    // `applyTranscriptEvent` resolves `tool.update` by `toolCallId`, and every
+    // order-dependent event (`tool.start`, `tool.end`, `shell.start`,
+    // `shell.end`, `message.append`, `message.end`) is unbuffered and forces a
+    // flush before it applies.
+    for (const run of this.toolUpdateRuns.values()) events.push(withSeq(run.latest, run.seq));
+    this.reset();
     return { events, resyncRequired: false };
   }
 
   clear(): void {
-    this.runs = [];
-    this.pendingByteCount = 0;
+    this.reset();
     this.resyncRequired = false;
   }
 
-  private markResyncRequired(): void {
+  private reset(): void {
     this.runs = [];
+    this.toolUpdateRuns.clear();
     this.pendingByteCount = 0;
+  }
+
+  private markResyncRequired(): void {
+    this.reset();
     this.resyncRequired = true;
   }
 }
 
-function canMerge(run: BufferedRun, event: BufferedStreamEvent): boolean {
+function canMerge(
+  run: AccumulatingRun,
+  event: Exclude<BufferedStreamEvent, ToolUpdateEvent>,
+): boolean {
   switch (run.type) {
     case "assistant.delta": return event.type === "assistant.delta";
     case "assistant.thinking.delta": return event.type === "assistant.thinking.delta";
     case "shell.chunk": return event.type === "shell.chunk";
-    case "tool.update": return event.type === "tool.update" && run.toolCallId === event.toolCallId;
   }
 }
 
-function createRun(event: BufferedStreamEvent, bytes: number): BufferedRun {
+function createRun(
+  event: Exclude<BufferedStreamEvent, ToolUpdateEvent>,
+  bytes: number,
+): AccumulatingRun {
   if (event.type === "assistant.delta" || event.type === "assistant.thinking.delta") {
     return { type: event.type, chunks: [event.text], seq: event.seq, bytes };
   }
-  if (event.type === "shell.chunk") {
-    return { type: event.type, chunks: [event.chunk], seq: event.seq, bytes };
-  }
-  return {
-    type: event.type,
-    toolCallId: event.toolCallId,
-    latest: toolUpdatePayload(event),
-    seq: event.seq,
-    bytes,
-  };
+  return { type: event.type, chunks: [event.chunk], seq: event.seq, bytes };
 }
 
-function mergedRunBytes(run: BufferedRun, event: BufferedStreamEvent, eventBytes: number): number {
-  if (run.type === "tool.update" && event.type === "tool.update") {
-    const retained = withSeq(toolUpdatePayload(event), highestSeq(run.seq, event.seq));
-    return serializedEventBytes(retained);
-  }
-  return run.bytes + eventBytes;
+function mergedRunBytes(
+  run: AccumulatingRun,
+  event: Exclude<BufferedStreamEvent, ToolUpdateEvent>,
+): number {
+  return run.bytes + serializedEventBytes(event);
 }
 
-function mergeIntoRun(run: BufferedRun, event: BufferedStreamEvent, bytes: number): void {
+function mergeIntoRun(
+  run: AccumulatingRun,
+  event: Exclude<BufferedStreamEvent, ToolUpdateEvent>,
+  bytes: number,
+): void {
   if (run.type === "assistant.delta" && event.type === "assistant.delta") {
     run.chunks.push(event.text);
     run.seq = highestSeq(run.seq, event.seq);
@@ -185,27 +233,17 @@ function mergeIntoRun(run: BufferedRun, event: BufferedStreamEvent, bytes: numbe
     run.chunks.push(event.chunk);
     run.seq = highestSeq(run.seq, event.seq);
     run.bytes = bytes;
-    return;
-  }
-  if (run.type === "tool.update" && event.type === "tool.update") {
-    run.latest = toolUpdatePayload(event);
-    run.seq = highestSeq(run.seq, event.seq);
-    run.bytes = bytes;
   }
 }
 
-function materializeRun(run: BufferedRun): SessionUiEvent {
+function materializeRun(run: AccumulatingRun): SessionUiEvent {
   if (run.type === "assistant.delta") {
     return withSeq({ type: run.type, text: run.chunks.join("") }, run.seq);
   }
   if (run.type === "assistant.thinking.delta") {
     return withSeq({ type: run.type, text: run.chunks.join("") }, run.seq);
   }
-  if (run.type === "shell.chunk") {
-    return withSeq({ type: run.type, chunk: run.chunks.join("") }, run.seq);
-  }
-  if ("latest" in run) return withSeq(run.latest, run.seq);
-  throw new Error("unreachable buffered stream run");
+  return withSeq({ type: run.type, chunk: run.chunks.join("") }, run.seq);
 }
 
 function toolUpdatePayload(event: ToolUpdateEvent): Omit<ToolUpdateEvent, "seq"> {

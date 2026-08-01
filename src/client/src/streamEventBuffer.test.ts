@@ -3,6 +3,7 @@ import type { SessionUiEvent } from "./sessionSocket";
 import {
   DEFAULT_MAX_PENDING_STREAM_BYTES,
   DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS,
+  DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS,
   StreamEventBuffer,
   isBufferedStreamEvent,
 } from "./streamEventBuffer";
@@ -29,9 +30,20 @@ describe("StreamEventBuffer defaults", () => {
     expect(DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS).toBe(128);
     expect(DEFAULT_MAX_PENDING_STREAM_BYTES).toBe(262_144);
   });
+
+  it("exports the tool-update key limit", () => {
+    expect(DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS).toBe(64);
+  });
 });
 
 describe("StreamEventBuffer", () => {
+  const bashSnapshot = (toolCallId: string, bytes: number): BufferedStreamEvent => ({
+    type: "tool.update",
+    toolName: "bash",
+    toolCallId,
+    text: "x".repeat(bytes),
+  });
+
   it("materializes text chunks once at drain and preserves the highest seq", () => {
     const events: BufferedStreamEvent[] = [
       { type: "assistant.delta", text: "Hel", seq: 4 },
@@ -74,7 +86,7 @@ describe("StreamEventBuffer", () => {
     });
   });
 
-  it("keeps the latest same-tool update and treats different tools as barriers", () => {
+  it("keeps the latest same-tool update without treating different tools as barriers", () => {
     const buffer = new StreamEventBuffer();
 
     buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "partial 1", content: "old", details: { step: 1 }, seq: 1 });
@@ -82,85 +94,114 @@ describe("StreamEventBuffer", () => {
     buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 3 });
     buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "after barrier", seq: 4 });
 
-    expect(buffer.eventCount).toBe(3);
+    expect(buffer.eventCount).toBe(2);
     expect(buffer.drain()).toEqual({
       events: [
-        { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "partial 2", content: "new", details: { step: 2 }, seq: 2 },
-        { type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 3 },
         { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "after barrier", seq: 4 },
+        { type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 3 },
       ],
       resyncRequired: false,
     });
   });
 
-  it("resyncs rather than retaining a same-tool replacement larger than the byte limit", () => {
-    const earlier: BufferedStreamEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "",
-      seq: Number.MAX_SAFE_INTEGER,
-    };
-    const latest: BufferedStreamEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "123456789012345",
-      seq: 1,
-    };
-    const retained: SessionUiEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "123456789012345",
-      seq: Number.MAX_SAFE_INTEGER,
-    };
-    const maxBytes = 91;
-    const buffer = new StreamEventBuffer({ maxBytes });
-
-    expect(utf8ByteLength(earlier)).toBe(maxBytes);
-    expect(utf8ByteLength(latest)).toBe(maxBytes);
-    expect(utf8ByteLength(retained)).toBe(106);
-
-    buffer.enqueue(earlier);
-    buffer.enqueue(latest);
-
-    expect(buffer.eventCount).toBe(0);
-    expect(buffer.pendingBytes).toBe(0);
-    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
+  it("does not resync when concurrent tools interleave full-size snapshots", () => {
+    // Reproduces the tab-freeze surge: upstream bash emits a cumulative 50KB
+    // snapshot per update, so interleaved tools used to cross the 256KB budget
+    // after 6-8 events and trigger a full session resync loop.
+    for (const concurrency of [2, 6, 12]) {
+      const buffer = new StreamEventBuffer();
+      for (let round = 0; round < 40; round++) {
+        for (let tool = 0; tool < concurrency; tool++) {
+          buffer.enqueue(bashSnapshot(`c${String(tool)}`, 50 * 1024));
+        }
+      }
+      const drained = buffer.drain();
+      expect(drained.resyncRequired).toBe(false);
+      expect(drained.events).toHaveLength(concurrency);
+    }
   });
 
-  it("accepts a same-tool replacement exactly at the byte limit", () => {
-    const earlier: BufferedStreamEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "",
-      seq: Number.MAX_SAFE_INTEGER,
-    };
-    const latest: BufferedStreamEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "123456789012345",
-      seq: 1,
-    };
-    const retained: SessionUiEvent = {
-      type: "tool.update",
-      toolName: "bash",
-      toolCallId: "c1",
-      text: "123456789012345",
-      seq: Number.MAX_SAFE_INTEGER,
-    };
-    const maxBytes = utf8ByteLength(retained);
-    const buffer = new StreamEventBuffer({ maxBytes });
+  it("retains only the latest snapshot per tool call and the highest seq", () => {
+    const buffer = new StreamEventBuffer();
 
-    buffer.enqueue(earlier);
-    buffer.enqueue(latest);
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "first", seq: 7 });
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 8 });
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "latest", content: "new", details: { step: 2 }, seq: 3 });
 
-    expect(buffer.eventCount).toBe(1);
-    expect(buffer.pendingBytes).toBe(maxBytes);
-    expect(buffer.drain()).toEqual({ events: [retained], resyncRequired: false });
+    expect(buffer.eventCount).toBe(2);
+    expect(buffer.drain()).toEqual({
+      events: [
+        { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "latest", content: "new", details: { step: 2 }, seq: 7 },
+        { type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 8 },
+      ],
+      resyncRequired: false,
+    });
+  });
+
+  it("does not charge keyed tool updates against the accumulating byte budget", () => {
+    const buffer = new StreamEventBuffer({ maxBytes: 200 });
+
+    buffer.enqueue(bashSnapshot("c1", 50 * 1024));
+    buffer.enqueue(bashSnapshot("c2", 50 * 1024));
+
+    expect(buffer.pendingBytes).toBe(0);
+    expect(buffer.drain().resyncRequired).toBe(false);
+  });
+
+  it("does not charge keyed tool updates against the event-run limit", () => {
+    const buffer = new StreamEventBuffer({ maxEventRuns: 2, maxBytes: 10_000 });
+
+    buffer.enqueue({ type: "assistant.delta", text: "a" });
+    buffer.enqueue({ type: "shell.chunk", chunk: "s" });
+    for (let tool = 0; tool < 10; tool++) buffer.enqueue(bashSnapshot(`c${String(tool)}`, 16));
+
+    expect(buffer.drain().resyncRequired).toBe(false);
+  });
+
+  it("resyncs when distinct streaming tool calls exceed the key limit", () => {
+    const buffer = new StreamEventBuffer({ maxToolUpdateKeys: 3 });
+
+    for (let tool = 0; tool < 4; tool++) buffer.enqueue(bashSnapshot(`c${String(tool)}`, 16));
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: false });
+  });
+
+  it("accepts exactly the configured tool-update key limit", () => {
+    const buffer = new StreamEventBuffer({ maxToolUpdateKeys: 3 });
+
+    for (let tool = 0; tool < 3; tool++) buffer.enqueue(bashSnapshot(`c${String(tool)}`, 16));
+
+    expect(buffer.eventCount).toBe(3);
+    expect(buffer.drain().resyncRequired).toBe(false);
+  });
+
+  it("drains accumulating runs before keyed tool updates", () => {
+    const buffer = new StreamEventBuffer();
+
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "tool", seq: 1 });
+    buffer.enqueue({ type: "assistant.delta", text: "text", seq: 2 });
+    buffer.enqueue({ type: "shell.chunk", chunk: "shell", seq: 3 });
+
+    expect(buffer.drain()).toEqual({
+      events: [
+        { type: "assistant.delta", text: "text", seq: 2 },
+        { type: "shell.chunk", chunk: "shell", seq: 3 },
+        { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "tool", seq: 1 },
+      ],
+      resyncRequired: false,
+    });
+  });
+
+  it("clear removes keyed tool updates", () => {
+    const buffer = new StreamEventBuffer();
+
+    buffer.enqueue(bashSnapshot("c1", 16));
+    buffer.clear();
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: false });
   });
 
   it("accepts exactly the configured event-run limit", () => {

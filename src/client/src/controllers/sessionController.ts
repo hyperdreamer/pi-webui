@@ -18,7 +18,15 @@ import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from 
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
 
 const MESSAGE_PAGE_SIZE = 100;
+const OVERLOAD_RESYNC_MIN_INTERVAL_MS = 1_000;
 const BULK_FALLBACK_CONCURRENCY = 4;
+
+type OverloadResyncScheduler = (run: () => void, delayMs: number) => () => void;
+
+const defaultOverloadResyncScheduler: OverloadResyncScheduler = (run, delayMs) => {
+  const timer = globalThis.setTimeout(run, delayMs);
+  return () => { globalThis.clearTimeout(timer); };
+};
 
 export interface SessionEventSocket {
   connect(
@@ -56,6 +64,8 @@ export interface SessionControllerDependencies {
   socket?: SessionEventSocket;
   transcripts?: ChatTranscriptStore;
   streamEventBuffer?: StreamEventBuffer;
+  now?: () => number;
+  scheduleOverloadResync?: OverloadResyncScheduler;
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
@@ -97,6 +107,10 @@ interface SelectedSessionRefreshTarget {
   selectionSeq: number;
 }
 
+interface PendingOverloadResync {
+  cancel: () => void;
+}
+
 export class SessionController {
   private readonly socket: SessionEventSocket;
   private readonly api: typeof defaultApi;
@@ -113,6 +127,10 @@ export class SessionController {
   // applies exactly once. Reset whenever the selection changes.
   private streamWatermark: { sessionId: string; seq: number } | undefined;
   private readonly streamEventBuffer: StreamEventBuffer;
+  private readonly now: () => number;
+  private readonly scheduleOverloadResync: OverloadResyncScheduler;
+  private lastOverloadResyncAt: number | undefined;
+  private pendingOverloadResync: PendingOverloadResync | undefined;
   private pendingStatusBySession = new Map<string, SessionStatus>();
   private pendingActivityBySession = new Map<string, SessionActivity>();
   private pendingFrame: number | undefined;
@@ -133,6 +151,8 @@ export class SessionController {
     this.api = deps.api ?? defaultApi;
     this.transcripts = deps.transcripts ?? new ChatTranscriptStore();
     this.streamEventBuffer = deps.streamEventBuffer ?? new StreamEventBuffer();
+    this.now = deps.now ?? (() => Date.now());
+    this.scheduleOverloadResync = deps.scheduleOverloadResync ?? defaultOverloadResyncScheduler;
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
@@ -998,13 +1018,22 @@ export class SessionController {
   }
 
   refreshSelectedSession(sessionId = this.getState().selectedSession?.id): Promise<void> {
+    const target = this.selectedSessionRefreshTarget(sessionId);
+    if (target === undefined) return Promise.resolve();
+    return this.refreshSelectedSessionTarget(target);
+  }
+
+  private selectedSessionRefreshTarget(sessionId: string | undefined): SelectedSessionRefreshTarget | undefined {
     const session = this.getState().selectedSession;
-    if (sessionId === undefined || session?.id !== sessionId || session.archived === true || isClientPendingStartSessionInfo(session)) return Promise.resolve();
-    const target: SelectedSessionRefreshTarget = {
+    if (sessionId === undefined || session?.id !== sessionId || session.archived === true || isClientPendingStartSessionInfo(session)) return undefined;
+    return {
       session,
       machineId: selectedMachineId(this.getState()),
       selectionSeq: this.selectionSeq,
     };
+  }
+
+  private refreshSelectedSessionTarget(target: SelectedSessionRefreshTarget): Promise<void> {
     return this.requestSelectedSessionRefresh(target).catch((error: unknown) => {
       if (this.isCurrentRefreshTarget(target)) this.setState({ error: String(error) });
     });
@@ -1456,7 +1485,7 @@ export class SessionController {
       for (const event of events) messages = this.transcripts.applyLiveEvent(messages, event) ?? messages;
       if (messages !== this.getState().messages) this.setState({ messages });
     }
-    if (resyncRequired) void this.refreshSelectedSession();
+    if (resyncRequired) this.requestOverloadResync();
     if (this.pendingActivityBySession.size > 0) {
       const activities = Array.from(this.pendingActivityBySession.values());
       this.pendingActivityBySession.clear();
@@ -1469,7 +1498,49 @@ export class SessionController {
     }
   }
 
+  /**
+   * Buffer overflow means the client is behind, and the recovery refetch is the
+   * most expensive operation available. Without a floor between attempts, a
+   * sustained surge trips the cap again within a few hundred milliseconds and
+   * the refetch becomes a self-sustaining loop that freezes the tab.
+   */
+  private requestOverloadResync(target = this.selectedSessionRefreshTarget(this.getState().selectedSession?.id)): void {
+    if (target === undefined || !this.isCurrentRefreshTarget(target)) return;
+    const now = this.now();
+    const last = this.lastOverloadResyncAt;
+    if (last !== undefined) {
+      const elapsed = now - last;
+      if (elapsed < OVERLOAD_RESYNC_MIN_INTERVAL_MS) {
+        this.scheduleDeferredOverloadResync(target, OVERLOAD_RESYNC_MIN_INTERVAL_MS - elapsed);
+        return;
+      }
+    }
+    this.cancelPendingOverloadResync();
+    this.lastOverloadResyncAt = now;
+    void this.refreshSelectedSessionTarget(target);
+  }
+
+  private scheduleDeferredOverloadResync(target: SelectedSessionRefreshTarget, delayMs: number): void {
+    if (this.pendingOverloadResync !== undefined) return;
+    const pending: PendingOverloadResync = { cancel: () => undefined };
+    this.pendingOverloadResync = pending;
+    pending.cancel = this.scheduleOverloadResync(() => {
+      if (this.pendingOverloadResync !== pending) return;
+      this.pendingOverloadResync = undefined;
+      this.requestOverloadResync(target);
+    }, delayMs);
+  }
+
+  private cancelPendingOverloadResync(): void {
+    const pending = this.pendingOverloadResync;
+    if (pending === undefined) return;
+    this.pendingOverloadResync = undefined;
+    pending.cancel();
+  }
+
   private clearPendingUpdates(): void {
+    this.lastOverloadResyncAt = undefined;
+    this.cancelPendingOverloadResync();
     this.streamEventBuffer.clear();
     this.pendingStatusBySession.clear();
     this.pendingActivityBySession.clear();

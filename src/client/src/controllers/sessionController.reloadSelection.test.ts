@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { initialAppState } from "../appState";
 import { ChatTranscriptStore } from "../chatTranscriptStore";
@@ -51,14 +51,20 @@ describe("SessionController reload and selection", () => {
       },
     );
 
-    await controller.reloadSession(persistedSession);
+    vi.useFakeTimers();
+    try {
+      await controller.reloadSession(persistedSession);
+      vi.runAllTimers();
 
-    expect(reloadCalls).toEqual([oldSession.id]);
-    expect(messageCalls).toEqual([oldSession.id]);
-    expect(cachedPages.get(cacheKey)).toEqual(freshPage);
-    expect(state.messages).toEqual([{ role: "assistant", parts: [{ type: "text", text: "fresh from disk" }] }]);
-    expect(state.messagePageStart).toBe(1);
-    expect(state.error).toBe("");
+      expect(reloadCalls).toEqual([oldSession.id]);
+      expect(messageCalls).toEqual([oldSession.id]);
+      expect(cachedPages.get(cacheKey)).toEqual(freshPage);
+      expect(state.messages).toEqual([{ role: "assistant", parts: [{ type: "text", text: "fresh from disk" }] }]);
+      expect(state.messagePageStart).toBe(1);
+      expect(state.error).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not reload sessions from disk when the selected machine runtime does not support it", async () => {
