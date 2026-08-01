@@ -1974,6 +1974,7 @@ export class PiWebUiApp extends LitElement {
         title: "Clean Up Sessions",
         description: "Preview and manually clean up idle or archived sessions on the selected machine",
         group: "Sessions",
+        closesActionPalette: true,
         ...(canCleanup ? {} : { enabled: false, disabledReason: this.sessionCleanupUnavailableMessage() }),
         run: () => { this.openSessionCleanupDialog(); },
       },
@@ -2032,6 +2033,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the machine selector",
         shortcut: "mod+g m",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("machines"),
       },
       {
@@ -2040,6 +2042,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the projects list",
         shortcut: "mod+g p",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("projects"),
       },
       {
@@ -2048,6 +2051,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the workspaces list",
         shortcut: "mod+g w",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("workspaces"),
       },
       {
@@ -2056,6 +2060,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the sessions list",
         shortcut: "mod+g s",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("sessions"),
       },
     ];
