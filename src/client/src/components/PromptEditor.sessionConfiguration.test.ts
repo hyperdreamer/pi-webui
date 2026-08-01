@@ -4,7 +4,7 @@ import { render, type PropertyValues, type TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientSessionModelPolicyStatus, ModelTierSettingsResponse, SessionModelPolicyResponse } from "../../../shared/apiTypes";
 import type { SessionStatus } from "../api";
-import { findOptionalTemplateEventHandlerNearMarker, isTemplateResult, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { isTemplateResult } from "../templateInspection.testSupport";
 import { PromptEditor } from "./PromptEditor";
 
 const tieredPolicyStatus: ClientSessionModelPolicyStatus = {
@@ -53,12 +53,9 @@ describe("PromptEditor session controls", () => {
     editor.onSelectModel = onSelectModel;
     editor.onSelectThinking = onSelectThinking;
 
-    const controls = renderCompactStatus(editor);
-
-    // This node-only suite checks the component's two stable control bindings
-    // directly rather than installing a disproportionate DOM harness.
-    templateEventHandlerNearMarker(controls, 'title="Select model"')(new Event("click"));
-    templateEventHandlerAfterValue(controls, "Default thinking level: high", "@click")(new Event("click"));
+    const controls = renderCompactStatusElement(editor);
+    requiredButton(controls, '[title="Select model"]').click();
+    requiredButton(controls, ".select-thinking").click();
 
     expect(onSelectModel).toHaveBeenCalledOnce();
     expect(onSelectThinking).toHaveBeenCalledOnce();
@@ -86,6 +83,7 @@ describe("PromptEditor session controls", () => {
     };
     const catalog = emptyModelTierCatalog();
     const onOpen = vi.fn();
+    const onClose = vi.fn();
     const onSave = vi.fn();
     editor.status = status;
     editor.modelPolicyResponse = response;
@@ -93,6 +91,7 @@ describe("PromptEditor session controls", () => {
     editor.modelPolicyLoading = true;
     editor.modelPolicyError = "Policy read failed";
     editor.onOpenModelPolicy = onOpen;
+    editor.onCloseModelPolicy = onClose;
     editor.onSaveModelPolicy = onSave;
 
     const controls = renderCompactStatusElement(editor);
@@ -112,7 +111,36 @@ describe("PromptEditor session controls", () => {
     expect(policyControl.saving).toBe(false);
     expect(policyControl.error).toBe("Policy read failed");
     expect(policyControl.onOpen).toBe(onOpen);
+    expect(policyControl.onClose).toBe(onClose);
     expect(policyControl.onSave).toBe(onSave);
+  });
+
+  it("forwards live invalid blocked status ahead of a stale valid response without disabling repair", () => {
+    const livePolicyStatus: ClientSessionModelPolicyStatus = {
+      ...tieredPolicyStatus,
+      ladderValid: false,
+      blockedReason: "runtime could not prove the previous policy was restored",
+    };
+    const stalePolicyStatus: ClientSessionModelPolicyStatus = {
+      ...tieredPolicyStatus,
+      ladderValid: true,
+    };
+    const response: SessionModelPolicyResponse = {
+      contractVersion: 1,
+      policy: { mode: "tiered", tier: "advanced", exact: stalePolicyStatus.resolved },
+      session: sessionStatus(stalePolicyStatus),
+    };
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(livePolicyStatus);
+    editor.modelPolicyResponse = response;
+
+    const policyControl = renderedPolicyControl(renderCompactStatusElement(editor));
+
+    expect(policyControl.status).toBe(livePolicyStatus);
+    expect(policyControl.status).not.toBe(response.session.modelPolicy);
+    expect(policyControl.status?.ladderValid).toBe(false);
+    expect(policyControl.status?.blockedReason).toBe("runtime could not prove the previous policy was restored");
+    expect(policyControl.editable).toBe(true);
   });
 
   it("keeps policy mutation disabled while the composer or active session is busy", () => {
@@ -185,20 +213,18 @@ describe("PromptEditor session controls", () => {
     };
     editor.onCompact = onCompact;
 
-    const statusControls = renderCompactStatus(editor);
+    expect(renderCompactStatusElement(editor).querySelector(".compact-button")).toBeNull();
 
-    expect(findOptionalTemplateEventHandlerNearMarker(statusControls, 'title="Compact context"')).toBeUndefined();
-
-    const controls = renderPromptEditor(editor);
-
-    // The stable control title keeps this node-only wiring check narrowly scoped.
-    templateEventHandlerNearMarker(controls, 'title="Compact context"')(new Event("click"));
+    const compact = requiredButton(renderPromptEditorActions(editor), ".compact-button");
+    expect(compact.disabled).toBe(false);
+    compact.click();
 
     expect(onCompact).toHaveBeenCalledOnce();
   });
 
   it("keeps Compact beside Queue without allowing active work to be interrupted", () => {
     const editor = new PromptEditor();
+    const onCompact = vi.fn();
     editor.status = {
       sessionId: "session-1",
       isStreaming: true,
@@ -211,9 +237,16 @@ describe("PromptEditor session controls", () => {
     };
     editor.canSteer = true;
     editor.canStop = true;
-    editor.onCompact = vi.fn();
+    editor.onCompact = onCompact;
 
-    expect(templateValueAfterMarker(renderPromptEditor(editor), 'class="compact-button" ?disabled=')).toBe(true);
+    const actions = renderPromptEditorActions(editor);
+    const compact = requiredButton(actions, ".compact-button");
+    const queue = requiredButton(actions, '[aria-label="Queue message"]');
+
+    expect(compact.nextElementSibling).toBe(queue);
+    expect(compact.disabled).toBe(true);
+    compact.click();
+    expect(onCompact).not.toHaveBeenCalled();
   });
 });
 
@@ -228,6 +261,7 @@ type RenderedPolicyControl = HTMLElement & {
   editable: boolean;
   error: string;
   onOpen?: () => void;
+  onClose?: () => void;
   onSave?: unknown;
 };
 
@@ -274,10 +308,18 @@ function isShouldUpdate(value: unknown): value is ShouldUpdate {
   return typeof value === "function";
 }
 
-function renderPromptEditor(editor: PromptEditor): TemplateResult {
-  const rendered = editor.render();
-  if (!isTemplateResult(rendered)) throw new Error("PromptEditor did not render a template");
-  return rendered;
+function renderPromptEditorActions(editor: PromptEditor): HTMLElement {
+  const host = document.createElement("div");
+  render(editor.render(), host);
+  const actions = host.querySelector<HTMLElement>(".actions");
+  if (actions === null) throw new Error("PromptEditor actions did not render");
+  return actions;
+}
+
+function requiredButton(root: ParentNode, selector: string): HTMLButtonElement {
+  const button = root.querySelector<HTMLButtonElement>(selector);
+  if (button === null) throw new Error(`Expected the ${selector} button`);
+  return button;
 }
 
 function sessionStatus(

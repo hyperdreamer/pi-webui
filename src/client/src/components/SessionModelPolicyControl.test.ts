@@ -172,6 +172,27 @@ function saveButton(control: SessionModelPolicyControl): HTMLButtonElement {
   return element;
 }
 
+function requiredButton(control: SessionModelPolicyControl, selector: string): HTMLButtonElement {
+  const element = shadowRoot(control).querySelector<HTMLButtonElement>(selector);
+  if (element === null) throw new Error(`Expected the ${selector} action`);
+  return element;
+}
+
+function componentStyleRule(selector: string): CSSStyleDeclaration {
+  const style = document.createElement("style");
+  style.textContent = SessionModelPolicyControl.styles.cssText;
+  document.head.append(style);
+  const sheet = style.sheet;
+  const rule = sheet === null
+    ? undefined
+    : Array.from(sheet.cssRules).find(
+      (candidate): candidate is CSSStyleRule => candidate instanceof CSSStyleRule && candidate.selectorText === selector,
+    );
+  style.remove();
+  if (rule === undefined) throw new Error(`Expected the ${selector} component style rule`);
+  return rule.style;
+}
+
 function labelTextFor(control: SessionModelPolicyControl, id: string): string {
   const label = shadowRoot(control).querySelector<HTMLLabelElement>(`label[for="${id}"]`);
   if (label === null) throw new Error(`Expected a visible label for ${id}`);
@@ -231,6 +252,22 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(shadowRoot(control).querySelectorAll("button")).toHaveLength(1);
   });
 
+  it("lets a Tiered trigger shrink and ellipsize inside its assigned narrow flex slot", async () => {
+    const control = await mountControl((element) => {
+      element.status = tieredStatus();
+      element.style.width = "130px";
+    });
+
+    const triggerRule = componentStyleRule(".policy-trigger");
+    const resolutionRule = componentStyleRule(".policy-tier, .policy-resolution");
+
+    expect(control.style.width).toBe("130px");
+    expect(triggerRule.flex).toBe("1 1 auto");
+    expect(triggerRule.maxWidth).toBe("100%");
+    expect(triggerRule.overflow).toBe("hidden");
+    expect(resolutionRule.textOverflow).toBe("ellipsis");
+  });
+
   it("stays visible from live status before any policy response has loaded", async () => {
     const control = await mountControl((element) => {
       element.status = tieredStatus();
@@ -288,6 +325,66 @@ describe("SessionModelPolicyControl closed trigger", () => {
 });
 
 describe("SessionModelPolicyControl opened surface", () => {
+  it("calls onClose once for every user dismissal route and never while already closed", async () => {
+    const routes: readonly {
+      name: string;
+      dismiss: (control: SessionModelPolicyControl) => void;
+    }[] = [
+      {
+        name: "Cancel",
+        dismiss: (control) => { requiredButton(control, ".policy-cancel").click(); },
+      },
+      {
+        name: "Escape",
+        dismiss: (control) => {
+          field(control, "policy-mode").dispatchEvent(new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            key: "Escape",
+          }));
+        },
+      },
+      {
+        name: "close button",
+        dismiss: (control) => { requiredButton(control, ".policy-close").click(); },
+      },
+      {
+        name: "trigger toggle",
+        dismiss: (control) => { trigger(control).click(); },
+      },
+    ];
+
+    for (const route of routes) {
+      const onClose = vi.fn();
+      const control = await mountControl((element) => {
+        element.status = exactStatus();
+        element.response = exactResponse();
+        element.catalog = validCatalog();
+        element.editable = true;
+        element.onClose = onClose;
+      });
+
+      await openPanel(control);
+      route.dismiss(control);
+      await control.updateComplete;
+
+      expect(optionalPanel(control), route.name).toBeNull();
+      expect(onClose, route.name).toHaveBeenCalledOnce();
+
+      trigger(control).dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        key: "Escape",
+      }));
+      await control.updateComplete;
+
+      expect(onClose, `${route.name} while already closed`).toHaveBeenCalledOnce();
+      control.remove();
+    }
+  });
+
   it("opens once per opening and shows visible labels for every applicable field", async () => {
     const onOpen = vi.fn();
     const control = await mountControl((element) => {

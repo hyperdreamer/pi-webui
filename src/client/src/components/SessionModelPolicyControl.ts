@@ -55,6 +55,7 @@ export class SessionModelPolicyControl extends LitElement {
   @property({ type: Boolean }) editable = false;
   @property() error = "";
   @property({ attribute: false }) onOpen?: () => void;
+  @property({ attribute: false }) onClose?: () => void;
   @property({ attribute: false }) onSave?: (update: SessionModelPolicyUpdate) => void;
 
   @state() private open = false;
@@ -285,6 +286,7 @@ export class SessionModelPolicyControl extends LitElement {
     if (!this.open) return;
     this.draft = draftForResponse(this.response);
     this.open = false;
+    this.onClose?.();
     // Restore focus through the retained trigger reference so closing by Escape,
     // Cancel, or the close control never drops the user at the document root.
     void this.updateComplete.then(() => {
@@ -360,7 +362,7 @@ export class SessionModelPolicyControl extends LitElement {
   static override styles = css`
     :host { position: relative; min-width: 0; display: inline-flex; align-items: center; gap: 6px; font: inherit; }
     * { box-sizing: border-box; }
-    .policy-trigger { flex: 0 0 auto; min-width: 0; display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 9px; font: inherit; font-size: 12px; line-height: 1.3; cursor: pointer; }
+    .policy-trigger { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 9px; font: inherit; font-size: 12px; line-height: 1.3; cursor: pointer; }
     .policy-trigger:hover, .policy-trigger:focus-visible { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .policy-mode { font-weight: 600; }
     .policy-tier, .policy-resolution { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-muted); }

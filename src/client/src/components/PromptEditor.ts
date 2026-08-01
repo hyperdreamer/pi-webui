@@ -58,6 +58,7 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
   @property({ attribute: false }) onOpenModelPolicy?: () => void;
+  @property({ attribute: false }) onCloseModelPolicy?: () => void;
   @property({ attribute: false }) onSaveModelPolicy?: (update: SessionModelPolicyUpdate) => void;
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
@@ -214,6 +215,7 @@ export class PromptEditor extends LitElement {
             .editable=${policyEditable}
             .error=${this.modelPolicyError}
             .onOpen=${this.onOpenModelPolicy}
+            .onClose=${this.onCloseModelPolicy}
             .onSave=${this.onSaveModelPolicy}
           ></session-model-policy-control>
         `}
