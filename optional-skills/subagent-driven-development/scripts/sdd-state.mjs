@@ -7,11 +7,15 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+/** The skill root, resolved from this module so cwd never affects rendering. */
+const SKILL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 import { parsePlanText, roleTier } from "./lib/plan-policy.mjs";
+import { renderPrompt } from "./lib/prompt-renderer.mjs";
 import {
   clearStaleLock,
   EXIT,
@@ -22,6 +26,8 @@ import {
   StoreError,
   transition,
 } from "./lib/state-store.mjs";
+
+export { renderPrompt } from "./lib/prompt-renderer.mjs";
 
 export {
   clearStaleLock,
@@ -73,6 +79,8 @@ const USAGE = [
   "  sdd-state lock-status --state STATE",
   "  sdd-state clear-stale-lock --state STATE --expected-owner-token TOKEN",
   "                             --decision-file DECISION_JSON",
+  "  sdd-state render-prompt --tier TIER --role ROLE --context CONTEXT_JSON",
+  "                          --output PROMPT_FILE",
 ].join("\n");
 
 /** Require a set of flags, naming every missing one at once. */
@@ -215,6 +223,33 @@ function main(argv) {
       const flags = parseFlags(args);
       const required = requireFlags(flags, ["state"]);
       console.log(JSON.stringify(lockStatus({ statePath: required.state })));
+      return 0;
+    }
+    case "render-prompt": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["tier", "role", "context", "output"]);
+      const raw = readFileSync(required.context, "utf8");
+      if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
+        throw new Error("the context file exceeds 64 KiB");
+      }
+      let context;
+      try {
+        context = JSON.parse(raw);
+      } catch {
+        throw new Error(`the context file is not valid JSON: ${required.context}`);
+      }
+      const rendered = renderPrompt({
+        tier: required.tier,
+        role: required.role,
+        context,
+        skillRoot: SKILL_ROOT,
+      });
+      // Atomic: validation has already passed, so a partial prompt never appears
+      // at the output path where a dispatch could pick it up.
+      const temporaryPath = `${required.output}.tmp`;
+      writeFileSync(temporaryPath, rendered);
+      renameSync(temporaryPath, required.output);
+      console.log(JSON.stringify({ output: required.output, bytes: Buffer.byteLength(rendered, "utf8") }));
       return 0;
     }
     case "clear-stale-lock": {

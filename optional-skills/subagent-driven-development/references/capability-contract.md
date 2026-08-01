@@ -146,3 +146,26 @@ normalization of byte-order marks, CRLF, and outer whitespace. With no
 server-side deduplication there is nothing to compare against, so both the
 fingerprint and its normalization rules are removed rather than kept as unused
 ceremony.
+
+## Known divergence: the eval fake still models the withdrawn dedup contract
+
+`evals/fake-sdd-tools.mjs` still implements the earlier draft of this file: a
+`dispatchKey` parameter, a `reused` flag, conflicting-reuse rejection, and a
+returned `policyApplication`. None of that exists in the runtime.
+
+This is recorded rather than silently patched, because the fake is baseline
+evidence. Task 3's controller results were produced against it, and rewriting it
+now would invalidate that comparison without re-running the baseline.
+
+Scope of the impact, measured rather than assumed:
+
+- The **role** suite (`evals/role-evals.json`) does not reference `dispatchKey`,
+  `policyApplication`, `reused`, or `rawPrompt` at all. Role work is unaffected.
+- Two **controller** scenarios reference it: `missing-capability-contract`
+  (`dispatchKey`) and `dispatch-intent-crash-recovery` (`policyApplication`).
+
+The decision: leave the fake alone for role work, and treat realigning it plus
+regenerating those two controller scenarios as a prerequisite of the controller
+GREEN run, not of the role contracts. A fake that validates a channel the runtime
+does not implement can only produce false confidence, so it must not be used to
+certify controller behavior.

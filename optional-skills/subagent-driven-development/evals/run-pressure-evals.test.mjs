@@ -100,8 +100,12 @@ describe("deterministic SDD pressure evaluator", () => {
       "--mode", "json", "--print", "--no-session", "--session-dir", "/tmp/sdd-evals/.sessions/run-3",
       "--approve", "--no-skills", "--no-extensions",
       "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
-      "--skill", "optional-skills/subagent-driven-development",
-      "--extension", "optional-skills/subagent-driven-development/evals/fake-sdd-tools.mjs",
+      // Absolute, so a scenario that runs with cwd inside its fixture repository
+      // still resolves the skill and extension. Asserted by suffix for the same
+      // reason the read roots below are.
+      "--skill", expect.stringContaining("optional-skills/subagent-driven-development"),
+      "--extension",
+      expect.stringContaining("optional-skills/subagent-driven-development/evals/fake-sdd-tools.mjs"),
       "--model", "RightCode-OpenAI/gpt-5.6-sol:max",
       expect.stringContaining("IMPORTANT: This is a real controller decision"),
     ]);

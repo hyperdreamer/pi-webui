@@ -967,6 +967,19 @@ const HANDLERS = Object.freeze({
     "implementer-status-recorded": (state, event) => {
       enumerated(event.status, IMPLEMENTER_STATUSES, "status");
       const concerns = normalizeConcerns(event.concerns);
+
+      // A hedged status with nothing to adjudicate is worse than no hedge: it
+      // costs the controller a decision point and gives it nothing to decide.
+      // The role contract states this three ways and a live role still returned
+      // DONE_WITH_CONCERNS with an empty concerns section, so it is enforced
+      // here. This is the project's own thesis applied to itself: prose is
+      // advice, a reducer is enforcement.
+      if (event.status === "DONE_WITH_CONCERNS" && concerns.length === 0) {
+        fail(
+          "DONE_WITH_CONCERNS requires at least one concern; record DONE when there is nothing to adjudicate",
+        );
+      }
+
       const dispatch = { ...state.dispatch, status: event.status, concerns };
 
       if (event.status === "BLOCKED") {

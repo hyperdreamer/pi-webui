@@ -165,7 +165,7 @@ export function buildPiInvocation(args, repetition) {
   // exclusive, and no-guidance loads neither.
   if (args.suite === "controller") {
     if (args.condition === "candidate") {
-      piArgs.push("--skill", SKILL_ROOT_RELATIVE);
+      piArgs.push("--skill", join(args.evaluatorRoot, SKILL_ROOT_RELATIVE));
     } else if (args.condition === "original") {
       piArgs.push("--skill", args.originalSkill);
     }
@@ -180,7 +180,7 @@ export function buildPiInvocation(args, repetition) {
     rolePromptSource = promptPath;
   }
 
-  piArgs.push("--extension", FAKE_TOOLS_RELATIVE);
+  piArgs.push("--extension", join(args.evaluatorRoot, FAKE_TOOLS_RELATIVE));
   piArgs.push("--model", args.model);
 
   // For role suites, append a fixture manifest so the model can discover the
@@ -259,13 +259,17 @@ export function captureFixtureIdentity(fixtureDir) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) {
-        walk(absolute);
+        if (entry.name !== ".git") walk(absolute);
         continue;
       }
       if (!entry.isFile()) continue;
       const relative = relative_(fixtureDir, absolute).replaceAll("\\", "/");
       // Harness bookkeeping is not part of scenario fixture identity.
       if (relative === "tool-log.jsonl" || relative === "dispatch-registry.json") continue;
+      // Nor is Git's own metadata, for scenarios given a fixture repository.
+      // Every commit rewrites files under .git, which would drown the signal
+      // this function exists to provide: which scenario files a role touched.
+      if (relative === ".git" || relative.startsWith(".git/")) continue;
       identity[relative] = createHash("sha256").update(readFileSync(absolute)).digest("hex");
     }
   };
@@ -478,7 +482,13 @@ function runRepetition(args, repetition) {
 
   try {
     const result = spawnSync(invocation.command, invocation.args, {
-      cwd: args.evaluatorRoot,
+      // A scenario that requires real Git inspection must run *inside* its
+      // fixture repository. Otherwise git reports on the surrounding repo and an
+      // honest role reports it could not verify its own change.
+      cwd:
+        args.scenario.fixtureGitRepository === true
+          ? invocation.fixtureDir
+          : args.evaluatorRoot,
       ...spawnOptions(),
       env: { ...process.env, ...invocation.env },
     });
@@ -528,6 +538,22 @@ function writeScenarioFixtures(scenario, fixtureDir) {
     const target = join(fixtureDir, relative);
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, String(content));
+  }
+
+  // Some scenarios require the role to inspect real Git state before reporting.
+  // Without a repository, `git status` fails and an honest implementer must
+  // report that it could not verify -- which makes the scenario's own
+  // expectations mutually unsatisfiable. Initialize a committed repository so
+  // the inspection the contract demands is actually possible.
+  if (scenario.fixtureGitRepository === true) {
+    const git = (...args) =>
+      spawnSync("git", args, { cwd: fixtureDir, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    git("init", "--quiet");
+    git("config", "user.email", "sdd-eval@example.invalid");
+    git("config", "user.name", "SDD Eval Fixture");
+    git("config", "commit.gpgsign", "false");
+    git("add", "--all");
+    git("commit", "--quiet", "--message", "fixture baseline");
   }
 }
 

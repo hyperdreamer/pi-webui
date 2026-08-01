@@ -1052,6 +1052,14 @@ describe("implementer result classification", () => {
     expect(() => reduceState(finished(), reviewIntentEvent())).toThrow(/pinned/u);
   });
 
+  it("refuses a hedged status with nothing to adjudicate", () => {
+    // A live role run returned exactly this after three escalating revisions of
+    // the prose contract. The guard is why the prose is now redundant rather
+    // than load-bearing.
+    expect(() => record("DONE_WITH_CONCERNS")).toThrow(/at least one concern/u);
+    expect(() => record("DONE_WITH_CONCERNS", { concerns: [] })).toThrow(/at least one concern/u);
+  });
+
   it("passes an observational concern straight through", () => {
     const pinned = record("DONE_WITH_CONCERNS", {
       concerns: [{ kind: "observational", note: "naming could be clearer" }],
