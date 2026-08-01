@@ -6,6 +6,7 @@ Plugins can currently:
 
 - add action-palette commands;
 - add workspace tools/panels next to Files, Git, and Terminal;
+- add Activity Rail activities opened from dedicated Rail controls;
 - add compact workspace-label items in the workspace list, panel header, and status bar;
 - call browser APIs and documented PI WEBUI plugin context helpers;
 - read workspace files and start workspace terminal commands through documented helpers;
@@ -79,7 +80,7 @@ After editing, check the manifest endpoint and browser-console failure cases.
 
 ## Canonical example: bundled Info plugin
 
-PI WEBUI ships a real bundled `info` plugin. Use it as the reference example because it is intentionally small while still exercising all core contribution types: an action, a workspace label, and a workspace panel.
+PI WEBUI ships a real bundled `info` plugin. Use it as the reference example because it is intentionally small while still exercising three UI contribution types: an action, a workspace label, and a workspace panel. Activity Rail activities are an additional v1 UI contribution type documented below.
 
 Bundled PI WEBUI plugins are developed as TypeScript in the repository, but their `package.json` metadata still points at built JavaScript because plugins are loaded by the browser as JS ES modules. `npm run dev:web` watches and rebuilds bundled plugin TS into `dist/pi-webui-plugins/` during development, and `npm run build` emits the JS before packaging a release.
 
@@ -147,7 +148,7 @@ Reload the PI WEBUI browser tab. PI WEBUI serves plugin modules with an mtime-ba
 
 When [machine federation](https://pi-webui.dev/machines) is enabled, PI WEBUI also loads discovered plugins from the selected remote machine. Remote plugins are trusted browser-side code like local plugins, but their contributions are machine-scoped:
 
-- actions, workspace panels, and workspace labels only appear while that machine is selected;
+- actions, workspace panels, Activity Rail activities, and workspace labels only appear while that machine is selected;
 - plugin file and terminal helpers run against that machine;
 - plugin code is loaded best-effort through the current gateway and cached for the browser page lifetime;
 - if the gateway and remote machine both have an enabled plugin with the same original id, `machineSpecific` metadata decides whether the gateway copy is reused or only the selected machine's copy can appear;
@@ -204,11 +205,11 @@ Built-in plugins can be managed from **Settings → PI WEBUI plugins** or with t
 ### Memory
 
 **Plugin id:** `workspace-memory`
-**What it does:** adds a read-only **Memory** workspace tab. It reads `pi-hermes-memory`-compatible data through PI WEBUI and never writes, creates, edits, or deletes memories.
+**What it does:** adds a read-only **Memory** Activity Rail activity. It is **Rail-only**: it does not contribute a workspace panel. It reads `pi-hermes-memory`-compatible data through PI WEBUI and never writes, creates, edits, or deletes memories.
 
-The tab shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable project-specific request displays a scoped **Project-specific unavailable** state while **Global memory** remains available. A failed global-memory request is presented as a panel-level retryable error.
+Select the circular **Memory** Rail control to open a host-owned detail dialog. The dialog shows independently collapsible **Global memory** and **Project-specific memory** groups. Project-specific memory contains entries only for the selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable project-specific request displays a scoped **Project-specific unavailable** state while **Global memory** remains available. A failed global-memory request is presented as a retryable error in the detail view.
 
-The Memory tab is visible only when a compatible memory provider is detected for the active agent profile and project scope. A compatible provider with zero entries still shows the tab but omits the badge. A positive badge totals global and project-specific memory entries. PI WEBUI refreshes the badge immediately after a selected project or workspace change and then checks approximately every 30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
+With a workspace selected, the Memory activity remains visible while memory loads, when data is available, and if a memory request fails. It is hidden only after the provider confirms that the whole memory capability is unavailable. A project-specific unavailable response is a separate scoped detail state; it does not mean the whole provider is unavailable. The count badge appears only for data with one or more entries, so it is omitted in all non-data states and for zero data; when shown, it totals global and project-specific memory entries. PI WEBUI refreshes the badge immediately after a selected project or workspace change and then checks approximately every 30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
 
 Memory is bundled with PI WEBUI and enabled by default. To disable it, use **Settings → PI WEBUI plugins** or set:
 
@@ -393,11 +394,16 @@ interface PiWebUiPlugin {
   activate: (context: PluginActivationContext) => PluginActivationResult;
 }
 
+interface PluginHostCapabilities {
+  activityRailItems?: true;
+}
+
 interface PluginActivationContext {
   apiVersion: 1;
   pluginId: string;
   html: typeof import("lit").html;
   svg: typeof import("lit").svg;
+  capabilities?: PluginHostCapabilities;
 }
 
 interface PluginActivationResult {
@@ -439,6 +445,7 @@ For example, plugin `info` with action `workspace.show-path` becomes `info:works
 interface PluginContributions {
   actions?: PluginAction[];
   workspacePanels?: WorkspacePanelContribution[];
+  activityRailItems?: ActivityRailContribution[];
   workspaceLabels?: WorkspaceLabelContribution[];
 }
 ```
@@ -647,6 +654,74 @@ interface Workspace {
 `machine.id` is included in panel contexts so plugins can keep caches machine-scoped. Do not infer the selected machine from global browser state.
 
 Use existing classes such as `toolbar`, `viewer`, `empty`, and `muted` for panel content when possible. Do not assume a panel owns the whole page; keep layout contained.
+
+### Activity Rail activities
+
+Activity Rail activities add a focused, dialog-backed surface. Each activity must supply an `id`, `title`, `icon`, and `render`. The host uses `title` for the icon control's accessible name and dialog heading, `icon` for the Rail control, and `render` for the dialog body. Prefer an SVG created by `svg` with `currentColor` so themes can style the required icon.
+
+Activity Rail support is an additive v1 capability. A supporting host passes `capabilities.activityRailItems === true`; if the capability is missing, select the old-host branch:
+
+```js
+activate: ({ capabilities, html, svg }) => ({
+  contributions: capabilities?.activityRailItems === true
+    ? {
+      activityRailItems: [{
+        id: "workspace.dashboard",
+        title: "Dashboard",
+        icon: svg`<svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"></path></svg>`,
+        render: () => html`<p>Dashboard</p>`,
+      }],
+    }
+    : {
+      workspacePanels: [{
+        id: "workspace.dashboard",
+        title: "Dashboard",
+        render: () => html`<p>Dashboard</p>`,
+      }],
+    },
+});
+```
+
+Activity type and context:
+
+```ts
+interface ActivityRailContribution {
+  id: string;
+  title: string;
+  icon: TemplateResult;
+  order?: number;
+  visible?: (context: ActivityRailContext) => boolean;
+  badge?: (context: ActivityRailContext) => string | number | TemplateResult | undefined;
+  render: (context: ActivityRailContext) => TemplateResult;
+}
+
+interface ActivityRailHost {
+  requestRender(): void;
+  close(): void;
+}
+
+interface ActivityRailWorkspaceScope {
+  workspace: Workspace;
+  files: WorkspaceFiles;
+  terminal: WorkspacePanelTerminal;
+}
+
+interface ActivityRailContext extends PluginRuntimeContext {
+  machine: PluginMachine;
+  workspaceScope?: ActivityRailWorkspaceScope;
+  host: ActivityRailHost;
+}
+```
+
+The host renders visible activities as neutral, circular icon controls in a dedicated, host-owned section after its reorderable built-in controls and before Settings. Activities are not draggable and do not enter the user-reorderable core Rail order. `order` controls only the activity section: items sort by ascending `order` (default `1000`), then `title`, then id. Do not use `order` to place an activity among built-in controls.
+
+`visible` and `badge` are synchronous, lightweight callbacks. `visible` defaults to shown; return `false` to hide an activity. `badge` runs only for visible activities and may return a string, number, `TemplateResult`, or `undefined`; `undefined` omits the badge. Do not return promises. Keep asynchronous work and cached state inside the plugin, then call `host.requestRender()` when that state changes so the host can re-evaluate `visible`, `badge`, and an open activity body.
+
+`ActivityRailContext` extends the documented runtime context. `workspaceScope` is optional because an activity can be available without a selected workspace; check it before using its `workspace`, `files`, or `terminal` helpers. `host.close()` closes the currently open instance of that activity. Calls from stale or no-longer-open activity contexts safely do nothing.
+
+The host owns the dialog frame, title, icon, close controls, Escape/backdrop dismissal, focus restoration, and error handling. An activity's `render()` returns only the dialog body. The host reports callback failures: a throwing `visible` callback hides the activity, a throwing `badge` callback omits the badge, and a throwing `render` callback shows a host-owned failure message.
+
+Below 1181px, the persistent desktop Rail is replaced by a compact Activity Rail drawer that includes the same visible controls. Selecting an activity there still opens the host-owned dialog.
 
 ### Workspace labels
 
@@ -955,7 +1030,7 @@ PI WEBUI does not provide a plugin cache/invalidation framework. Keep host callb
 
 - simple contributions should be synchronous and cheap;
 - expensive or async work should live inside the plugin;
-- custom elements in `type: "render"` label items or panels are a good place to own async loading;
+- custom elements in `type: "render"` label items, workspace panels, or Activity Rail dialog bodies are a good place to own async loading;
 - dedupe async reads/commands and avoid unbounded polling;
 - clean up intervals/event listeners in custom elements' `disconnectedCallback()`.
 
@@ -966,18 +1041,20 @@ If you are an AI agent building or editing a PI WEBUI plugin, follow this checkl
 1. Create or update a plugin folder with `package.json` and a JavaScript module such as `pi-webui-plugin.js`.
 2. Use the single supported package metadata shape: `piWebUi.plugins` array with `{ id, module, machineSpecific? }` entries.
 3. Default-export `{ apiVersion: 1, name, activate }` from the module.
-4. Return `{ contributions: { actions, workspacePanels, workspaceLabels } }` from `activate()`.
+4. Return `{ contributions: { actions, workspacePanels, activityRailItems, workspaceLabels } }` from `activate()` as needed.
 5. Use ids matching `^[a-z][a-z0-9.-]*$`.
 6. Use the activation context's `html` function for Lit templates.
 7. Keep `activate()` synchronous and cheap; return contribution definitions only.
-8. Add actions for command-palette operations.
-9. Add workspace panels for larger workspace UI.
-10. Add workspace labels for compact inline metadata.
-11. Return arrays from workspace label `items()`; return an empty array to render nothing.
-12. Use documented context helpers first: `files`, `terminal`, `host.requestRender`, `workspace`, `machine`, `state.selectedWorkspace`, `state.selectedSession`, `state.piWebUiStatus`, and `prompt`.
-13. Do not fetch PI WEBUI `/api/...` endpoints directly unless you intentionally accept private API churn; prefer documented helpers.
-14. Treat plugins as trusted code and avoid reading or displaying secrets unless intentional.
-15. After local edits, tell the user to hard reload the browser and check the console for plugin errors.
+8. Feature-detect `capabilities.activityRailItems === true` and retain a fallback contribution when supporting older v1 hosts.
+9. Add actions for command-palette operations.
+10. Add workspace panels for larger workspace UI.
+11. Add Activity Rail activities for focused host-owned dialogs; require an icon and title, and check `workspaceScope` before using it.
+12. Add workspace labels for compact inline metadata.
+13. Return arrays from workspace label `items()`; return an empty array to render nothing.
+14. Use documented context helpers first: `files`, `terminal`, `host.requestRender`, `host.close`, `workspaceScope`, `workspace`, `machine`, `state.selectedWorkspace`, `state.selectedSession`, `state.piWebUiStatus`, and `prompt`.
+15. Do not fetch PI WEBUI `/api/...` endpoints directly unless you intentionally accept private API churn; prefer documented helpers.
+16. Treat plugins as trusted code and avoid reading or displaying secrets unless intentional.
+17. After local edits, tell the user to hard reload the browser and check the console for plugin errors.
 
 ## Troubleshooting
 
@@ -1004,4 +1081,4 @@ Common issues:
 - entry module path points outside the plugin root or file does not exist;
 - browser cache not refreshed after editing;
 - plugin directory is not under `~/.pi-webui/plugins` or symlinked there;
-- plugin throws during module import, `activate()`, `visible()`, `enabled()`, `items()`, or `render()`; check the browser console.
+- plugin throws during module import, `activate()`, `visible()`, `badge()`, `enabled()`, `items()`, or `render()`; check the browser console.

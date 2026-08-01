@@ -1,17 +1,72 @@
-import { describe, expect, it, vi } from "vitest";
+import { LitElement, html } from "lit";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityRail } from "./ActivityRail";
 import { templateEventHandlerAfterMarker, templateText, templateClickHandlerForText, templateValueAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
 import { type ReorderableRailItem } from "../activityRailOrder";
+import type { ActivityRailDisplayItem } from "../plugins/activityRail";
+
+type DesktopMediaListener = (event: MediaQueryListEvent) => void;
+
+class FakeDesktopMediaQueryEvent extends Event {
+  readonly media = "";
+
+  constructor(readonly matches: boolean) {
+    super("change");
+  }
+}
+
+class FakeRailButton extends EventTarget {}
+
+interface DesktopMediaStub {
+  matches: boolean;
+  addEventListener(type: string, listener: DesktopMediaListener): void;
+  removeEventListener(type: string, listener: DesktopMediaListener): void;
+  dispatchChange(matches: boolean): void;
+}
+
+function createDesktopMediaStub(initialMatches: boolean): DesktopMediaStub {
+  const listeners = new Set<DesktopMediaListener>();
+  return {
+    matches: initialMatches,
+    addEventListener: (_type, listener) => { listeners.add(listener); },
+    removeEventListener: (_type, listener) => { listeners.delete(listener); },
+    dispatchChange(matches) {
+      this.matches = matches;
+      for (const listener of listeners) listener(new FakeDesktopMediaQueryEvent(matches));
+    },
+  };
+}
+
+function eventWithTargets(type: string, target: EventTarget, currentTarget: EventTarget): Event {
+  const event = new Event(type, { cancelable: true });
+  Object.defineProperties(event, {
+    currentTarget: { value: currentTarget },
+    target: { value: target },
+  });
+  return event;
+}
+
+function eventWithCurrentTarget(type: string, currentTarget: EventTarget): Event {
+  const event = new Event(type);
+  Object.defineProperty(event, "currentTarget", { value: currentTarget });
+  return event;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ActivityRail", () => {
-  function createRail(terminalCount = 0, systemPromptEnabled = false) {
+  function pluginItems(): ActivityRailDisplayItem[] {
+    return [
+      { id: "tasks:open", title: "Tasks", icon: html`<svg data-icon="tasks"></svg>` },
+      { id: "memory:open", title: "Memory", icon: html`<svg data-icon="brain"></svg>`, badge: 2 },
+    ];
+  }
+
+  function createRail(terminalCount = 0, systemPromptEnabled = false, desktopMedia: DesktopMediaStub = createDesktopMediaStub(true)) {
     const rail = new ActivityRail();
-    const desktopStub = {
-      matches: true,
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
-    };
-    Object.defineProperty(rail, "desktopMedia", { get: () => desktopStub });
+    Object.defineProperty(rail, "desktopMedia", { get: () => desktopMedia });
     rail.terminalCount = terminalCount;
     rail.systemPromptEnabled = systemPromptEnabled;
     return rail;
@@ -34,15 +89,142 @@ describe("ActivityRail", () => {
       expect(railText(rail)).toContain("Open settings");
     });
 
-    it("does not render rail content when viewport is below 1181px", () => {
-      const rail = new ActivityRail();
-      const mobileStub = {
-        matches: false,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-      };
-      Object.defineProperty(rail, "desktopMedia", { get: () => mobileStub });
+    it("renders nothing below the desktop breakpoint while the compact drawer is closed", () => {
+      const rail = createRail(0, false, createDesktopMediaStub(false));
+      rail.compactOpen = false;
+
       expect(railText(rail)).toBe("");
+    });
+  });
+
+  describe("plugin controls", () => {
+    it("renders supplied plugin controls in a circular, non-draggable section after core controls", () => {
+      const rail = createRail();
+      rail.pluginItems = pluginItems();
+      const text = railText(rail);
+      const infoPos = text.indexOf("Open system info");
+      const separatorPos = text.indexOf("rail-plugin-separator");
+      const tasksPos = text.indexOf("Tasks");
+      const memoryPos = text.indexOf("Memory");
+      const spacerPos = text.indexOf("rail-spacer");
+      const settingsPos = text.indexOf("Open settings");
+      const pluginSection = text.slice(separatorPos, spacerPos);
+
+      expect(infoPos).toBeLessThan(separatorPos);
+      expect(separatorPos).toBeLessThan(tasksPos);
+      expect(tasksPos).toBeLessThan(memoryPos);
+      expect(memoryPos).toBeLessThan(spacerPos);
+      expect(spacerPos).toBeLessThan(settingsPos);
+      expect(pluginSection).toContain('class="icon-button plugin-rail-button"');
+      expect(pluginSection).not.toContain("draggable");
+      expect(pluginSection).not.toContain("data-rail-item");
+      expect(text).toContain("Memory, 2");
+      expect(ActivityRail.styles.cssText).toMatch(/\.plugin-rail-button\s*\{[^}]*border-radius:\s*50%/);
+    });
+
+    it("does not render a plugin separator when no plugin controls are supplied", () => {
+      expect(railText(createRail())).not.toContain("rail-plugin-separator");
+    });
+  });
+
+  describe("compact drawer", () => {
+    function createCompactRail() {
+      const rail = createRail(0, false, createDesktopMediaStub(false));
+      rail.pluginItems = pluginItems();
+      rail.compactOpen = true;
+      return rail;
+    }
+
+    it("renders the activity rail in a labelled overlay with close, backdrop, and Escape controls", () => {
+      const rail = createCompactRail();
+      const text = railText(rail);
+
+      expect(text).toContain('role="dialog"');
+      expect(text).toContain('aria-label="Activity rail"');
+      expect(text).toContain("Tasks");
+      expect(text).toContain("Memory");
+      expect(text).toContain("Close activity rail");
+      expect(text).toContain("compact-rail-backdrop");
+      expect(text).toContain("@mousedown=");
+      expect(text).toContain("@keydown=");
+    });
+
+    // The Node test environment has no DOM, so inspect only the compact drawer's stable event wiring.
+    it("closes only when the compact drawer backdrop itself is pressed", () => {
+      const rail = createCompactRail();
+      const onCloseCompact = vi.fn();
+      rail.onCloseCompact = onCloseCompact;
+      const backdrop = new EventTarget();
+      const handler = templateEventHandlerNearMarker(rail.render(), "compact-rail-backdrop");
+
+      handler(eventWithTargets("mousedown", new EventTarget(), backdrop));
+      expect(onCloseCompact).not.toHaveBeenCalled();
+
+      handler(eventWithTargets("mousedown", backdrop, backdrop));
+      expect(onCloseCompact).toHaveBeenCalledOnce();
+    });
+
+    it("closes the compact drawer with Escape and its close control", () => {
+      const rail = createCompactRail();
+      const onCloseCompact = vi.fn();
+      rail.onCloseCompact = onCloseCompact;
+      const escapeHandler = templateEventHandlerNearMarker(rail.render(), "@keydown=");
+      const closeHandler = templateClickHandlerForText(rail.render(), "Close activity rail");
+
+      escapeHandler(Object.assign(new Event("keydown", { cancelable: true }), { key: "Escape" }));
+      closeHandler(new Event("click"));
+
+      expect(onCloseCompact).toHaveBeenCalledTimes(2);
+    });
+
+    it("closes the compact drawer before invoking a core action", () => {
+      const rail = createCompactRail();
+      const calls: string[] = [];
+      rail.onCloseCompact = () => { calls.push("close"); };
+      rail.onOpenTerminal = () => { calls.push("terminal"); };
+
+      templateClickHandlerForText(rail.render(), "Open terminal")(new Event("click"));
+
+      expect(calls).toEqual(["close", "terminal"]);
+    });
+
+    it("closes the compact drawer before invoking a plugin action with its source", () => {
+      const rail = createCompactRail();
+      const calls: string[] = [];
+      const source = new FakeRailButton();
+      vi.stubGlobal("HTMLElement", FakeRailButton);
+      rail.onCloseCompact = () => { calls.push("close"); };
+      rail.onOpenPluginActivity = (id, receivedSource) => {
+        expect(receivedSource).toBe(source);
+        calls.push(`plugin:${id}`);
+      };
+
+      templateClickHandlerForText(rail.render(), "Memory, 2")(eventWithCurrentTarget("click", source));
+
+      expect(calls).toEqual(["close", "plugin:memory:open"]);
+    });
+
+    it("clears compact-open state and requests an update after a desktop resize", () => {
+      const desktopMedia = createDesktopMediaStub(false);
+      const rail = createRail(0, false, desktopMedia);
+      const requestUpdate = vi.spyOn(rail, "requestUpdate");
+      const baseConnectedCallback = vi.spyOn(LitElement.prototype, "connectedCallback").mockImplementation(() => undefined);
+      const baseDisconnectedCallback = vi.spyOn(LitElement.prototype, "disconnectedCallback").mockImplementation(() => undefined);
+      rail.compactOpen = true;
+      rail.onCloseCompact = () => { rail.compactOpen = false; };
+
+      try {
+        rail.connectedCallback();
+        requestUpdate.mockClear();
+        desktopMedia.dispatchChange(true);
+
+        expect(rail.compactOpen).toBe(false);
+        expect(requestUpdate).toHaveBeenCalled();
+      } finally {
+        rail.disconnectedCallback();
+        baseConnectedCallback.mockRestore();
+        baseDisconnectedCallback.mockRestore();
+      }
     });
   });
 

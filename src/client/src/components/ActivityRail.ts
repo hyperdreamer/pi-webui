@@ -1,12 +1,18 @@
-import { LitElement, css, html, nothing, type TemplateResult } from "lit";
+import { LitElement, css, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
+import { ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY } from "../appShell/appShellController";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
+import type { ActivityRailDisplayItem } from "../plugins/activityRail";
+import type { QualifiedContributionId } from "../plugins/types";
 
-const DESKTOP_RAIL_MEDIA_QUERY = "(min-width: 1181px)";
 const REORDERABLE_IDS: readonly string[] = ["terminal", "git-update-manager", "theme", "system-prompt", "history", "info"];
 
 function isReorderableItem(value: string): value is ReorderableRailItem {
   return REORDERABLE_IDS.includes(value);
+}
+
+function isActivityRailButtonTarget(value: EventTarget | null): value is HTMLElement {
+  return typeof HTMLElement !== "undefined" && value instanceof HTMLElement;
 }
 
 @customElement("activity-rail")
@@ -24,6 +30,10 @@ export class ActivityRail extends LitElement {
   @property({ type: Boolean }) historyEnabled = false;
   @property({ attribute: false }) railOrder: ReorderableRailItem[] = [...DEFAULT_RAIL_ORDER];
   @property({ attribute: false }) onRailOrderChange?: (order: ReorderableRailItem[]) => void;
+  @property({ attribute: false }) pluginItems: readonly ActivityRailDisplayItem[] = [];
+  @property({ attribute: false }) onOpenPluginActivity?: (id: QualifiedContributionId, source: HTMLElement) => void;
+  @property({ type: Boolean }) compactOpen = false;
+  @property({ attribute: false }) onCloseCompact?: () => void;
 
   private desktopMedia: MediaQueryList | undefined;
   private dragItem: ReorderableRailItem | undefined;
@@ -31,7 +41,7 @@ export class ActivityRail extends LitElement {
   constructor() {
     super();
     if (typeof window !== "undefined" && "matchMedia" in window) {
-      this.desktopMedia = window.matchMedia(DESKTOP_RAIL_MEDIA_QUERY);
+      this.desktopMedia = window.matchMedia(ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY);
     }
   }
 
@@ -45,19 +55,61 @@ export class ActivityRail extends LitElement {
     this.desktopMedia?.removeEventListener("change", this.onDesktopMediaChange);
   }
 
-  private onDesktopMediaChange = () => {
-    // Media change triggers a re-render; no popup state to clean up.
+  protected override updated(changed: PropertyValues<this>): void {
+    if (!changed.has("compactOpen") || !this.compactOpen || this.isDesktopRailLayout()) return;
+    this.renderRoot.querySelector<HTMLButtonElement>(".compact-rail-close")?.focus();
+  }
+
+  private onDesktopMediaChange = (event: MediaQueryListEvent): void => {
+    if (event.matches && this.compactOpen) this.onCloseCompact?.();
+    this.requestUpdate();
   };
+
+  private isDesktopRailLayout(): boolean {
+    return this.desktopMedia?.matches ?? true;
+  }
 
   // -- Click handlers --
 
-  private readonly openTerminal = (): void => { this.onOpenTerminal?.(); };
-  private readonly openGitUpdateManager = (): void => { this.onOpenGitUpdateManager?.(); };
-  private readonly openTheme = (): void => { this.onOpenTheme?.(); };
-  private readonly openSystemPrompt = (): void => { this.onOpenSystemPrompt?.(); };
-  private readonly openHistory = (): void => { this.onOpenHistory?.(); };
-  private readonly openInfo = (): void => { this.onOpenInfo?.(); };
-  private readonly openSettings = (): void => { this.onOpenSettings?.(); };
+  private closeCompactBeforeAction(): void {
+    if (!this.isDesktopRailLayout()) this.onCloseCompact?.();
+  }
+
+  private invokeCoreAction(action: (() => void) | undefined): void {
+    this.closeCompactBeforeAction();
+    action?.();
+  }
+
+  private readonly openTerminal = (): void => { this.invokeCoreAction(this.onOpenTerminal); };
+  private readonly openGitUpdateManager = (): void => { this.invokeCoreAction(this.onOpenGitUpdateManager); };
+  private readonly openTheme = (): void => { this.invokeCoreAction(this.onOpenTheme); };
+  private readonly openSystemPrompt = (): void => { this.invokeCoreAction(this.onOpenSystemPrompt); };
+  private readonly openHistory = (): void => { this.invokeCoreAction(this.onOpenHistory); };
+  private readonly openInfo = (): void => { this.invokeCoreAction(this.onOpenInfo); };
+  private readonly openSettings = (): void => { this.invokeCoreAction(this.onOpenSettings); };
+
+  private readonly openPluginActivity = (id: QualifiedContributionId, source: EventTarget | null): void => {
+    this.closeCompactBeforeAction();
+    if (!isActivityRailButtonTarget(source)) return;
+    this.onOpenPluginActivity?.(id, source);
+  };
+
+  private readonly closeCompact = (): void => {
+    this.onCloseCompact?.();
+  };
+
+  private readonly handleCompactBackdropMouseDown = (event: MouseEvent): void => {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    this.closeCompact();
+  };
+
+  private readonly handleCompactKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeCompact();
+  };
 
   // -- Drag-and-drop (reorderable items only) --
 
@@ -329,11 +381,58 @@ export class ActivityRail extends LitElement {
     `;
   }
 
-  override render() {
-    const isDesktop = this.desktopMedia?.matches ?? true;
-    if (!isDesktop) return html``;
+  private pluginAriaLabel(item: ActivityRailDisplayItem): string {
+    const badge = typeof item.badge === "string" || typeof item.badge === "number" ? String(item.badge).trim() : "";
+    return badge === "" ? item.title : `${item.title}, ${badge}`;
+  }
 
+  private renderPluginButton(item: ActivityRailDisplayItem): TemplateResult {
+    return html`
+      <button
+        type="button"
+        class="icon-button plugin-rail-button"
+        title=${item.title}
+        aria-label=${this.pluginAriaLabel(item)}
+        @click=${(event: MouseEvent) => { this.openPluginActivity(item.id, event.currentTarget); }}
+      >
+        <span class="plugin-rail-icon" aria-hidden="true">${item.icon}</span>
+        ${item.badge === undefined ? nothing : html`<span class="rail-badge" aria-hidden="true">${item.badge}</span>`}
+      </button>
+    `;
+  }
+
+  private renderRailContents(): TemplateResult {
     const order = this.railOrder.length === 0 ? [...DEFAULT_RAIL_ORDER] : this.railOrder;
+    return html`
+      ${order.map((item) => this.renderReorderableButton(item))}
+      ${this.pluginItems.length === 0 ? nothing : html`
+        <div class="rail-plugin-separator" role="separator"></div>
+        ${this.pluginItems.map((item) => this.renderPluginButton(item))}
+      `}
+      <div class="rail-spacer"></div>
+      ${this.renderSettingsButton()}
+    `;
+  }
+
+  private renderCompactCloseButton(): TemplateResult {
+    return html`
+      <button
+        type="button"
+        class="icon-button compact-rail-close"
+        title="Close activity rail"
+        aria-label="Close activity rail"
+        @click=${this.closeCompact}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="m6 6 12 12M18 6 6 18"/>
+        </svg>
+      </button>
+    `;
+  }
+
+  private renderRailNavigation(prefix?: TemplateResult): TemplateResult {
     return html`
       <nav
         class="rail"
@@ -341,10 +440,29 @@ export class ActivityRail extends LitElement {
         @dragover=${this.onRailDragOver}
         @drop=${this.onRailDrop}
       >
-        ${order.map((item) => this.renderReorderableButton(item))}
-        <div class="rail-spacer"></div>
-        ${this.renderSettingsButton()}
+        ${prefix ?? nothing}
+        ${this.renderRailContents()}
       </nav>
+    `;
+  }
+
+  override render() {
+    if (this.isDesktopRailLayout()) return this.renderRailNavigation();
+    if (!this.compactOpen) return html``;
+
+    return html`
+      <div class="compact-rail-backdrop" @mousedown=${this.handleCompactBackdropMouseDown}>
+        <section
+          class="compact-rail-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Activity rail"
+          tabindex="-1"
+          @keydown=${this.handleCompactKeyDown}
+        >
+          ${this.renderRailNavigation(this.renderCompactCloseButton())}
+        </section>
+      </div>
     `;
   }
 
@@ -380,6 +498,9 @@ export class ActivityRail extends LitElement {
       cursor: pointer;
       transition: opacity 0.15s ease, box-shadow 0.15s ease;
     }
+    .plugin-rail-button { border-radius: 50%; }
+    .plugin-rail-icon { display: grid; place-items: center; width: 20px; height: 20px; }
+    .plugin-rail-icon > svg { width: 20px; height: 20px; }
     .rail-badge {
       position: absolute;
       top: -3px;
@@ -410,6 +531,11 @@ export class ActivityRail extends LitElement {
       box-shadow: 0 -2px 0 0 var(--pi-accent);
     }
     .rail-spacer { flex: 1 1 auto; min-height: 0; }
+    .rail-plugin-separator { width: 24px; border-top: 1px solid var(--pi-border); margin: 2px 0; }
     .settings-button { margin-bottom: 12px; }
+    .compact-rail-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: stretch; background: var(--pi-overlay); }
+    .compact-rail-dialog { height: 100%; }
+    .compact-rail-dialog .rail { box-shadow: 8px 0 24px var(--pi-shadow); }
+    .compact-rail-close { margin-bottom: 2px; }
   `;
 }
