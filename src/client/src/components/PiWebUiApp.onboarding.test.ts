@@ -139,7 +139,7 @@ describe("PiWebUiApp session onboarding", () => {
     const onSend = startScreenSendHandler(renderSessionStartScreen(app, state));
     onSend("Sketch a plan", undefined, [attachment], "inline");
 
-    expect(startSessionWithPrompt).toHaveBeenCalledWith("Sketch a plan", undefined, [attachment], "inline");
+    expect(startSessionWithPrompt).toHaveBeenCalledWith("Sketch a plan", undefined, [attachment], "inline", undefined);
     expect(focusChatComposer).toHaveBeenCalledOnce();
   });
 });

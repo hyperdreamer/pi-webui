@@ -1,8 +1,10 @@
 import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
+import { modelPolicyDraftFromPolicy, selectDraftTier, sessionModelPolicyUpdateFromDraft } from "./sessionModelPolicyDraft";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
@@ -345,6 +347,23 @@ export class PiWebUiApp extends LitElement {
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
+  // Per-machine tier catalog owned by this component, shared by the starter and
+  // active policy controls. Loaded on demand (never eagerly) because it is only
+  // needed once a user opens a policy dialog, and re-fetched per machine.
+  @state() private modelTierCatalog: ModelTierSettingsResponse | undefined;
+  @state() private modelTierCatalogLoading = false;
+  @state() private modelTierCatalogError = "";
+  /**
+   * The starter composer's local policy draft. There is no session yet, so no
+   * server owns this: it is initialized from the confirmed Pi defaults, kept
+   * independent of them once the user chooses Tiered, and carried into
+   * `POST /sessions`. Cleared on every workspace/machine change.
+   */
+  @state() private starterModelPolicy: SessionModelPolicy | undefined;
+  /** Machine the loaded catalog belongs to; guards cross-machine application. */
+  private modelTierCatalogMachineId: string | undefined;
+  /** Newest issued catalog request; a late response with a lower seq is dropped. */
+  private modelTierCatalogSeq = 0;
   @state() private modelsConfigDialogOpen = false;
   @state() private projectBrowserOpen = false;
   private projectBrowserRestoreFocus: (() => void) | undefined;
@@ -1086,6 +1105,7 @@ export class PiWebUiApp extends LitElement {
       return;
     }
     this.starterSessionDefaults = undefined;
+    this.resetStarterModelPolicyForScopeChange();
     this.terminalAutoStartWorkspaceId = undefined;
     this.activeTerminalIds.clear();
     const selectedTerminalId = this.routeRestoreInProgress ? this.restoringRouteTerminalId : next.selectedWorkspace === undefined ? undefined : this.terminalSelection.latestTerminalId(this.terminalWorkspaceKey(next.selectedWorkspace));
@@ -1111,11 +1131,30 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.sessionDefaults(workspace.path, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
+      this.linkStarterExactBranch(defaults);
     } catch (error) {
       if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) {
         console.warn("Failed to load Pi session defaults", error);
       }
     }
+  }
+
+  /**
+   * Keep the starter's remembered Exact branch pointed at whatever model/thinking
+   * pair Pi actually resolved. While the user is Tiered the remembered Exact
+   * tuple is theirs to keep, so a confirmed default must not overwrite it; the
+   * two branches stay independent exactly as they do for a live session.
+   */
+  private linkStarterExactBranch(defaults: SessionDefaultsResponse): void {
+    const exact = starterExactSelection(defaults);
+    if (exact === undefined) return;
+    const current = this.starterModelPolicy;
+    if (current === undefined) {
+      this.starterModelPolicy = { mode: "exact", exact };
+      return;
+    }
+    if (current.mode === "tiered") return;
+    this.starterModelPolicy = { ...current, exact };
   }
 
   private syncSessionUnreadMachines(): void {
@@ -1272,6 +1311,8 @@ export class PiWebUiApp extends LitElement {
     const pendingMachineId = this.pendingRemoteRouteRestore?.machineId ?? "local";
     if (pendingMachineId !== (next.selectedMachine?.id ?? "local")) this.clearPendingRemoteRouteRestore();
     this.sessions.clearActiveSession();
+    this.resetStarterModelPolicyForScopeChange();
+    this.resetModelTierCatalogForMachineChange();
     this.realtime.close();
     this.connectRealtime();
     this.activeTerminalIds.clear();
@@ -1446,6 +1487,81 @@ export class PiWebUiApp extends LitElement {
     // capability stay on the legacy cwd-based /files route.
     const runtime = this.state.machineRuntimes[machineId];
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.workspaceFileSuggestions);
+  }
+
+  /**
+   * COMPAT-CAP sessions.modelPolicy: the dedicated capability requires both web
+   * and sessiond, and is never inferred from `settings.modelTiers` or
+   * `settings.selectedMachine`. A remote peer whose runtime has not been
+   * negotiated yet stays unsupported, so no unsupported request is issued and
+   * the composer keeps its previous Exact-only model/thinking controls.
+   */
+  private sessionModelPolicySupported(machineId = selectedMachineId(this.state)): boolean {
+    if (machineId === "local") return true;
+    const runtime = this.state.machineRuntimes[machineId];
+    return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsModelPolicy);
+  }
+
+  /**
+   * Fetch the selected machine's tier catalog for whichever policy control is
+   * open. Two independent guards protect the single shared field: the response
+   * must still belong to the machine and workspace it was issued for, and it
+   * must be the newest issued request, so neither a machine/workspace switch nor
+   * a slow earlier response can publish a catalog the user is no longer looking
+   * at.
+   */
+  private async loadModelTierCatalog(machineId: string): Promise<void> {
+    const workspaceId = this.state.selectedWorkspace?.id;
+    const seq = ++this.modelTierCatalogSeq;
+    const isCurrent = () => (
+      seq === this.modelTierCatalogSeq
+      && selectedMachineId(this.state) === machineId
+      && this.state.selectedWorkspace?.id === workspaceId
+    );
+    this.modelTierCatalogLoading = true;
+    this.modelTierCatalogError = "";
+    try {
+      const catalog = await modelTiersApi.settings(machineId);
+      if (!isCurrent()) return;
+      this.modelTierCatalogMachineId = machineId;
+      this.modelTierCatalog = catalog;
+    } catch (error) {
+      if (!isCurrent()) return;
+      this.modelTierCatalogError = errorMessage(error);
+    } finally {
+      if (seq === this.modelTierCatalogSeq) this.modelTierCatalogLoading = false;
+    }
+  }
+
+  /**
+   * Drop the starter draft when the selection it was derived from changes. The
+   * draft is linked to one workspace's confirmed Pi defaults, so it must not
+   * survive into another workspace and silently start a session with the previous
+   * workspace's policy. `loadStarterSessionDefaults()` relinks a fresh Exact
+   * branch only once the new defaults arrive.
+   */
+  private resetStarterModelPolicyForScopeChange(): void {
+    this.starterModelPolicy = undefined;
+    this.modelTierCatalogError = "";
+  }
+
+  /**
+   * The catalog is a per-machine projection, so a machine change invalidates it
+   * outright. In-flight loads are already dropped by their machine guard; the
+   * sequence bump makes that explicit and keeps the loading flag honest.
+   */
+  private resetModelTierCatalogForMachineChange(): void {
+    this.modelTierCatalogSeq += 1;
+    this.modelTierCatalogMachineId = undefined;
+    this.modelTierCatalog = undefined;
+    this.modelTierCatalogLoading = false;
+    this.modelTierCatalogError = "";
+  }
+
+  /** The loaded catalog, only when it belongs to the currently selected machine. */
+  private selectedMachineModelTierCatalog(): ModelTierSettingsResponse | undefined {
+    if (this.modelTierCatalogMachineId !== selectedMachineId(this.state)) return undefined;
+    return this.modelTierCatalog;
   }
 
   private archivedDeleteUnavailableMessage(): string {
@@ -1831,6 +1947,7 @@ export class PiWebUiApp extends LitElement {
     const defaults = this.starterSessionDefaults;
     const canSelectDefaultModel = defaults !== undefined && defaults.models.length > 0;
     const canSelectDefaultThinking = defaults !== undefined && defaults.thinkingLevels.length > 0;
+    const policy = this.starterModelPolicyInputs();
     return html`
       <section class="session-start-screen" aria-labelledby="session-start-heading">
         <div class="session-start-content">
@@ -1838,12 +1955,84 @@ export class PiWebUiApp extends LitElement {
           <h1 id="session-start-heading">What would you like to build?</h1>
           <p class="session-start-copy">Start a conversation in <strong>${workspace.label}</strong>. Ask Pi to explore the codebase, plan a change, or help you make it.</p>
           <div class="session-start-composer">
-            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
+            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelPolicyResponse=${policy?.response} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${policy === undefined ? "" : this.modelTierCatalogError} .onOpenModelPolicy=${policy === undefined ? undefined : this.handleOpenStarterModelPolicy} .onSaveModelPolicy=${policy === undefined ? undefined : this.handleSaveStarterModelPolicy} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
       </section>
     `;
+  }
+
+  /**
+   * Project the local starter draft into the same inputs the active composer
+   * receives. There is no session yet, so the "live status" and the "confirmed
+   * response" are both derived locally from the draft and the catalog; the
+   * synthetic response exists only so the control can open its editable form, and
+   * its placeholder `sessionId` is never sent to an API.
+   *
+   * `blockedReason` is diagnostic here, exactly as it is for a live session: a
+   * starter Tiered choice whose tier does not resolve still ships a `policy`, so
+   * the control renders a repairable form rather than a dead end.
+   */
+  private starterModelPolicyInputs(): { status: ClientSessionModelPolicyStatus; response: SessionModelPolicyResponse } | undefined {
+    const defaults = this.starterSessionDefaults;
+    const policy = this.starterModelPolicy;
+    if (defaults === undefined || policy === undefined || !this.sessionModelPolicySupported()) return undefined;
+    if (starterExactSelection(defaults) === undefined) return undefined;
+    const catalog = this.selectedMachineModelTierCatalog();
+    const selectedTier = policy.tier;
+    const selectedTierRow = selectedTier === undefined ? undefined : catalog?.rows[selectedTier];
+    const selectedTierEntry = selectedTier !== undefined && selectedTierRow?.valid === true
+      ? catalog?.ladder?.[selectedTier]
+      : undefined;
+    const status: ClientSessionModelPolicyStatus = {
+      mode: policy.mode,
+      ...(selectedTier === undefined ? {} : { tier: selectedTier }),
+      resolved: selectedTierEntry ?? policy.exact,
+      ladderValid: catalog?.valid === true,
+      ...(policy.mode === "tiered" && selectedTierEntry === undefined
+        ? { blockedReason: catalog?.configError ?? "Choose a valid model tier before starting" }
+        : {}),
+    };
+    return {
+      status,
+      response: {
+        contractVersion: 1,
+        policy,
+        session: {
+          sessionId: "starter",
+          isStreaming: false,
+          isCompacting: false,
+          isBashRunning: false,
+          pendingMessageCount: 0,
+          queuedMessages: [],
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: 0,
+          ...(defaults.model === undefined ? {} : { model: defaults.model }),
+          thinkingLevel: defaults.thinkingLevel,
+          modelPolicy: status,
+        },
+      },
+    };
+  }
+
+  /**
+   * The typed policy snapshot to carry into `POST /sessions`, or undefined when
+   * the starter never diverged from the defaults the daemon will apply anyway.
+   * A Tiered choice always travels; an Exact choice travels only when the user
+   * repaired it away from the confirmed defaults, so an untouched starter keeps
+   * the existing request body byte-for-byte.
+   */
+  private starterModelPolicyStartSnapshot(): SessionModelPolicyUpdate | undefined {
+    const policy = this.starterModelPolicy;
+    const defaults = this.starterSessionDefaults;
+    if (policy === undefined || defaults === undefined || !this.sessionModelPolicySupported()) return undefined;
+    if (policy.mode === "tiered") {
+      return policy.tier === undefined ? undefined : { mode: "tiered", tier: policy.tier };
+    }
+    const linked = starterExactSelection(defaults);
+    if (linked !== undefined && sameExactSelection(linked, policy.exact)) return undefined;
+    return { mode: "exact", exact: { model: { ...policy.exact.model }, thinkingLevel: policy.exact.thinkingLevel } };
   }
 
   private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
@@ -2678,6 +2867,7 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.updateSessionDefaults(workspace.path, update, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
+      this.linkStarterExactBranch(defaults);
     } catch (error) {
       if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) this.setState({ error: String(error) });
     }
@@ -2699,7 +2889,10 @@ export class PiWebUiApp extends LitElement {
   private readonly handleStartSessionPrompt = (text: string, streamingBehavior?: "steer" | "followUp", attachments?: import("../api").PromptAttachment[], delivery?: import("../../../shared/apiTypes").PromptAttachmentDelivery): void => {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
-    void this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery);
+    // Snapshot the starter policy before the request begins. Starter state is
+    // reset by the start-screen transition, not by mutating it mid-flight.
+    const modelPolicy = this.starterModelPolicyStartSnapshot();
+    void this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy);
     void this.focusChatComposer();
   };
 
@@ -2709,6 +2902,55 @@ export class PiWebUiApp extends LitElement {
 
   private readonly handleSelectStarterThinking = (): void => {
     this.openStarterThinkingDialog();
+  };
+
+  /**
+   * Opening either policy dialog is what triggers the catalog read: the control's
+   * unavailable-state retry calls `onOpen` alone and distinguishes a missing
+   * policy from a missing catalog, so catalog recovery depends on this.
+   */
+  private readonly handleOpenStarterModelPolicy = (): void => {
+    void this.loadModelTierCatalog(selectedMachineId(this.state));
+  };
+
+  /**
+   * Apply a starter choice to the local draft only. Choosing Tiered here must not
+   * write a global Pi default; the transition and its validity check both come
+   * from the pure draft module, so no policy decision is made in this component.
+   */
+  private readonly handleSaveStarterModelPolicy = (update: SessionModelPolicyUpdate): void => {
+    const current = this.starterModelPolicy;
+    const catalog = this.selectedMachineModelTierCatalog();
+    if (current === undefined || catalog === undefined) return;
+    const draft = modelPolicyDraftFromPolicy(current);
+    const next = update.mode === "tiered"
+      ? selectDraftTier(draft, update.tier)
+      : { ...draft, mode: "exact" as const, exact: update.exact };
+    if (sessionModelPolicyUpdateFromDraft(next, catalog) === undefined) return;
+    this.starterModelPolicy = {
+      mode: next.mode,
+      exact: { model: { ...next.exact.model }, thinkingLevel: next.exact.thinkingLevel },
+      ...(next.tier === undefined ? {} : { tier: next.tier }),
+    };
+  };
+
+  private readonly handleOpenActiveModelPolicy = (): void => {
+    void this.sessions.loadModelPolicy();
+    void this.loadModelTierCatalog(selectedMachineId(this.state));
+  };
+
+  /**
+   * Drop the held inspection response when the dialog closes. Every exact-route
+   * model/thinking mutation supersedes it, and keeping it would either cost a
+   * redundant policy GET with a transient `modelPolicy: undefined` or leave a
+   * superseded remembered branch on screen.
+   */
+  private readonly handleCloseActiveModelPolicy = (): void => {
+    this.setState({ modelPolicy: undefined, modelPolicyError: undefined });
+  };
+
+  private readonly handleSaveActiveModelPolicy = (update: SessionModelPolicyUpdate): void => {
+    void this.sessions.saveModelPolicy(update);
   };
 
   private readonly handleOpenTerminalFromRail = (): void => {
@@ -2923,6 +3165,21 @@ export class PiWebUiApp extends LitElement {
     void this.openThinkingDialog();
   };
 
+  /**
+   * Whether the active composer may show the policy control, plus the single
+   * error string it should display. Requires both the negotiated capability and a
+   * live status projection: a peer that supports the feature but has not published
+   * a policy status yet has nothing to render a trigger from, and the control would
+   * render nothing anyway.
+   *
+   * A policy transport error outranks a catalog error, because the control cannot
+   * open its form at all without a policy response.
+   */
+  private activeModelPolicyInputs(state: AppState): { error: string } | undefined {
+    if (state.status?.modelPolicy === undefined || !this.sessionModelPolicySupported()) return undefined;
+    return { error: state.modelPolicyError ?? this.modelTierCatalogError };
+  }
+
   private renderChatView(state: AppState, session: SessionInfo) {
     return html`
       <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
@@ -3078,6 +3335,7 @@ export class PiWebUiApp extends LitElement {
       && state.selectedSession.archived !== true;
     const gitUpdateManagerWorkspace = this.gitUpdateManagerPanelOpen ? state.selectedWorkspace : undefined;
     const activeActivity = this.activeActivityRailItem();
+    const activePolicy = this.activeModelPolicyInputs(state);
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <activity-rail
@@ -3115,7 +3373,7 @@ export class PiWebUiApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
+            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy === undefined ? undefined : state.status?.modelPolicy} .modelPolicyResponse=${activePolicy === undefined ? undefined : state.modelPolicy} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onOpenModelPolicy=${activePolicy === undefined ? undefined : this.handleOpenActiveModelPolicy} .onCloseModelPolicy=${activePolicy === undefined ? undefined : this.handleCloseActiveModelPolicy} .onSaveModelPolicy=${activePolicy === undefined ? undefined : this.handleSaveActiveModelPolicy} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
           ` : this.shouldShowSessionStartScreen(state)
             ? this.renderSessionStartScreen(state)
@@ -3254,6 +3512,26 @@ function remoteRouteRestoreRetryDelay(attempt: number): number {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The Exact selection a starter draft links to, or undefined when Pi has not
+ * resolved a complete model/thinking pair yet. An incomplete pair must not be
+ * padded with placeholders: the policy contract forbids substitution, and the
+ * draft module would reject it as unsavable anyway.
+ */
+function starterExactSelection(defaults: SessionDefaultsResponse): ExactModelSelection | undefined {
+  const provider = defaults.model?.provider;
+  const id = defaults.model?.id;
+  if (provider === undefined || provider === "" || id === undefined || id === "") return undefined;
+  if (defaults.thinkingLevel === "") return undefined;
+  return { model: { provider, id }, thinkingLevel: defaults.thinkingLevel };
+}
+
+function sameExactSelection(left: ExactModelSelection, right: ExactModelSelection): boolean {
+  return left.model.provider === right.model.provider
+    && left.model.id === right.model.id
+    && left.thinkingLevel === right.thinkingLevel;
 }
 
 function omitWorkspaceDeletionRun(runs: Record<string, TerminalCommandRun>, workspaceId: string): Record<string, TerminalCommandRun> {
