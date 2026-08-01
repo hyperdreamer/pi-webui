@@ -136,7 +136,12 @@ interval. The clock is injected.
 stringifies ~1.7 MiB synchronously on every merge. It becomes a scheduled
 latest-wins write behind an injected scheduler, so a burst of merges produces
 one serialization. The in-memory `rawHistoryPages` view stays synchronous, so
-no downstream reader observes a delay.
+no in-process reader observes a delay: every production cache read goes through
+`rawHistoryPage`, which prefers that map. The one observable window is a page
+reload or unload before a scheduled write runs, which can leave `sessionStorage`
+stale or missing an entry. That is a cache-warmth tradeoff rather than data loss
+— the cache already tolerates write failure, and `selectSession` performs an
+authoritative refresh after showing any cached view.
 
 ## Testing
 
