@@ -1,0 +1,121 @@
+import {
+  MODEL_TIERS,
+  type ExactModelSelection,
+  type ModelTier,
+  type ModelTierModelOption,
+  type ModelTierSettingsResponse,
+  type SessionModelPolicy,
+  type SessionModelPolicyUpdate,
+  type TierModelRef,
+} from "../../../shared/apiTypes";
+
+export interface SessionModelPolicyDraft {
+  mode: "exact" | "tiered";
+  exact: ExactModelSelection;
+  tier?: ModelTier;
+}
+
+export function modelPolicyDraftFromPolicy(policy: SessionModelPolicy): SessionModelPolicyDraft {
+  return {
+    mode: policy.mode,
+    exact: cloneExactSelection(policy.exact),
+    ...(policy.tier === undefined ? {} : { tier: policy.tier }),
+  };
+}
+
+export function selectDraftTier(draft: SessionModelPolicyDraft, tier: ModelTier): SessionModelPolicyDraft {
+  return { ...draft, mode: "tiered", tier };
+}
+
+export function selectDraftExact(draft: SessionModelPolicyDraft): SessionModelPolicyDraft {
+  return { ...draft, mode: "exact" };
+}
+
+export function updateDraftExactModel(
+  draft: SessionModelPolicyDraft,
+  option: ModelTierModelOption,
+): SessionModelPolicyDraft {
+  const thinkingLevel = option.thinkingLevels.includes(draft.exact.thinkingLevel)
+    ? draft.exact.thinkingLevel
+    : "";
+  return {
+    ...draft,
+    exact: {
+      model: { ...option.model },
+      thinkingLevel,
+    },
+  };
+}
+
+export function updateDraftExactThinking(
+  draft: SessionModelPolicyDraft,
+  thinkingLevel: string,
+): SessionModelPolicyDraft {
+  return {
+    ...draft,
+    exact: {
+      ...draft.exact,
+      thinkingLevel,
+    },
+  };
+}
+
+export function sessionModelPolicyUpdateFromDraft(
+  draft: SessionModelPolicyDraft,
+  catalog: ModelTierSettingsResponse,
+): SessionModelPolicyUpdate | undefined {
+  if (draft.mode === "exact") {
+    if (!isValidExactSelection(draft.exact, catalog.models)) return undefined;
+    return { mode: "exact", exact: cloneExactSelection(draft.exact) };
+  }
+
+  const tier = draft.tier;
+  if (
+    tier === undefined
+    || !catalog.valid
+    || !hasCompleteLadder(catalog)
+    || !hasValidTierRow(catalog, tier)
+  ) {
+    return undefined;
+  }
+  return { mode: "tiered", tier };
+}
+
+function isValidExactSelection(
+  exact: ExactModelSelection,
+  models: readonly ModelTierModelOption[],
+): boolean {
+  if (
+    !isNonBlank(exact.model.provider)
+    || !isNonBlank(exact.model.id)
+    || !isNonBlank(exact.thinkingLevel)
+  ) {
+    return false;
+  }
+  const option = models.find((candidate) => sameModel(candidate.model, exact.model));
+  return option?.thinkingLevels.includes(exact.thinkingLevel) === true;
+}
+
+function hasCompleteLadder(catalog: ModelTierSettingsResponse): boolean {
+  const ladder = catalog.ladder;
+  return ladder !== undefined && MODEL_TIERS.every((tier) => Object.hasOwn(ladder, tier));
+}
+
+function hasValidTierRow(catalog: ModelTierSettingsResponse, tier: ModelTier): boolean {
+  return Object.hasOwn(catalog.rows, tier) && catalog.rows[tier].valid;
+}
+
+function sameModel(left: TierModelRef, right: TierModelRef): boolean {
+  return left.provider === right.provider && left.id === right.id;
+}
+
+function isNonBlank(value: string): boolean {
+  return value.trim() !== "";
+}
+
+function cloneExactSelection(exact: ExactModelSelection): ExactModelSelection {
+  return {
+    model: { ...exact.model },
+    thinkingLevel: exact.thinkingLevel,
+  };
+}
