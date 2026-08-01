@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 
 import { LitElement } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
 import type { AppAction } from "../actions";
 
 vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
+
+beforeEach(() => {
+  vi.stubGlobal("matchMedia", (query: string) => inactiveMediaQuery(query));
+  vi.stubGlobal("requestAnimationFrame", () => 0);
+});
 const { PiWebUiApp } = await import("./PiWebUiApp");
 const { ActionPalette } = await import("./ActionPalette");
 type PiWebUiAppElement = InstanceType<typeof PiWebUiApp>;
@@ -46,12 +51,51 @@ describe("PiWebUiApp action palette persistence", () => {
     expect(ran).toEqual(["test.closing"]);
     expect(paletteOpen(app)).toBe(false);
   });
+
+  it("flips a layout toggle title in place and preserves the search query", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    const palette = actionPalette(app);
+    if (palette === null) throw new Error("Expected the action palette to be rendered");
+    const input = palette.shadowRoot?.querySelector<HTMLInputElement>("input");
+    if (input === null || input === undefined) throw new Error("Expected the palette search input");
+    input.value = "terminal tab";
+    input.dispatchEvent(new Event("input"));
+    await palette.updateComplete;
+
+    clickPaletteRow(app, "Hide Terminal Tab");
+    await Promise.resolve();
+    await app.updateComplete;
+    await palette.updateComplete;
+
+    expect(paletteOpen(app)).toBe(true);
+    expect(palette.shadowRoot?.querySelector("input")?.value).toBe("terminal tab");
+    const titles = [...(palette.shadowRoot?.querySelectorAll(".options button strong") ?? [])].map((node) => node.textContent);
+    expect(titles).toContain("Show Terminal Tab");
+    expect(titles).not.toContain("Hide Terminal Tab");
+  });
+
+  it("leaves no palette mounted when a dialog action opens its dialog", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    clickPaletteRow(app, "Open Settings");
+    await Promise.resolve();
+    await app.updateComplete;
+
+    expect(paletteOpen(app)).toBe(false);
+    expect(actionPalette(app)).toBeNull();
+    expect(app.renderRoot.querySelector("settings-dialog")).not.toBeNull();
+  });
 });
 
 async function openPaletteWith(actions: AppAction[]): Promise<{ app: PiWebUiAppElement; ran: string[] }> {
   const ran: string[] = [];
-  vi.stubGlobal("matchMedia", (query: string) => inactiveMediaQuery(query));
-  vi.stubGlobal("requestAnimationFrame", () => 0);
   const app = new PiWebUiApp();
   setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
   vi.spyOn(Object.getPrototypeOf(app), "getActions").mockReturnValue(actions);
