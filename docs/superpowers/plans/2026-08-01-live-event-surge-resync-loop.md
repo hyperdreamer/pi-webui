@@ -4,14 +4,17 @@
 
 **Goal:** Stop the browser tab freezing during a surge of concurrent live tool events by keying `tool.update` coalescing on `toolCallId` under a distinct-key cap, so the client stops falsely detecting overload and looping on full session resync.
 
-**Architecture:** `StreamEventBuffer` currently merges an incoming event only against the immediately previous run, so concurrent tools never merge and each 50KB cumulative snapshot consumes budget. The fix splits the buffer's two limits by what they protect against: accumulating runs (text/thinking/shell) keep the additive UTF-8 byte budget because they genuinely grow while the client falls behind; `tool.update` runs move to a `Map` keyed by `toolCallId` with latest-wins replacement, bounded by a distinct-key count cap instead of bytes. Two contained hardening changes follow: a minimum-interval guard on the overload-triggered resync inside `flushPendingUpdates`, and latest-wins coalescing of the synchronous `sessionStorage` transcript write.
+**Architecture:** `StreamEventBuffer` currently merges an incoming event only against the immediately previous run, so concurrent tools never merge and each 50KB cumulative snapshot consumes budget. The fix splits the buffer's two limits by what they protect against: accumulating runs (text/thinking/shell) keep their existing additive UTF-8 byte budget unchanged, because they genuinely grow while the client falls behind; `tool.update` runs move to a `Map` keyed by `toolCallId` with latest-wins replacement, bounded by a distinct-key count cap instead of bytes. Two contained hardening changes follow: a minimum-interval guard on the overload-triggered resync inside `flushPendingUpdates`, and latest-wins coalescing of the synchronous `sessionStorage` transcript write.
+
+**Revision note:** an earlier draft opened with a task that re-measured accumulating-run bytes per chunk to drop a `TextEncoder` call. It was dropped before implementation: it could not be both behavior-preserving and change byte totals, and its saving was negligible because the expensive re-encode lives entirely on the `tool.update` path that Task 1 removes. Accumulating byte accounting is now explicitly untouched.
 
 **Tech Stack:** TypeScript, Lit, Vitest, Node. Client code under `src/client/src/`.
 
 ## Global Constraints
 
 - Target file for the primary fix: `src/client/src/streamEventBuffer.ts`.
-- Preserve the existing public surface of `StreamEventBuffer`: `enqueue`, `drain`, `clear`, `eventCount`, `pendingBytes`, and the exported `isBufferedStreamEvent`. All 13 existing tests in `src/client/src/streamEventBuffer.test.ts` must keep passing except the two that assert byte-budget behavior for `tool.update`, which Task 2 intentionally replaces.
+- Preserve the existing public surface of `StreamEventBuffer`: `enqueue`, `drain`, `clear`, `eventCount`, `pendingBytes`, and the exported `isBufferedStreamEvent`. All 13 existing tests in `src/client/src/streamEventBuffer.test.ts` must keep passing except the three that assert the old `tool.update` contract, which Task 1 intentionally replaces (named in Task 1's Step 1).
+- Accumulating runs (`assistant.delta`, `assistant.thinking.delta`, `shell.chunk`) keep their current byte accounting exactly as it is today. Do not change how their bytes are measured or charged; their cap behavior must not shift.
 - `DEFAULT_MAX_PENDING_STREAM_EVENT_RUNS = 128` and `DEFAULT_MAX_PENDING_STREAM_BYTES = 262_144` keep their exported names and values.
 - New export: `DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS = 64`.
 - `StreamEventBufferLimits` gains one optional field, `maxToolUpdateKeys?: number`. Existing callers passing `{ maxEventRuns, maxBytes }` must keep compiling; `src/client/src/controllers/sessionController.liveEvents.test.ts:401` constructs `new StreamEventBuffer({ maxEventRuns: 1, maxBytes: 262_144 })` and must not need changes.
@@ -23,125 +26,14 @@
 
 ---
 
-### Task 1: Extract byte accounting so accumulating runs stop re-encoding
-
-**Files:**
-- Modify: `src/client/src/streamEventBuffer.ts` (`serializedEventBytes`, `AssistantDeltaRun`/`ThinkingDeltaRun`/`ShellRun` byte handling, `mergedRunBytes`, `mergeIntoRun`, `enqueue`)
-- Test: `src/client/src/streamEventBuffer.test.ts`
-
-**Interfaces:**
-- Consumes: nothing from earlier tasks.
-- Produces: `serializedEventBytes(event: SessionUiEvent): number` stays exported-internal (module-private) and unchanged in meaning. New module-private helper `textByteLength(text: string): number` returning exact UTF-8 byte length via the shared module-level `textEncoder`.
-
-This task is behavior-preserving. It removes the per-event re-encode of the whole merged run so a 50KB snapshot no longer costs a 50KB encode on every enqueue. Byte totals must come out identical, which the existing tests verify.
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `src/client/src/streamEventBuffer.test.ts` inside the existing `describe("StreamEventBuffer", ...)` block:
-
-```ts
-  it("charges accumulating runs exact UTF-8 bytes for multibyte chunks", () => {
-    const first: BufferedStreamEvent = { type: "shell.chunk", chunk: "日本語" };
-    const second: BufferedStreamEvent = { type: "shell.chunk", chunk: "café" };
-    const buffer = new StreamEventBuffer();
-
-    buffer.enqueue(first);
-    const afterFirst = buffer.pendingBytes;
-    buffer.enqueue(second);
-
-    // 日本語 is 9 UTF-8 bytes and café is 5, so the run total must grow by
-    // exactly the second chunk's byte length, not its UTF-16 length of 4.
-    expect(afterFirst).toBe(utf8ByteLength(first));
-    expect(buffer.pendingBytes - afterFirst).toBe(utf8ByteLength(second));
-    expect(buffer.drain()).toEqual({
-      events: [{ type: "shell.chunk", chunk: "日本語café" }],
-      resyncRequired: false,
-    });
-  });
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `npm test -- --run src/client/src/streamEventBuffer.test.ts -t "exact UTF-8 bytes for multibyte"`
-
-Expected: FAIL. Current `mergedRunBytes` returns `run.bytes + eventBytes`, where `eventBytes` is the whole serialized event including its JSON envelope (`{"type":"shell.chunk","chunk":...}`), so the delta is much larger than the chunk's byte length.
-
-- [ ] **Step 3: Write minimal implementation**
-
-In `src/client/src/streamEventBuffer.ts`, add next to `serializedEventBytes`:
-
-```ts
-function textByteLength(text: string): number {
-  return textEncoder.encode(text).byteLength;
-}
-```
-
-Change accumulating-run byte accounting to charge only the payload text. Replace `mergedRunBytes` and the accumulating branches of `createRun` so a run's `bytes` is the envelope cost measured once at creation plus the byte length of each appended chunk.
-
-In `createRun`, for the three accumulating types keep `bytes` as the full `serializedEventBytes(event)` (envelope + first chunk) exactly as today.
-
-In `mergedRunBytes`, keep the signature `(run: BufferedRun, event: BufferedStreamEvent, eventBytes: number)` for this task so the existing `tool.update` branch still compiles, and change only the accumulating branches to charge the payload text:
-
-```ts
-function mergedRunBytes(run: BufferedRun, event: BufferedStreamEvent, eventBytes: number): number {
-  if (run.type === "tool.update" && event.type === "tool.update") {
-    const retained = withSeq(toolUpdatePayload(event), highestSeq(run.seq, event.seq));
-    return serializedEventBytes(retained);
-  }
-  if (event.type === "assistant.delta" || event.type === "assistant.thinking.delta") {
-    return run.bytes + textByteLength(event.text);
-  }
-  if (event.type === "shell.chunk") {
-    return run.bytes + textByteLength(event.chunk);
-  }
-  return run.bytes + eventBytes;
-}
-```
-
-The `tool.update` branch stays as-is in this task; Task 2 deletes it along with the `eventBytes` parameter.
-
-In `enqueue`, `eventBytes` is now needed only for the non-merging path and for `tool.update`. A merging `tool.update` still requires it to be passed, but that branch ignores the argument, so pass `0` when merging and serialize only when creating a new run:
-
-```ts
-    const previous = this.runs.at(-1);
-    const mergesWithPrevious = previous !== undefined && canMerge(previous, event);
-    const nextEventCount = this.runs.length + (mergesWithPrevious ? 0 : 1);
-    const nextRunBytes = mergesWithPrevious && previous !== undefined
-      ? mergedRunBytes(previous, event, 0)
-      : serializedEventBytes(event);
-    const bytesToReplace = mergesWithPrevious && previous !== undefined ? previous.bytes : 0;
-    const nextBytes = this.pendingByteCount - bytesToReplace + nextRunBytes;
-```
-
-Pass `nextRunBytes` to `createRun` at its call site.
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `npm test -- --run src/client/src/streamEventBuffer.test.ts`
-
-Expected: PASS, all 14 tests. The pre-existing byte-limit tests ("resyncs when a multibyte input is one UTF-8 byte over the byte limit", "returns one resync marker on byte overflow and ignores inputs until drain", "accepts a same-tool replacement exactly at the byte limit") must still pass unchanged — they are the guard that this refactor did not alter totals.
-
-Run: `npm run typecheck`
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/client/src/streamEventBuffer.ts src/client/src/streamEventBuffer.test.ts
-git commit -m "perf(client): charge accumulating stream runs per-chunk bytes"
-```
-
----
-
-### Task 2: Key `tool.update` coalescing by `toolCallId` under a distinct-key cap
+### Task 1: Key `tool.update` coalescing by `toolCallId` under a distinct-key cap
 
 **Files:**
 - Modify: `src/client/src/streamEventBuffer.ts` (`StreamEventBufferLimits`, limits constants, `runs`/`toolUpdateRuns` state, `enqueue`, `drain`, `clear`, `eventCount`, `canMerge`, `createRun`, `mergeIntoRun`, `mergedRunBytes`, `materializeRun`)
 - Test: `src/client/src/streamEventBuffer.test.ts`
 
 **Interfaces:**
-- Consumes: `textByteLength` from Task 1.
+- Consumes: nothing from earlier tasks.
 - Produces:
   - `export const DEFAULT_MAX_PENDING_TOOL_UPDATE_KEYS = 64;`
   - `StreamEventBufferLimits` becomes `{ maxEventRuns?: number; maxBytes?: number; maxToolUpdateKeys?: number }`.
@@ -373,7 +265,8 @@ Split `enqueue` so `tool.update` takes the keyed path and never touches bytes or
       ? mergedRunBytes(previous, event)
       : serializedEventBytes(event);
     // `mergedRunBytes` loses its `eventBytes` parameter here, because only
-    // accumulating runs remain and they charge per-chunk bytes.
+    // accumulating runs remain and they keep charging the full serialized
+    // event exactly as before.
     const bytesToReplace = mergesWithPrevious && previous !== undefined ? previous.bytes : 0;
     const nextBytes = this.pendingByteCount - bytesToReplace + nextRunBytes;
 
@@ -435,7 +328,7 @@ Update the accessors, `drain`, `clear`, and `markResyncRequired`:
   }
 ```
 
-Narrow the free functions: `canMerge`, `createRun`, `mergeIntoRun`, and `materializeRun` now take `AccumulatingRun` and `Exclude<BufferedStreamEvent, ToolUpdateEvent>`, so their `tool.update` branches and the now-unreachable `throw new Error("unreachable buffered stream run")` in `materializeRun` are deleted. `mergedRunBytes` loses its `eventBytes` parameter and its `tool.update` branch. Keep `toolUpdatePayload`, `withSeq`, `highestSeq`, `serializedEventBytes`, and `textByteLength`.
+Narrow the free functions: `canMerge`, `createRun`, `mergeIntoRun`, and `materializeRun` now take `AccumulatingRun` and `Exclude<BufferedStreamEvent, ToolUpdateEvent>`, so their `tool.update` branches and the now-unreachable `throw new Error("unreachable buffered stream run")` in `materializeRun` are deleted. `mergedRunBytes` drops its `tool.update` branch, so its body reduces to `return run.bytes + serializedEventBytes(event);` and its `eventBytes` parameter becomes redundant — remove the parameter and compute the value inside. Accumulating byte totals stay identical to today. Keep `toolUpdatePayload`, `withSeq`, `highestSeq`, and `serializedEventBytes`.
 
 Text, thinking, and shell runs stay positional and unkeyed. Keying them would reorder interleaved parts of the same message and corrupt part sequence.
 
@@ -462,14 +355,14 @@ git commit -m "fix(client): coalesce tool updates by call id under a key cap"
 
 ---
 
-### Task 3: Throttle the overload-triggered resync
+### Task 2: Throttle the overload-triggered resync
 
 **Files:**
 - Modify: `src/client/src/controllers/sessionController.ts` (`SessionControllerDependencies` ~line 54-62, private fields ~line 115-123, constructor ~line 130-138, `flushPendingUpdates` ~line 1452, `clearPendingUpdates` ~line 1471)
 - Test: `src/client/src/controllers/sessionController.liveEvents.test.ts`
 
 **Interfaces:**
-- Consumes: `drain()`'s `resyncRequired` flag from Task 2.
+- Consumes: `drain()`'s `resyncRequired` flag from Task 1.
 - Produces: `SessionControllerDependencies` gains `now?: () => number`. New module constant `const OVERLOAD_RESYNC_MIN_INTERVAL_MS = 1_000;`. Private field `private lastOverloadResyncAt: number | undefined;`.
 
 Throttle only the overload path. `refreshSelectedSession()` also serves tree navigation, `agent.end`, and error recovery; throttling all callers would risk correctness.
@@ -605,7 +498,7 @@ git commit -m "fix(client): throttle overload-triggered session resync"
 
 ---
 
-### Task 4: Coalesce the transcript cache write
+### Task 3: Coalesce the transcript cache write
 
 **Files:**
 - Modify: `src/client/src/chatTranscriptStore.ts` (`ChatTranscriptStore` constructor, `mergeHistory`, `discard`)
@@ -770,7 +663,7 @@ git commit -m "perf(client): coalesce transcript history cache writes"
 
 ---
 
-### Task 5: Changeset and full verification
+### Task 4: Changeset and full verification
 
 **Files:**
 - Create: `.changeset/live-event-surge-resync-loop.md`
@@ -812,6 +705,6 @@ git commit -m "docs(changeset): note live event surge freeze fix"
 Two limits are inherited from the spec and are not closed by this plan:
 
 - Render cost was measured in jsdom, which performs no layout or paint. There is no trustworthy figure for real browser cost with many expanded tool cards. If a freeze persists after this change, real browser profiling is the next step.
-- The freeze was never reproduced in a live browser tab. The loop is confirmed by reading the code and measuring its parts. Task 2's interleaving test is the regression guard for the mechanism, not proof that the tab no longer freezes.
+- The freeze was never reproduced in a live browser tab. The loop is confirmed by reading the code and measuring its parts. Task 1's interleaving test is the regression guard for the mechanism, not proof that the tab no longer freezes.
 
 Out of scope: virtualizing or truncating the live-events group, changing upstream `bash` snapshot emission or its 100ms throttle, and server-side coalescing of `tool.update` in `sessionEventHub`.
