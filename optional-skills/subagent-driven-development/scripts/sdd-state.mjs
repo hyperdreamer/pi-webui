@@ -17,10 +17,13 @@ export {
   computeRunId,
   createInitialState,
   dispatchKeyFor,
+  EVENT_TYPES,
   PHASES,
   reduceState,
   StateError,
   STATE_VERSION,
+  TERMINAL_PHASES,
+  TRANSITIONS,
   validateState,
 } from "./lib/state-machine.mjs";
 

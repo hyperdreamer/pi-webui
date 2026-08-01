@@ -9,13 +9,16 @@ import {
   dispatchKeyFor,
   fixerTier,
   parsePlanText,
+  PHASES,
+  reduceState,
   reReviewerTier,
   reviewerTier,
-  reduceState,
   roleTier,
+  TERMINAL_PHASES,
   tierDirective,
   tierLabel,
   TIERS,
+  TRANSITIONS,
   validateState,
 } from "../scripts/sdd-state.mjs";
 
@@ -600,7 +603,7 @@ describe("reduceState capability and plan gates", () => {
       mode: "tiered",
       at,
     });
-    expect(next.phase).toBe("PLAN_CHECK");
+    expect(next.phase).toBe("PLAN_VALIDATE");
   });
 
   it("accepts a valid exact-mode capability", () => {
@@ -609,7 +612,7 @@ describe("reduceState capability and plan gates", () => {
       mode: "exact",
       at,
     });
-    expect(next.phase).toBe("PLAN_CHECK");
+    expect(next.phase).toBe("PLAN_VALIDATE");
   });
 
   it("increments revision exactly once per transition", () => {
@@ -634,25 +637,26 @@ describe("reduceState capability and plan gates", () => {
     ).toBe("PLAN_INVALID");
   });
 
+  it("requires a validated plan before any preflight observation", () => {
+    const gated = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    expect(() => reduceState(gated, { type: "preflight-clean", at })).toThrow(/validated plan/u);
+  });
+
   it("requires a persisted ruling to leave a preflight decision", () => {
     const gated = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
     const valid = reduceState(gated, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at });
+    expect(valid.phase).toBe("PLAN_VALIDATE");
     const pending = reduceState(valid, {
-      type: "preflight-decision-required",
+      type: "preflight-conflict",
       reason: "worktree is dirty",
       at,
     });
     expect(pending.phase).toBe("PREFLIGHT_DECISION_REQUIRED");
-    expect(() => reduceState(pending, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at })).toThrow(
-      /illegal transition/u,
-    );
+    expect(() =>
+      reduceState(pending, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at }),
+    ).toThrow(/illegal transition/u);
     expect(
-      reduceState(pending, {
-        type: "preflight-ruling-recorded",
-        decision: "proceed",
-        reason: "generated files only",
-        at,
-      }).phase,
+      reduceState(pending, { type: "preflight-approved", reason: "generated files only", at }).phase,
     ).toBe("WORKSPACE_READY");
   });
 
@@ -742,11 +746,12 @@ const ready = () => {
     mode: "tiered",
     at: "2026-07-31T00:01:00.000Z",
   });
-  return reduceState(gated, {
+  const validated = reduceState(gated, {
     type: "plan-valid",
     planDigest: BASE_INIT.planDigest,
     at: "2026-07-31T00:02:00.000Z",
   });
+  return reduceState(validated, { type: "preflight-clean", at: "2026-07-31T00:02:30.000Z" });
 };
 
 const RUN = BASE_INIT.runRoot;
@@ -754,20 +759,20 @@ const at3 = "2026-07-31T00:03:00.000Z";
 const at4 = "2026-07-31T00:04:00.000Z";
 const at5 = "2026-07-31T00:05:00.000Z";
 
-const intentEvent = (overrides = {}) => ({
-  type: "dispatch-intended",
+const intentEvent = ({ attempt = 1, ...overrides } = {}) => ({
+  type: "implement-dispatch-intended",
   role: "implementer",
+  attempt,
   dispatchKey: dispatchKeyFor({
     runId: ready().runId,
     task: 1,
     role: "implementer",
-    attempt: 1,
+    attempt,
   }),
   tier: "economy",
   promptPath: `${RUN}/task-1-implementer-prompt.md`,
   reportPath: `${RUN}/task-1-implementer-report.md`,
   briefPath: `${RUN}/task-1-brief.md`,
-  attempt: 1,
   expectedOutcome: "implementer-report",
   renderedPrompt: "Implement task 1.\n",
   at: at3,
@@ -775,6 +780,28 @@ const intentEvent = (overrides = {}) => ({
 });
 
 const intended = (overrides = {}) => reduceState(ready(), intentEvent(overrides));
+
+// The task reviewer runs at implementer+1 with a Standard floor, so an economy
+// implementer yields standard rather than fast.
+const reviewIntentEvent = (overrides = {}) => ({
+  type: "task-review-dispatch-intended",
+  role: "task-reviewer",
+  dispatchKey: dispatchKeyFor({
+    runId: ready().runId,
+    task: 1,
+    role: "task-reviewer",
+    attempt: 1,
+  }),
+  tier: "standard",
+  promptPath: `${RUN}/task-1-review-prompt.md`,
+  reportPath: `${RUN}/task-1-review-report.md`,
+  briefPath: `${RUN}/task-1-brief.md`,
+  attempt: 1,
+  expectedOutcome: "review-report",
+  renderedPrompt: "Review task 1.\n",
+  at: "2026-07-31T00:07:00.000Z",
+  ...overrides,
+});
 
 const started = () =>
   reduceState(intended(), {
@@ -979,129 +1006,871 @@ describe("dispatch correlation and ambiguity", () => {
 });
 
 describe("implementer result classification", () => {
-  const complete = (status, extra = {}) =>
+  const finished = () =>
     reduceState(started(), {
-      type: "child-completed",
-      status,
+      type: "implementer-finished",
       reportPath: `${RUN}/task-1-implementer-report.md`,
       at: at5,
+    });
+
+  const record = (status, extra = {}) =>
+    reduceState(finished(), {
+      type: "implementer-status-recorded",
+      status,
+      at: "2026-07-31T00:06:00.000Z",
       ...extra,
     });
 
-  it("enters IMPLEMENT_RESULT before classification", () => {
-    expect(complete("DONE").phase).toBe("IMPLEMENT_RESULT");
+  it("records the report before any status is classified", () => {
+    const state = finished();
+    expect(state.phase).toBe("IMPLEMENT_RESULT");
+    expect(state.dispatch.status).toBeNull();
   });
 
   it("rejects an undefined status token", () => {
-    expect(() => complete("DONE_ISH")).toThrow(/status/u);
+    expect(() => record("DONE_ISH")).toThrow(/status/u);
   });
 
-  it("advances DONE to review intent", () => {
-    const result = complete("DONE");
-    const next = reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" });
-    expect(next.phase).toBe("REVIEW_DISPATCH_INTENT");
+  it("pins DONE and then advances to review intent", () => {
+    const pinned = record("DONE");
+    expect(pinned.phase).toBe("IMPLEMENT_RESULT");
+    const next = reduceState(pinned, reviewIntentEvent());
+    expect(next.phase).toBe("TASK_REVIEW_DISPATCH_INTENT");
+    expect(next.dispatch.tier).toBe("standard");
   });
 
-  it("carries concern evidence for an observational DONE_WITH_CONCERNS", () => {
-    const result = complete("DONE_WITH_CONCERNS", {
+  it("refuses review intent before a status is pinned", () => {
+    expect(() => reduceState(finished(), reviewIntentEvent())).toThrow(/pinned/u);
+  });
+
+  it("passes an observational concern straight through", () => {
+    const pinned = record("DONE_WITH_CONCERNS", {
       concerns: [{ kind: "observational", note: "naming could be clearer" }],
     });
-    expect(result.dispatch.concerns).toHaveLength(1);
-    expect(
-      reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" }).phase,
-    ).toBe("REVIEW_DISPATCH_INTENT");
+    expect(pinned.phase).toBe("IMPLEMENT_RESULT");
+    expect(pinned.dispatch.concerns).toHaveLength(1);
   });
 
-  it("requires a ruling for a correctness or scope concern", () => {
-    const result = complete("DONE_WITH_CONCERNS", {
+  it("requires a ruling for a correctness concern", () => {
+    const pending = record("DONE_WITH_CONCERNS", {
       concerns: [{ kind: "correctness", note: "the retry bound may be off by one" }],
     });
-    expect(() =>
-      reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" }),
-    ).toThrow(/ruling/u);
+    expect(pending.phase).toBe("CONCERN_DECISION_REQUIRED");
+    expect(() => reduceState(pending, reviewIntentEvent())).toThrow(/illegal transition/u);
+    expect(
+      reduceState(pending, {
+        type: "concern-ruling-recorded",
+        decision: "proceed",
+        reason: "verified the bound is correct",
+        at: "2026-07-31T00:07:00.000Z",
+      }).phase,
+    ).toBe("IMPLEMENT_RESULT");
+  });
+
+  it("blocks on a ruling that rejects the concern", () => {
+    const pending = record("DONE_WITH_CONCERNS", {
+      concerns: [{ kind: "scope", note: "touched an unrelated module" }],
+    });
+    expect(
+      reduceState(pending, {
+        type: "concern-ruling-recorded",
+        decision: "block",
+        reason: "scope creep must be resolved by a human",
+        at: "2026-07-31T00:07:00.000Z",
+      }).phase,
+    ).toBe("TASK_BLOCKED");
   });
 
   it("enters TASK_BLOCKED immediately on BLOCKED", () => {
-    expect(complete("BLOCKED", { reason: "the interface does not exist" }).phase).toBe(
-      "IMPLEMENT_RESULT",
-    );
-    const blocked = reduceState(
-      complete("BLOCKED", { reason: "the interface does not exist" }),
-      { type: "task-blocked", reason: "the interface does not exist", at: "2026-07-31T00:06:00.000Z" },
-    );
-    expect(blocked.phase).toBe("TASK_BLOCKED");
+    expect(record("BLOCKED", { reason: "the interface does not exist" }).phase).toBe("TASK_BLOCKED");
   });
 });
 
 describe("bounded context retry", () => {
-  const enrich = (state, n) =>
-    reduceState(state, {
-      type: "context-enrichment-required",
-      reason: `needs context ${String(n)}`,
-      at: `2026-07-31T00:0${String(5 + n)}:00.000Z`,
-    });
-
-  const needsContext = (state) =>
-    reduceState(state, {
-      type: "child-completed",
-      status: "NEEDS_CONTEXT",
+  const needContext = (state, ts) => {
+    const finished = reduceState(state, {
+      type: "implementer-finished",
       reportPath: `${RUN}/task-1-implementer-report.md`,
-      at: at5,
+      at: ts,
     });
+    return reduceState(finished, {
+      type: "implementer-status-recorded",
+      status: "NEEDS_CONTEXT",
+      at: ts,
+    });
+  };
 
   it("allows two enrichments at the planned tier without touching fixRound", () => {
-    const first = enrich(needsContext(started()), 1);
-    expect(first.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
-    expect(first.contextAttempts).toBe(1);
-    expect(first.currentImplementerTier).toBe("economy");
-    expect(first.fixRound).toBe(0);
+    const required = needContext(started(), at5);
+    expect(required.phase).toBe("CONTEXT_REQUIRED");
+    const retry = reduceState(
+      required,
+      intentEvent({ attempt: 2, type: "context-dispatch-intended", at: "2026-07-31T00:06:00.000Z" }),
+    );
+    expect(retry.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(retry.contextAttempts).toBe(1);
+    expect(retry.currentImplementerTier).toBe("economy");
+    expect(retry.fixRound).toBe(0);
   });
 
   it("blocks the third NEEDS_CONTEXT without incrementing fixRound", () => {
-    let state = enrich(needsContext(started()), 1);
-    state = reduceState(state, {
-      type: "dispatch-started",
-      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f814",
-      at: "2026-07-31T00:08:00.000Z",
-    });
-    state = reduceState(state, {
-      type: "child-completed",
-      status: "NEEDS_CONTEXT",
-      reportPath: `${RUN}/task-1-implementer-report.md`,
-      at: "2026-07-31T00:09:00.000Z",
-    });
-    state = reduceState(state, {
-      type: "context-enrichment-required",
-      reason: "needs context 2",
-      at: "2026-07-31T00:10:00.000Z",
-    });
+    let state = needContext(started(), at5);
+    for (const [attempt, minute] of [
+      [2, "06"],
+      [3, "08"],
+    ]) {
+      state = reduceState(
+        state,
+        intentEvent({
+          attempt,
+          type: "context-dispatch-intended",
+          at: `2026-07-31T00:${minute}:00.000Z`,
+        }),
+      );
+      state = reduceState(state, {
+        type: "dispatch-started",
+        sessionId: `019fb673-4324-7c1d-98a2-3c638e29f81${String(attempt)}`,
+        at: `2026-07-31T00:${minute}:30.000Z`,
+      });
+      state = needContext(state, `2026-07-31T00:${String(Number(minute) + 1).padStart(2, "0")}:00.000Z`);
+    }
     expect(state.contextAttempts).toBe(2);
+    expect(state.phase).toBe("CONTEXT_REQUIRED");
 
-    state = reduceState(state, {
-      type: "dispatch-started",
-      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f815",
-      at: "2026-07-31T00:11:00.000Z",
-    });
-    state = reduceState(state, {
-      type: "child-completed",
-      status: "NEEDS_CONTEXT",
-      reportPath: `${RUN}/task-1-implementer-report.md`,
-      at: "2026-07-31T00:12:00.000Z",
-    });
     expect(() =>
-      reduceState(state, {
-        type: "context-enrichment-required",
-        reason: "needs context 3",
-        at: "2026-07-31T00:13:00.000Z",
-      }),
-    ).toThrow(/context/u);
+      reduceState(
+        state,
+        intentEvent({
+          attempt: 4,
+          type: "context-dispatch-intended",
+          at: "2026-07-31T00:12:00.000Z",
+        }),
+      ),
+    ).toThrow(/bounded at 2/u);
 
     const blocked = reduceState(state, {
-      type: "task-blocked",
+      type: "context-limit-reached",
       reason: "three context attempts exhausted",
-      at: "2026-07-31T00:13:00.000Z",
+      at: "2026-07-31T00:12:00.000Z",
     });
     expect(blocked.phase).toBe("TASK_BLOCKED");
     expect(blocked.fixRound).toBe(0);
+  });
+});
+
+/** Drive a task to TASK_REVIEW_RUNNING with a reviewer child in flight. */
+const reviewRunning = () => {
+  const finished = reduceState(started(), {
+    type: "implementer-finished",
+    reportPath: `${RUN}/task-1-implementer-report.md`,
+    at: at5,
+  });
+  const pinned = reduceState(finished, {
+    type: "implementer-status-recorded",
+    status: "DONE",
+    at: "2026-07-31T00:06:00.000Z",
+  });
+  const intent = reduceState(pinned, reviewIntentEvent());
+  return reduceState(intent, {
+    type: "dispatch-started",
+    sessionId: "019fb673-4324-7c1d-98a2-3c638e29f820",
+    at: "2026-07-31T00:08:00.000Z",
+  });
+};
+
+const reviewFinished = (overrides = {}) =>
+  reduceState(reviewRunning(), {
+    type: "task-review-finished",
+    reportPath: `${RUN}/task-1-review-report.md`,
+    specStatus: "PASS",
+    qualityStatus: "APPROVED",
+    at: "2026-07-31T00:09:00.000Z",
+    ...overrides,
+  });
+
+const CRITICAL = [{ id: "F-1", severity: "Critical", summary: "the bound is off by one" }];
+const MINOR = [{ id: "F-2", severity: "Minor", summary: "naming could be clearer" }];
+
+/** A fix intent for the given round; the fixer tier escalates at rounds 4 and 5. */
+const fixIntentEvent = (round, overrides = {}) => ({
+  type: "fix-dispatch-intended",
+  role: "fixer",
+  attempt: 1,
+  dispatchKey: dispatchKeyFor({
+    runId: ready().runId,
+    task: 1,
+    role: "fixer",
+    attempt: 1,
+    round,
+  }),
+  tier: fixerTier("economy", round),
+  promptPath: `${RUN}/task-1-fix-${String(round)}-prompt.md`,
+  reportPath: `${RUN}/task-1-fix-${String(round)}-report.md`,
+  briefPath: `${RUN}/task-1-brief.md`,
+  expectedOutcome: "fix-report",
+  renderedPrompt: `Fix round ${String(round)}.\n`,
+  at: "2026-07-31T00:10:00.000Z",
+  ...overrides,
+});
+
+describe("task review decision", () => {
+  it("records the reviewer verdict without choosing a phase", () => {
+    const state = reviewFinished();
+    expect(state.phase).toBe("TASK_REVIEW_DECISION");
+    expect(state.reviewOutcome).toMatchObject({ specStatus: "PASS", qualityStatus: "APPROVED" });
+  });
+
+  it("requires both axes to be explicit", () => {
+    expect(() => reviewFinished({ specStatus: undefined })).toThrow(/specStatus/u);
+    expect(() => reviewFinished({ qualityStatus: "LGTM" })).toThrow(/qualityStatus/u);
+  });
+
+  it("completes a task only on spec PASS plus quality APPROVED", () => {
+    const approved = reduceState(reviewFinished(), {
+      type: "review-approved",
+      at: "2026-07-31T00:10:00.000Z",
+    });
+    expect(approved.phase).toBe("TASK_COMPLETE");
+  });
+
+  it("refuses completion on a spec failure or requested changes", () => {
+    expect(() =>
+      reduceState(reviewFinished({ specStatus: "FAIL" }), {
+        type: "review-approved",
+        at: "2026-07-31T00:10:00.000Z",
+      }),
+    ).toThrow(/spec PASS/u);
+    expect(() =>
+      reduceState(reviewFinished({ qualityStatus: "CHANGES_REQUESTED" }), {
+        type: "review-approved",
+        at: "2026-07-31T00:10:00.000Z",
+      }),
+    ).toThrow(/quality APPROVED/u);
+  });
+
+  it("refuses completion while a load-bearing finding is open", () => {
+    const withFinding = reviewFinished({ findings: CRITICAL });
+    expect(() =>
+      reduceState(withFinding, { type: "review-approved", at: "2026-07-31T00:10:00.000Z" }),
+    ).toThrow(/load-bearing/u);
+  });
+
+  it("opens a fix round for a load-bearing finding", () => {
+    const withFinding = reviewFinished({
+      findings: CRITICAL,
+      qualityStatus: "CHANGES_REQUESTED",
+    });
+    const fixing = reduceState(withFinding, fixIntentEvent(1));
+    expect(fixing.phase).toBe("FIX_DISPATCH_INTENT");
+    expect(fixing.fixRound).toBe(1);
+    expect(fixing.dispatch.tier).toBe("economy");
+  });
+
+  it("refuses a fix round when nothing needs fixing", () => {
+    expect(() => reduceState(reviewFinished(), fixIntentEvent(1))).toThrow(/requires a spec/u);
+  });
+
+  it("blocks on an explicit review block", () => {
+    const blocked = reduceState(reviewFinished({ specStatus: "FAIL" }), {
+      type: "review-blocked",
+      reason: "the task premise is wrong",
+      at: "2026-07-31T00:10:00.000Z",
+    });
+    expect(blocked.phase).toBe("TASK_BLOCKED");
+  });
+});
+
+/** Drive to REREVIEW_RUNNING after one fix round on a critical finding. */
+const rereviewRunning = (round = 1) => {
+  let state = reduceState(
+    reviewFinished({ findings: CRITICAL, qualityStatus: "CHANGES_REQUESTED" }),
+    fixIntentEvent(round),
+  );
+  state = reduceState(state, {
+    type: "dispatch-started",
+    sessionId: "019fb673-4324-7c1d-98a2-3c638e29f830",
+    at: "2026-07-31T00:11:00.000Z",
+  });
+  state = reduceState(state, {
+    type: "rereview-dispatch-intended",
+    role: "re-reviewer",
+    attempt: 1,
+    dispatchKey: dispatchKeyFor({
+      runId: ready().runId,
+      task: 1,
+      role: "re-reviewer",
+      attempt: 1,
+    }),
+    tier: reReviewerTier("economy"),
+    promptPath: `${RUN}/task-1-rereview-prompt.md`,
+    reportPath: `${RUN}/task-1-rereview-report.md`,
+    briefPath: `${RUN}/task-1-brief.md`,
+    expectedOutcome: "rereview-report",
+    renderedPrompt: "Re-review the fix.\n",
+    findingResolutions: [{ id: "F-1", disposition: "fixed", evidence: "commit abc1234" }],
+    at: "2026-07-31T00:12:00.000Z",
+  });
+  return reduceState(state, {
+    type: "dispatch-started",
+    sessionId: "019fb673-4324-7c1d-98a2-3c638e29f831",
+    at: "2026-07-31T00:13:00.000Z",
+  });
+};
+
+const rereviewFinished = (overrides = {}) =>
+  reduceState(rereviewRunning(), {
+    type: "rereview-finished",
+    reportPath: `${RUN}/task-1-rereview-report.md`,
+    specStatus: "PASS",
+    qualityStatus: "APPROVED",
+    at: "2026-07-31T00:14:00.000Z",
+    ...overrides,
+  });
+
+describe("fix and re-review loop", () => {
+  it("records fix resolutions when the re-review is dispatched", () => {
+    const state = rereviewRunning();
+    expect(state.phase).toBe("REREVIEW_RUNNING");
+    expect(state.findings[0]).toMatchObject({ id: "F-1", disposition: "fixed" });
+  });
+
+  it("pins the re-review result before any adjudication is legal", () => {
+    const running = rereviewRunning();
+    expect(() =>
+      reduceState(running, { type: "rereview-approved", at: "2026-07-31T00:14:00.000Z" }),
+    ).toThrow(/recorded review result/u);
+    expect(() =>
+      reduceState(running, {
+        type: "rereview-blocked",
+        reason: "still wrong",
+        at: "2026-07-31T00:14:00.000Z",
+      }),
+    ).toThrow(/recorded review result/u);
+    expect(() =>
+      reduceState(running, {
+        ...fixIntentEvent(2, {
+          type: "next-fix-dispatch-intended",
+          at: "2026-07-31T00:14:00.000Z",
+        }),
+      }),
+    ).toThrow(/recorded review result/u);
+  });
+
+  it("refuses to pin a second result for the same round", () => {
+    expect(() =>
+      reduceState(rereviewFinished(), {
+        type: "rereview-finished",
+        reportPath: `${RUN}/task-1-rereview-report.md`,
+        specStatus: "PASS",
+        qualityStatus: "APPROVED",
+        at: "2026-07-31T00:15:00.000Z",
+      }),
+    ).toThrow(/already pinned/u);
+  });
+
+  it("completes the task once the fix is approved", () => {
+    const approved = reduceState(rereviewFinished(), {
+      type: "rereview-approved",
+      at: "2026-07-31T00:15:00.000Z",
+    });
+    expect(approved.phase).toBe("TASK_COMPLETE");
+    expect(approved.findings[0].disposition).toBe("fixed");
+  });
+
+  it("escalates the fixer tier at rounds 4 and 5", () => {
+    expect(fixerTier("standard", 3)).toBe("standard");
+    expect(fixerTier("standard", 4)).toBe("advanced");
+    expect(fixerTier("standard", 5)).toBe("capable");
+  });
+
+  it("caps fix rounds at five", () => {
+    let state = rereviewFinished({ specStatus: "FAIL", findings: CRITICAL });
+    for (let round = 2; round <= 5; round += 1) {
+      state = reduceState(state, {
+        ...fixIntentEvent(round, {
+          type: "next-fix-dispatch-intended",
+          at: `2026-07-31T01:${String(round).padStart(2, "0")}:00.000Z`,
+        }),
+      });
+      expect(state.fixRound).toBe(round);
+      state = reduceState(state, {
+        type: "dispatch-started",
+        sessionId: `019fb673-4324-7c1d-98a2-3c638e29f84${String(round)}`,
+        at: `2026-07-31T01:${String(round).padStart(2, "0")}:30.000Z`,
+      });
+      state = reduceState(state, {
+        type: "rereview-dispatch-intended",
+        role: "re-reviewer",
+        attempt: 1,
+        dispatchKey: dispatchKeyFor({
+          runId: ready().runId,
+          task: 1,
+          role: "re-reviewer",
+          attempt: 1,
+        }),
+        tier: reReviewerTier("economy"),
+        promptPath: `${RUN}/task-1-rereview-prompt.md`,
+        reportPath: `${RUN}/task-1-rereview-report.md`,
+        briefPath: `${RUN}/task-1-brief.md`,
+        expectedOutcome: "rereview-report",
+        renderedPrompt: "Re-review again.\n",
+        at: `2026-07-31T01:${String(round).padStart(2, "0")}:40.000Z`,
+      });
+      state = reduceState(state, {
+        type: "dispatch-started",
+        sessionId: `019fb673-4324-7c1d-98a2-3c638e29f85${String(round)}`,
+        at: `2026-07-31T01:${String(round).padStart(2, "0")}:50.000Z`,
+      });
+      state = reduceState(state, {
+        type: "rereview-finished",
+        reportPath: `${RUN}/task-1-rereview-report.md`,
+        specStatus: "FAIL",
+        qualityStatus: "CHANGES_REQUESTED",
+        at: `2026-07-31T01:${String(round).padStart(2, "0")}:55.000Z`,
+      });
+    }
+    expect(state.fixRound).toBe(5);
+    // Built without the helper: fixerTier itself rejects a sixth round, and the
+    // reducer's cap must fire on its own rather than relying on that.
+    expect(() =>
+      reduceState(state, {
+        type: "next-fix-dispatch-intended",
+        role: "fixer",
+        attempt: 1,
+        dispatchKey: dispatchKeyFor({
+          runId: ready().runId,
+          task: 1,
+          role: "fixer",
+          attempt: 1,
+          round: 6,
+        }),
+        tier: "capable",
+        promptPath: `${RUN}/task-1-fix-6-prompt.md`,
+        reportPath: `${RUN}/task-1-fix-6-report.md`,
+        briefPath: `${RUN}/task-1-brief.md`,
+        expectedOutcome: "fix-report",
+        renderedPrompt: "Fix round 6.\n",
+        at: "2026-07-31T02:00:00.000Z",
+      }),
+    ).toThrow(/capped at 5/u);
+  });
+
+  it("parks a contestable finding only with a persisted ruling", () => {
+    const pinned = rereviewFinished({ findings: MINOR });
+    const parked = reduceState(pinned, {
+      type: "task-park-ruling-recorded",
+      reason: "cosmetic; tracked separately",
+      findingResolutions: [{ id: "F-2", disposition: "parked", evidence: "issue #412" }],
+      at: "2026-07-31T00:15:00.000Z",
+    });
+    expect(parked.findings.find((f) => f.id === "F-2").disposition).toBe("parked");
+  });
+
+  it("never parks a load-bearing finding", () => {
+    const pinned = reduceState(rereviewRunning(), {
+      type: "rereview-finished",
+      reportPath: `${RUN}/task-1-rereview-report.md`,
+      specStatus: "FAIL",
+      qualityStatus: "CHANGES_REQUESTED",
+      findings: [{ id: "F-9", severity: "Critical", summary: "data loss on retry" }],
+      at: "2026-07-31T00:14:00.000Z",
+    });
+    expect(() =>
+      reduceState(pinned, {
+        type: "task-park-ruling-recorded",
+        reason: "deadline pressure",
+        findingResolutions: [{ id: "F-9", disposition: "parked", evidence: "ship it" }],
+        at: "2026-07-31T00:15:00.000Z",
+      }),
+    ).toThrow(/cannot be parked/u);
+  });
+
+  it("never silently drops a finding during adjudication", () => {
+    const pinned = rereviewFinished({ findings: MINOR });
+    expect(pinned.findings.map((f) => f.id).sort()).toEqual(["F-1", "F-2"]);
+    const approved = reduceState(pinned, {
+      type: "rereview-approved",
+      findingResolutions: [{ id: "F-2", disposition: "out-of-scope", evidence: "separate module" }],
+      at: "2026-07-31T00:15:00.000Z",
+    });
+    expect(approved.findings.map((f) => f.id).sort()).toEqual(["F-1", "F-2"]);
+  });
+
+  it("rejects a resolution naming an unknown finding", () => {
+    const pinned = rereviewFinished();
+    expect(() =>
+      reduceState(pinned, {
+        type: "rereview-approved",
+        findingResolutions: [{ id: "F-404", disposition: "fixed", evidence: "invented" }],
+        at: "2026-07-31T00:15:00.000Z",
+      }),
+    ).toThrow(/unknown finding/u);
+  });
+
+  it("requires evidence for every resolution", () => {
+    const pinned = rereviewFinished({ findings: MINOR });
+    expect(() =>
+      reduceState(pinned, {
+        type: "task-park-ruling-recorded",
+        reason: "cosmetic",
+        findingResolutions: [{ id: "F-2", disposition: "parked" }],
+        at: "2026-07-31T00:15:00.000Z",
+      }),
+    ).toThrow(/evidence/u);
+  });
+
+  it("refuses to re-report a finding at a different severity", () => {
+    expect(() =>
+      reduceState(rereviewRunning(), {
+        type: "rereview-finished",
+        reportPath: `${RUN}/task-1-rereview-report.md`,
+        specStatus: "FAIL",
+        qualityStatus: "CHANGES_REQUESTED",
+        findings: [{ id: "F-1", severity: "Minor", summary: "downgraded to dismiss it" }],
+        at: "2026-07-31T00:14:00.000Z",
+      }),
+    ).toThrow(/cannot be re-reported/u);
+  });
+});
+
+/** A single-task run reaching TASK_COMPLETE, ready for final review. */
+const SOLO = Object.freeze({ tasks: [{ number: 1, implementerTier: "economy" }] });
+
+const soloComplete = () => {
+  const approved = reduceState(rereviewFinished(), {
+    type: "rereview-approved",
+    at: "2026-07-31T00:15:00.000Z",
+  });
+  expect(approved.phase).toBe("TASK_COMPLETE");
+  // Re-pin onto the single-task index so task 1 is the last task and final
+  // review becomes legal. Validated on the way through reduceState below.
+  return { ...approved, tasks: SOLO.tasks };
+};
+
+const finalIntentEvent = (role, phaseLabel, overrides = {}) => ({
+  role,
+  attempt: 1,
+  dispatchKey: dispatchKeyFor({ runId: ready().runId, task: 1, role, attempt: 1 }),
+  tier: "frontier",
+  promptPath: `${RUN}/${phaseLabel}-prompt.md`,
+  reportPath: `${RUN}/${phaseLabel}-report.md`,
+  briefPath: `${RUN}/task-1-brief.md`,
+  expectedOutcome: `${phaseLabel}-report`,
+  renderedPrompt: `${phaseLabel}\n`,
+  ...overrides,
+});
+
+const finalReviewRunning = () => {
+  const intent = reduceState(soloComplete(), {
+    type: "final-review-dispatch-intended",
+    ...finalIntentEvent("final", "final-review", { at: "2026-07-31T00:16:00.000Z" }),
+  });
+  expect(intent.phase).toBe("FINAL_REVIEW_DISPATCH_INTENT");
+  return reduceState(intent, {
+    type: "dispatch-started",
+    sessionId: "019fb673-4324-7c1d-98a2-3c638e29f860",
+    at: "2026-07-31T00:17:00.000Z",
+  });
+};
+
+const finalReviewFinished = (overrides = {}) =>
+  reduceState(finalReviewRunning(), {
+    type: "final-review-finished",
+    reportPath: `${RUN}/final-review-report.md`,
+    specStatus: "PASS",
+    qualityStatus: "APPROVED",
+    at: "2026-07-31T00:18:00.000Z",
+    ...overrides,
+  });
+
+describe("final review loop", () => {
+  it("requires the last task to be complete before final review", () => {
+    const twoTaskComplete = { ...soloComplete(), currentTask: 1, tasks: BASE_INIT.tasks };
+    expect(twoTaskComplete.tasks).toHaveLength(2);
+    expect(() =>
+      reduceState(twoTaskComplete, {
+        type: "final-review-dispatch-intended",
+        ...finalIntentEvent("final", "final-review", { at: "2026-07-31T00:16:00.000Z" }),
+      }),
+    ).toThrow(/last task/u);
+  });
+
+  it("advances to the next task using only the immutable plan index", () => {
+    const next = reduceState({ ...soloComplete(), tasks: BASE_INIT.tasks }, {
+      type: "next-task-ready",
+      at: "2026-07-31T00:16:00.000Z",
+    });
+    expect(next).toMatchObject({
+      phase: "WORKSPACE_READY",
+      currentTask: 2,
+      currentImplementerTier: "advanced",
+      contextAttempts: 0,
+      fixRound: 0,
+    });
+  });
+
+  it("requires every final role to run at frontier", () => {
+    expect(() =>
+      reduceState(soloComplete(), {
+        type: "final-review-dispatch-intended",
+        ...finalIntentEvent("final", "final-review", {
+          tier: "capable",
+          at: "2026-07-31T00:16:00.000Z",
+        }),
+      }),
+    ).toThrow(/frontier/u);
+  });
+
+  it("records the final verdict without choosing a phase", () => {
+    const state = finalReviewFinished();
+    expect(state.phase).toBe("FINAL_REVIEW_RUNNING");
+    expect(state.reviewOutcome.pinned).toBe(true);
+  });
+
+  it("completes a clean final review", () => {
+    const done = reduceState(finalReviewFinished(), {
+      type: "final-complete",
+      at: "2026-07-31T00:19:00.000Z",
+    });
+    expect(done.phase).toBe("COMPLETE");
+  });
+
+  it("refuses completion before the final result is pinned", () => {
+    expect(() =>
+      reduceState(finalReviewRunning(), {
+        type: "final-complete",
+        at: "2026-07-31T00:19:00.000Z",
+      }),
+    ).toThrow(/recorded review result/u);
+  });
+
+  it("refuses completion while any finding is unadjudicated", () => {
+    const withFinding = finalReviewFinished({
+      findings: [{ id: "F-7", severity: "Minor", summary: "a stale comment" }],
+    });
+    expect(() =>
+      reduceState(withFinding, { type: "final-complete", at: "2026-07-31T00:19:00.000Z" }),
+    ).toThrow(/remain open/u);
+  });
+
+  it("permits exactly one final-fix wave", () => {
+    const needsFix = finalReviewFinished({
+      specStatus: "FAIL",
+      qualityStatus: "CHANGES_REQUESTED",
+      findings: [{ id: "F-8", severity: "Critical", summary: "a compatibility break" }],
+    });
+    let state = reduceState(needsFix, {
+      type: "final-fix-dispatch-intended",
+      ...finalIntentEvent("final-fixer", "final-fix", { at: "2026-07-31T00:19:00.000Z" }),
+    });
+    expect(state.phase).toBe("FINAL_FIX_DISPATCH_INTENT");
+    expect(state.finalFixUsed).toBe(true);
+
+    state = reduceState(state, {
+      type: "dispatch-started",
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f870",
+      at: "2026-07-31T00:20:00.000Z",
+    });
+    state = reduceState(state, {
+      type: "final-rereview-dispatch-intended",
+      ...finalIntentEvent("final-re-reviewer", "final-rereview", {
+        at: "2026-07-31T00:21:00.000Z",
+      }),
+      findingResolutions: [{ id: "F-8", disposition: "fixed", evidence: "commit def5678" }],
+    });
+    state = reduceState(state, {
+      type: "dispatch-started",
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f871",
+      at: "2026-07-31T00:22:00.000Z",
+    });
+    state = reduceState(state, {
+      type: "final-rereview-finished",
+      reportPath: `${RUN}/final-rereview-report.md`,
+      specStatus: "PASS",
+      qualityStatus: "APPROVED",
+      at: "2026-07-31T00:23:00.000Z",
+    });
+    const done = reduceState(state, { type: "final-complete", at: "2026-07-31T00:24:00.000Z" });
+    expect(done.phase).toBe("COMPLETE");
+    expect(done.findings.find((f) => f.id === "F-8").disposition).toBe("fixed");
+  });
+
+  it("refuses a second final-fix wave", () => {
+    const used = { ...finalReviewFinished({ specStatus: "FAIL" }), finalFixUsed: true };
+    expect(() =>
+      reduceState(used, {
+        type: "final-fix-dispatch-intended",
+        ...finalIntentEvent("final-fixer", "final-fix", { at: "2026-07-31T00:19:00.000Z" }),
+      }),
+    ).toThrow(/exactly one final-fix wave/u);
+  });
+
+  it("blocks a load-bearing residual at final re-review", () => {
+    const blocked = reduceState(
+      finalReviewFinished({
+        specStatus: "FAIL",
+        findings: [{ id: "F-6", severity: "Critical", summary: "unsafe migration" }],
+      }),
+      { type: "final-blocked", reason: "unsafe migration must be fixed", at: "2026-07-31T00:19:00.000Z" },
+    );
+    expect(blocked.phase).toBe("FINAL_BLOCKED");
+  });
+
+  it("accepts no continuation event once terminal", () => {
+    const done = reduceState(finalReviewFinished(), {
+      type: "final-complete",
+      at: "2026-07-31T00:19:00.000Z",
+    });
+    expect(() =>
+      reduceState(done, { type: "next-task-ready", at: "2026-07-31T00:20:00.000Z" }),
+    ).toThrow(/terminal/u);
+  });
+});
+
+describe("recovery rulings", () => {
+  it("records a repair in any nonterminal phase without changing it", () => {
+    const before = ready();
+    const after = reduceState(before, {
+      type: "recovery-ruling-recorded",
+      reason: "cleared a stale lock from a dead PID",
+      receipt: "lock-token 4f2a released at 00:03:10Z",
+      at: "2026-07-31T00:03:10.000Z",
+    });
+    expect(after.phase).toBe(before.phase);
+    expect(after.recoveryRulings).toBe(1);
+    expect(after.revision).toBe(before.revision + 1);
+  });
+
+  it("requires a receipt, not just a reason", () => {
+    expect(() =>
+      reduceState(ready(), {
+        type: "recovery-ruling-recorded",
+        reason: "cleared a lock",
+        at: "2026-07-31T00:03:10.000Z",
+      }),
+    ).toThrow(/receipt/u);
+  });
+
+  it("is not legal in a terminal phase", () => {
+    const blocked = reduceState(init(), {
+      type: "capability-missing",
+      reason: "get_model_policy unavailable",
+      at: "2026-07-31T00:01:00.000Z",
+    });
+    expect(() =>
+      reduceState(blocked, {
+        type: "recovery-ruling-recorded",
+        reason: "retry",
+        receipt: "none",
+        at: "2026-07-31T00:02:00.000Z",
+      }),
+    ).toThrow(/terminal/u);
+  });
+});
+
+describe("reducer completeness", () => {
+  it("registers every phase/event pair exactly once", () => {
+    const seen = new Set(TRANSITIONS.map((entry) => `${entry.phase}\u0000${entry.event}`));
+    expect(seen.size).toBe(TRANSITIONS.length);
+  });
+
+  it("registers only known phases", () => {
+    for (const { phase } of TRANSITIONS) expect(PHASES).toContain(phase);
+  });
+
+  it("gives every nonterminal phase at least one outgoing transition", () => {
+    const withOutgoing = new Set(TRANSITIONS.map((entry) => entry.phase));
+    const stranded = PHASES.filter(
+      (phase) => !withOutgoing.has(phase) && !TERMINAL_PHASES.includes(phase),
+    );
+    expect(stranded).toEqual([]);
+  });
+
+  it("gives terminal phases no outgoing transition", () => {
+    const withOutgoing = new Set(TRANSITIONS.map((entry) => entry.phase));
+    expect(TERMINAL_PHASES.filter((phase) => withOutgoing.has(phase))).toEqual([]);
+  });
+
+  it("rejects every unregistered event name", () => {
+    expect(() =>
+      reduceState(ready(), { type: "definitely-not-an-event", at: "2026-07-31T00:03:00.000Z" }),
+    ).toThrow(/unknown event type/u);
+  });
+
+  it("reaches every gate phase through the production order", () => {
+    const gated = reduceState(init(SOLO), {
+      type: "capability-confirmed",
+      mode: "tiered",
+      at: "2026-07-31T00:01:00.000Z",
+    });
+    expect(gated.phase).toBe("PLAN_VALIDATE");
+    const validated = reduceState(gated, {
+      type: "plan-valid",
+      planDigest: BASE_INIT.planDigest,
+      at: "2026-07-31T00:02:00.000Z",
+    });
+    const conflicted = reduceState(validated, {
+      type: "preflight-conflict",
+      reason: "untracked build output",
+      at: "2026-07-31T00:02:30.000Z",
+    });
+    const approved = reduceState(conflicted, {
+      type: "preflight-approved",
+      reason: "generated files only",
+      at: "2026-07-31T00:02:40.000Z",
+    });
+    expect(approved.phase).toBe("WORKSPACE_READY");
+  });
+});
+
+describe("state-machine reference stays in step with the reducer", () => {
+  const reference = readFileSync(
+    new URL("../references/state-machine.md", import.meta.url),
+    "utf8",
+  );
+
+  it("names every phase the reducer declares", () => {
+    const missing = PHASES.filter((phase) => !reference.includes(`\`${phase}\``));
+    expect(missing).toEqual([]);
+  });
+
+  it("names every event the reducer accepts", () => {
+    const events = [...new Set(TRANSITIONS.map((entry) => entry.event))];
+    const missing = events.filter((event) => !reference.includes(`\`${event}\``));
+    expect(missing).toEqual([]);
+  });
+
+  it("names no phase the reducer does not declare", () => {
+    // Status tokens and exported identifiers share the SHOUTY shape but are not
+    // phases; listing them keeps a genuinely unknown phase name failing.
+    const notPhases = [
+      "TRANSITIONS",
+      "PHASES",
+      "EVENT_TYPES",
+      "TERMINAL_PHASES",
+      "PASS",
+      "FAIL",
+      "APPROVED",
+      "CHANGES_REQUESTED",
+      "DONE",
+      "DONE_WITH_CONCERNS",
+      "NEEDS_CONTEXT",
+      "BLOCKED",
+    ];
+    const cited = [...reference.matchAll(/`([A-Z][A-Z_]{3,})`/gu)].map((match) => match[1]);
+    const unknown = [...new Set(cited)].filter(
+      (token) => !PHASES.includes(token) && !notPhases.includes(token),
+    );
+    expect(unknown).toEqual([]);
+  });
+
+  it("reports the transition and phase counts the reducer actually has", () => {
+    expect(reference).toContain(`${String(TRANSITIONS.length)} registered`);
+    expect(reference.toLowerCase()).toContain(`${String(PHASES.length)} phases`);
+  });
+
+  it("states the canonical direction of truth", () => {
+    expect(reference).toMatch(/`state\.json` is canonical/u);
+    expect(reference).toMatch(/never hand-edit/iu);
   });
 });
