@@ -18,6 +18,7 @@ import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from 
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
 
 const MESSAGE_PAGE_SIZE = 100;
+const OVERLOAD_RESYNC_MIN_INTERVAL_MS = 1_000;
 const BULK_FALLBACK_CONCURRENCY = 4;
 
 export interface SessionEventSocket {
@@ -56,6 +57,7 @@ export interface SessionControllerDependencies {
   socket?: SessionEventSocket;
   transcripts?: ChatTranscriptStore;
   streamEventBuffer?: StreamEventBuffer;
+  now?: () => number;
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
@@ -113,6 +115,8 @@ export class SessionController {
   // applies exactly once. Reset whenever the selection changes.
   private streamWatermark: { sessionId: string; seq: number } | undefined;
   private readonly streamEventBuffer: StreamEventBuffer;
+  private readonly now: () => number;
+  private lastOverloadResyncAt: number | undefined;
   private pendingStatusBySession = new Map<string, SessionStatus>();
   private pendingActivityBySession = new Map<string, SessionActivity>();
   private pendingFrame: number | undefined;
@@ -133,6 +137,7 @@ export class SessionController {
     this.api = deps.api ?? defaultApi;
     this.transcripts = deps.transcripts ?? new ChatTranscriptStore();
     this.streamEventBuffer = deps.streamEventBuffer ?? new StreamEventBuffer();
+    this.now = deps.now ?? (() => Date.now());
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
@@ -1456,7 +1461,7 @@ export class SessionController {
       for (const event of events) messages = this.transcripts.applyLiveEvent(messages, event) ?? messages;
       if (messages !== this.getState().messages) this.setState({ messages });
     }
-    if (resyncRequired) void this.refreshSelectedSession();
+    if (resyncRequired) this.requestOverloadResync();
     if (this.pendingActivityBySession.size > 0) {
       const activities = Array.from(this.pendingActivityBySession.values());
       this.pendingActivityBySession.clear();
@@ -1469,7 +1474,22 @@ export class SessionController {
     }
   }
 
+  /**
+   * Buffer overflow means the client is behind, and the recovery refetch is the
+   * most expensive operation available. Without a floor between attempts, a
+   * sustained surge trips the cap again within a few hundred milliseconds and
+   * the refetch becomes a self-sustaining loop that freezes the tab.
+   */
+  private requestOverloadResync(): void {
+    const now = this.now();
+    const last = this.lastOverloadResyncAt;
+    if (last !== undefined && now - last < OVERLOAD_RESYNC_MIN_INTERVAL_MS) return;
+    this.lastOverloadResyncAt = now;
+    void this.refreshSelectedSession();
+  }
+
   private clearPendingUpdates(): void {
+    this.lastOverloadResyncAt = undefined;
     this.streamEventBuffer.clear();
     this.pendingStatusBySession.clear();
     this.pendingActivityBySession.clear();

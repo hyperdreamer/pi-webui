@@ -419,4 +419,60 @@ describe("SessionController live events", () => {
     expect(streamSnapshot).toHaveBeenCalledOnce();
     expect(state.messages).toEqual([]);
   });
+
+  it("throttles repeated overload resyncs to one per interval", async () => {
+    const socket = new EmitSocket();
+    const messages = vi.fn<typeof defaultApi.messages>(() => Promise.resolve(emptyPage));
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages,
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    let clock = 10_000;
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      {
+        api,
+        socket,
+        now: () => clock,
+        streamEventBuffer: new StreamEventBuffer({ maxEventRuns: 1, maxBytes: 262_144 }),
+      },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+    const baseline = messages.mock.calls.length;
+
+    // Each burst overflows the 1-run cap. Settling the refresh between bursts is
+    // essential: `TrailingRefreshCoordinator` only merges requests that arrive
+    // while one is already in flight, so without settling it would absorb the
+    // whole loop and the test would pass with no throttle present. Measured
+    // unthrottled behaviour for this loop is one refetch per burst.
+    const overflowOnce = async (seq: number): Promise<void> => {
+      socket.emit({ type: "assistant.delta", text: "a", seq });
+      socket.emit({ type: "assistant.thinking.delta", text: "t", seq: seq + 1 });
+      runPendingAnimationFrames();
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+    };
+
+    for (let burst = 0; burst < 4; burst++) {
+      await overflowOnce(1 + burst * 2);
+      clock += 100;
+    }
+
+    // Four overloads inside one 1000ms window collapse to a single refetch.
+    expect(messages.mock.calls.length).toBe(baseline + 1);
+
+    clock += 1_000;
+    await overflowOnce(99);
+
+    expect(messages.mock.calls.length).toBe(baseline + 2);
+  });
 });
