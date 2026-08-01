@@ -9,13 +9,14 @@ describe("SessionController pending starts", () => {
   it("creates and selects a temporary editable session before backend start resolves", async () => {
     const started: SessionInfo = { ...oldSession, id: "started-session", path: "/tmp/started-session.jsonl" };
     const startRequest = deferred<SessionInfo>();
+    const messageRequest = deferred<typeof emptyPage>();
     const messageCalls: string[] = [];
     const statusCalls: string[] = [];
     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
     const api: typeof defaultApi = {
       ...defaultApi,
       startSession: () => startRequest.promise,
-      messages: (session) => { messageCalls.push(sessionLookupId(session)); return Promise.resolve(emptyPage); },
+      messages: (session) => { messageCalls.push(sessionLookupId(session)); return messageRequest.promise; },
       status: (session) => { statusCalls.push(sessionLookupId(session)); return Promise.resolve(status(sessionLookupId(session))); },
     };
     const controller = new SessionController(
@@ -36,8 +37,17 @@ describe("SessionController pending starts", () => {
     expect(messageCalls).toEqual([]);
     expect(statusCalls).toEqual([]);
 
+    let completed: boolean | undefined;
+    void start.then((result) => { completed = result; });
     startRequest.resolve(started);
-    await start;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(messageCalls).toEqual(["started-session"]);
+    expect(completed).toBeUndefined();
+
+    messageRequest.resolve(emptyPage);
+    expect(await start).toBe(true);
 
     expect(state.sessions.map((session) => session.id)).toEqual(["started-session"]);
     expect(state.selectedSession?.id).toBe("started-session");
@@ -228,7 +238,32 @@ describe("SessionController pending starts", () => {
     expect(isCachedNewSessionInfo(state.sessions[0])).toBe(true);
   });
 
-  it("keeps a failed temporary start selected with a discardable transient row", async () => {
+  it("returns false without side effects when no workspace is selected", async () => {
+    let startCalls = 0;
+    let state: AppState = { ...initialAppState(), sessions: [] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      startSession: () => {
+        startCalls += 1;
+        return Promise.resolve(oldSession);
+      },
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    await expect(controller.startSession()).resolves.toBe(false);
+
+    expect(startCalls).toBe(0);
+    expect(state.sessions).toEqual([]);
+    expect(state.selectedSession).toBeUndefined();
+  });
+
+  it("keeps a failed temporary start selected with a discardable transient row and returns false", async () => {
     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
     const api: typeof defaultApi = {
       ...defaultApi,
@@ -242,7 +277,7 @@ describe("SessionController pending starts", () => {
       { api, socket: new FakeSocket() },
     );
 
-    await controller.startSession();
+    await expect(controller.startSession()).resolves.toBe(false);
     const temporaryId = state.selectedSession?.id;
 
     expect(temporaryId).toMatch(/^pending-session-/);

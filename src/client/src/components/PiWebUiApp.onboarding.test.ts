@@ -66,7 +66,7 @@ describe("PiWebUiApp session onboarding", () => {
     const controller = appSessionController(app);
     setAppState(app, state);
     if (!Reflect.set(app, "starterSessionDefaults", starterSessionDefaults())) throw new Error("Could not install starter defaults");
-    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(undefined);
+    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(false);
 
     await startScreenConfigurationHandler(renderSessionStartScreen(app, state), ".onSelectModel=")();
 
@@ -80,7 +80,7 @@ describe("PiWebUiApp session onboarding", () => {
     const controller = appSessionController(app);
     setAppState(app, state);
     if (!Reflect.set(app, "starterSessionDefaults", starterSessionDefaults())) throw new Error("Could not install starter defaults");
-    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(undefined);
+    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(false);
 
     await startScreenConfigurationHandler(renderSessionStartScreen(app, state), ".onSelectThinking=")();
 
@@ -96,7 +96,7 @@ describe("PiWebUiApp session onboarding", () => {
     const controller = appSessionController(app);
     setAppState(app, state);
     if (!Reflect.set(app, "starterSessionDefaults", defaults)) throw new Error("Could not install starter defaults");
-    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(undefined);
+    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(false);
     const updateDefaults = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(nextDefaults);
 
     await pickStarterModel(app, "openai/gpt-next");
@@ -114,7 +114,7 @@ describe("PiWebUiApp session onboarding", () => {
     const controller = appSessionController(app);
     setAppState(app, state);
     if (!Reflect.set(app, "starterSessionDefaults", defaults)) throw new Error("Could not install starter defaults");
-    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(undefined);
+    const startSession = vi.spyOn(controller, "startSession").mockResolvedValue(false);
     const updateDefaults = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(nextDefaults);
 
     await pickStarterThinking(app, "low");
@@ -129,7 +129,7 @@ describe("PiWebUiApp session onboarding", () => {
     const state = onboardingState();
     setAppState(app, state);
     const controller = appSessionController(app);
-    const startSessionWithPrompt = vi.spyOn(controller, "startSessionWithPrompt").mockResolvedValue(undefined);
+    const startSessionWithPrompt = vi.spyOn(controller, "startSessionWithPrompt").mockResolvedValue(false);
     const focusChatComposer = vi.fn(() => Promise.resolve());
     if (!Reflect.set(app, "focusChatComposer", focusChatComposer)) throw new Error("Could not install prompt focus harness");
     const attachment: PromptAttachment = { kind: "image", mimeType: "image/png", data: "QUJD", name: "sketch.png" };

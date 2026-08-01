@@ -588,15 +588,6 @@ export class PiWebUiApp extends LitElement {
     if (!this.shouldShowSessionStartScreen(previous) && this.shouldShowSessionStartScreen(this.state) && this.state.selectedWorkspace !== undefined) {
       void this.loadStarterSessionDefaults(this.state.selectedWorkspace);
     }
-    // A successful session start (from the composer or the nav button) moves the
-    // start screen out of view. Clear the starter draft here, through the same
-    // transition that (re)loads it on the way back in, so returning to the start
-    // screen in the same workspace never silently reapplies an earlier Tiered
-    // choice. This does not run mid-request: the snapshot carried into the
-    // request is read synchronously before the pending session is inserted.
-    if (this.shouldShowSessionStartScreen(previous) && !this.shouldShowSessionStartScreen(this.state)) {
-      this.starterModelPolicy = undefined;
-    }
     this.handleMachineChange(previous, this.state);
     if (machineActivitySubscriptionInputsChanged(previous, this.state)) this.syncMachineActivitySubscriptions();
     this.notifications.syncEnvironment(previous, this.state);
@@ -1788,14 +1779,17 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
-    // Read the starter snapshot synchronously, before the pending session row is
-    // inserted: starting a session from the nav control must honour the starter's
-    // policy choice exactly as sending the first prompt does, or the choice is
-    // silently replaced by daemon defaults.
+    // Capture the starter state synchronously, before startSession() inserts and
+    // selects its pending row. Draft identity acts as a generation guard because
+    // every starter edit and relink replaces the policy object.
+    const workspaceId = this.state.selectedWorkspace?.id;
+    const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
     // `startSession()` remains in flight until the backend session resolves;
     // open the chat as soon as the controller has inserted the temporary row.
-    const start = this.sessions.startSession(modelPolicy).catch((error: unknown) => {
+    const start = this.sessions.startSession(modelPolicy).then((started) => {
+      this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
+    }).catch((error: unknown) => {
       if (shouldComplete()) this.setState({ error: String(error) });
     });
     if (shouldComplete()) await this.focusChatComposer();
@@ -2056,6 +2050,15 @@ export class PiWebUiApp extends LitElement {
     const linked = starterExactSelection(defaults);
     if (linked !== undefined && sameExactSelection(linked, policy.exact)) return undefined;
     return { mode: "exact", exact: { model: { ...policy.exact.model }, thinkingLevel: policy.exact.thinkingLevel } };
+  }
+
+  private clearStarterModelPolicyAfterSuccessfulStart(
+    started: boolean,
+    workspaceId: string | undefined,
+    starterModelPolicy: SessionModelPolicy | undefined,
+  ): void {
+    if (!started || this.state.selectedWorkspace?.id !== workspaceId || this.starterModelPolicy !== starterModelPolicy) return;
+    this.starterModelPolicy = undefined;
   }
 
   private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
@@ -2912,10 +2915,15 @@ export class PiWebUiApp extends LitElement {
   private readonly handleStartSessionPrompt = (text: string, streamingBehavior?: "steer" | "followUp", attachments?: import("../api").PromptAttachment[], delivery?: import("../../../shared/apiTypes").PromptAttachmentDelivery): void => {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
-    // Snapshot the starter policy before the request begins. Starter state is
-    // reset by the start-screen transition, not by mutating it mid-flight.
+    // Capture the starter state before the controller inserts and selects its
+    // pending row. A failed start retains this draft for a retry; a successful
+    // stale completion cannot clear a newer draft or another workspace's draft.
+    const workspaceId = this.state.selectedWorkspace?.id;
+    const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
-    void this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy);
+    void this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy).then((started) => {
+      this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
+    });
     void this.focusChatComposer();
   };
 

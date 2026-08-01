@@ -445,7 +445,7 @@ describe("SessionController model policy state", () => {
 
     const start = controller.startSession(tieredUpdate);
     startRequest.resolve(selectedSession);
-    await start;
+    expect(await start).toBe(true);
 
     expect(startCalls).toEqual([{ cwd: "/work", machineId: "remote", modelPolicy: tieredUpdate }]);
     expect(startCalls[0]?.modelPolicy).toBe(tieredUpdate);
@@ -473,8 +473,20 @@ describe("SessionController model policy state", () => {
     expect(promptCalls).toEqual([]);
 
     startRequest.resolve(selectedSession);
-    await startAndSend;
+    expect(await startAndSend).toBe(true);
 
     expect(promptCalls).toEqual([{ sessionId: selectedSession.id, text: "Plan the migration" }]);
+  });
+
+  it("propagates false when starter session creation fails", async () => {
+    const api = selectionApi({
+      startSession: () => Promise.reject(new Error("backend unavailable")),
+    });
+    const { controller, state } = harness(api, { selectedSession: undefined, sessions: [] });
+
+    await expect(controller.startSessionWithPrompt("Retry the migration", undefined, undefined, "inline", tieredUpdate)).resolves.toBe(false);
+
+    expect(state().selectedSession?.id).toMatch(/^pending-session-/);
+    expect(state().error).toContain("backend unavailable");
   });
 });

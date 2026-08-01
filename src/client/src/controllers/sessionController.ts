@@ -201,9 +201,9 @@ export class SessionController {
     this.deselectSession({ forgetRememberedSelection: true });
   }
 
-  async startSession(modelPolicy?: SessionModelPolicyUpdate) {
+  async startSession(modelPolicy?: SessionModelPolicyUpdate): Promise<boolean> {
     const workspace = this.getState().selectedWorkspace;
-    if (!workspace) return;
+    if (!workspace) return false;
     const machineId = selectedMachineId(this.getState());
     const pending = this.createPendingSessionStart(workspace, machineId, modelPolicy);
     this.pendingSessionStarts.set(pending.tempId, pending);
@@ -211,8 +211,10 @@ export class SessionController {
     try {
       const session = await this.api.startSession(workspace.path, machineId, pending.modelPolicy);
       await this.resolvePendingSessionStart(pending.tempId, session);
+      return true;
     } catch (error) {
       this.failPendingSessionStart(pending.tempId, error);
+      return false;
     }
   }
 
@@ -222,10 +224,11 @@ export class SessionController {
     attachments?: PromptAttachment[],
     delivery: PromptAttachmentDelivery = "inline",
     modelPolicy?: SessionModelPolicyUpdate,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const startingSession = this.startSession(modelPolicy);
     await this.send(text, streamingBehavior, attachments, delivery);
-    await startingSession;
+    const started = await startingSession;
+    return started;
   }
 
   preferredSession(cwd: string, sessions: SessionInfo[], targetSessionId: string | undefined): SessionInfo | undefined {
