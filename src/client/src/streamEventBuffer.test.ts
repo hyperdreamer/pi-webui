@@ -1,0 +1,159 @@
+import { describe, expect, it } from "vitest";
+import type { SessionUiEvent } from "./sessionSocket";
+import {
+  StreamEventBuffer,
+  isBufferedStreamEvent,
+} from "./streamEventBuffer";
+
+type BufferedStreamEvent = Extract<
+  SessionUiEvent,
+  { type: "assistant.delta" | "assistant.thinking.delta" | "shell.chunk" | "tool.update" }
+>;
+
+const utf8ByteLength = (event: SessionUiEvent): number => new TextEncoder().encode(JSON.stringify(event)).byteLength;
+
+describe("isBufferedStreamEvent", () => {
+  it("accepts only high-frequency stream events", () => {
+    expect(isBufferedStreamEvent({ type: "assistant.delta", text: "a" })).toBe(true);
+    expect(isBufferedStreamEvent({ type: "assistant.thinking.delta", text: "a" })).toBe(true);
+    expect(isBufferedStreamEvent({ type: "shell.chunk", chunk: "a" })).toBe(true);
+    expect(isBufferedStreamEvent({ type: "tool.update", toolName: "read", toolCallId: "c1", text: "a" })).toBe(true);
+    expect(isBufferedStreamEvent({ type: "tool.start", toolName: "read", toolCallId: "c1", summary: "" })).toBe(false);
+  });
+});
+
+describe("StreamEventBuffer", () => {
+  it("materializes text chunks once at drain and preserves the highest seq", () => {
+    const events: BufferedStreamEvent[] = [
+      { type: "assistant.delta", text: "Hel", seq: 4 },
+      { type: "assistant.delta", text: "lo ", seq: 5 },
+      { type: "assistant.delta", text: "world", seq: 6 },
+    ];
+    const buffer = new StreamEventBuffer();
+
+    for (const event of events) buffer.enqueue(event);
+
+    expect(buffer.eventCount).toBe(1);
+    expect(buffer.drain()).toEqual({
+      events: [{ type: "assistant.delta", text: "Hello world", seq: 6 }],
+      resyncRequired: false,
+    });
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.pendingBytes).toBe(0);
+  });
+
+  it("preserves ordering across thinking, text, and shell type transitions", () => {
+    const buffer = new StreamEventBuffer();
+
+    buffer.enqueue({ type: "assistant.delta", text: "a" });
+    buffer.enqueue({ type: "assistant.thinking.delta", text: "t" });
+    buffer.enqueue({ type: "assistant.delta", text: "b" });
+    buffer.enqueue({ type: "shell.chunk", chunk: "line 1\n" });
+    buffer.enqueue({ type: "shell.chunk", chunk: "line 2\n" });
+    buffer.enqueue({ type: "assistant.thinking.delta", text: "u" });
+
+    expect(buffer.eventCount).toBe(5);
+    expect(buffer.drain()).toEqual({
+      events: [
+        { type: "assistant.delta", text: "a" },
+        { type: "assistant.thinking.delta", text: "t" },
+        { type: "assistant.delta", text: "b" },
+        { type: "shell.chunk", chunk: "line 1\nline 2\n" },
+        { type: "assistant.thinking.delta", text: "u" },
+      ],
+      resyncRequired: false,
+    });
+  });
+
+  it("keeps the latest same-tool update and treats different tools as barriers", () => {
+    const buffer = new StreamEventBuffer();
+
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "partial 1", content: "old", details: { step: 1 }, seq: 1 });
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "partial 2", content: "new", details: { step: 2 }, seq: 2 });
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 3 });
+    buffer.enqueue({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: "after barrier", seq: 4 });
+
+    expect(buffer.eventCount).toBe(3);
+    expect(buffer.drain()).toEqual({
+      events: [
+        { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "partial 2", content: "new", details: { step: 2 }, seq: 2 },
+        { type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other", seq: 3 },
+        { type: "tool.update", toolName: "bash", toolCallId: "c1", text: "after barrier", seq: 4 },
+      ],
+      resyncRequired: false,
+    });
+  });
+
+  it("returns one resync marker on event-run overflow and resumes after drain", () => {
+    const buffer = new StreamEventBuffer({ maxEventRuns: 2, maxBytes: 10_000 });
+
+    buffer.enqueue({ type: "assistant.delta", text: "a" });
+    buffer.enqueue({ type: "assistant.thinking.delta", text: "t" });
+    buffer.enqueue({ type: "shell.chunk", chunk: "s" });
+    buffer.enqueue({ type: "assistant.delta", text: "ignored before drain" });
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.pendingBytes).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: false });
+
+    buffer.enqueue({ type: "assistant.delta", text: "accepted after drain" });
+    expect(buffer.drain()).toEqual({
+      events: [{ type: "assistant.delta", text: "accepted after drain" }],
+      resyncRequired: false,
+    });
+  });
+
+  it("returns one resync marker on byte overflow and ignores inputs until drain", () => {
+    const first: SessionUiEvent = { type: "assistant.delta", text: "a" };
+    const second: SessionUiEvent = { type: "assistant.delta", text: "b" };
+    const buffer = new StreamEventBuffer({
+      maxEventRuns: 128,
+      maxBytes: utf8ByteLength(first) + utf8ByteLength(second) - 1,
+    });
+
+    buffer.enqueue(first);
+    buffer.enqueue(second);
+    buffer.enqueue({ type: "assistant.delta", text: "ignored before drain" });
+
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: true });
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: false });
+
+    buffer.enqueue({ type: "assistant.delta", text: "accepted after drain" });
+    expect(buffer.drain()).toEqual({
+      events: [{ type: "assistant.delta", text: "accepted after drain" }],
+      resyncRequired: false,
+    });
+  });
+
+  it("clear removes pending events, byte accounting, and a pending resync marker", () => {
+    const buffer = new StreamEventBuffer({ maxEventRuns: 1, maxBytes: 10_000 });
+
+    buffer.enqueue({ type: "assistant.delta", text: "a" });
+    buffer.enqueue({ type: "assistant.thinking.delta", text: "overflow" });
+    buffer.clear();
+
+    expect(buffer.eventCount).toBe(0);
+    expect(buffer.pendingBytes).toBe(0);
+    expect(buffer.drain()).toEqual({ events: [], resyncRequired: false });
+
+    buffer.enqueue({ type: "shell.chunk", chunk: "accepted after clear" });
+    expect(buffer.drain()).toEqual({
+      events: [{ type: "shell.chunk", chunk: "accepted after clear" }],
+      resyncRequired: false,
+    });
+  });
+
+  it("keeps many chunks in one run before drain and materializes their text correctly", () => {
+    const buffer = new StreamEventBuffer();
+    const chunks = Array.from({ length: 100 }, (_, index) => `chunk-${String(index)};`);
+
+    for (const chunk of chunks) buffer.enqueue({ type: "shell.chunk", chunk });
+
+    expect(buffer.eventCount).toBe(1);
+    expect(buffer.drain()).toEqual({
+      events: [{ type: "shell.chunk", chunk: chunks.join("") }],
+      resyncRequired: false,
+    });
+  });
+});
