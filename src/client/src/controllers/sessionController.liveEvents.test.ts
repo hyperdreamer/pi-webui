@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
+import { StreamEventBuffer } from "../streamEventBuffer";
 import { SessionController } from "./sessionController";
 import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, runPendingAnimationFrames, status, workspace, type AppState, type MessagePage, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
 
@@ -251,5 +252,171 @@ describe("SessionController live events", () => {
     controller.applyGlobalEvent({ type: "session.created", session: { ...oldSession } });
 
     expect(state.sessions.map((session) => session.id)).toEqual(["old-session"]);
+  });
+
+  it("coalesces a flood of assistant deltas into a single transcript write per frame", async () => {
+    const socket = new EmitSocket();
+    const setStateCalls: Partial<AppState>[] = [];
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => Promise.resolve(emptyPage),
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { setStateCalls.push(patch); state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+    setStateCalls.length = 0;
+
+    for (let index = 0; index < 500; index += 1) {
+      socket.emit({ type: "assistant.delta", text: "x", seq: index + 1 });
+    }
+
+    expect(controller.pendingTranscriptEventCount()).toBe(1);
+    expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(0);
+
+    runPendingAnimationFrames();
+
+    expect(controller.pendingTranscriptEventCount()).toBe(0);
+    const messageWrites = setStateCalls.filter((patch) => patch.messages !== undefined);
+    expect(messageWrites).toHaveLength(1);
+    expect(state.messages).toEqual([{ role: "assistant", parts: [{ type: "text", text: "x".repeat(500) }] }]);
+  });
+
+  it("flushes buffered deltas before applying a structural shell start", async () => {
+    const socket = new EmitSocket();
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => Promise.resolve(emptyPage),
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+
+    socket.emit({ type: "assistant.delta", text: "before ", seq: 1 });
+    socket.emit({ type: "assistant.delta", text: "barrier", seq: 2 });
+    expect(controller.pendingTranscriptEventCount()).toBe(1);
+
+    socket.emit({ type: "shell.start", command: "ls", seq: 3 });
+
+    expect(controller.pendingTranscriptEventCount()).toBe(0);
+    expect(state.messages).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "before barrier" }] },
+      { role: "bash", parts: [{ type: "text", text: "$ ls" }] },
+    ]);
+
+    socket.emit({ type: "shell.chunk", chunk: "a", seq: 4 });
+    socket.emit({ type: "shell.chunk", chunk: "b", seq: 5 });
+    runPendingAnimationFrames();
+
+    expect(state.messages).toEqual([
+      { role: "assistant", parts: [{ type: "text", text: "before barrier" }] },
+      { role: "bash", parts: [{ type: "text", text: "$ ls\n\nab" }] },
+    ]);
+  });
+
+  it("buffers repeated tool updates while keeping different tool calls separate", async () => {
+    const socket = new EmitSocket();
+    const setStateCalls: Partial<AppState>[] = [];
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => Promise.resolve(emptyPage),
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { setStateCalls.push(patch); state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+
+    socket.emit({ type: "tool.start", toolName: "bash", toolCallId: "c1", summary: "first", seq: 1 });
+    socket.emit({ type: "tool.start", toolName: "bash", toolCallId: "c2", summary: "second", seq: 2 });
+    setStateCalls.length = 0;
+
+    for (let index = 0; index < 200; index += 1) {
+      socket.emit({ type: "tool.update", toolName: "bash", toolCallId: "c1", text: `partial ${String(index)}`, seq: index + 3 });
+    }
+    socket.emit({ type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other partial", seq: 203 });
+    socket.emit({ type: "tool.update", toolName: "bash", toolCallId: "c2", text: "other final", seq: 204 });
+
+    expect(controller.pendingTranscriptEventCount()).toBe(2);
+    expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(0);
+
+    runPendingAnimationFrames();
+
+    expect(controller.pendingTranscriptEventCount()).toBe(0);
+    expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(1);
+    expect(state.messages).toEqual([
+      {
+        role: "tool",
+        parts: [{ type: "toolExecution", toolCallId: "c1", toolName: "bash", summary: "first", status: "running", resultText: "partial 199" }],
+      },
+      {
+        role: "tool",
+        parts: [{ type: "toolExecution", toolCallId: "c2", toolName: "bash", summary: "second", status: "running", resultText: "other final" }],
+      },
+    ]);
+  });
+
+  it("requests one authoritative refresh when the stream buffer overflows", async () => {
+    const socket = new EmitSocket();
+    const setStateCalls: Partial<AppState>[] = [];
+    const streamSnapshot = vi.fn<typeof defaultApi.streamSnapshot>(() => Promise.resolve({ seq: 0, partial: null }));
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => Promise.resolve(emptyPage),
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot,
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { setStateCalls.push(patch); state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      {
+        api,
+        socket,
+        streamEventBuffer: new StreamEventBuffer({ maxEventRuns: 1, maxBytes: 262_144 }),
+      },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+    streamSnapshot.mockClear();
+    setStateCalls.length = 0;
+
+    socket.emit({ type: "assistant.delta", text: "discarded", seq: 1 });
+    socket.emit({ type: "assistant.thinking.delta", text: "overflow", seq: 2 });
+
+    expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(0);
+    runPendingAnimationFrames();
+    expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(0);
+
+    await vi.waitFor(() => { expect(streamSnapshot).toHaveBeenCalledOnce(); });
+    await vi.waitFor(() => {
+      expect(setStateCalls.filter((patch) => patch.messages !== undefined)).toHaveLength(1);
+    });
+    expect(streamSnapshot).toHaveBeenCalledOnce();
+    expect(state.messages).toEqual([]);
   });
 });

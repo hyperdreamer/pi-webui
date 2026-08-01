@@ -54,7 +54,7 @@ type BufferedRun = TextRun | ShellRun | ToolRun;
 
 const textEncoder = new TextEncoder();
 
-export function isBufferedStreamEvent(event: SessionUiEvent): boolean {
+export function isBufferedStreamEvent(event: SessionUiEvent): event is BufferedStreamEvent {
   return event.type === "assistant.delta"
     || event.type === "assistant.thinking.delta"
     || event.type === "shell.chunk"

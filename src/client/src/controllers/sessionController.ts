@@ -8,6 +8,7 @@ import { ChatTranscriptStore } from "../chatTranscriptStore";
 import { isShellInput } from "../inputModes";
 import { fileCompletionInsertText } from "../promptCompletions";
 import { SessionSocket, type GlobalSessionEvent, type SessionUiEvent } from "../sessionSocket";
+import { StreamEventBuffer, isBufferedStreamEvent } from "../streamEventBuffer";
 import { isArchivableSessionInfo, isTransientNewSessionInfo, sessionPersistenceOptionsForRuntime } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
@@ -54,6 +55,7 @@ export interface SessionControllerDependencies {
   api?: typeof defaultApi;
   socket?: SessionEventSocket;
   transcripts?: ChatTranscriptStore;
+  streamEventBuffer?: StreamEventBuffer;
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
@@ -110,7 +112,7 @@ export class SessionController {
   // in the committed history + seeded partial and must be dropped, so every event
   // applies exactly once. Reset whenever the selection changes.
   private streamWatermark: { sessionId: string; seq: number } | undefined;
-  private pendingTranscriptEvents: SessionUiEvent[] = [];
+  private readonly streamEventBuffer: StreamEventBuffer;
   private pendingStatusBySession = new Map<string, SessionStatus>();
   private pendingActivityBySession = new Map<string, SessionActivity>();
   private pendingFrame: number | undefined;
@@ -130,6 +132,7 @@ export class SessionController {
     this.socket = deps.socket ?? new SessionSocket();
     this.api = deps.api ?? defaultApi;
     this.transcripts = deps.transcripts ?? new ChatTranscriptStore();
+    this.streamEventBuffer = deps.streamEventBuffer ?? new StreamEventBuffer();
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
@@ -1392,7 +1395,7 @@ export class SessionController {
       this.queueActivityUpdate(event.activity);
       return;
     }
-    if (isHighFrequencyTranscriptEvent(event)) {
+    if (isBufferedStreamEvent(event)) {
       this.queueTranscriptEvent(event);
       return;
     }
@@ -1412,9 +1415,14 @@ export class SessionController {
     }
   }
 
-  private queueTranscriptEvent(event: SessionUiEvent): void {
-    this.pendingTranscriptEvents.push(event);
+  private queueTranscriptEvent(event: Parameters<StreamEventBuffer["enqueue"]>[0]): void {
+    this.streamEventBuffer.enqueue(event);
     this.schedulePendingFlush();
+  }
+
+  /** Buffered transcript-event count after materializing coalesced runs. Exposed for tests. */
+  pendingTranscriptEventCount(): number {
+    return this.streamEventBuffer.eventCount;
   }
 
   private queueStatusUpdate(status: SessionStatus): void {
@@ -1442,13 +1450,13 @@ export class SessionController {
   // the latest buffered value per session. These writes run in a single task, so
   // Lit batches them into one render.
   flushPendingUpdates(): void {
-    if (this.pendingTranscriptEvents.length > 0) {
-      const events = this.pendingTranscriptEvents;
-      this.pendingTranscriptEvents = [];
+    const { events, resyncRequired } = this.streamEventBuffer.drain();
+    if (events.length > 0) {
       let messages = this.getState().messages;
       for (const event of events) messages = this.transcripts.applyLiveEvent(messages, event) ?? messages;
       if (messages !== this.getState().messages) this.setState({ messages });
     }
+    if (resyncRequired) void this.refreshSelectedSession();
     if (this.pendingActivityBySession.size > 0) {
       const activities = Array.from(this.pendingActivityBySession.values());
       this.pendingActivityBySession.clear();
@@ -1462,7 +1470,7 @@ export class SessionController {
   }
 
   private clearPendingUpdates(): void {
-    this.pendingTranscriptEvents = [];
+    this.streamEventBuffer.clear();
     this.pendingStatusBySession.clear();
     this.pendingActivityBySession.clear();
     if (this.pendingFrame === undefined) return;
@@ -1659,10 +1667,6 @@ function sessionMessageCountPatch(state: AppState, sessionId: string, messageCou
     ...(projectSessions === undefined ? {} : { projectSessions }),
     ...(selectedSession !== state.selectedSession ? { selectedSession } : {}),
   };
-}
-
-function isHighFrequencyTranscriptEvent(event: SessionUiEvent): boolean {
-  return event.type === "assistant.delta" || event.type === "assistant.thinking.delta" || event.type === "shell.chunk";
 }
 
 function isSessionNotFoundError(error: unknown): boolean {
