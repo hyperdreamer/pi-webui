@@ -331,7 +331,7 @@ export default function fakeSddTools(pi) {
       const sessionId = String(params?.sessionId ?? "");
       logCall("check_subsession", { sessionId });
       const registry = loadRegistry();
-      const record = Object.values(registry).find((entry) => entry.sessionId === sessionId);
+      const record = registry[sessionId];
       if (record === undefined) return textResult(`ERROR: unknown sessionId: ${sessionId}`);
       return textResult(JSON.stringify({ sessionId, status: "completed" }, null, 2));
     },

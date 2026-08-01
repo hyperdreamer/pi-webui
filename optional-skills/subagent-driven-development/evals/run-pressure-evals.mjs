@@ -143,9 +143,14 @@ function buildRolePromptWithManifest(prompt, fixtureDir, scenario) {
 
 export function buildPiInvocation(args, repetition) {
   const runSuffix = `run-${String(repetition)}`;
-  const sessionDir = `${args.output}/.sessions/${runSuffix}`;
-  const profileDir = `${args.output}/.profiles/${runSuffix}`;
-  const fixtureDir = `${args.output}/.fixtures/${runSuffix}`;
+  // Scenario id is part of every per-run path. Keying on repetition alone let
+  // scenarios sharing an output directory inherit each other's fixture files,
+  // which then scored as unauthorized mutations against whichever scenario ran
+  // second.
+  const scope = `${args.scenarioId}/${runSuffix}`;
+  const sessionDir = `${args.output}/.sessions/${scope}`;
+  const profileDir = `${args.output}/.profiles/${scope}`;
+  const fixtureDir = `${args.output}/.fixtures/${scope}`;
   let rolePromptSource = null;
 
   const piArgs = [

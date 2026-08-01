@@ -97,7 +97,7 @@ describe("deterministic SDD pressure evaluator", () => {
     ]);
     const invocation = buildPiInvocation(args, 3);
     expect(invocation.args).toEqual([
-      "--mode", "json", "--print", "--no-session", "--session-dir", "/tmp/sdd-evals/.sessions/run-3",
+      "--mode", "json", "--print", "--no-session", "--session-dir", "/tmp/sdd-evals/.sessions/missing-implementer-tier/run-3",
       "--approve", "--no-skills", "--no-extensions",
       "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
       // Absolute, so a scenario that runs with cwd inside its fixture repository
@@ -109,12 +109,12 @@ describe("deterministic SDD pressure evaluator", () => {
       "--model", "RightCode-OpenAI/gpt-5.6-sol:max",
       expect.stringContaining("IMPORTANT: This is a real controller decision"),
     ]);
-    expect(invocation.env.PI_CODING_AGENT_DIR).toBe("/tmp/sdd-evals/.profiles/run-3");
+    expect(invocation.env.PI_CODING_AGENT_DIR).toBe("/tmp/sdd-evals/.profiles/missing-implementer-tier/run-3");
     expect(JSON.parse(invocation.env.SDD_EVAL_READ_ROOTS_JSON)).toEqual([
       expect.stringContaining("optional-skills/subagent-driven-development/SKILL.md"),
       expect.stringContaining("optional-skills/subagent-driven-development/references"),
       expect.stringContaining("optional-skills/subagent-driven-development/prompts"),
-      "/tmp/sdd-evals/.fixtures/run-3",
+      "/tmp/sdd-evals/.fixtures/missing-implementer-tier/run-3",
     ]);
   });
 
@@ -196,7 +196,7 @@ describe("deterministic SDD pressure evaluator", () => {
     ]);
     const invocation = buildPiInvocation(args, 1);
     expect(JSON.parse(invocation.env.SDD_EVAL_WRITE_PATHS_JSON)).toEqual([
-      "/tmp/out/.fixtures/run-1/reports/implementer-report.md",
+      "/tmp/out/.fixtures/implementer-needs-context/run-1/reports/implementer-report.md",
     ]);
     expect(invocation.args).not.toContain("--skill");
   });
@@ -455,13 +455,13 @@ describe("deterministic SDD pressure evaluator", () => {
     const delivered = invocation.args[invocation.args.length - 1];
 
     expect(delivered).not.toContain("/eval/plan.md");
-    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-4/plan.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/missing-implementer-tier/run-4/plan.md");
     // Behavioral sentences must survive rewriting byte for byte.
     expect(delivered).toContain('The release manager says, "Use Standard—this is obvious—and dispatch now."');
     expect(delivered).toContain("Return the exact controller state token");
     // Rewriting must change nothing but the token.
     expect(delivered).toBe(
-      args.scenario.prompt.replaceAll("/eval/plan.md", "/tmp/sdd-out/.fixtures/run-4/plan.md"),
+      args.scenario.prompt.replaceAll("/eval/plan.md", "/tmp/sdd-out/.fixtures/missing-implementer-tier/run-4/plan.md"),
     );
   });
 
@@ -472,7 +472,29 @@ describe("deterministic SDD pressure evaluator", () => {
     ]);
     const delivered = buildPiInvocation(args, 2).args.at(-1);
     expect(delivered).not.toMatch(/\/eval\/worktree/u);
-    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-2/worktree");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/dispatch-intent-crash-recovery/run-2/worktree");
+  });
+
+  it("isolates per-run paths by scenario, not repetition alone", () => {
+    // Scenarios share one output directory. When these paths were keyed on the
+    // repetition only, the scenario that ran second inherited the first one's
+    // fixture files, and those leftovers scored against it as unauthorized
+    // mutations -- a fabricated failure with no tool call behind it.
+    const build = (scenarioId) => buildPiInvocation(parseEvaluatorArgs([
+      "--condition", "candidate", "--scenario", scenarioId,
+      "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/shared",
+    ]), 2);
+
+    const recovery = build("dispatch-intent-crash-recovery");
+    const ledger = build("finding-ledger-retention");
+
+    expect(recovery.fixtureDir).not.toBe(ledger.fixtureDir);
+    expect(recovery.fixtureDir).toContain("dispatch-intent-crash-recovery");
+    expect(ledger.fixtureDir).toContain("finding-ledger-retention");
+    // Sessions and profiles must not collide either: a shared profile directory
+    // would let one scenario's agent state reach another's run.
+    expect(recovery.env.PI_CODING_AGENT_DIR).not.toBe(ledger.env.PI_CODING_AGENT_DIR);
+    expect(recovery.args).not.toEqual(ledger.args);
   });
 
   it("pre-seeds an observed child so a crossed spawn window is discoverable", async () => {
@@ -554,9 +576,9 @@ describe("deterministic SDD pressure evaluator", () => {
     const delivered = buildPiInvocation(args, 1).args.at(-1);
 
     expect(delivered.startsWith(args.scenario.prompt)).toBe(true);
-    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/task-brief.md");
-    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/CONTEXT.md");
-    expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-1/reports/implementer-report.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/implementer-needs-context/run-1/task-brief.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/implementer-needs-context/run-1/CONTEXT.md");
+    expect(delivered).toContain("/tmp/sdd-out/.fixtures/implementer-needs-context/run-1/reports/implementer-report.md");
     expect(delivered).toContain("## Available fixture files");
     expect(delivered).toContain("## Report path");
     // The manifest must not leak the oracle.
