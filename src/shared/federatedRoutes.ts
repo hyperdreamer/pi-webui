@@ -83,6 +83,8 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/sessions/:sessionId/system-prompt" },
   { method: "GET", path: "/sessions/:sessionId/stream-snapshot" },
   { method: "GET", path: "/sessions/:sessionId/models" },
+  { method: "GET", path: "/sessions/:sessionId/model-policy" },
+  { method: "PUT", path: "/sessions/:sessionId/model-policy" },
   { method: "POST", path: "/sessions/:sessionId/model" },
   { method: "POST", path: "/sessions/:sessionId/model/cycle" },
   { method: "GET", path: "/sessions/:sessionId/thinking-levels" },

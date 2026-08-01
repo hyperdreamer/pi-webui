@@ -49,6 +49,7 @@ export interface SessionRouteService {
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;
   modelPolicy(ref: SessionRouteLookup): Promise<SessionModelPolicyResponse>;
+  setModelPolicy(ref: SessionRouteLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse>;
   systemPrompt(ref: SessionRouteLookup): Promise<ClientSessionSystemPrompt>;
   streamSnapshot(ref: SessionRouteLookup): Promise<SessionStreamSnapshot>;
   notificationCatalog(): SessionNotificationCatalogSnapshot | Promise<SessionNotificationCatalogSnapshot>;
