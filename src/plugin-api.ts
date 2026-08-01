@@ -122,6 +122,8 @@ export interface PluginAction {
   enabled?: (context: PluginRuntimeContext) => boolean;
   /** Explain why a disabled action is visible but unavailable. */
   disabledReason?: (context: PluginRuntimeContext) => string | undefined;
+  /** Close the action palette after this action runs. Defaults to keeping it open. */
+  closesActionPalette?: boolean;
   run: (context: PluginRuntimeContext) => void | Promise<void>;
 }
 

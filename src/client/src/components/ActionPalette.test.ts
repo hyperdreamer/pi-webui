@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppAction } from "../actions";
+import { closesActionPaletteAfterRun } from "../actions";
 import { filterActionPaletteActions } from "./ActionPalette";
 
 describe("filterActionPaletteActions", () => {
@@ -19,6 +20,20 @@ describe("filterActionPaletteActions", () => {
     ];
 
     expect(filterActionPaletteActions(actions, "support cleanup").map((item) => item.id)).toEqual(["cleanup"]);
+  });
+});
+
+describe("closesActionPaletteAfterRun", () => {
+  it("keeps the palette open for actions that do not opt in", () => {
+    expect(closesActionPaletteAfterRun(action("refresh", "Refresh Files"))).toBe(false);
+  });
+
+  it("closes the palette when the action opts in", () => {
+    expect(closesActionPaletteAfterRun(action("focus", "Focus Prompt", { closesActionPalette: true }))).toBe(true);
+  });
+
+  it("keeps the palette open when the action opts out explicitly", () => {
+    expect(closesActionPaletteAfterRun(action("toggle", "Hide Info Tab", { closesActionPalette: false }))).toBe(false);
   });
 });
 

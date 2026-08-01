@@ -2,6 +2,7 @@ import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
 import { configApi, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
+import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -1973,6 +1974,7 @@ export class PiWebUiApp extends LitElement {
         title: "Clean Up Sessions",
         description: "Preview and manually clean up idle or archived sessions on the selected machine",
         group: "Sessions",
+        closesActionPalette: true,
         ...(canCleanup ? {} : { enabled: false, disabledReason: this.sessionCleanupUnavailableMessage() }),
         run: () => { this.openSessionCleanupDialog(); },
       },
@@ -2031,6 +2033,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the machine selector",
         shortcut: "mod+g m",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("machines"),
       },
       {
@@ -2039,6 +2042,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the projects list",
         shortcut: "mod+g p",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("projects"),
       },
       {
@@ -2047,6 +2051,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the workspaces list",
         shortcut: "mod+g w",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("workspaces"),
       },
       {
@@ -2055,6 +2060,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the sessions list",
         shortcut: "mod+g s",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("sessions"),
       },
     ];
@@ -3131,7 +3137,7 @@ export class PiWebUiApp extends LitElement {
         </main>
         ${this.renderWorkspacePanelEdgeControl()}
         ${this.renderWorkspacePanel()}
-        ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
+        ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { if (closesActionPaletteAfterRun(action)) this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
         ${this.renderSessionTreeNavigator(state)}
         ${this.projectBrowserOpen ? html`<project-browser-dialog
           .projects=${state.projects}

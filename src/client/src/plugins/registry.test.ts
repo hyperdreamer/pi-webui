@@ -64,6 +64,29 @@ describe("PluginRegistry", () => {
     expect(registry.getWorkspacePanels().map((panel) => panel.id)).toEqual(["core:workspace.files", "core:workspace.git", "core:workspace.terminal", "core:workspace.info"]);
   });
 
+  it("preserves closesActionPalette through qualification", () => {
+    const registry = new PluginRegistry();
+    registry.register({
+      id: "example",
+      plugin: {
+        apiVersion: 1,
+        name: "Example",
+        activate: () => ({
+          contributions: {
+            actions: [
+              { id: "closing", title: "Closing", closesActionPalette: true, run: () => undefined },
+              { id: "persistent", title: "Persistent", run: () => undefined },
+            ],
+          },
+        }),
+      },
+    });
+
+    const actions = registry.getActions(createContext().context);
+    expect(actions.find((action) => action.id === "example:closing")?.closesActionPalette).toBe(true);
+    expect(actions.find((action) => action.id === "example:persistent")?.closesActionPalette).toBeUndefined();
+  });
+
   it("provides html and svg helpers to plugin activation and callbacks", () => {
     const registry = new PluginRegistry();
     registry.register({

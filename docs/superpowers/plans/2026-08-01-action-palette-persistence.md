@@ -107,41 +107,117 @@ This is the behavioral core of the change. After it, every action keeps the pale
 
 Create `src/client/src/components/PiWebUiApp.actionPalette.test.ts`.
 
-This test uses TemplateResult handler extraction, which `.agents/skills/testing-guide/SKILL.md` treats as an escape hatch requiring justification. It qualifies: the behavior under test *is* the Lit template wiring of `.onRun` on `<action-palette>`, and rendering the full `PiWebUiApp` shell would need machine, project, session, and controller fakes far out of proportion to one branch. Check whether a helper for locating a bound property in a `TemplateResult` already exists in a sibling test such as `PiWebUiApp.sessionRename.test.ts` and reuse it if so; otherwise keep the one below file-local. Include the justifying comment.
+Copy the mounting harness from `src/client/src/components/PiWebUiApp.activityRail.focus.test.ts`: the `// @vitest-environment jsdom` pragma on line 1, the `getContext` canvas spy, the dynamic `await import("./PiWebUiApp")`, `mountWithoutAppSideEffects`, `setAppState`, and the `afterEach` cleanup. Do not use TemplateResult handler extraction; a real DOM harness already exists in that sibling file, so per `.agents/skills/testing-guide/SKILL.md` the escape hatch is not warranted here.
+
+The palette lives in `PiWebUiApp`'s own `renderRoot`, and each row is a `<button>` inside `<action-palette>`'s shadow root. Open it by setting state, and read `actionPaletteOpen` back through `Reflect.get(app, "state")`.
 
 ```ts
-import { describe, expect, it } from "vitest";
-import { closesActionPaletteAfterRun } from "../actions";
+// @vitest-environment jsdom
+
+import { LitElement } from "lit";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { initialAppState, type AppState } from "../appState";
 import type { AppAction } from "../actions";
 
-// Direct handler reasoning is proportionate here: the behavior under test is the
-// close-vs-keep-open decision applied to a palette run, and rendering the full
-// app shell would require disproportionate controller fakes for one branch.
-function paletteRun(closed: boolean[], action: AppAction): void {
-  if (closesActionPaletteAfterRun(action)) closed.push(true);
-}
+vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
+const { PiWebUiApp } = await import("./PiWebUiApp");
+const { ActionPalette } = await import("./ActionPalette");
+type PiWebUiAppElement = InstanceType<typeof PiWebUiApp>;
+let mountedApp: PiWebUiAppElement | undefined;
 
-describe("action palette run wiring", () => {
-  it("leaves the palette open for actions that do not opt in", () => {
-    const closed: boolean[] = [];
-    paletteRun(closed, { id: "refresh", title: "Refresh Files", run: () => undefined });
-    expect(closed).toEqual([]);
+afterEach(async () => {
+  document.body.replaceChildren();
+  await mountedApp?.updateComplete;
+  await Promise.resolve();
+  mountedApp = undefined;
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("PiWebUiApp action palette persistence", () => {
+  it("keeps the palette open after running an action that does not opt out", async () => {
+    const { app, ran } = await openPaletteWith([
+      { id: "test.persistent", title: "Refresh Files", run: () => { ran.push("test.persistent"); } },
+    ]);
+
+    clickPaletteRow(app, "Refresh Files");
+    await app.updateComplete;
+
+    expect(ran).toEqual(["test.persistent"]);
+    expect(paletteOpen(app)).toBe(true);
+    expect(actionPalette(app)).not.toBeNull();
   });
 
-  it("closes the palette for actions that opt in", () => {
-    const closed: boolean[] = [];
-    paletteRun(closed, { id: "focus", title: "Focus Prompt", closesActionPalette: true, run: () => undefined });
-    expect(closed).toEqual([true]);
+  it("closes the palette after running an action that opts in", async () => {
+    const { app, ran } = await openPaletteWith([
+      { id: "test.closing", title: "Focus Prompt", closesActionPalette: true, run: () => { ran.push("test.closing"); } },
+    ]);
+
+    clickPaletteRow(app, "Focus Prompt");
+    await app.updateComplete;
+
+    expect(ran).toEqual(["test.closing"]);
+    expect(paletteOpen(app)).toBe(false);
   });
 });
+
+async function openPaletteWith(actions: AppAction[]): Promise<{ app: PiWebUiAppElement; ran: string[] }> {
+  const ran: string[] = [];
+  const app = new PiWebUiApp();
+  setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+  vi.spyOn(PiWebUiApp.prototype, "getActions" as never).mockReturnValue(actions as never);
+  mountWithoutAppSideEffects(app);
+  await app.updateComplete;
+  return { app, ran };
+}
+
+function mountWithoutAppSideEffects(app: PiWebUiAppElement): void {
+  mountedApp = app;
+  vi.spyOn(PiWebUiApp.prototype, "connectedCallback").mockImplementation(function (this: PiWebUiAppElement): void {
+    LitElement.prototype.connectedCallback.call(this);
+  });
+  vi.spyOn(PiWebUiApp.prototype, "disconnectedCallback").mockImplementation(function (this: PiWebUiAppElement): void {
+    LitElement.prototype.disconnectedCallback.call(this);
+  });
+  document.body.append(app);
+}
+
+function setAppState(app: PiWebUiAppElement, state: AppState): void {
+  if (!Reflect.set(app, "state", state)) throw new Error("Could not set PiWebUiApp state");
+}
+
+function paletteOpen(app: PiWebUiAppElement): boolean {
+  const state: unknown = Reflect.get(app, "state");
+  if (typeof state !== "object" || state === null) throw new Error("PiWebUiApp state is unavailable");
+  return Reflect.get(state, "actionPaletteOpen") === true;
+}
+
+function actionPalette(app: PiWebUiAppElement): InstanceType<typeof ActionPalette> | null {
+  const palette = app.renderRoot.querySelector("action-palette");
+  return palette instanceof ActionPalette ? palette : null;
+}
+
+function clickPaletteRow(app: PiWebUiAppElement, title: string): void {
+  const palette = actionPalette(app);
+  if (palette === null) throw new Error("Expected the action palette to be rendered");
+  const rows = [...(palette.shadowRoot?.querySelectorAll<HTMLButtonElement>(".options button") ?? [])];
+  const row = rows.find((candidate) => candidate.textContent?.includes(title) === true);
+  if (row === undefined) throw new Error(`Expected a palette row titled ${title}`);
+  row.click();
+}
 ```
 
-If that reduces to re-testing Task 1's helper, delete this file and rely on Task 1 plus the Task 6 manual verification instead. Record which choice you made in the commit body. Do not invent a component harness for it.
+Adapt freely if the harness needs adjusting — `getActions` is private, so the
+`as never` casts above may need a different shape, and if stubbing it proves
+awkward you may instead register a test plugin contributing the two actions, as
+`registerActivityPlugin` does in the sibling file. What must not change: the test
+mounts the real component, clicks a real row, and asserts real
+`actionPaletteOpen` state.
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npm test -- --run src/client/src/components/PiWebUiApp.actionPalette.test.ts`
-Expected: PASS once Task 1 is in place. If you deleted the file, skip to Step 3.
+Expected: FAIL on the first case. The current wiring closes the palette for every action, so `paletteOpen(app)` is `false` where the test expects `true`. The second case passes already.
 
 - [ ] **Step 3: Change the wiring**
 
@@ -409,6 +485,7 @@ git commit -m "feat(palette): classify core action palette persistence"
 **Files:**
 - Modify: `pi-webui-plugins/workspace-tasks/pi-webui-plugin.ts:14-24`
 - Create: `.changeset/action-palette-persistence.md`
+- Test: `src/client/src/components/PiWebUiApp.actionPalette.test.ts` (extend Task 2's file)
 
 **Interfaces:**
 - Consumes: `PluginAction.closesActionPalette` from Task 4.
@@ -456,21 +533,91 @@ Expected: no errors.
 Run: `npm run verify`
 Expected: PASS. This change touches shared types and a published API surface, so the narrow-layer checks are not sufficient on their own.
 
-- [ ] **Step 5: Manual check in the running UI**
+- [ ] **Step 5: Write the behavior test for the persistence consequences**
 
-The UI dev service autoreloads, so no session daemon restart is needed. Open the palette with the Actions button, then confirm:
+The spec's Consequences section claims things no earlier task asserts: that a
+toggle's row title flips in place while the palette stays open, that the search
+query survives a run, and that a dialog action leaves no palette behind. Cover
+them by extending `src/client/src/components/PiWebUiApp.actionPalette.test.ts`
+from Task 2, reusing its harness.
 
-1. `Hide Terminal Tab` keeps the palette open, and the row's title flips to `Show Terminal Tab` in place, with the search text preserved.
-2. `Refresh Files` keeps it open and can be clicked twice.
-3. `Focus Prompt` closes it and lands the caret in the composer.
-4. `Open Settings` closes it and the settings dialog is fully visible with nothing dimming it.
-5. `Go to Files` closes it and the files view is visible.
-6. The × button and Escape both still close it.
+There is no Playwright or Puppeteer in this repo; jsdom under
+`// @vitest-environment jsdom` is the browser environment available, and it is
+enough for all three.
 
-- [ ] **Step 6: Commit**
+Use the app's real actions here rather than stubbing `getActions`, so the
+classification from Tasks 3, 5, and this task is what gets exercised. Add:
+
+```ts
+  it("flips a layout toggle title in place and preserves the search query", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    const palette = actionPalette(app);
+    if (palette === null) throw new Error("Expected the action palette to be rendered");
+    const input = palette.shadowRoot?.querySelector<HTMLInputElement>("input");
+    if (input === null || input === undefined) throw new Error("Expected the palette search input");
+    input.value = "terminal tab";
+    input.dispatchEvent(new Event("input"));
+    await palette.updateComplete;
+
+    clickPaletteRow(app, "Hide Terminal Tab");
+    await app.updateComplete;
+    await palette.updateComplete;
+
+    expect(paletteOpen(app)).toBe(true);
+    expect(palette.shadowRoot?.querySelector("input")?.value).toBe("terminal tab");
+    const titles = [...(palette.shadowRoot?.querySelectorAll(".options button strong") ?? [])].map((node) => node.textContent);
+    expect(titles).toContain("Show Terminal Tab");
+    expect(titles).not.toContain("Hide Terminal Tab");
+  });
+
+  it("leaves no palette mounted when a dialog action opens its dialog", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+
+    clickPaletteRow(app, "Open Settings");
+    await app.updateComplete;
+
+    expect(paletteOpen(app)).toBe(false);
+    expect(actionPalette(app)).toBeNull();
+    expect(app.renderRoot.querySelector("settings-dialog")).not.toBeNull();
+  });
+```
+
+If `Open Settings` cannot reach `settings-dialog` in jsdom without more app
+wiring than this harness provides, assert only that the palette is closed and
+unmounted, and note the omission in your report. Do not stub `settings-dialog`
+into existence.
+
+Run: `npm test -- --run src/client/src/components/PiWebUiApp.actionPalette.test.ts`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 6: Two real-browser checks that jsdom cannot cover**
+
+jsdom has no layout or paint, so visual layering and real caret placement cannot
+be asserted there. Two checks remain:
+
+1. `Focus Prompt` closes the palette and the caret lands in the composer.
+2. `Open Settings` closes the palette and the settings dialog is fully visible, with no leftover dimming over it.
+
+These are **not** part of this task and are **not** committed. Playwright is
+installed globally on the development machine but deliberately absent from this
+repo's `package.json`, so a committed Playwright test would break `typecheck`,
+Knip, and CI for everyone else. The controller verifies these two separately via
+an ad-hoc script under `.superpowers/sdd/2026-08-01-action-palette-persistence/`
+(git-ignored), run against the dev server with `NODE_PATH=$(npm root -g)`.
+
+Skip this step as the task implementer. Leave it to the controller.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add pi-webui-plugins/workspace-tasks/pi-webui-plugin.ts .changeset/action-palette-persistence.md
+git add pi-webui-plugins/workspace-tasks/pi-webui-plugin.ts .changeset/action-palette-persistence.md src/client/src/components/PiWebUiApp.actionPalette.test.ts
 git commit -m "feat(palette): close the palette when opening the tasks panel"
 ```
 
@@ -478,8 +625,8 @@ git commit -m "feat(palette): close the palette when opening the tasks panel"
 
 ## Self-Review
 
-**Spec coverage.** Mechanism: field in Task 1, both `PluginAction` copies and the `getActions()` copy line in Task 4, wiring in Task 2, helper in Task 1. Classification: app-level in Task 3, core in Task 5, bundled in Task 6. Consequences: persisted query and index verified in Task 6 Step 5 check 1; no-dialog-under-backdrop verified by checks 4 and 5. Testing: helper tests in Task 1, catalog test in Task 5, qualification test in Task 4, and the spec's note that disabled rows need no new coverage is honored by not adding any.
+**Spec coverage.** Mechanism: field in Task 1, both `PluginAction` copies and the `getActions()` copy line in Task 4, wiring in Task 2, helper in Task 1. Classification: app-level in Task 3, core in Task 5, bundled in Task 6. Consequences: persisted query and in-place title flip asserted in Task 6 Step 5; no-dialog-under-backdrop covered by Task 6 Step 5's settings case for unmounting, with the visual half in Step 6. Testing: helper tests in Task 1, DOM wiring tests in Task 2, catalog test in Task 5, qualification test in Task 4, and the spec's note that disabled rows need no new coverage is honored by not adding any.
 
-**Placeholders.** None. Every code step carries literal content. Task 2 Step 1 and Task 6 Step 2 contain judgment calls, each with a stated decision rule and a default, not deferred work.
+**Placeholders.** None. Every code step carries literal content. Task 2 Step 1 and Task 6 Steps 2 and 5 contain judgment calls, each with a stated decision rule and a default, not deferred work.
 
 **Type consistency.** `closesActionPalette?: boolean` is identical in `AppAction`, both `PluginAction` declarations, and inherited by `QualifiedPluginAction extends AppAction`. `closesActionPaletteAfterRun` keeps that name in Tasks 1 and 2. `createCoreActions` matches the existing export. The fourteen IDs in Task 5's assertion match the fourteen listed in its Step 3 and the spec's table; `app.sessions.cleanup` and the four `app.navigation.focus-*` IDs belong to Task 3 and are correctly absent from the core-plugin assertion.
