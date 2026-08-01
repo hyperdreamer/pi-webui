@@ -83,6 +83,7 @@ export class PluginRegistry {
       if (action.description !== undefined) qualified.description = action.description;
       if (action.shortcut !== undefined) qualified.shortcut = action.shortcut;
       if (action.group !== undefined) qualified.group = action.group;
+      if (action.closesActionPalette !== undefined) qualified.closesActionPalette = action.closesActionPalette;
       if (enabled !== undefined) qualified.enabled = enabled;
       if (disabledReason !== undefined && disabledReason !== "") qualified.disabledReason = disabledReason;
       return qualified;
