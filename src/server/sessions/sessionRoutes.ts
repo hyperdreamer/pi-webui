@@ -558,9 +558,9 @@ function sessionStartRequestFromUnknown(value: unknown): { cwd: string; modelPol
 function modelPolicyMutationBodyFromUnknown(value: unknown): Record<string, unknown> {
   const record = requirePlainRecord(value, "request body");
   requireExactFields(record, ["cwd", "policy"], "model policy mutation");
-  requireString(record, "cwd");
+  const cwd = normalizeRequestCwd(requireString(record, "cwd"));
   if (!Object.hasOwn(record, "policy")) throw new Error("policy field is required");
-  return record;
+  return { ...record, cwd };
 }
 
 function sessionModelPolicyUpdateFromUnknown(value: unknown): SessionModelPolicyUpdate {

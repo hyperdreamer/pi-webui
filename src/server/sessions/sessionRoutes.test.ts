@@ -130,6 +130,8 @@ describe("session routes", () => {
       { method: "POST", url: "/sessions", payload: { modelPolicy: { mode: "tiered", tier: "advanced" } }, error: "cwd field must be a string" },
       { method: "POST", url: "/sessions", payload: { cwd: "/work", unexpected: true }, error: "session start field contains unsupported property" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { policy: exact }, error: "cwd field must be a string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "", policy: exact }, error: "cwd is required" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "   ", policy: exact }, error: "cwd must be an absolute path" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai" }, thinkingLevel: "high" } } }, error: "model id field must be a non-blank string" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "tiered" } }, error: "tier field is required" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { ...exact, tier: "advanced" } }, error: "model policy field contains unsupported property" },
