@@ -52,16 +52,45 @@ describe("PiWebUiApp workspace tab visibility", () => {
     ]));
     expect(mobileMainTabs(app).map((tab) => tab.id)).not.toContain("core:workspace.terminal");
   });
+
+  it("restores hidden Terminal and Info tabs when the app is recreated", () => {
+    const storage = createStorage();
+    const app = createApp(storage);
+    invokePrivateMethod(app, "toggleTerminalTab");
+    invokePrivateMethod(app, "toggleInfoTab");
+
+    expect(storage.getItem("pi-webui:terminal-tab-hidden")).toBe("true");
+    expect(storage.getItem("pi-webui:info-tab-hidden")).toBe("true");
+
+    const recreated = createApp(storage);
+
+    expect(Reflect.get(recreated, "terminalTabHidden")).toBe(true);
+    expect(Reflect.get(recreated, "infoTabHidden")).toBe(true);
+  });
 });
 
-function createApp(): PiWebUiApp {
-  const storage = {
-    getItem: () => null,
-    setItem: () => undefined,
-    removeItem: () => undefined,
-  };
+function createApp(storage = createStorage()): PiWebUiApp {
+  vi.stubGlobal("localStorage", createStorage());
   vi.stubGlobal("window", { location: { search: "" }, localStorage: storage });
   return new PiWebUiApp();
+}
+
+function createStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value); },
+    removeItem: (key) => { values.delete(key); },
+    clear: () => { values.clear(); },
+    key: (index) => [...values.keys()][index] ?? null,
+    get length() { return values.size; },
+  };
+}
+
+function invokePrivateMethod(app: PiWebUiApp, methodName: string): void {
+  const method: unknown = Reflect.get(app, methodName);
+  if (typeof method !== "function") throw new Error(`PiWebUiApp.${methodName} was not callable`);
+  method.call(app);
 }
 
 function renderWorkspacePanel(app: PiWebUiApp): TemplateResult {

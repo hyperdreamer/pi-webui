@@ -52,6 +52,7 @@ import { applyActiveShortcutPreferences } from "../shortcutPreferences";
 import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
 import { fitTerminalModalBounds, moveTerminalModal, resizeTerminalModal, type TerminalModalBounds, type TerminalModalViewport } from "../terminalModalGeometry";
 import { clampTerminalModalFontSize, clampTerminalModalOpacity, readTerminalModalPreferences, writeTerminalModalPreferences } from "../terminalModalPreferences";
+import { readWorkspaceTabVisibility, writeWorkspaceTabVisibility } from "../workspaceTabVisibility";
 import { isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, pendingWorkspaceDeletionIds, targetWorkspaceIdForRun, workspaceDeletionRunFilter } from "../workspaceDeletion";
 import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
 import "./MachineList";
@@ -361,8 +362,9 @@ export class PiWebUiApp extends LitElement {
   private readonly initialTerminalModalPreferences = readTerminalModalPreferences();
   @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
-  @state() private terminalTabHidden = readTerminalTabHidden();
-  @state() private infoTabHidden = readInfoTabHidden();
+  private readonly initialWorkspaceTabVisibility = readWorkspaceTabVisibility();
+  @state() private terminalTabHidden = this.initialWorkspaceTabVisibility.terminalHidden;
+  @state() private infoTabHidden = this.initialWorkspaceTabVisibility.infoHidden;
   @state() private railOrder: ReorderableRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
   @state() private compactRailOpen = false;
   private compactActivityRailLauncher: HTMLElement | undefined;
@@ -2855,12 +2857,16 @@ export class PiWebUiApp extends LitElement {
 
   private toggleTerminalTab(): void {
     this.terminalTabHidden = !this.terminalTabHidden;
-    writeTerminalTabHidden(this.terminalTabHidden);
+    this.persistWorkspaceTabVisibility();
   }
 
   private toggleInfoTab(): void {
     this.infoTabHidden = !this.infoTabHidden;
-    writeInfoTabHidden(this.infoTabHidden);
+    this.persistWorkspaceTabVisibility();
+  }
+
+  private persistWorkspaceTabVisibility(): void {
+    writeWorkspaceTabVisibility({ terminalHidden: this.terminalTabHidden, infoHidden: this.infoTabHidden });
   }
 
   private readonly handleStopActiveWork = (): void => {
@@ -3262,52 +3268,6 @@ function omitWorkspaceDeletionRun(runs: Record<string, TerminalCommandRun>, work
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => { resolve(); }));
-}
-
-const TERMINAL_TAB_HIDDEN_KEY = "pi-webui:terminal-tab-hidden";
-
-function readTerminalTabHidden(): boolean {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return false;
-    return storage.getItem(TERMINAL_TAB_HIDDEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeTerminalTabHidden(hidden: boolean): void {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return;
-    if (hidden) storage.setItem(TERMINAL_TAB_HIDDEN_KEY, "true");
-    else storage.removeItem(TERMINAL_TAB_HIDDEN_KEY);
-  } catch {
-    // Ignore localStorage quota/privacy errors.
-  }
-}
-
-const INFO_TAB_HIDDEN_KEY = "pi-webui:info-tab-hidden";
-
-function readInfoTabHidden(): boolean {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return false;
-    return storage.getItem(INFO_TAB_HIDDEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeInfoTabHidden(hidden: boolean): void {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return;
-    if (hidden) storage.setItem(INFO_TAB_HIDDEN_KEY, "true");
-    else storage.removeItem(INFO_TAB_HIDDEN_KEY);
-  } catch {
-    // Ignore localStorage quota/privacy errors.
-  }
 }
 
 function thinkingDescription(level: string): string | undefined {
