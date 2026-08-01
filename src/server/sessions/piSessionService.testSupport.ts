@@ -48,14 +48,27 @@ export interface TestSession extends PiAgentSession {
   getFollowUpMessages: () => readonly string[];
 }
 
-export function fakeSessionManager(cwd = "/workspace", patch: Partial<PiSessionManager> = {}): PiSessionManager {
+export type FakeSessionManagerPatch = Partial<Omit<PiSessionManager, "appendCustomEntry">> & {
+  appendCustomEntry?: PiSessionManager["appendCustomEntry"] | undefined;
+};
+
+export function fakeSessionManager(cwd = "/workspace", patch: FakeSessionManagerPatch = {}): PiSessionManager {
+  const branch: unknown[] = [];
+  let nextEntryId = 1;
+  const { appendCustomEntry: appendCustomEntryPatch, ...rest } = patch;
+  const defaultAppendCustomEntry = (customType: string, data?: unknown): string => {
+    branch.push({ type: "custom", customType, data });
+    return `entry-${String(nextEntryId++)}`;
+  };
+  const appendCustomEntry = "appendCustomEntry" in patch ? appendCustomEntryPatch : defaultAppendCustomEntry;
   return {
     getCwd: () => cwd,
     getSessionId: () => "session-1",
     getSessionFile: () => undefined,
-    getBranch: () => [],
+    getBranch: () => branch,
     getLeafId: () => "leaf-1",
-    ...patch,
+    ...(appendCustomEntry === undefined ? {} : { appendCustomEntry }),
+    ...rest,
   };
 }
 
@@ -146,7 +159,7 @@ export function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession>
     messages: [],
     state: {},
     sessionName: undefined,
-    model: undefined,
+    model: testModel(),
     thinkingLevel: "off",
     isStreaming: false,
     isCompacting: false,

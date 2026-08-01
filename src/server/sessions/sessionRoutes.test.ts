@@ -860,6 +860,7 @@ class CapturingRouteSessionService implements SessionRouteService {
 
   list(): never { throw unusedRouteMethod("list"); }
   start(): never { throw unusedRouteMethod("start"); }
+  modelPolicy(): never { throw unusedRouteMethod("modelPolicy"); }
 
   dismissWarning(lookup: SessionRouteLookup, dismissId: string): Promise<SessionStatus> {
     this.dismissWarningCalls.push({ lookup, dismissId });

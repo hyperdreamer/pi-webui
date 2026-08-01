@@ -49,6 +49,7 @@ export interface ResolvedRuntimeTier<TModel extends { provider: string; id: stri
 
 export interface ModelTierRegistry<TModel extends { provider: string; id: string }> {
   resolve(tier: ModelTier): ResolvedRuntimeTier<TModel>;
+  validate(): LadderValidation;
 }
 
 export interface ModelTierRegistryConfig {
@@ -93,6 +94,21 @@ export function createModelTierRegistry<TModel extends { provider: string; id: s
         throw new Error(`tier ${tier} names unavailable model ${resolved.model.provider}/${resolved.model.id}`);
       }
       return { tier: resolved.tier, model, thinkingLevel: resolved.thinkingLevel };
+    },
+
+    validate() {
+      const config = deps.loadConfig();
+      if (config.modelTiersError !== undefined) {
+        return { valid: false, reason: `model tier configuration is invalid: ${config.modelTiersError}` };
+      }
+      if (config.modelTiers === undefined) {
+        return { valid: false, reason: "model tier configuration is missing" };
+      }
+      const models = deps.models();
+      return validateLadder(config.modelTiers, {
+        models,
+        supportedThinkingLevels: (model) => deps.supportedThinkingLevels(model),
+      });
     },
   };
 }

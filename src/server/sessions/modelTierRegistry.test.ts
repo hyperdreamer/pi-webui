@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { MODEL_TIERS, createModelTierRegistry, resolveTier, validateLadder, type ModelTierLadder, type TierResolutionDeps } from "./modelTierRegistry.js";
+import { describe, expect, it, vi } from "vitest";
+import { MODEL_TIERS, createModelTierRegistry, resolveTier, validateLadder, type ModelTierLadder, type ModelTierRegistryConfig, type TierResolutionDeps } from "./modelTierRegistry.js";
 
 /**
  * Available models are the runtime's answer, not ours. These fixtures mirror the
@@ -99,6 +99,59 @@ describe("model tier registry", () => {
       });
 
       expect(() => registry.resolve("economy")).toThrow("model tier configuration is missing");
+    });
+
+    it("reports a missing ladder as invalid", () => {
+      const registry = createModelTierRegistry<AvailableModel>({
+        loadConfig: () => ({}),
+        models: availableModels,
+        supportedThinkingLevels,
+      });
+
+      expect(registry.validate()).toEqual({ valid: false, reason: "model tier configuration is missing" });
+    });
+
+    it("rereads configuration and fails closed after an invalid external edit", () => {
+      let config: ModelTierRegistryConfig = { modelTiers: ladder() };
+      const loadConfig = vi.fn(() => config);
+      const registry = createModelTierRegistry<AvailableModel>({
+        loadConfig,
+        models: availableModels,
+        supportedThinkingLevels,
+      });
+
+      expect(registry.validate()).toEqual({ valid: true });
+      config = { modelTiersError: "invalid JSON after external edit" };
+      expect(registry.validate()).toEqual({
+        valid: false,
+        reason: "model tier configuration is invalid: invalid JSON after external edit",
+      });
+      expect(loadConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it("reports a configured model missing from the current catalog as invalid", () => {
+      const registry = createModelTierRegistry<AvailableModel>({
+        loadConfig: () => ({
+          modelTiers: ladder({ frontier: { model: { provider: "acme", id: "retired" }, thinkingLevel: "max" } }),
+        }),
+        models: availableModels,
+        supportedThinkingLevels,
+      });
+
+      expect(registry.validate()).toEqual({
+        valid: false,
+        reason: "tier frontier names unavailable model acme/retired",
+      });
+    });
+
+    it("accepts a complete ladder against the current model catalog", () => {
+      const registry = createModelTierRegistry<AvailableModel>({
+        loadConfig: () => ({ modelTiers: ladder() }),
+        models: availableModels,
+        supportedThinkingLevels,
+      });
+
+      expect(registry.validate()).toEqual({ valid: true });
     });
   });
 

@@ -39,6 +39,8 @@ import { parsePromptAttachments } from "../../shared/promptAttachments.js";
 import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_LIMIT } from "../../shared/apiTypes.js";
 import type {
+  ClientSessionModelPolicyStatus,
+  ExactModelSelection,
   SavedPromptAttachment,
   SessionBulkArchiveResponse,
   SessionBulkDeleteArchivedResponse,
@@ -49,6 +51,7 @@ import type {
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
+  SessionModelPolicyResponse,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
@@ -70,7 +73,13 @@ import {
 } from "./sessionNotificationStore.js";
 import { plainTextTheme } from "./plainTextTheme.js";
 import { SessionUnreadStore, type SessionUnreadMutation } from "./sessionUnreadStore.js";
-import { createModelTierRegistry, isModelTier, runtimeThinkingLevels, type ModelTierRegistry, type ModelTier } from "./modelTierRegistry.js";
+import { createModelTierRegistry, isModelTier, runtimeThinkingLevels, type LadderValidation, type ModelTierRegistry, type ModelTier } from "./modelTierRegistry.js";
+import {
+  inspectSessionModelPolicy,
+  serializeSessionModelPolicy,
+  SESSION_MODEL_POLICY_CUSTOM_TYPE,
+  type SessionModelPolicyInspection,
+} from "./sessionModelPolicy.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -205,6 +214,7 @@ interface StartSessionOptions {
 
 interface InternalStartSessionOptions extends StartSessionOptions {
   creationProvenance?: SessionCreationProvenance;
+  initializeDefaultModelPolicy?: true;
 }
 
 function requirePromptText(value: unknown): string {
@@ -401,7 +411,7 @@ interface PendingSessionOpen {
   promise: Promise<ActiveSession<PiSessionRuntime>>;
 }
 
-interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "initialThinkingLevel" | "creationProvenance"> {
+interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "initialThinkingLevel" | "creationProvenance" | "initializeDefaultModelPolicy"> {
   notificationGeneration?: SessionNotificationGeneration;
   notifications?: "enabled" | "disabled";
 }
@@ -702,6 +712,9 @@ export class PiSessionService implements SessionRouteService {
   private readonly pendingSessionOpens = new Map<string, PendingSessionOpen>();
   private readonly activities = new Map<string, { phase: "active" | "idle" | "error"; label: string; detail?: string; at: string }>();
   private readonly generationMetrics = new WeakMap<PiAgentSession, GenerationMetrics>();
+  private readonly modelPolicyInspections = new WeakMap<PiAgentSession, SessionModelPolicyInspection>();
+  private readonly modelPolicyLadderValidations = new WeakMap<PiAgentSession, LadderValidation>();
+  private readonly modelPolicyBlockedReasons = new WeakMap<PiAgentSession, string>();
   private readonly heartbeat: NodeJS.Timeout;
   private readonly commandService: SessionCommandService<PiAgentSession>;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
@@ -1031,8 +1044,8 @@ export class PiSessionService implements SessionRouteService {
     return [...unarchivedSessions, ...archivedSessions];
   }
 
-  async start(cwd: string, options: StartSessionOptions = {}): Promise<ClientSession> {
-    return this.startSession(cwd, options);
+  async start(cwd: string): Promise<ClientSession> {
+    return this.startSession(cwd, { initializeDefaultModelPolicy: true });
   }
 
   private async startSession(cwd: string, options: InternalStartSessionOptions): Promise<ClientSession> {
@@ -1043,6 +1056,7 @@ export class PiSessionService implements SessionRouteService {
         ...(options.initialModel === undefined ? {} : { initialModel: options.initialModel }),
         ...(options.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: options.initialThinkingLevel }),
         ...(options.creationProvenance === undefined ? {} : { creationProvenance: options.creationProvenance }),
+        ...(options.initializeDefaultModelPolicy === undefined ? {} : { initializeDefaultModelPolicy: options.initializeDefaultModelPolicy }),
       },
     );
     const { session } = active.runtime;
@@ -1074,7 +1088,7 @@ export class PiSessionService implements SessionRouteService {
     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
     const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, input.cwd);
     if (!decision.allowed) throw spawnTargetError(decision);
-    const created = await this.start(decision.cwd, input.model === undefined ? {} : { initialModel: input.model });
+    const created = await this.startSession(decision.cwd, input.model === undefined ? {} : { initialModel: input.model });
     await this.prompt(created.id, input.prompt);
     this.logger.info(
       { spawningCwd: input.spawningCwd, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length },
@@ -1492,6 +1506,16 @@ export class PiSessionService implements SessionRouteService {
 
   async status(ref: PiSessionLookup): Promise<ClientSessionStatus> {
     return this.statusFromSession(await this.getOrOpen(ref));
+  }
+
+  async modelPolicy(ref: PiSessionLookup): Promise<SessionModelPolicyResponse> {
+    const session = await this.getOrOpen(ref);
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    return {
+      contractVersion: 1,
+      ...(inspection.kind === "invalid" ? {} : { policy: inspection.policy }),
+      session: this.statusFromSession(session),
+    };
   }
 
   async systemPrompt(ref: PiSessionLookup): Promise<ClientSessionSystemPrompt> {
@@ -2545,6 +2569,7 @@ export class PiSessionService implements SessionRouteService {
     if (notificationGeneration !== undefined) this.notificationGenerationBySession.set(runtime.session, notificationGeneration);
 
     try {
+      this.inspectAndCacheSessionModelPolicy(runtime.session);
       if (options.creationProvenance === "tracked-subsession") {
         await this.publishUnreadMutations(this.unreadStore.excludeSession(
           runtime.session.sessionId,
@@ -2565,6 +2590,7 @@ export class PiSessionService implements SessionRouteService {
             candidateGeneration = this.notificationStore.beginReplacement(priorGeneration, notificationIdentityForSession(session));
             this.notificationGenerationBySession.set(session, candidateGeneration);
           }
+          this.inspectAndCacheSessionModelPolicy(session);
           this.bindRuntime(active, session);
           boundSession = session;
           await this.bindSessionExtensions(session, candidateGeneration);
@@ -2582,6 +2608,9 @@ export class PiSessionService implements SessionRouteService {
         }
       });
       this.active.set(runtime.session.sessionId, active);
+      if (options.initializeDefaultModelPolicy === true) {
+        this.initializeDefaultSessionModelPolicy(runtime.session);
+      }
       if (notificationOwnership === "replacement" && notificationGeneration !== undefined) {
         this.publishNotificationMutations(this.notificationStore.commitReplacement(notificationGeneration));
         notificationOwnership = "external";
@@ -3220,6 +3249,81 @@ export class PiSessionService implements SessionRouteService {
     this.events.publishGlobal({ type: "activity.update", activity });
   }
 
+  private exactSelectionFromSession(session: PiAgentSession): ExactModelSelection {
+    const model = session.model;
+    if (
+      model === undefined
+      || typeof model.provider !== "string"
+      || model.provider.trim() === ""
+      || typeof model.id !== "string"
+      || model.id.trim() === ""
+    ) {
+      throw new Error("Session model policy requires a resolved runtime model provider and id");
+    }
+    if (typeof session.thinkingLevel !== "string" || session.thinkingLevel.trim() === "") {
+      throw new Error("Session model policy requires a resolved runtime thinking level");
+    }
+    return {
+      model: { provider: model.provider, id: model.id },
+      thinkingLevel: session.thinkingLevel,
+    };
+  }
+
+  private policyEntries(session: PiAgentSession): readonly unknown[] {
+    return session.sessionManager.getEntries?.() ?? session.sessionManager.getBranch();
+  }
+
+  private inspectAndCacheSessionModelPolicy(session: PiAgentSession): SessionModelPolicyInspection {
+    const inspection = inspectSessionModelPolicy(
+      this.policyEntries(session),
+      this.exactSelectionFromSession(session),
+    );
+    const ladderValidation = this.modelTierRegistry.validate();
+    this.modelPolicyInspections.set(session, inspection);
+    this.modelPolicyLadderValidations.set(session, ladderValidation);
+    if (inspection.kind === "invalid") this.modelPolicyBlockedReasons.set(session, inspection.reason);
+    else this.modelPolicyBlockedReasons.delete(session);
+    return inspection;
+  }
+
+  private initializeDefaultSessionModelPolicy(session: PiAgentSession): void {
+    if (session.sessionManager.appendCustomEntry === undefined) {
+      throw new Error("Cannot persist default model policy: session persistence is unavailable");
+    }
+    const policy = { mode: "exact" as const, exact: this.exactSelectionFromSession(session) };
+    session.sessionManager.appendCustomEntry(
+      SESSION_MODEL_POLICY_CUSTOM_TYPE,
+      serializeSessionModelPolicy(policy),
+    );
+    this.inspectAndCacheSessionModelPolicy(session);
+  }
+
+  private modelPolicyStatusFromSession(session: PiAgentSession): ClientSessionModelPolicyStatus {
+    const inspection = this.modelPolicyInspections.get(session);
+    if (inspection === undefined) throw new Error("Session model policy inspection is unavailable");
+    const ladderValidation = this.modelPolicyLadderValidations.get(session);
+    if (ladderValidation === undefined) throw new Error("Session model tier validation is unavailable");
+    const resolved = this.exactSelectionFromSession(session);
+    const blockedReason = this.modelPolicyBlockedReasons.get(session);
+
+    if (inspection.kind === "invalid") {
+      return {
+        mode: "exact",
+        resolved,
+        ladderValid: ladderValidation.valid,
+        ...(blockedReason === undefined ? {} : { blockedReason }),
+      };
+    }
+
+    return {
+      mode: inspection.policy.mode,
+      ...(inspection.policy.tier === undefined ? {} : { tier: inspection.policy.tier }),
+      resolved,
+      ladderValid: ladderValidation.valid,
+      ...(blockedReason === undefined ? {} : { blockedReason }),
+    };
+  }
+
   private statusFromSession(session: PiAgentSession): ClientSessionStatus {
     const stats = session.getSessionStats();
     const model = session.model === undefined ? undefined : modelToClientModel(session.model);
@@ -3231,6 +3335,7 @@ export class PiSessionService implements SessionRouteService {
       persisted: sessionFileExists(session.sessionFile),
       ...(model === undefined ? {} : { model }),
       thinkingLevel: session.thinkingLevel,
+      modelPolicy: this.modelPolicyStatusFromSession(session),
       isStreaming: session.isStreaming,
       isCompacting: session.isCompacting,
       isBashRunning: session.isBashRunning,

@@ -7,6 +7,7 @@ import type {
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
+  SessionModelPolicyResponse,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
 } from "../../shared/apiTypes.js";
@@ -46,6 +47,7 @@ export interface SessionRouteService {
   exportHistory(ref: SessionRouteLookup): Promise<string>;
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;
+  modelPolicy(ref: SessionRouteLookup): Promise<SessionModelPolicyResponse>;
   systemPrompt(ref: SessionRouteLookup): Promise<ClientSessionSystemPrompt>;
   streamSnapshot(ref: SessionRouteLookup): Promise<SessionStreamSnapshot>;
   notificationCatalog(): SessionNotificationCatalogSnapshot | Promise<SessionNotificationCatalogSnapshot>;
