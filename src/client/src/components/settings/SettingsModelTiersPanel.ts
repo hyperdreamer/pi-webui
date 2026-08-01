@@ -215,7 +215,6 @@ export class SettingsModelTiersPanel extends LitElement {
           <label class="sr-only" for=${`select-model-${tier}`}>${meta.label} tier model</label>
           <select
             id=${`select-model-${tier}`}
-            aria-label=${`${meta.label} tier model`}
             aria-invalid=${String(!rowValidation.valid)}
             ?disabled=${disabled}
             .value=${selectedRef ? modelKey(selectedRef) : ""}
@@ -247,7 +246,6 @@ export class SettingsModelTiersPanel extends LitElement {
           <label class="sr-only" for=${`select-thinking-${tier}`}>${meta.label} tier thinking level</label>
           <select
             id=${`select-thinking-${tier}`}
-            aria-label=${`${meta.label} tier thinking level`}
             aria-invalid=${String(!rowValidation.valid)}
             ?disabled=${disabled || selectedRef === undefined}
             .value=${row.thinkingLevel}
