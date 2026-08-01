@@ -37,6 +37,14 @@ jobs:
         run: npm run smoke:package-install
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            tag="${version#*-}"
+            tag="${tag%%.*}"
+            npm publish --access public --provenance --tag "$tag"
+          else
+            npm publish --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0-beta.1
+
+### Patch Changes
+
+- Add a Settings → Model tiers page for editing the six-tier model/thinking ladder used by tracked child sessions, with live validation against the selected machine's available models and thinking levels.
+- 0b53a10: Add plugin-contributed Activity Rail activities with responsive dialog access, and move bundled Memory from the workspace tab to the Activity Rail.
+
 ## 1.10.7
 
 ### Patch Changes
