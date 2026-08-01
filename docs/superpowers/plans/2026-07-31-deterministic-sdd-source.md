@@ -61,10 +61,9 @@
 - `optional-skills/subagent-driven-development/scripts/lib/prompt-renderer.mjs` — role schema and first-token prompt rendering.
 - `optional-skills/subagent-driven-development/scripts/lib/manifest.mjs` — ownership/runtime-tree validation and hashing.
 - `optional-skills/subagent-driven-development/scripts/sdd-state` — executable shell adapter.
-- `optional-skills/subagent-driven-development/scripts/sdd-workspace` — per-plan ignored workspace resolver.
-- `optional-skills/subagent-driven-development/scripts/task-brief` — exact task extractor and tier validator.
-- `optional-skills/subagent-driven-development/scripts/review-package` — bounded commit/stat/diff package writer.
 - `optional-skills/subagent-driven-development/pi-webui-skill.json` — opt-in ownership/runtime-file manifest; not an installer.
+
+Inherited from the installed original skill and deliberately **not** recreated here: `scripts/sdd-workspace` (per-plan ignored workspace resolver), `scripts/task-brief` (task text extractor), and `scripts/review-package` (commit/stat/diff package writer). Task 7 tests that the candidate composes with them.
 
 ### Tests and evaluations
 
@@ -758,6 +757,18 @@ git commit -m "feat(skills): validate tiered SDD plans"
 
 **Interfaces:** Consumes immutable version-1 state and one typed event. Produces `createInitialState`, `reduceState`, and `validateState` from `scripts/lib/state-machine.mjs`, re-exported by the CLI facade. The reducer performs no filesystem, Git, tool, random, or clock work.
 
+**Scope boundary for Tasks 5–7.** The candidate's contribution is one thing: a code reducer that mechanically refuses illegal transitions. It is not a reimplementation of the original SDD.
+
+The justification is measured, not assumed. In the Task 3 baseline, both conditions on `post-compaction-illegal-transition` produced the correct phase token and then inverted the canonical-artifact rule, asserting the append-only ledger was authoritative and `state.json` a derived cache. Both invented repair mechanisms; one minted a fabricated dispatch key. That gap is unreachable by reasoning because it is a convention the skill defines. Prose instructing a controller to trust a ledger is advice; a reducer that rejects the transition is enforcement.
+
+Inherit from the original skill rather than rebuild:
+
+- **Git and artifacts as ground truth.** Its ledger discipline — "trust the ledger and `git log` over your own recollection" — is the recovery model this plan adopts. The reducer makes that discipline mandatory instead of advisory.
+- **The plan-scoped workspace layout** and its working `sdd-workspace`, `task-brief`, and `review-package` scripts.
+- **Its operational wisdom**, which these tasks do not attempt to replace: dispatch-prompt hygiene, artifact handover instead of context pasting, turn-count-over-token-price economics, and the four implementer status semantics.
+
+Explicitly out of scope for Tasks 5–7: model selection, which the typed `tier` parameter already binds deterministically in PI WEBUI; and dispatch-level idempotency, which the runtime does not offer.
+
 This task covers initial state, capability and plan gates, and the task-dispatch/context loop. Task 6 completes the same module with the review, fix, and final loops and writes the transition reference. Splitting at this seam keeps each child's working set to one loop family; the module is importable and fully green at the end of this task even though the reducer is not yet total.
 
 - [ ] **Step 1: Write initial-state and capability-gate RED tests**
@@ -972,14 +983,13 @@ git commit -m "feat(skills): complete deterministic SDD state machine"
 - Modify: `optional-skills/subagent-driven-development/scripts/sdd-state.mjs`
 - Create: `optional-skills/subagent-driven-development/scripts/lib/state-store.mjs`
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
-- Create: `optional-skills/subagent-driven-development/scripts/sdd-workspace`
-- Create: `optional-skills/subagent-driven-development/scripts/task-brief`
-- Create: `optional-skills/subagent-driven-development/scripts/review-package`
 - Create: `optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs`
 
-**Interfaces:** Consumes validated plans, Git identity, expected revision, typed event JSON files, and recorded Git ranges. Produces atomic state writes, audit repair, exact task briefs, and bounded review packages. No command dispatches a child.
+**Interfaces:** Consumes validated plans, Git identity, expected revision, and typed event JSON files. Produces atomic state writes and audit repair. No command dispatches a child.
 
 Ground truth for "was this work done" is the same as the original SDD's: commits in Git and artifacts on disk, not session identity. The ledger correlates a controller-owned `dispatchKey` to a runtime `sessionId` so recovery can inspect the right child, but a lost correlation degrades to inspecting commits and reports rather than to an unrecoverable run.
+
+**Reuse, do not reimplement.** The original skill already ships working `scripts/sdd-workspace`, `scripts/task-brief`, and `scripts/review-package`, and its plan-scoped workspace layout is the design this plan adopts. Do not recreate them. The candidate's contribution is the state store and the reducer that guards transitions; artifact plumbing is inherited. If a specific behavior is missing, extend the inherited script's contract in a later task with evidence for why, rather than forking a parallel copy that can drift.
 
 - [ ] **Step 1: Write atomic state/lock RED tests**
 
@@ -1026,39 +1036,38 @@ sdd-state clear-stale-lock --state STATE --expected-owner-token TOKEN --decision
 
 `repair-audit` uses the lock/reread protocol and only projects `lastTransition`. `clear-stale-lock` never guesses: require matching token, same hostname, absent PID, and `{ "action":"clear-stale-lock", "ownerToken":"...", "reason":"...", "approvedAt":"..." }`. It emits a bounded receipt; before any further dispatch, the controller records that receipt through `recovery-ruling-recorded` at the unchanged expected revision. Run audit/lock tests to green.
 
-- [ ] **Step 6: Write workspace/task-brief RED tests**
+- [ ] **Step 6: Write inherited-script compatibility RED tests**
 
-In `tests/sdd-scripts.test.mjs`, create a real temporary Git repository and prove:
+In `tests/sdd-scripts.test.mjs`, create a real temporary Git repository and prove the candidate composes with the original skill's scripts rather than replacing them:
 
-1. `sdd-workspace PLAN` returns `<root>/.superpowers/sdd/<slug>-<digest8>`, creates a self-ignoring `*\n` file, and leaves status unchanged.
-2. Different canonical plan paths do not collide.
-3. `task-brief PLAN 2 OUT` atomically writes Task 2, plan digest, exact `implementerTier`, and Global Constraints when the plan has them; 256 KiB passes and 256 KiB+1 fails without output.
-4. Missing/duplicate/malformed tier exits 2 and leaves no output.
-5. `sdd-state`, `sdd-workspace`, and `task-brief` are executable.
+1. `sdd-workspace PLAN` returns a plan-scoped directory, creates a self-ignoring `*\n` file, and leaves `git status` unchanged.
+2. Different plan basenames do not collide.
+3. `task-brief PLAN 2 OUT` writes Task 2's text, and the extracted brief's `**Implementer tier:**` line matches what `validate-plan` reports for that task. This is the contract that keeps brief text and dispatched tier from diverging.
+4. `review-package BASE HEAD OUT` emits commit log, stat, and diff without changing HEAD, index, or status.
 
-- [ ] **Step 7: Run workspace/brief tests and verify RED**
+Resolve the scripts from the installed original skill directory, and skip with an explicit message if it is absent, so the suite states its dependency instead of silently passing.
+
+- [ ] **Step 7: Verify inherited-script composition**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs
 ```
 
-Expected: failures for the missing workspace/brief scripts while state-store tests remain green.
+Expected: compatibility cases fail until the parser/CLI agreement in Step 8 is settled, while state-store tests remain green.
 
-- [ ] **Step 8: Implement workspace/task-brief scripts and return to GREEN**
+- [ ] **Step 8: Reconcile the plan grammar with the inherited extractor**
 
-All shell scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, quoted paths, and `git rev-parse --show-toplevel`.
+The inherited `task-brief` matches `^#+[ \t]+Task[ \t]+[0-9]+` — any heading depth, no tier field required. Task 4's parser requires exactly `## Task N: Title` plus `**Implementer tier:** <Tier>`, and rejects other depths as non-canonical. `writing-plans` currently emits `### Task N:` with no tier line, so the strict parser rejects every plan that skill produces.
 
-`sdd-workspace` canonicalizes the plan path, derives `<slug>-<sha256(path)[0:8]>`, creates the run directory only after controller capability/plan gates, writes `.superpowers/sdd/.gitignore` as exactly `*\n`, and prints only the absolute path. `task-brief` delegates to `sdd-state extract-task PLAN TASK_NUMBER OUT`; that ESM command atomically writes plan identity/digest, optional Global Constraints, exact task block, and `implementerTier`. Run Step 6 tests to green.
+This is a real incompatibility and must be resolved explicitly, not left to discovery during a run. Implement the reconciliation as follows:
 
-- [ ] **Step 9: Write review-package RED tests**
+- `validate-plan` gains a diagnostic that names the exact defect and the exact repair for a non-canonical plan: which heading depth was found, which is required, and which tasks lack a tier line;
+- the plan contract states that a tier-annotated plan is a precondition of the deterministic controller, not something it infers. A plan without tiers enters `PLAN_INVALID` with that diagnostic. Never guess a tier;
+- a compatibility test pins both directions: a canonical `## Task N:` plan with tier lines is accepted by the parser *and* extractable by the inherited `task-brief`; an H3 plan is rejected by the parser with the actionable diagnostic.
 
-In a temporary Git repository, prove `review-package BASE HEAD OUT` emits ordered commit log, stat, name-status, and diff without changing HEAD/index/status. Require valid commits and base-ancestor-head. Test paths with spaces and a diff over 200 KiB: output must retain full stat/name-status/numstat plus an explicit truncation marker. Invalid/non-ancestor ranges exit 2 and leave no partial output; script is executable.
+Do not loosen the parser to accept H3. The strictness is the point: an unannotated plan cannot drive tiered dispatch, and silently accepting one would reintroduce tier guessing.
 
-- [ ] **Step 10: Implement review-package and return to GREEN**
-
-Implement exactly the three-argument script. Verify commits with `git rev-parse --verify`, ancestry with `git merge-base --is-ancestor`, gather each section using argument arrays/quoted SHAs, and atomically rename the completed package. Never checkout/reset/stage. Run `sdd-scripts.test.mjs` to green.
-
-- [ ] **Step 11: Exercise crash recovery and full Task 7 verification**
+- [ ] **Step 9: Exercise crash recovery and full Task 7 verification**
 
 Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before recording a session id. Restart with read-only `show`; assert the stored key, cwd, tier, and rendered prompt bytes remain, and that the reported next action is a ruling on `DISPATCH_AMBIGUOUS` rather than an automatic replay.
 
@@ -1076,7 +1085,7 @@ npx eslint "optional-skills/subagent-driven-development/scripts/**/*.mjs"
 
 Expected: all tests/lint pass with no stale temp/lock files.
 
-- [ ] **Step 12: Commit Task 7**
+- [ ] **Step 10: Commit Task 7**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts \
@@ -1490,11 +1499,8 @@ scripts/lib/plan-policy.mjs
 scripts/lib/prompt-renderer.mjs
 scripts/lib/state-machine.mjs
 scripts/lib/state-store.mjs
-scripts/review-package
 scripts/sdd-state
 scripts/sdd-state.mjs
-scripts/sdd-workspace
-scripts/task-brief
 ```
 
 Add:
