@@ -270,7 +270,13 @@ export function parseSessionModelPolicyResponse(value: unknown): SessionModelPol
   if (record["contractVersion"] !== 1) throw new Error("Invalid session model policy contract version");
 
   const session = parseSessionStatus(record["session"]);
-  if (!Object.hasOwn(record, "policy")) return { contractVersion: 1, session };
+  if (!Object.hasOwn(record, "policy")) {
+    const blockedReason = session.modelPolicy?.blockedReason;
+    if (blockedReason === undefined || blockedReason.trim() === "") {
+      throw new Error("Expected non-blank string field: blockedReason");
+    }
+    return { contractVersion: 1, session };
+  }
   return { contractVersion: 1, policy: parseSessionModelPolicy(record["policy"]), session };
 }
 

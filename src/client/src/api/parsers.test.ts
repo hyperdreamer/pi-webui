@@ -475,9 +475,38 @@ describe("API parsers", () => {
     expect(parseSessionModelPolicyResponse(value)).toEqual(value);
   });
 
-  it("accepts an omitted repair policy and legacy status without model policy", () => {
+  it("accepts an omitted repair policy when status carries a non-blank blocked reason", () => {
     const value = sessionModelPolicyResponseWire();
-    const repairResponse = { contractVersion: 1, session: value.session };
+    const repairResponse = {
+      contractVersion: 1,
+      session: {
+        ...value.session,
+        modelPolicy: {
+          ...value.session.modelPolicy,
+          blockedReason: "unsupported policy version",
+        },
+      },
+    };
+
+    expect(parseSessionModelPolicyResponse(repairResponse)).toEqual(repairResponse);
+  });
+
+  it("rejects an omitted policy without a non-blank blocked reason", () => {
+    const value = sessionModelPolicyResponseWire();
+    const blankReasonResponse = {
+      contractVersion: 1,
+      session: {
+        ...value.session,
+        modelPolicy: { ...value.session.modelPolicy, blockedReason: "   " },
+      },
+    };
+
+    expect(() => parseSessionModelPolicyResponse({ contractVersion: 1, session: value.session })).toThrow("blockedReason");
+    expect(() => parseSessionModelPolicyResponse(blankReasonResponse)).toThrow("blockedReason");
+  });
+
+  it("continues to parse legacy status without model policy", () => {
+    const value = sessionModelPolicyResponseWire();
     const legacyStatus = {
       sessionId: value.session.sessionId,
       isStreaming: value.session.isStreaming,
@@ -489,7 +518,6 @@ describe("API parsers", () => {
       cost: value.session.cost,
     };
 
-    expect(parseSessionModelPolicyResponse(repairResponse)).toEqual(repairResponse);
     expect(parseSessionStatus(legacyStatus)).toEqual(legacyStatus);
   });
 
