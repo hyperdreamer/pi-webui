@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0-beta.4
+
+### Patch Changes
+
+- f448f0d: Keep the Actions palette open after running an action, so toggles and refreshes such as Hide Terminal Tab or Refresh Files can be run several times without reopening it. The palette still closes for actions that move keyboard focus, switch the visible view, or open a dialog, and closes as before with the × button or Escape.
+- d246c42: Fix the browser tab freezing during a surge of concurrent live tool events. Updates from several tools running at once are now coalesced per tool call, so the client no longer mistakes normal concurrency for overload and stops repeatedly refetching the whole session. Recovery refetches are also rate-limited and transcript cache writes are batched.
+
 ## 1.11.0-beta.3
 
 ### Patch Changes
