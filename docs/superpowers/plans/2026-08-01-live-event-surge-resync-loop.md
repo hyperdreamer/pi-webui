@@ -374,7 +374,6 @@ Add to `src/client/src/controllers/sessionController.liveEvents.test.ts`. Mirror
 ```ts
   it("throttles repeated overload resyncs to one per interval", async () => {
     const socket = new EmitSocket();
-    const setStateCalls: Partial<AppState>[] = [];
     const messages = vi.fn<typeof defaultApi.messages>(() => Promise.resolve(emptyPage));
     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
     const api: typeof defaultApi = {
@@ -387,7 +386,7 @@ Add to `src/client/src/controllers/sessionController.liveEvents.test.ts`. Mirror
     let clock = 10_000;
     const controller = new SessionController(
       () => state,
-      (patch) => { setStateCalls.push(patch); state = { ...state, ...patch }; },
+      (patch) => { state = { ...state, ...patch }; },
       () => undefined,
       undefined,
       {
@@ -400,21 +399,33 @@ Add to `src/client/src/controllers/sessionController.liveEvents.test.ts`. Mirror
     await controller.selectSession(oldSession, { updateUrl: false });
     const baseline = messages.mock.calls.length;
 
-    // Each pair overflows the 1-run cap, so every flush reports resyncRequired.
-    for (let burst = 0; burst < 4; burst++) {
-      socket.emit({ type: "assistant.delta", text: "a", seq: 1 + burst * 2 });
-      socket.emit({ type: "assistant.thinking.delta", text: "t", seq: 2 + burst * 2 });
+    // Each burst overflows the 1-run cap. Settling the refresh between bursts is
+    // essential: `TrailingRefreshCoordinator` only merges requests that arrive
+    // while one is already in flight, so without settling it would absorb the
+    // whole loop and the test would pass with no throttle present. Measured
+    // unthrottled behaviour for this loop is one refetch per burst.
+    const overflowOnce = async (seq: number): Promise<void> => {
+      socket.emit({ type: "assistant.delta", text: "a", seq });
+      socket.emit({ type: "assistant.thinking.delta", text: "t", seq: seq + 1 });
       runPendingAnimationFrames();
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+    };
+
+    for (let burst = 0; burst < 4; burst++) {
+      await overflowOnce(1 + burst * 2);
       clock += 100;
     }
-    await vi.waitFor(() => { expect(messages.mock.calls.length).toBe(baseline + 1); });
+
+    // Four overloads inside one 1000ms window collapse to a single refetch.
     expect(messages.mock.calls.length).toBe(baseline + 1);
 
     clock += 1_000;
-    socket.emit({ type: "assistant.delta", text: "a", seq: 99 });
-    socket.emit({ type: "assistant.thinking.delta", text: "t", seq: 100 });
-    runPendingAnimationFrames();
-    await vi.waitFor(() => { expect(messages.mock.calls.length).toBe(baseline + 2); });
+    await overflowOnce(99);
+
+    expect(messages.mock.calls.length).toBe(baseline + 2);
   });
 ```
 
@@ -422,7 +433,9 @@ Add to `src/client/src/controllers/sessionController.liveEvents.test.ts`. Mirror
 
 Run: `npm test -- --run src/client/src/controllers/sessionController.liveEvents.test.ts -t "throttles repeated overload resyncs"`
 
-Expected: FAIL — `now` is not a recognized dependency (type error), and every flush calls `refreshSelectedSession()`, so the count exceeds `baseline + 1`.
+Expected: FAIL with `expected 5 to be 2` (or similar) on the `baseline + 1` assertion — every settled overload burst calls `refreshSelectedSession()`, so four bursts produce four refetches instead of one. Measured unthrottled behaviour is one refetch per settled burst.
+
+If instead the test PASSES here, stop and report: it means the bursts are being absorbed by `TrailingRefreshCoordinator` rather than genuinely settling, and the test proves nothing. Do not proceed to implementation on a green red-phase.
 
 - [ ] **Step 3: Write the implementation**
 
