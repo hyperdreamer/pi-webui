@@ -18,15 +18,30 @@ export function finalizeShellMessage(messages: ChatLine[], event: Extract<Sessio
   const last = messages.at(-1);
   const lastPart = last?.parts.at(-1);
   if (last?.role !== "bash" || lastPart?.type !== "text") return messages;
+
+  const shellText = event.output === undefined || event.isError === true
+    ? lastPart.text
+    : replaceShellOutput(lastPart.text, event.output);
   const notes: string[] = [];
-  if (!lastPart.text.includes("\n\n") && (event.output === undefined || event.output === "")) notes.push("(no output)");
-  if (event.isError === true) notes.push(event.output ?? "Bash command failed");
+  if ((event.output === undefined && !lastPart.text.includes("\n\n")) || event.output === "") notes.push("(no output)");
+  if (event.isError === true) {
+    notes.push(event.output === undefined || event.output === "" ? "Bash command failed" : `Bash command failed: ${event.output}`);
+  }
   if (event.exitCode != null) notes.push(`exit ${String(event.exitCode)}`);
   if (event.cancelled === true) notes.push("cancelled");
   if (event.truncated === true) notes.push("output truncated");
   if (event.fullOutputPath !== undefined && event.fullOutputPath !== "") notes.push(`full output: ${event.fullOutputPath}`);
-  if (notes.length === 0) return messages;
-  return [...messages.slice(0, -1), { ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: `${lastPart.text}\n\n${notes.join("\n")}` }] }];
+
+  const finalizedText = notes.length === 0 ? shellText : `${shellText}\n\n${notes.join("\n")}`;
+  if (finalizedText === lastPart.text) return messages;
+  return [...messages.slice(0, -1), { ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: finalizedText }] }];
+}
+
+function replaceShellOutput(text: string, output: string): string {
+  const promptStart = text.indexOf("$ ");
+  const outputStart = promptStart < 0 ? -1 : text.indexOf("\n\n", promptStart);
+  const commandPrefix = outputStart < 0 ? text : text.slice(0, outputStart);
+  return output === "" ? commandPrefix : `${commandPrefix}\n\n${output}`;
 }
 
 function hasShellOutput(text: string): boolean {

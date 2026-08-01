@@ -6,17 +6,36 @@ renderer.html = ({ text }) => escapeHtml(text);
 const MAX_MARKDOWN_CACHE_ENTRIES = 300;
 const markdownHtmlCache = new Map<string, string>();
 
-export function toSafeMarkdownHtml(text: string): string {
-  const cached = markdownHtmlCache.get(text);
-  if (cached !== undefined) return cached;
+export interface MarkdownRenderOptions {
+  /**
+   * Whether the rendered HTML may be cached. Streaming text must pass `false`:
+   * every partial answer is a distinct cache key, so caching prefixes retains
+   * hundreds of progressively larger copies of the same response and can freeze
+   * the tab under fast provider output.
+   */
+  cache?: boolean;
+}
+
+export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions = {}): string {
+  const useCache = options.cache !== false;
+  if (useCache) {
+    const cached = markdownHtmlCache.get(text);
+    if (cached !== undefined) return cached;
+  }
   const html = marked.parse(text, { async: false, breaks: true, gfm: true, renderer });
   const safeHtml = sanitizeHtml(html);
+  if (!useCache) return safeHtml;
   markdownHtmlCache.set(text, safeHtml);
   if (markdownHtmlCache.size > MAX_MARKDOWN_CACHE_ENTRIES) {
     const oldest = markdownHtmlCache.keys().next().value;
     if (oldest !== undefined) markdownHtmlCache.delete(oldest);
   }
   return safeHtml;
+}
+
+/** Current cached-entry count. Exposed so tests can assert cache growth. */
+export function markdownHtmlCacheSize(): number {
+  return markdownHtmlCache.size;
 }
 
 function escapeHtml(text: string): string {

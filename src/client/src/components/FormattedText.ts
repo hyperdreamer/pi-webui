@@ -8,9 +8,15 @@ import { formattedTextStyles } from "./shared";
 @customElement("formatted-text")
 export class FormattedText extends LitElement {
   @property() text = "";
+  /**
+   * True while this text is the growing tail of a live response. Live text is
+   * rendered without writing the markdown cache, because every streamed prefix
+   * would otherwise be retained as a separate cache entry.
+   */
+  @property({ type: Boolean }) live = false;
 
   override render() {
-    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
+    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text, { cache: !this.live }))}</div>`;
   }
 
   override updated(): void {
