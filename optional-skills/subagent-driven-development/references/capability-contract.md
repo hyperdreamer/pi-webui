@@ -44,11 +44,10 @@ interface GetModelPolicyV1 {
   };
   trackedDispatch: {
     contractVersion: 1;
-    dispatchKey: true;
     tierField: true;
     scope: "parent-session";
-    canonicalInputs: readonly ["cwd", "rawPrompt"];
-    resultPolicyApplication: true;
+    canonicalInputs: readonly ["cwd", "prompt", "tier"];
+    returnsSessionId: true;
   };
 }
 ```
@@ -70,80 +69,80 @@ mutation, plan mutation, or dispatch.
 
 ## `spawn_subsession` success details
 
+This section describes the **implemented** runtime, verified against
+`src/server/sessions/spawnSubsessionTool.ts` and
+`src/server/sessions/piSessionService.ts`. Earlier drafts of this file specified
+server-side dispatch keying and replay deduplication. The runtime has neither.
+
 ```ts
+interface SpawnSubsessionParamsV1 {
+  prompt: string;
+  cwd?: string;
+  tier?: ModelTier;
+}
+
 interface SpawnSubsessionDetailsV1 {
-  contractVersion: 1;
   sessionId: string;
-  dispatch: { key: string; reused: boolean };
-  policyApplication: {
-    requestedDirective: string;
-    outcome: "directive-applied" | "tier-unchanged" | "ignored-exact";
-    mode: "exact" | "tiered";
-    tier?: ModelTier;
-    resolved: ExactModelSelection;
-    at: string;
-  };
+  cwd: string;
 }
 ```
 
-The child's durable application entry projects an identical `policyApplication`
-value, precedes the cleaned task, and is marked outside model context. Fake
-transcript fixtures expose event order and model visibility so tests can assert
-both.
+There is no `dispatchKey` parameter, no `reused` flag, and no returned
+`policyApplication`. Parent→child lineage is durable through the parent session's
+`pi-webui.subsession.spawned` custom entry, which `listSubsessions` rehydrates
+from the persisted session file, so lineage survives a daemon restart. What the
+runtime does not provide is *correlation of a repeated call to an earlier child*.
 
-### `dispatchKey`
+### Tier binding
 
-`dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`. The
-server treats it as an opaque bounded string and never parses its structure.
+`tier` is the binding channel. A supplied tier resolves through the machine's
+configured ladder to an exact model and thinking level, applied as model-then-
+thinking before the child's first request. An unresolvable tier fails the spawn
+without creating a child and without substituting a neighbouring tier. An omitted
+`tier` inherits the parent's model.
 
-Replay requires the same key, same `cwd`, and same raw prompt. Conflicting reuse
-of a key with different canonical inputs fails. A stored result is retained
-verbatim after later policy or tier-mapping changes.
+Prompt text never selects a model. The runtime does not scan prompt bytes for
+slash directives, so a `/tier-*` line is a human-readable echo with zero control
+effect. A test fake that recovers a tier by splitting the prompt is exercising a
+channel the runtime does not implement, and cannot detect a child that ignored
+the directive.
 
-Fresh-dispatch validation uses the pre-spawn inspection. Replay validation uses
-the complete inspection stored in dispatch intent and never compares the replay
-against current policy or ladder state.
+The one exception is a guard, not a mechanism: a leading `/tier-*` line that
+*disagrees* with the typed `tier` is rejected before child creation, so a stale
+echoed directive cannot silently imply a tier that was not requested.
 
-### Optional `tier` field
+### No dispatch idempotency
 
-When supplied, `tier` must name the same tier as the leading directive in the
-prompt. A disagreement, or a `tier` with no leading directive, fails before child
-creation. An omitted `tier` preserves directive-only behavior.
+Repeating a spawn call creates a second child. The contract that consumers may
+rely on is therefore **detectable** non-idempotency, not prevented duplication:
 
-`tier` never applies policy on its own. The directive remains the only
-application mechanism; `tier` is a machine-checkable declaration of the same
-intent.
+- `dispatchKey` is controller-owned. It names a row in the controller's own
+  dispatch ledger, is never sent to the tool, and exists so recovery can
+  correlate a recorded intent to the `sessionId` the tool returned.
+- A crash between the spawn call and the ledger write can orphan a child. This
+  window cannot be closed client-side. It must be *visible*: an intent without a
+  recorded `sessionId` is ambiguous and requires an explicit ruling.
+- Authority for whether work happened is commits and artifacts, never session
+  identity. A lost correlation degrades to inspecting `git log` and report files,
+  not to an unrecoverable run.
 
 ### Fail-closed conditions
 
-Missing fields, unknown contract versions, unknown outcomes, contradictory
-mode/tier combinations, malformed tuples, reordered or model-visible application
-events, and a missing child projection all fail closed.
+Missing required fields, unknown tier values, a tier absent from the configured
+ladder, an unavailable model, and a leading directive disagreeing with the typed
+tier all fail before a child is created.
 
-## Identity-input properties
+## Recovery-input properties
 
-`rawPrompt` serves two purposes with incompatible tolerances. Directive
-recognition is whitespace-tolerant by design; identity comparison tolerates
-nothing.
+**Recovery must never re-render the prompt.** Dispatch intent stores the rendered
+prompt bytes, and a ruling to reissue sends those stored bytes verbatim.
+Re-rendering couples recovery to renderer output, so any drift — including
+interior drift such as an added blank line, which trimming cannot absorb — changes
+what the child receives on a path whose whole purpose is exactness.
 
-**The directive bytes stay in the identity input.** Stripping the directive
-before fingerprinting makes two dispatches that differ only in tier
-byte-identical. A reused key would then return the earlier child for a request
-that asked for a different tier, reporting `reused: true` with the earlier policy
-application and no detectable mismatch. That silent tier substitution is strictly
-worse than a false conflict, which halts visibly, so identity must cover the
-directive.
-
-**Replay must never re-render the prompt.** Dispatch intent stores the rendered
-prompt bytes next to the pre-spawn inspection it already stores, and recovery
-reissues those stored bytes verbatim. Re-rendering couples identity to renderer
-output, so any drift — including interior drift such as an added blank line after
-the directive, which trimming cannot absorb — turns a legitimate recovery into
-conflicting reuse.
-
-Identity comparison additionally normalizes a leading byte-order mark, CRLF to
-LF, and outer whitespace, so transport-level rewriting does not manufacture a
-conflict. Normalization applies only to the bytes compared for identity, never to
-the bytes delivered to the child, which must keep the directive at byte zero.
-Normalization is insurance for transport, not a substitute for storing the
-rendered bytes.
+Storing the bytes is the entire mitigation. Earlier drafts additionally
+fingerprinted `cwd` and prompt bytes for identity comparison and specified
+normalization of byte-order marks, CRLF, and outer whitespace. With no
+server-side deduplication there is nothing to compare against, so both the
+fingerprint and its normalization rules are removed rather than kept as unused
+ceremony.

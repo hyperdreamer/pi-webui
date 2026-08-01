@@ -5,14 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  createInitialState,
+  dispatchKeyFor,
   fixerTier,
   parsePlanText,
   reReviewerTier,
   reviewerTier,
+  reduceState,
   roleTier,
   tierDirective,
   tierLabel,
   TIERS,
+  validateState,
 } from "../scripts/sdd-state.mjs";
 
 const VALID_PLAN = `# Example Implementation Plan
@@ -471,5 +475,633 @@ describe("tier identifiers match the dispatch boundary", () => {
 
   it("emits a lowercase directive echo", () => {
     expect(tierDirective("capable")).toBe("/tier-capable");
+  });
+});
+
+const BASE_INIT = Object.freeze({
+  planPath: "/repo/docs/plan.md",
+  planDigest: "a".repeat(64),
+  repoRoot: "/repo",
+  worktree: "/repo-worktree",
+  runRoot: "/repo-worktree/.superpowers/sdd/example-a1b2c3d4",
+  branch: "feature/example",
+  baseRef: "main",
+  mergeBase: "b".repeat(40),
+  tasks: [
+    { number: 1, implementerTier: "economy" },
+    { number: 2, implementerTier: "advanced" },
+  ],
+  at: "2026-07-31T00:00:00.000Z",
+});
+
+const init = (overrides = {}) => createInitialState({ ...BASE_INIT, ...overrides });
+
+describe("createInitialState", () => {
+  it("constructs every version-1 field explicitly", () => {
+    expect(init()).toMatchObject({
+      version: 1,
+      revision: 0,
+      phase: "CAPABILITY_CHECK",
+      currentTask: 1,
+      currentImplementerTier: "economy",
+      contextAttempts: 0,
+      fixRound: 0,
+      finalFixUsed: false,
+      dispatch: null,
+    });
+  });
+
+  it("derives runId from plan digest and pinned Git identity", () => {
+    const expected = createHash("sha256")
+      .update(
+        [
+          BASE_INIT.planDigest,
+          BASE_INIT.worktree,
+          BASE_INIT.branch,
+          BASE_INIT.mergeBase,
+          BASE_INIT.at,
+        ].join("\u0000"),
+      )
+      .digest("hex");
+    expect(init().runId).toBe(expected);
+  });
+
+  it("changes runId when any identity input changes", () => {
+    expect(init({ branch: "feature/other" }).runId).not.toBe(init().runId);
+    expect(init({ mergeBase: "c".repeat(40) }).runId).not.toBe(init().runId);
+  });
+
+  it("stores the immutable task/tier index and deep-freezes state", () => {
+    const state = init();
+    expect(state.tasks).toEqual([
+      { number: 1, implementerTier: "economy" },
+      { number: 2, implementerTier: "advanced" },
+    ]);
+    expect(Object.isFrozen(state)).toBe(true);
+    expect(Object.isFrozen(state.tasks)).toBe(true);
+    expect(() => {
+      state.tasks[0].implementerTier = "frontier";
+    }).toThrow();
+  });
+
+  it("does not retain a reference to caller-owned task input", () => {
+    const tasks = [{ number: 1, implementerTier: "economy" }];
+    const state = createInitialState({ ...BASE_INIT, tasks });
+    tasks[0].implementerTier = "frontier";
+    expect(state.tasks[0].implementerTier).toBe("economy");
+  });
+
+  it("rejects an invalid ladder tier", () => {
+    expect(() => init({ tasks: [{ number: 1, implementerTier: "Capable" }] })).toThrow(
+      /implementerTier/u,
+    );
+    expect(() => init({ tasks: [{ number: 1, implementerTier: "turbo" }] })).toThrow(
+      /implementerTier/u,
+    );
+  });
+
+  it("rejects malformed identity fields", () => {
+    expect(() => init({ planDigest: "a".repeat(63) })).toThrow(/planDigest/u);
+    expect(() => init({ mergeBase: "zz" })).toThrow(/mergeBase/u);
+    expect(() => init({ worktree: "relative/path" })).toThrow(/worktree/u);
+    expect(() => init({ runRoot: "/elsewhere/run" })).toThrow(/runRoot/u);
+    expect(() => init({ at: "not-a-timestamp" })).toThrow(/at/u);
+  });
+
+  it("requires at least one task with contiguous numbering", () => {
+    expect(() => init({ tasks: [] })).toThrow(/tasks/u);
+    expect(() =>
+      init({
+        tasks: [
+          { number: 1, implementerTier: "economy" },
+          { number: 3, implementerTier: "advanced" },
+        ],
+      }),
+    ).toThrow(/contiguous/u);
+  });
+});
+
+describe("reduceState capability and plan gates", () => {
+  const at = "2026-07-31T00:01:00.000Z";
+
+  it("blocks on a missing capability", () => {
+    const next = reduceState(init(), {
+      type: "capability-missing",
+      reason: "get_model_policy unavailable",
+      at,
+    });
+    expect(next.phase).toBe("CAPABILITY_BLOCKED");
+    expect(next.revision).toBe(1);
+  });
+
+  it("advances a confirmed capability to the plan gate", () => {
+    const next = reduceState(init(), {
+      type: "capability-confirmed",
+      mode: "tiered",
+      at,
+    });
+    expect(next.phase).toBe("PLAN_CHECK");
+  });
+
+  it("accepts a valid exact-mode capability", () => {
+    const next = reduceState(init(), {
+      type: "capability-confirmed",
+      mode: "exact",
+      at,
+    });
+    expect(next.phase).toBe("PLAN_CHECK");
+  });
+
+  it("increments revision exactly once per transition", () => {
+    const one = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    const two = reduceState(one, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at });
+    expect([one.revision, two.revision]).toEqual([1, 2]);
+  });
+
+  it("records a single-line lastTransition", () => {
+    const next = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    expect(next.lastTransition).toContain("capability-confirmed");
+    expect(next.lastTransition).not.toMatch(/\r|\n/u);
+  });
+
+  it("blocks an invalid plan and a digest conflict", () => {
+    const gated = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    expect(
+      reduceState(gated, { type: "plan-invalid", reason: "no tier on task 2", at }).phase,
+    ).toBe("PLAN_INVALID");
+    expect(
+      reduceState(gated, { type: "plan-conflict", planDigest: "d".repeat(64), at }).phase,
+    ).toBe("PLAN_INVALID");
+  });
+
+  it("requires a persisted ruling to leave a preflight decision", () => {
+    const gated = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    const valid = reduceState(gated, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at });
+    const pending = reduceState(valid, {
+      type: "preflight-decision-required",
+      reason: "worktree is dirty",
+      at,
+    });
+    expect(pending.phase).toBe("PREFLIGHT_DECISION_REQUIRED");
+    expect(() => reduceState(pending, { type: "plan-valid", planDigest: BASE_INIT.planDigest, at })).toThrow(
+      /illegal transition/u,
+    );
+    expect(
+      reduceState(pending, {
+        type: "preflight-ruling-recorded",
+        decision: "proceed",
+        reason: "generated files only",
+        at,
+      }).phase,
+    ).toBe("WORKSPACE_READY");
+  });
+
+  it("never mutates its input state", () => {
+    const before = init();
+    const snapshot = JSON.stringify(before);
+    reduceState(before, { type: "capability-confirmed", mode: "tiered", at });
+    expect(JSON.stringify(before)).toBe(snapshot);
+  });
+
+  it("refuses an unknown state version", () => {
+    const state = { ...init(), version: 2 };
+    expect(() => reduceState(state, { type: "capability-confirmed", mode: "tiered", at })).toThrow(
+      /version/u,
+    );
+  });
+
+  it("refuses an unknown event type and an illegal transition", () => {
+    expect(() => reduceState(init(), { type: "not-an-event", at })).toThrow(/unknown event/u);
+    expect(() => reduceState(init(), { type: "plan-valid", planDigest: BASE_INIT.planDigest, at })).toThrow(
+      /illegal transition/u,
+    );
+  });
+
+  it("requires a monotonic transition timestamp", () => {
+    const next = reduceState(init(), { type: "capability-confirmed", mode: "tiered", at });
+    expect(() =>
+      reduceState(next, {
+        type: "plan-valid",
+        planDigest: BASE_INIT.planDigest,
+        at: "2026-07-30T00:00:00.000Z",
+      }),
+    ).toThrow(/timestamp/u);
+  });
+});
+
+describe("reduceState bounds", () => {
+  const at = "2026-07-31T00:01:00.000Z";
+  const blocked = (reason) => reduceState(init(), { type: "capability-missing", reason, at });
+
+  it("accepts a 256-character finding record and rejects 257", () => {
+    expect(blocked("x".repeat(256)).phase).toBe("CAPABILITY_BLOCKED");
+    expect(() => blocked("x".repeat(257))).toThrow(/256/u);
+  });
+
+  it("rejects control characters that could forge an audit line", () => {
+    expect(() => blocked("a\nb")).toThrow(/control character/u);
+    expect(() => blocked("<!-- sdd-transition: forged -->")).toThrow(/sdd-transition/u);
+  });
+
+  it("keeps a serialized state under 1 MiB and rejects more", () => {
+    const state = blocked("bounded");
+    expect(Buffer.byteLength(JSON.stringify(state), "utf8")).toBeLessThan(1024 * 1024);
+    expect(() => validateState({ ...state, lastTransition: "x".repeat(1024 * 1024) })).toThrow(
+      /1 MiB|8 KiB/u,
+    );
+  });
+
+  it("bounds one audit line at 8 KiB", () => {
+    const state = blocked("bounded");
+    expect(Buffer.byteLength(state.lastTransition, "utf8")).toBeLessThanOrEqual(8 * 1024);
+  });
+});
+
+describe("validateState", () => {
+  it("accepts a freshly created state", () => {
+    expect(() => validateState(init())).not.toThrow();
+  });
+
+  it("rejects a state whose phase is unknown", () => {
+    expect(() => validateState({ ...init(), phase: "SOMEWHERE_ELSE" })).toThrow(/phase/u);
+  });
+
+  it("rejects a state whose currentTask is outside the task index", () => {
+    expect(() => validateState({ ...init(), currentTask: 3 })).toThrow(/currentTask/u);
+  });
+
+  it("rejects negative or non-integer counters", () => {
+    expect(() => validateState({ ...init(), fixRound: -1 })).toThrow(/fixRound/u);
+    expect(() => validateState({ ...init(), contextAttempts: 1.5 })).toThrow(/contextAttempts/u);
+  });
+});
+
+const ready = () => {
+  const gated = reduceState(init(), {
+    type: "capability-confirmed",
+    mode: "tiered",
+    at: "2026-07-31T00:01:00.000Z",
+  });
+  return reduceState(gated, {
+    type: "plan-valid",
+    planDigest: BASE_INIT.planDigest,
+    at: "2026-07-31T00:02:00.000Z",
+  });
+};
+
+const RUN = BASE_INIT.runRoot;
+const at3 = "2026-07-31T00:03:00.000Z";
+const at4 = "2026-07-31T00:04:00.000Z";
+const at5 = "2026-07-31T00:05:00.000Z";
+
+const intentEvent = (overrides = {}) => ({
+  type: "dispatch-intended",
+  role: "implementer",
+  dispatchKey: dispatchKeyFor({
+    runId: ready().runId,
+    task: 1,
+    role: "implementer",
+    attempt: 1,
+  }),
+  tier: "economy",
+  promptPath: `${RUN}/task-1-implementer-prompt.md`,
+  reportPath: `${RUN}/task-1-implementer-report.md`,
+  briefPath: `${RUN}/task-1-brief.md`,
+  attempt: 1,
+  expectedOutcome: "implementer-report",
+  renderedPrompt: "Implement task 1.\n",
+  at: at3,
+  ...overrides,
+});
+
+const intended = (overrides = {}) => reduceState(ready(), intentEvent(overrides));
+
+const started = () =>
+  reduceState(intended(), {
+    type: "dispatch-started",
+    sessionId: "019fb673-4324-7c1d-98a2-3c638e29f810",
+    at: at4,
+  });
+
+describe("dispatchKeyFor", () => {
+  it("composes controller-owned identity without a round for non-fix roles", () => {
+    expect(
+      dispatchKeyFor({ runId: "f".repeat(64), task: 2, role: "task-reviewer", attempt: 1 }),
+    ).toBe(`${"f".repeat(64)}:task-2:task-reviewer:attempt-1`);
+  });
+
+  it("includes the round for the fixer role", () => {
+    expect(
+      dispatchKeyFor({ runId: "f".repeat(64), task: 2, role: "fixer", attempt: 1, round: 3 }),
+    ).toBe(`${"f".repeat(64)}:task-2:fixer:attempt-1:round-3`);
+  });
+
+  it("requires a round for the fixer and rejects one elsewhere", () => {
+    expect(() =>
+      dispatchKeyFor({ runId: "f".repeat(64), task: 1, role: "fixer", attempt: 1 }),
+    ).toThrow(/round/u);
+    expect(() =>
+      dispatchKeyFor({ runId: "f".repeat(64), task: 1, role: "implementer", attempt: 1, round: 1 }),
+    ).toThrow(/round/u);
+  });
+
+  it("stays inside the bounded key grammar", () => {
+    const key = dispatchKeyFor({ runId: "f".repeat(64), task: 10, role: "re-reviewer", attempt: 2 });
+    expect(key).toMatch(/^[A-Za-z0-9._:-]{1,240}$/u);
+  });
+});
+
+describe("task dispatch intent", () => {
+  it("enters WORKSPACE_READY from an accepted plan", () => {
+    expect(ready().phase).toBe("WORKSPACE_READY");
+  });
+
+  it("records a complete intent before any session exists", () => {
+    const state = intended();
+    expect(state.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(state.dispatch).toMatchObject({
+      role: "implementer",
+      tier: "economy",
+      attempt: 1,
+      sessionId: null,
+      renderedPrompt: "Implement task 1.\n",
+    });
+  });
+
+  it("rejects an intent whose rendered prompt is absent", () => {
+    expect(() => intended({ renderedPrompt: undefined })).toThrow(/renderedPrompt/u);
+    expect(() => intended({ renderedPrompt: "" })).toThrow(/renderedPrompt/u);
+  });
+
+  it("accepts a rendered prompt with no leading tier directive", () => {
+    expect(intended({ renderedPrompt: "No directive at all.\n" }).dispatch.renderedPrompt).toBe(
+      "No directive at all.\n",
+    );
+  });
+
+  it("accepts a leading directive echo that agrees with the typed tier", () => {
+    expect(
+      intended({ renderedPrompt: "/tier-economy\n\nImplement task 1.\n" }).dispatch.tier,
+    ).toBe("economy");
+  });
+
+  it("reports a leading directive echo that disagrees with the typed tier", () => {
+    expect(() => intended({ renderedPrompt: "/tier-frontier\n\nImplement task 1.\n" })).toThrow(
+      /divergence/u,
+    );
+  });
+
+  it("rejects a tier differing from the role formula", () => {
+    expect(() => intended({ tier: "frontier" })).toThrow(/formula/u);
+  });
+
+  it("rejects a malformed key and a key not matching the run", () => {
+    expect(() => intended({ dispatchKey: "has spaces" })).toThrow(/dispatchKey/u);
+    expect(() => intended({ dispatchKey: `${"0".repeat(64)}:task-1:implementer:attempt-1` })).toThrow(
+      /dispatchKey/u,
+    );
+  });
+
+  it("rejects artifact paths outside the pinned run root", () => {
+    expect(() => intended({ reportPath: "/tmp/elsewhere/report.md" })).toThrow(/reportPath/u);
+    expect(() => intended({ promptPath: `${RUN}/../escape.md` })).toThrow(/promptPath/u);
+    expect(() => intended({ briefPath: "relative/brief.md" })).toThrow(/briefPath/u);
+  });
+
+  it("bounds the stored rendered prompt at 384 KiB", () => {
+    expect(() => intended({ renderedPrompt: "x".repeat(384 * 1024 + 1) })).toThrow(/384/u);
+  });
+
+  it("refuses a second dispatch while one is running", () => {
+    expect(() => reduceState(started(), intentEvent({ at: at5 }))).toThrow(/illegal transition/u);
+  });
+});
+
+describe("dispatch correlation and ambiguity", () => {
+  it("records the returned session id against the intent", () => {
+    const state = started();
+    expect(state.phase).toBe("IMPLEMENT_RUNNING");
+    expect(state.dispatch).toMatchObject({
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f810",
+      dispatchKey: intentEvent().dispatchKey,
+    });
+  });
+
+  it("keeps the stored prompt bytes byte-for-byte through correlation", () => {
+    expect(started().dispatch.renderedPrompt).toBe("Implement task 1.\n");
+  });
+
+  it("enters DISPATCH_AMBIGUOUS when the spawn window was crossed", () => {
+    const state = reduceState(intended(), {
+      type: "dispatch-window-crossed",
+      reason: "controller restarted before the session id was recorded",
+      at: at4,
+    });
+    expect(state.phase).toBe("DISPATCH_AMBIGUOUS");
+    expect(state.dispatch.sessionId).toBeNull();
+    expect(state.dispatch.renderedPrompt).toBe("Implement task 1.\n");
+  });
+
+  it("never resolves ambiguity on its own", () => {
+    const ambiguous = reduceState(intended(), {
+      type: "dispatch-window-crossed",
+      reason: "restart",
+      at: at4,
+    });
+    expect(() =>
+      reduceState(ambiguous, {
+        type: "dispatch-started",
+        sessionId: "019fb673-4324-7c1d-98a2-3c638e29f811",
+        at: at5,
+      }),
+    ).toThrow(/illegal transition/u);
+  });
+
+  it("adopts an observed child only through an explicit ruling", () => {
+    const ambiguous = reduceState(intended(), {
+      type: "dispatch-window-crossed",
+      reason: "restart",
+      at: at4,
+    });
+    const adopted = reduceState(ambiguous, {
+      type: "dispatch-ruling-recorded",
+      decision: "adopt",
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f812",
+      reason: "single child observed with matching cwd",
+      at: at5,
+    });
+    expect(adopted.phase).toBe("IMPLEMENT_RUNNING");
+    expect(adopted.dispatch.sessionId).toBe("019fb673-4324-7c1d-98a2-3c638e29f812");
+  });
+
+  it("requires a session id to adopt and forbids one to reissue", () => {
+    const ambiguous = reduceState(intended(), {
+      type: "dispatch-window-crossed",
+      reason: "restart",
+      at: at4,
+    });
+    expect(() =>
+      reduceState(ambiguous, {
+        type: "dispatch-ruling-recorded",
+        decision: "adopt",
+        reason: "no id supplied",
+        at: at5,
+      }),
+    ).toThrow(/sessionId/u);
+    expect(() =>
+      reduceState(ambiguous, {
+        type: "dispatch-ruling-recorded",
+        decision: "reissue",
+        sessionId: "019fb673-4324-7c1d-98a2-3c638e29f813",
+        reason: "contradictory",
+        at: at5,
+      }),
+    ).toThrow(/sessionId/u);
+  });
+
+  it("returns a reissue ruling to intent with the stored bytes intact", () => {
+    const ambiguous = reduceState(intended(), {
+      type: "dispatch-window-crossed",
+      reason: "restart",
+      at: at4,
+    });
+    const reissued = reduceState(ambiguous, {
+      type: "dispatch-ruling-recorded",
+      decision: "reissue",
+      reason: "no child found; accepting a possible orphan",
+      at: at5,
+    });
+    expect(reissued.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(reissued.dispatch.renderedPrompt).toBe("Implement task 1.\n");
+    expect(reissued.dispatch.sessionId).toBeNull();
+    expect(reissued.dispatch.reissued).toBe(true);
+  });
+});
+
+describe("implementer result classification", () => {
+  const complete = (status, extra = {}) =>
+    reduceState(started(), {
+      type: "child-completed",
+      status,
+      reportPath: `${RUN}/task-1-implementer-report.md`,
+      at: at5,
+      ...extra,
+    });
+
+  it("enters IMPLEMENT_RESULT before classification", () => {
+    expect(complete("DONE").phase).toBe("IMPLEMENT_RESULT");
+  });
+
+  it("rejects an undefined status token", () => {
+    expect(() => complete("DONE_ISH")).toThrow(/status/u);
+  });
+
+  it("advances DONE to review intent", () => {
+    const result = complete("DONE");
+    const next = reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" });
+    expect(next.phase).toBe("REVIEW_DISPATCH_INTENT");
+  });
+
+  it("carries concern evidence for an observational DONE_WITH_CONCERNS", () => {
+    const result = complete("DONE_WITH_CONCERNS", {
+      concerns: [{ kind: "observational", note: "naming could be clearer" }],
+    });
+    expect(result.dispatch.concerns).toHaveLength(1);
+    expect(
+      reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" }).phase,
+    ).toBe("REVIEW_DISPATCH_INTENT");
+  });
+
+  it("requires a ruling for a correctness or scope concern", () => {
+    const result = complete("DONE_WITH_CONCERNS", {
+      concerns: [{ kind: "correctness", note: "the retry bound may be off by one" }],
+    });
+    expect(() =>
+      reduceState(result, { type: "review-required", at: "2026-07-31T00:06:00.000Z" }),
+    ).toThrow(/ruling/u);
+  });
+
+  it("enters TASK_BLOCKED immediately on BLOCKED", () => {
+    expect(complete("BLOCKED", { reason: "the interface does not exist" }).phase).toBe(
+      "IMPLEMENT_RESULT",
+    );
+    const blocked = reduceState(
+      complete("BLOCKED", { reason: "the interface does not exist" }),
+      { type: "task-blocked", reason: "the interface does not exist", at: "2026-07-31T00:06:00.000Z" },
+    );
+    expect(blocked.phase).toBe("TASK_BLOCKED");
+  });
+});
+
+describe("bounded context retry", () => {
+  const enrich = (state, n) =>
+    reduceState(state, {
+      type: "context-enrichment-required",
+      reason: `needs context ${String(n)}`,
+      at: `2026-07-31T00:0${String(5 + n)}:00.000Z`,
+    });
+
+  const needsContext = (state) =>
+    reduceState(state, {
+      type: "child-completed",
+      status: "NEEDS_CONTEXT",
+      reportPath: `${RUN}/task-1-implementer-report.md`,
+      at: at5,
+    });
+
+  it("allows two enrichments at the planned tier without touching fixRound", () => {
+    const first = enrich(needsContext(started()), 1);
+    expect(first.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(first.contextAttempts).toBe(1);
+    expect(first.currentImplementerTier).toBe("economy");
+    expect(first.fixRound).toBe(0);
+  });
+
+  it("blocks the third NEEDS_CONTEXT without incrementing fixRound", () => {
+    let state = enrich(needsContext(started()), 1);
+    state = reduceState(state, {
+      type: "dispatch-started",
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f814",
+      at: "2026-07-31T00:08:00.000Z",
+    });
+    state = reduceState(state, {
+      type: "child-completed",
+      status: "NEEDS_CONTEXT",
+      reportPath: `${RUN}/task-1-implementer-report.md`,
+      at: "2026-07-31T00:09:00.000Z",
+    });
+    state = reduceState(state, {
+      type: "context-enrichment-required",
+      reason: "needs context 2",
+      at: "2026-07-31T00:10:00.000Z",
+    });
+    expect(state.contextAttempts).toBe(2);
+
+    state = reduceState(state, {
+      type: "dispatch-started",
+      sessionId: "019fb673-4324-7c1d-98a2-3c638e29f815",
+      at: "2026-07-31T00:11:00.000Z",
+    });
+    state = reduceState(state, {
+      type: "child-completed",
+      status: "NEEDS_CONTEXT",
+      reportPath: `${RUN}/task-1-implementer-report.md`,
+      at: "2026-07-31T00:12:00.000Z",
+    });
+    expect(() =>
+      reduceState(state, {
+        type: "context-enrichment-required",
+        reason: "needs context 3",
+        at: "2026-07-31T00:13:00.000Z",
+      }),
+    ).toThrow(/context/u);
+
+    const blocked = reduceState(state, {
+      type: "task-blocked",
+      reason: "three context attempts exhausted",
+      at: "2026-07-31T00:13:00.000Z",
+    });
+    expect(blocked.phase).toBe("TASK_BLOCKED");
+    expect(blocked.fixRound).toBe(0);
   });
 });

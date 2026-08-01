@@ -14,6 +14,17 @@ import { pathToFileURL } from "node:url";
 import { parsePlanText, roleTier } from "./lib/plan-policy.mjs";
 
 export {
+  computeRunId,
+  createInitialState,
+  dispatchKeyFor,
+  PHASES,
+  reduceState,
+  StateError,
+  STATE_VERSION,
+  validateState,
+} from "./lib/state-machine.mjs";
+
+export {
   finalReviewerTier,
   fixerTier,
   parsePlanText,
