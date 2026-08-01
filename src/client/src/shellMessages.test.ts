@@ -19,6 +19,21 @@ describe("shell messages", () => {
     ]);
   });
 
+  it("preserves streamed partial output and appends the error detail for a failed completion", () => {
+    let messages = [shellStartMessage("failing-command")];
+    messages = appendShellChunk(messages, "partial output");
+
+    messages = finalizeShellMessage(messages, {
+      type: "shell.end",
+      output: "permission denied",
+      isError: true,
+    });
+
+    expect(messages).toEqual([
+      { role: "bash", parts: [{ type: "text", text: "$ failing-command\n\npartial output\n\nBash command failed: permission denied" }] },
+    ]);
+  });
+
   it("shows no output when authoritative empty output replaces partial chunks", () => {
     let messages = [shellStartMessage("printf output")];
     messages = appendShellChunk(messages, "partial output");
@@ -59,7 +74,6 @@ describe("shell messages", () => {
     messages = finalizeShellMessage(messages, {
       type: "shell.end",
       output: "complete error",
-      isError: true,
       exitCode: 2,
       cancelled: true,
       truncated: true,

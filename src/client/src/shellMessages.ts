@@ -19,12 +19,14 @@ export function finalizeShellMessage(messages: ChatLine[], event: Extract<Sessio
   const lastPart = last?.parts.at(-1);
   if (last?.role !== "bash" || lastPart?.type !== "text") return messages;
 
-  const shellText = event.output === undefined
+  const shellText = event.output === undefined || event.isError === true
     ? lastPart.text
     : replaceShellOutput(lastPart.text, event.output);
   const notes: string[] = [];
   if ((event.output === undefined && !lastPart.text.includes("\n\n")) || event.output === "") notes.push("(no output)");
-  if (event.isError === true && (event.output === undefined || event.output === "")) notes.push("Bash command failed");
+  if (event.isError === true) {
+    notes.push(event.output === undefined || event.output === "" ? "Bash command failed" : `Bash command failed: ${event.output}`);
+  }
   if (event.exitCode != null) notes.push(`exit ${String(event.exitCode)}`);
   if (event.cancelled === true) notes.push("cancelled");
   if (event.truncated === true) notes.push("output truncated");
