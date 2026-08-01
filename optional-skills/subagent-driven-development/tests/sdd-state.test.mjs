@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
@@ -1872,5 +1881,817 @@ describe("state-machine reference stays in step with the reducer", () => {
   it("states the canonical direction of truth", () => {
     expect(reference).toMatch(/`state\.json` is canonical/u);
     expect(reference).toMatch(/never hand-edit/iu);
+  });
+});
+
+/**
+ * Build a real run directory with a real plan file on disk.
+ *
+ * The store is exercised through the CLI against a real filesystem, because the
+ * properties under test are atomicity, locking, and fsync ordering. A mocked
+ * filesystem would assert the mock.
+ */
+function makeRun({ plan = VALID_PLAN } = {}) {
+  const root = makeTemporaryDirectory();
+  const worktree = join(root, "wt");
+  const runRoot = join(worktree, ".superpowers", "sdd", "plan-abc12345");
+  mkdirSync(runRoot, { recursive: true });
+  const planPath = join(worktree, "plan.md");
+  writeFileSync(planPath, plan);
+  return {
+    root,
+    worktree,
+    runRoot,
+    planPath,
+    statePath: join(runRoot, "state.json"),
+    progressPath: join(runRoot, "progress.md"),
+    planDigest: createHash("sha256").update(plan).digest("hex"),
+  };
+}
+
+const MERGE_BASE = "b".repeat(40);
+
+function initArgs(run, overrides = {}) {
+  const merged = {
+    plan: run.planPath,
+    state: run.statePath,
+    progress: run.progressPath,
+    "repo-root": run.worktree,
+    worktree: run.worktree,
+    branch: "feature/example",
+    "base-ref": "main",
+    "merge-base": MERGE_BASE,
+    ...overrides,
+  };
+  return ["init", ...Object.entries(merged).flatMap(([key, value]) => [`--${key}`, value])];
+}
+
+/** Write a bounded event JSON file under the run root, as the CLI requires. */
+function writeEvent(run, event, name = "event.json") {
+  const path = join(run.runRoot, name);
+  writeFileSync(path, JSON.stringify(event));
+  return path;
+}
+
+const readState = (run) => JSON.parse(readFileSync(run.statePath, "utf8"));
+const countMarkers = (run) =>
+  readFileSync(run.progressPath, "utf8").split("\n").filter((line) => line.includes("sdd-transition:")).length;
+
+describe("state store init", () => {
+  it("writes revision 0 plus exactly one audit marker", () => {
+    const run = makeRun();
+    const result = runCli(initArgs(run));
+    expect(result.status).toBe(0);
+
+    const state = readState(run);
+    expect(state).toMatchObject({ version: 1, revision: 0, phase: "CAPABILITY_CHECK" });
+    expect(state.planDigest).toBe(run.planDigest);
+    expect(state.tasks).toHaveLength(2);
+    expect(countMarkers(run)).toBe(1);
+  });
+
+  it("refuses to initialize twice", () => {
+    const run = makeRun();
+    expect(runCli(initArgs(run)).status).toBe(0);
+    const second = runCli(initArgs(run));
+    expect(second.status).not.toBe(0);
+    expect(second.stderr).toMatch(/already/iu);
+    expect(readState(run).revision).toBe(0);
+    expect(countMarkers(run)).toBe(1);
+  });
+
+  it("rejects a plan the parser will not accept", () => {
+    const run = makeRun({ plan: "# Plan\n\n### Task 1: H3 heading\n\nBody.\n" });
+    const result = runCli(initArgs(run));
+    expect(result.status).toBe(2);
+    expect(existsSync(run.statePath)).toBe(false);
+  });
+});
+
+describe("state store transition", () => {
+  const confirmed = { type: "capability-confirmed", mode: "tiered" };
+
+  it("advances revision 0 to 1 and appends one marker", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, confirmed);
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(result.status).toBe(0);
+    expect(readState(run)).toMatchObject({ revision: 1, phase: "PLAN_VALIDATE" });
+    expect(countMarkers(run)).toBe(2);
+  });
+
+  it("leaves both files untouched on a stale expected revision", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, confirmed);
+    const before = readFileSync(run.statePath);
+    const beforeProgress = readFileSync(run.progressPath);
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "7",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(result.status).toBe(3);
+    expect(readFileSync(run.statePath)).toEqual(before);
+    expect(readFileSync(run.progressPath)).toEqual(beforeProgress);
+  });
+
+  it("rejects an illegal transition without writing", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, { type: "final-complete" });
+    const before = readFileSync(run.statePath);
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(result.status).toBe(2);
+    expect(readFileSync(run.statePath)).toEqual(before);
+  });
+
+  it("fails closed when the plan digest drifts under the run", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeFileSync(run.planPath, `${VALID_PLAN}\n<!-- edited after init -->\n`);
+    const eventPath = writeEvent(run, confirmed);
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toMatch(/digest/iu);
+    expect(readState(run).revision).toBe(0);
+  });
+
+  it("rejects a caller-supplied transition timestamp", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, { ...confirmed, at: "2030-01-01T00:00:00.000Z" });
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/timestamp|\bat\b/iu);
+  });
+
+  it("requires the event file to live under the run root", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const outside = join(run.root, "outside-event.json");
+    writeFileSync(outside, JSON.stringify(confirmed));
+
+    const result = runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      outside,
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/run root/iu);
+  });
+
+  it("serializes two concurrent transitions into one winner", async () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, confirmed);
+    const args = [
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ];
+
+    const results = await Promise.all([
+      new Promise((done) => {
+        const child = spawn(CLI, args, { stdio: "ignore" });
+        child.on("exit", (code) => done(code));
+      }),
+      new Promise((done) => {
+        const child = spawn(CLI, args, { stdio: "ignore" });
+        child.on("exit", (code) => done(code));
+      }),
+    ]);
+
+    expect(results.filter((code) => code === 0)).toHaveLength(1);
+    expect(results.filter((code) => code === 3)).toHaveLength(1);
+    expect(readState(run).revision).toBe(1);
+    expect(countMarkers(run)).toBe(2);
+  });
+});
+
+describe("state store show", () => {
+  it("is read-only, byte for byte", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const before = readFileSync(run.statePath);
+    const beforeProgress = readFileSync(run.progressPath);
+
+    const result = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).state.revision).toBe(0);
+    expect(readFileSync(run.statePath)).toEqual(before);
+    expect(readFileSync(run.progressPath)).toEqual(beforeProgress);
+  });
+
+  it("reports a missing final marker as repairable", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeFileSync(run.progressPath, "# SDD ledger\n");
+
+    const result = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(result.status).toBe(5);
+    expect(JSON.parse(result.stdout).audit).toMatchObject({ status: "AUDIT_REPAIR_NEEDED" });
+  });
+});
+
+/** Drive a run to IMPLEMENT_DISPATCH_INTENT through the real CLI. */
+function runToIntent(run) {
+  runCli(initArgs(run));
+  const step = (event, expectedRevision, name) =>
+    runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      String(expectedRevision),
+      "--event-file",
+      writeEvent(run, event, name),
+    ]);
+
+  expect(step({ type: "capability-confirmed", mode: "tiered" }, 0, "e0.json").status).toBe(0);
+  expect(step({ type: "plan-valid", planDigest: run.planDigest }, 1, "e1.json").status).toBe(0);
+  expect(step({ type: "preflight-clean" }, 2, "e2.json").status).toBe(0);
+
+  const state = readState(run);
+  const intent = {
+    type: "implement-dispatch-intended",
+    role: "implementer",
+    attempt: 1,
+    dispatchKey: `${state.runId}:task-1:implementer:attempt-1`,
+    tier: state.currentImplementerTier,
+    promptPath: join(run.runRoot, "task-1-prompt.md"),
+    reportPath: join(run.runRoot, "task-1-report.md"),
+    briefPath: join(run.runRoot, "task-1-brief.md"),
+    expectedOutcome: "implementer-report",
+    renderedPrompt: "Implement task 1 exactly.\n",
+  };
+  expect(step(intent, 3, "e3.json").status).toBe(0);
+  return intent;
+}
+
+describe("audit repair", () => {
+  it("appends exactly one missing marker under the lock", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const eventPath = writeEvent(run, { type: "capability-confirmed", mode: "tiered" });
+    runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      "0",
+      "--event-file",
+      eventPath,
+    ]);
+    expect(countMarkers(run)).toBe(2);
+
+    // Drop the final marker, simulating a crash between state rename and append.
+    const lines = readFileSync(run.progressPath, "utf8").split("\n");
+    const lastMarker = lines.findLastIndex((line) => line.includes("sdd-transition:"));
+    writeFileSync(run.progressPath, [...lines.slice(0, lastMarker), ...lines.slice(lastMarker + 1)].join("\n"));
+    expect(countMarkers(run)).toBe(1);
+
+    const stateBefore = readFileSync(run.statePath);
+    const repair = runCli([
+      "repair-audit",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+    ]);
+    expect(repair.status).toBe(0);
+    expect(JSON.parse(repair.stdout)).toMatchObject({ repaired: true, markers: 2 });
+    expect(countMarkers(run)).toBe(2);
+    // Repair projects only lastTransition; canonical state is untouched.
+    expect(readFileSync(run.statePath)).toEqual(stateBefore);
+  });
+
+  it("is a no-op when the ledger is already complete", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    const repair = runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(repair.status).toBe(0);
+    expect(JSON.parse(repair.stdout)).toMatchObject({ repaired: false });
+    expect(countMarkers(run)).toBe(1);
+  });
+
+  it("treats a ledger ahead of state as corruption, not a missing marker", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    appendFileSync(run.progressPath, "<!-- sdd-transition: revision=9 phase=COMPLETE -->\n");
+    const repair = runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(repair.status).toBe(4);
+    expect(repair.stderr).toMatch(/corruption/iu);
+  });
+
+  it("appends once when two repairs race", async () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeFileSync(run.progressPath, "# SDD ledger\n");
+    const args = ["repair-audit", "--state", run.statePath, "--progress", run.progressPath];
+
+    const codes = await Promise.all(
+      [0, 1].map(
+        () =>
+          new Promise((done) => {
+            spawn(CLI, args, { stdio: "ignore" }).on("exit", (code) => done(code));
+          }),
+      ),
+    );
+    expect(codes.filter((code) => code === 0).length).toBeGreaterThanOrEqual(1);
+    expect(countMarkers(run)).toBe(1);
+  });
+});
+
+describe("lock handling", () => {
+  const lockPath = (run) => `${run.statePath}.lock`;
+
+  const writeLock = (run, owner) => writeFileSync(lockPath(run), `${JSON.stringify(owner)}\n`);
+
+  it("reports an unlocked run", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    expect(JSON.parse(runCli(["lock-status", "--state", run.statePath]).stdout)).toMatchObject({
+      status: "UNLOCKED",
+    });
+  });
+
+  it("reports a live lock and refuses repair while it is held", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeFileSync(run.progressPath, "# SDD ledger\n");
+    writeLock(run, {
+      token: "live-token",
+      pid: process.pid,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    });
+
+    expect(JSON.parse(runCli(["lock-status", "--state", run.statePath]).stdout).status).toBe("LIVE");
+    const show = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(JSON.parse(show.stdout).audit.status).toBe("RUN_LOCKED");
+    expect(show.status).toBe(0);
+
+    const repair = runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(repair.status).toBe(3);
+    // The liveness guard fires before lock acquisition, so the message names why
+    // repair is unsafe rather than reporting a generic contention.
+    expect(repair.stderr).toMatch(/not safe while a transition may be live/u);
+    expect(countMarkers(run)).toBe(0);
+  });
+
+  it("requires a stale lock to be cleared before repair can proceed", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeFileSync(run.progressPath, "# SDD ledger\n");
+    const owner = {
+      token: "dead-token",
+      pid: 2 ** 22,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    };
+    writeFileSync(`${run.statePath}.lock`, `${JSON.stringify(owner)}\n`);
+
+    // A stale lock still blocks acquisition, so recovery is ordered:
+    // clear-stale-lock first, then repair-audit.
+    const blocked = runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(blocked.status).toBe(3);
+    expect(countMarkers(run)).toBe(0);
+
+    const decisionPath = join(run.runRoot, "stale-decision.json");
+    writeFileSync(
+      decisionPath,
+      JSON.stringify({
+        action: "clear-stale-lock",
+        ownerToken: "dead-token",
+        reason: "the controller was killed mid-transition",
+        approvedAt: "2026-07-31T01:00:00.000Z",
+      }),
+    );
+    expect(
+      runCli([
+        "clear-stale-lock",
+        "--state",
+        run.statePath,
+        "--expected-owner-token",
+        "dead-token",
+        "--decision-file",
+        decisionPath,
+      ]).status,
+    ).toBe(0);
+
+    const repaired = runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(repaired.status).toBe(0);
+    expect(countMarkers(run)).toBe(1);
+  });
+
+  it("reports a dead owner as stale without clearing it", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeLock(run, {
+      token: "dead-token",
+      pid: 2 ** 22,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    });
+    expect(JSON.parse(runCli(["lock-status", "--state", run.statePath]).stdout).status).toBe("STALE");
+    expect(existsSync(lockPath(run))).toBe(true);
+  });
+
+  it("clears a stale lock only with a matching token and persisted decision", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeLock(run, {
+      token: "dead-token",
+      pid: 2 ** 22,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    });
+    const decisionPath = join(run.runRoot, "decision.json");
+    writeFileSync(
+      decisionPath,
+      JSON.stringify({
+        action: "clear-stale-lock",
+        ownerToken: "dead-token",
+        reason: "the controller host rebooted",
+        approvedAt: "2026-07-31T01:00:00.000Z",
+      }),
+    );
+
+    const wrongToken = runCli([
+      "clear-stale-lock",
+      "--state",
+      run.statePath,
+      "--expected-owner-token",
+      "not-the-token",
+      "--decision-file",
+      decisionPath,
+    ]);
+    expect(wrongToken.status).toBe(6);
+    expect(existsSync(lockPath(run))).toBe(true);
+
+    const cleared = runCli([
+      "clear-stale-lock",
+      "--state",
+      run.statePath,
+      "--expected-owner-token",
+      "dead-token",
+      "--decision-file",
+      decisionPath,
+    ]);
+    expect(cleared.status).toBe(0);
+    expect(JSON.parse(cleared.stdout).receipt).toMatch(/dead-token|dead pid/u);
+    expect(existsSync(lockPath(run))).toBe(false);
+  });
+
+  it("never clears a lock whose owner is alive", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeLock(run, {
+      token: "live-token",
+      pid: process.pid,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    });
+    const decisionPath = join(run.runRoot, "decision.json");
+    writeFileSync(
+      decisionPath,
+      JSON.stringify({
+        action: "clear-stale-lock",
+        ownerToken: "live-token",
+        reason: "impatience",
+        approvedAt: "2026-07-31T01:00:00.000Z",
+      }),
+    );
+    const result = runCli([
+      "clear-stale-lock",
+      "--state",
+      run.statePath,
+      "--expected-owner-token",
+      "live-token",
+      "--decision-file",
+      decisionPath,
+    ]);
+    expect(result.status).toBe(6);
+    expect(result.stderr).toMatch(/still alive/iu);
+    expect(existsSync(lockPath(run))).toBe(true);
+  });
+
+  it("requires a decision file naming the clear-stale-lock action", () => {
+    const run = makeRun();
+    runCli(initArgs(run));
+    writeLock(run, {
+      token: "dead-token",
+      pid: 2 ** 22,
+      host: hostname(),
+      at: "2026-07-31T00:00:00.000Z",
+    });
+    const decisionPath = join(run.runRoot, "decision.json");
+    writeFileSync(
+      decisionPath,
+      JSON.stringify({
+        action: "do-whatever",
+        ownerToken: "dead-token",
+        reason: "wrong action",
+        approvedAt: "2026-07-31T01:00:00.000Z",
+      }),
+    );
+    expect(
+      runCli([
+        "clear-stale-lock",
+        "--state",
+        run.statePath,
+        "--expected-owner-token",
+        "dead-token",
+        "--decision-file",
+        decisionPath,
+      ]).status,
+    ).toBe(2);
+    expect(existsSync(lockPath(run))).toBe(true);
+  });
+});
+
+describe("crash recovery across the spawn window", () => {
+  const transitionAt = (run, event, revision, name) =>
+    runCli([
+      "transition",
+      "--state",
+      run.statePath,
+      "--progress",
+      run.progressPath,
+      "--plan",
+      run.planPath,
+      "--expected-revision",
+      String(revision),
+      "--event-file",
+      writeEvent(run, event, name),
+    ]);
+
+  it("preserves the intent verbatim when the process dies before correlation", () => {
+    const run = makeRun();
+    const intent = runToIntent(run);
+
+    // Simulate the crash: nothing recorded the session id. A fresh process reads
+    // only what is on disk.
+    const inspected = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(inspected.status).toBe(0);
+    const report = JSON.parse(inspected.stdout);
+
+    expect(report.state.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(report.dispatch).toMatchObject({
+      dispatchKey: intent.dispatchKey,
+      role: "implementer",
+      tier: intent.tier,
+      sessionId: null,
+      ambiguous: true,
+    });
+    expect(report.state.dispatch.renderedPrompt).toBe(intent.renderedPrompt);
+    expect(report.nextAction).toMatch(/adopt an observed session id, or reissue/u);
+  });
+
+  it("reconstructs a reissue from stored state alone, with no renderer call", () => {
+    const run = makeRun();
+    const intent = runToIntent(run);
+    const report = JSON.parse(
+      runCli(["show", "--state", run.statePath, "--progress", run.progressPath]).stdout,
+    );
+
+    // Byte-for-byte, including the trailing newline. Recovery never re-renders,
+    // because re-rendering couples recovery to renderer output.
+    const recovered = report.state.dispatch.renderedPrompt;
+    expect(recovered).toBe(intent.renderedPrompt);
+    expect(Buffer.byteLength(recovered, "utf8")).toBe(
+      Buffer.byteLength(intent.renderedPrompt, "utf8"),
+    );
+    expect(report.dispatch.renderedPromptBytes).toBe(
+      Buffer.byteLength(intent.renderedPrompt, "utf8"),
+    );
+
+    // Everything a reissue needs is present on disk: prompt bytes, cwd root, and
+    // the typed tier that binds the model.
+    expect(report.state.runRoot).toBe(run.runRoot);
+    expect(report.state.dispatch.tier).toBe(intent.tier);
+  });
+
+  it("surfaces the crossed window and refuses to resolve it implicitly", () => {
+    const run = makeRun();
+    runToIntent(run);
+
+    const crossed = transitionAt(
+      run,
+      { type: "dispatch-window-crossed", reason: "controller restarted before correlation" },
+      4,
+      "crossed.json",
+    );
+    expect(crossed.status).toBe(0);
+    expect(readState(run).phase).toBe("DISPATCH_AMBIGUOUS");
+
+    // A plain correlation is not a ruling. The reducer refuses it.
+    const implicit = transitionAt(
+      run,
+      { type: "dispatch-started", sessionId: "sess-guessed" },
+      5,
+      "implicit.json",
+    );
+    expect(implicit.status).toBe(2);
+    expect(implicit.stderr).toMatch(/illegal transition/u);
+    expect(readState(run).phase).toBe("DISPATCH_AMBIGUOUS");
+  });
+
+  it("records adopt and reissue as distinct, durable outcomes", () => {
+    const adoptRun = makeRun();
+    runToIntent(adoptRun);
+    transitionAt(
+      adoptRun,
+      { type: "dispatch-window-crossed", reason: "restart" },
+      4,
+      "crossed.json",
+    );
+    expect(
+      transitionAt(
+        adoptRun,
+        {
+          type: "dispatch-ruling-recorded",
+          decision: "adopt",
+          sessionId: "sess-observed-child",
+          reason: "one child observed with the matching cwd",
+        },
+        5,
+        "adopt.json",
+      ).status,
+    ).toBe(0);
+    const adopted = readState(adoptRun);
+    expect(adopted.phase).toBe("IMPLEMENT_RUNNING");
+    expect(adopted.dispatch.sessionId).toBe("sess-observed-child");
+    expect(adopted.dispatch.reissued).toBe(false);
+
+    const reissueRun = makeRun();
+    const intent = runToIntent(reissueRun);
+    transitionAt(
+      reissueRun,
+      { type: "dispatch-window-crossed", reason: "restart" },
+      4,
+      "crossed.json",
+    );
+    expect(
+      transitionAt(
+        reissueRun,
+        {
+          type: "dispatch-ruling-recorded",
+          decision: "reissue",
+          reason: "no child found; accepting a possible orphan",
+        },
+        5,
+        "reissue.json",
+      ).status,
+    ).toBe(0);
+    const reissued = readState(reissueRun);
+    expect(reissued.phase).toBe("IMPLEMENT_DISPATCH_INTENT");
+    expect(reissued.dispatch.sessionId).toBeNull();
+    expect(reissued.dispatch.reissued).toBe(true);
+    // The bytes survived the whole detour untouched.
+    expect(reissued.dispatch.renderedPrompt).toBe(intent.renderedPrompt);
+  });
+
+  it("keeps show read-only across a full repair cycle", () => {
+    const run = makeRun();
+    runToIntent(run);
+    const stateBefore = readFileSync(run.statePath);
+
+    const lines = readFileSync(run.progressPath, "utf8").split("\n");
+    const last = lines.findLastIndex((line) => line.includes("sdd-transition:"));
+    writeFileSync(run.progressPath, [...lines.slice(0, last), ...lines.slice(last + 1)].join("\n"));
+
+    const before = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(before.status).toBe(5);
+    expect(readFileSync(run.statePath)).toEqual(stateBefore);
+
+    expect(
+      runCli(["repair-audit", "--state", run.statePath, "--progress", run.progressPath]).status,
+    ).toBe(0);
+    const after = runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+    expect(after.status).toBe(0);
+    expect(JSON.parse(after.stdout).audit.status).toBe("OK");
+    expect(readFileSync(run.statePath)).toEqual(stateBefore);
+  });
+
+  it("records the recovery receipt without changing the phase", () => {
+    const run = makeRun();
+    runToIntent(run);
+    const before = readState(run);
+
+    const recorded = transitionAt(
+      run,
+      {
+        type: "recovery-ruling-recorded",
+        reason: "cleared a stale lock from a dead controller",
+        receipt: "cleared lock token 4f2a held by dead pid 9999",
+      },
+      4,
+      "recovery.json",
+    );
+    expect(recorded.status).toBe(0);
+
+    const after = readState(run);
+    expect(after.phase).toBe(before.phase);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.recoveryRulings).toBe(1);
+  });
+
+  it("leaves no stale temp or lock files behind", () => {
+    const run = makeRun();
+    runToIntent(run);
+    runCli(["show", "--state", run.statePath, "--progress", run.progressPath]);
+
+    const leftovers = readdirSync(run.runRoot).filter(
+      (name) => name.includes(".tmp.") || name.endsWith(".lock"),
+    );
+    expect(leftovers).toEqual([]);
   });
 });

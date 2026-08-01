@@ -12,6 +12,27 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { parsePlanText, roleTier } from "./lib/plan-policy.mjs";
+import {
+  clearStaleLock,
+  EXIT,
+  initRun,
+  lockStatus,
+  repairAudit,
+  show,
+  StoreError,
+  transition,
+} from "./lib/state-store.mjs";
+
+export {
+  clearStaleLock,
+  EXIT,
+  initRun,
+  lockStatus,
+  repairAudit,
+  show,
+  StoreError,
+  transition,
+} from "./lib/state-store.mjs";
 
 export {
   computeRunId,
@@ -43,7 +64,25 @@ const USAGE = [
   "usage:",
   "  sdd-state validate-plan PLAN_FILE",
   "  sdd-state role-tier --implementer TIER --role ROLE [--round N]",
+  "  sdd-state init --plan PLAN --state STATE --progress PROGRESS --repo-root ROOT",
+  "                 --worktree TREE --branch BRANCH --base-ref REF --merge-base SHA",
+  "  sdd-state show --state STATE --progress PROGRESS",
+  "  sdd-state transition --state STATE --progress PROGRESS --plan PLAN",
+  "                       --expected-revision N --event-file EVENT_JSON",
+  "  sdd-state repair-audit --state STATE --progress PROGRESS",
+  "  sdd-state lock-status --state STATE",
+  "  sdd-state clear-stale-lock --state STATE --expected-owner-token TOKEN",
+  "                             --decision-file DECISION_JSON",
 ].join("\n");
+
+/** Require a set of flags, naming every missing one at once. */
+function requireFlags(flags, names) {
+  const missing = names.filter((name) => flags.get(name) === undefined);
+  if (missing.length > 0) {
+    throw new Error(`missing required flag(s): ${missing.map((n) => `--${n}`).join(", ")}\n${USAGE}`);
+  }
+  return Object.fromEntries(names.map((name) => [name, flags.get(name)]));
+}
 
 function parseFlags(args) {
   const flags = new Map();
@@ -100,6 +139,98 @@ function main(argv) {
     case "role-tier":
       console.log(JSON.stringify(roleTierCommand(args)));
       return 0;
+    case "init": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, [
+        "plan",
+        "state",
+        "progress",
+        "repo-root",
+        "worktree",
+        "branch",
+        "base-ref",
+        "merge-base",
+      ]);
+      const result = initRun({
+        planPath: required.plan,
+        statePath: required.state,
+        progressPath: required.progress,
+        repoRoot: required["repo-root"],
+        worktree: required.worktree,
+        branch: required.branch,
+        baseRef: required["base-ref"],
+        mergeBase: required["merge-base"],
+      });
+      console.log(JSON.stringify({ revision: result.state.revision, phase: result.state.phase }));
+      return 0;
+    }
+    case "show": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["state", "progress"]);
+      const result = show({ statePath: required.state, progressPath: required.progress });
+      console.log(JSON.stringify(result, null, 2));
+      // A repairable ledger is reported through the exit code so a script does
+      // not have to parse stdout to notice.
+      return result.audit.status === "AUDIT_REPAIR_NEEDED"
+        ? EXIT.AUDIT_REPAIR_NEEDED
+        : result.audit.status === "AUDIT_CORRUPT"
+          ? EXIT.IDENTITY
+          : 0;
+    }
+    case "transition": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, [
+        "state",
+        "progress",
+        "plan",
+        "expected-revision",
+        "event-file",
+      ]);
+      const revision = required["expected-revision"];
+      if (!/^[0-9]+$/u.test(revision)) {
+        throw new Error(`--expected-revision must be a non-negative integer: ${revision}`);
+      }
+      const result = transition({
+        statePath: required.state,
+        progressPath: required.progress,
+        planPath: required.plan,
+        expectedRevision: Number(revision),
+        eventFile: required["event-file"],
+        worktree: flags.get("worktree"),
+        branch: flags.get("branch"),
+        mergeBase: flags.get("merge-base"),
+      });
+      console.log(JSON.stringify({ revision: result.state.revision, phase: result.state.phase }));
+      return 0;
+    }
+    case "repair-audit": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["state", "progress"]);
+      console.log(
+        JSON.stringify(repairAudit({ statePath: required.state, progressPath: required.progress })),
+      );
+      return 0;
+    }
+    case "lock-status": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["state"]);
+      console.log(JSON.stringify(lockStatus({ statePath: required.state })));
+      return 0;
+    }
+    case "clear-stale-lock": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["state", "expected-owner-token", "decision-file"]);
+      console.log(
+        JSON.stringify(
+          clearStaleLock({
+            statePath: required.state,
+            expectedOwnerToken: required["expected-owner-token"],
+            decisionFile: required["decision-file"],
+          }),
+        ),
+      );
+      return 0;
+    }
     default:
       throw new Error(command === undefined ? USAGE : `unknown command: ${command}\n${USAGE}`);
   }
@@ -116,6 +247,8 @@ if (isDirectExecution()) {
     process.exitCode = main(process.argv.slice(2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 2;
+    // A StoreError carries the exit code its failure mode maps to; anything else
+    // is a validation failure from argument handling.
+    process.exitCode = error instanceof StoreError ? error.code : EXIT.VALIDATION;
   }
 }

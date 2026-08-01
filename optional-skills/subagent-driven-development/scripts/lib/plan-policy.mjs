@@ -244,9 +244,25 @@ export function parsePlanText(planText, planPath = "<plan>") {
       continue;
     }
 
-    // Any task-like ATX heading outside a fence that is not canonical is an error.
+    // Any task-like ATX heading outside a fence that is not canonical is an
+    // error. The diagnostic names the depth found, the depth required, and the
+    // tier line, because the most common source of a non-canonical plan is the
+    // `writing-plans` skill, which emits `### Task N:` with no tier field. A bare
+    // "not canonical" would leave the operator guessing at two separate repairs.
     if (TASK_LIKE_ATX.test(line) && !INDENTED_CODE.test(line)) {
-      throw new PlanError(`task-like heading is not canonical: ${line}`, planPath, lineNumber);
+      const depth = /^ {0,3}(#+)/u.exec(line)?.[1] ?? "#";
+      const title = line.replace(/^ {0,3}#+[ \t]+/u, "");
+      throw new PlanError(
+        [
+          `task-like heading is not canonical: ${line}`,
+          `found heading depth "${depth}" but the deterministic controller requires "##"`,
+          `rewrite it as: ## ${title.startsWith("Task") ? title : `Task N: ${title}`}`,
+          'and give every task a tier line on its own: **Implementer tier:** Advanced',
+          "a tier-annotated plan is a precondition of tiered dispatch; the controller never guesses a tier",
+        ].join("\n  "),
+        planPath,
+        lineNumber,
+      );
     }
 
     // A non-canonical H2 terminates the open section without being captured.
@@ -301,7 +317,9 @@ export function parsePlanText(planText, planPath = "<plan>") {
     }
     if (task.implementerTier === null) {
       throw new PlanError(
-        `Task ${String(task.number)} has no Implementer tier`,
+        `Task ${String(task.number)} has no Implementer tier
+  add a line reading exactly: **Implementer tier:** <Economy|Fast|Standard|Advanced|Capable|Frontier>
+  a tier-annotated plan is a precondition of tiered dispatch; the controller never guesses a tier`,
         planPath,
         task.headingLine,
       );
