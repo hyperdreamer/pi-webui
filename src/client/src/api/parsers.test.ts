@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -446,6 +446,131 @@ describe("API parsers", () => {
     expect(() => parseSessionInfo({ id: "s1", path: "", cwd: "/repo", persisted: "yes", created: "now", modified: "now", messageCount: 0, firstMessage: "" })).toThrow("Expected optional boolean field: persisted");
   });
 
+  it("parses a complete session model policy response", () => {
+    const value = {
+      contractVersion: 1,
+      policy: {
+        mode: "tiered",
+        exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+        tier: "advanced",
+      },
+      session: {
+        sessionId: "s-1",
+        isStreaming: false,
+        isCompacting: false,
+        isBashRunning: false,
+        pendingMessageCount: 0,
+        queuedMessages: [],
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        cost: 0,
+        modelPolicy: {
+          mode: "tiered",
+          tier: "advanced",
+          resolved: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+          ladderValid: true,
+        },
+      },
+    };
+
+    expect(parseSessionModelPolicyResponse(value)).toEqual(value);
+  });
+
+  it("accepts an omitted repair policy and legacy status without model policy", () => {
+    const value = sessionModelPolicyResponseWire();
+    const repairResponse = { contractVersion: 1, session: value.session };
+    const legacyStatus = {
+      sessionId: value.session.sessionId,
+      isStreaming: value.session.isStreaming,
+      isCompacting: value.session.isCompacting,
+      isBashRunning: value.session.isBashRunning,
+      pendingMessageCount: value.session.pendingMessageCount,
+      queuedMessages: value.session.queuedMessages,
+      tokens: value.session.tokens,
+      cost: value.session.cost,
+    };
+
+    expect(parseSessionModelPolicyResponse(repairResponse)).toEqual(repairResponse);
+    expect(parseSessionStatus(legacyStatus)).toEqual(legacyStatus);
+  });
+
+  it("retains a canonical remembered tier while Exact policy is active", () => {
+    const value = sessionModelPolicyResponseWire();
+    const exact = { model: { provider: "openai", id: "gpt-exact" }, thinkingLevel: "medium" };
+    const response = {
+      ...value,
+      policy: { mode: "exact", exact, tier: "advanced" },
+      session: {
+        ...value.session,
+        modelPolicy: { mode: "exact", tier: "advanced", resolved: exact, ladderValid: true },
+      },
+    };
+
+    expect(parseSessionModelPolicyResponse(response)).toMatchObject({
+      policy: { mode: "exact", exact, tier: "advanced" },
+      session: { modelPolicy: { mode: "exact", tier: "advanced", resolved: exact, ladderValid: true } },
+    });
+  });
+
+  it("rejects unsupported policy contracts and unknown keys at every policy level", () => {
+    const value = sessionModelPolicyResponseWire();
+
+    expect(() => parseSessionModelPolicyResponse({ ...value, contractVersion: 2 })).toThrow("contract version");
+    expect(() => parseSessionModelPolicyResponse({ ...value, unexpected: true })).toThrow("response field");
+    expect(() => parseSessionModelPolicyResponse({ ...value, policy: { ...value.policy, unexpected: true } })).toThrow("policy field");
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      session: { ...value.session, modelPolicy: { ...value.session.modelPolicy, unexpected: true } },
+    })).toThrow("status field");
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      policy: { ...value.policy, exact: { ...value.policy.exact, unexpected: true } },
+    })).toThrow("exact selection field");
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      policy: {
+        ...value.policy,
+        exact: { ...value.policy.exact, model: { ...value.policy.exact.model, unexpected: true } },
+      },
+    })).toThrow("model reference field");
+  });
+
+  it("rejects missing or non-canonical policy tiers", () => {
+    const value = sessionModelPolicyResponseWire();
+
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      policy: { mode: "tiered", exact: value.policy.exact },
+    })).toThrow("tier");
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      policy: { mode: "exact", exact: value.policy.exact, tier: "premium" },
+    })).toThrow("tier");
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      session: { ...value.session, modelPolicy: { ...value.session.modelPolicy, mode: "exact", tier: "premium" } },
+    })).toThrow("tier");
+  });
+
+  it("rejects malformed exact selections and optional session policy status", () => {
+    const value = sessionModelPolicyResponseWire();
+
+    expect(() => parseSessionModelPolicyResponse({
+      ...value,
+      policy: {
+        mode: "exact",
+        exact: { model: { provider: " ", id: "gpt-exact" }, thinkingLevel: "medium" },
+      },
+    })).toThrow("provider");
+    expect(() => parseSessionStatus({
+      ...value.session,
+      modelPolicy: { ...value.session.modelPolicy, resolved: { model: { provider: "openai" }, thinkingLevel: "high" } },
+    })).toThrow("id");
+    expect(() => parseSessionStatus({
+      ...value.session,
+      modelPolicy: { ...value.session.modelPolicy, tier: undefined },
+    })).toThrow("tier");
+  });
+
   it("validates session status including optional model, generation, and nullable context usage", () => {
     expect(parseSessionStatus({
       sessionId: "s1",
@@ -885,6 +1010,33 @@ function notificationInboxWire() {
     },
     notifications: [notificationWire(1)],
     dismissThrough: { order: 1, overflowWatermark: 0 },
+  };
+}
+
+function sessionModelPolicyResponseWire() {
+  return {
+    contractVersion: 1,
+    policy: {
+      mode: "tiered",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+      tier: "advanced",
+    },
+    session: {
+      sessionId: "s-1",
+      isStreaming: false,
+      isCompacting: false,
+      isBashRunning: false,
+      pendingMessageCount: 0,
+      queuedMessages: [],
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: 0,
+      modelPolicy: {
+        mode: "tiered",
+        tier: "advanced",
+        resolved: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+        ladderValid: true,
+      },
+    },
   };
 }
 

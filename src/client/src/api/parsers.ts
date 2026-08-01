@@ -1,6 +1,7 @@
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionMessageForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SystemInfoResponse, SystemMetricsResponse, SystemNetworkMetrics } from "../../../shared/apiTypes";
 import type { SessionDefaultsResponse } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { MODEL_TIERS } from "../../../shared/apiTypes";
@@ -256,10 +257,95 @@ export function parseSessionStatus(value: unknown): SessionStatus {
     cost: requireNumber(record, "cost"),
     ...optionalGeneration(record["generation"]),
     ...optionalModel(record["model"]),
+    ...optionalField("modelPolicy", record["modelPolicy"] === undefined ? undefined : parseClientSessionModelPolicyStatus(record["modelPolicy"])),
     ...optionalContextUsage(record["contextUsage"]),
     ...optionalField("thinkingLevel", optionalString(record, "thinkingLevel")),
     ...optionalWarnings(record["warnings"]),
   };
+}
+
+export function parseSessionModelPolicyResponse(value: unknown): SessionModelPolicyResponse {
+  const record = requirePlainRecord(value, "session model policy response");
+  assertOnlyFields(record, ["contractVersion", "policy", "session"], "session model policy response");
+  if (record["contractVersion"] !== 1) throw new Error("Invalid session model policy contract version");
+
+  const session = parseSessionStatus(record["session"]);
+  if (!Object.hasOwn(record, "policy")) return { contractVersion: 1, session };
+  return { contractVersion: 1, policy: parseSessionModelPolicy(record["policy"]), session };
+}
+
+function parseSessionModelPolicy(value: unknown): SessionModelPolicy {
+  const record = requirePlainRecord(value, "session model policy");
+  assertOnlyFields(record, ["mode", "exact", "tier"], "session model policy");
+  const mode = parseSessionModelPolicyMode(record["mode"]);
+  const tier = parseOptionalSessionModelPolicyTier(record, "session model policy");
+  if (mode === "tiered" && tier === undefined) throw new Error("Tiered session model policy requires a tier");
+  return {
+    mode,
+    exact: parseExactModelSelection(record["exact"]),
+    ...optionalField("tier", tier),
+  };
+}
+
+function parseClientSessionModelPolicyStatus(value: unknown): ClientSessionModelPolicyStatus {
+  const record = requirePlainRecord(value, "session model policy status");
+  assertOnlyFields(record, ["mode", "tier", "resolved", "ladderValid", "blockedReason"], "session model policy status");
+  const mode = parseSessionModelPolicyMode(record["mode"]);
+  const tier = parseOptionalSessionModelPolicyTier(record, "session model policy status");
+  if (mode === "tiered" && tier === undefined) throw new Error("Tiered session model policy status requires a tier");
+  return {
+    mode,
+    ...optionalField("tier", tier),
+    resolved: parseExactModelSelection(record["resolved"]),
+    ladderValid: requireBoolean(record, "ladderValid"),
+    ...optionalField("blockedReason", optionalString(record, "blockedReason")),
+  };
+}
+
+function parseExactModelSelection(value: unknown): ExactModelSelection {
+  const record = requirePlainRecord(value, "exact selection");
+  assertOnlyFields(record, ["model", "thinkingLevel"], "exact selection");
+  return {
+    model: parseExactModelReference(record["model"]),
+    thinkingLevel: requireNonBlankString(record, "thinkingLevel"),
+  };
+}
+
+function parseExactModelReference(value: unknown): ExactModelSelection["model"] {
+  const record = requirePlainRecord(value, "model reference");
+  assertOnlyFields(record, ["provider", "id"], "model reference");
+  return {
+    provider: requireNonBlankString(record, "provider"),
+    id: requireNonBlankString(record, "id"),
+  };
+}
+
+function parseSessionModelPolicyMode(value: unknown): SessionModelPolicy["mode"] {
+  if (value !== "exact" && value !== "tiered") throw new Error("Invalid session model policy mode");
+  return value;
+}
+
+function parseOptionalSessionModelPolicyTier(record: Record<string, unknown>, label: string): ModelTier | undefined {
+  if (!Object.hasOwn(record, "tier")) return undefined;
+  const value = record["tier"];
+  if (typeof value !== "string" || !isModelTier(value)) throw new Error(`Invalid ${label} tier`);
+  return value;
+}
+
+function requirePlainRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isPlainRecord(value)) throw new Error(`Expected ${label} object`);
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function assertOnlyFields(record: Record<string, unknown>, allowedFields: readonly string[], label: string): void {
+  const unexpected = Object.keys(record).find((field) => !allowedFields.includes(field));
+  if (unexpected !== undefined) throw new Error(`Invalid ${label} field: ${unexpected}`);
 }
 
 export function parseSessionStreamSnapshot(value: unknown): SessionStreamSnapshot {
