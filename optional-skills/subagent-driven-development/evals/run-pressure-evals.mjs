@@ -447,23 +447,25 @@ export function prepareRepetitionWorkspace(args, invocation) {
   mkdirSync(invocation.fixtureDir, { recursive: true });
   writeScenarioFixtures(args.scenario, invocation.fixtureDir);
 
-  const seed = args.scenario.seedDispatchRegistry;
-  if (seed === undefined) return invocation.fixtureDir;
+  // Seed children that already exist, so a controller recovering from a crossed
+  // spawn window can discover one with list_subsessions. The registry is keyed by
+  // sessionId because the runtime returns only { sessionId, cwd } and offers no
+  // dispatch key to look anything up by.
+  const observed = args.scenario.seedObservedChildren;
+  if (observed === undefined) return invocation.fixtureDir;
 
-  // The seeded cwd and prompt must match what the controller will reissue, so
-  // `/eval` tokens are rewritten here exactly as they are in the prompt.
-  const registryPath = join(invocation.fixtureDir, "dispatch-registry.json");
-  const cwd = rewriteEvalTokens(seed.cwd, invocation.fixtureDir);
-  const renderedPrompt = rewriteEvalTokens(seed.renderedPrompt, invocation.fixtureDir);
-  const registry = {
-    [seed.key]: {
-      cwd,
-      normalizedPrompt: renderedPrompt.replace(/^\uFEFF/u, "").replaceAll("\r\n", "\n").trim(),
-      sessionId: seed.sessionId,
-      policyApplication: seed.policyApplication,
-    },
-  };
-  writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+  const registry = {};
+  for (const child of observed) {
+    registry[child.sessionId] = {
+      cwd: rewriteEvalTokens(child.cwd, invocation.fixtureDir),
+      tier: child.tier ?? null,
+      at: "2026-07-30T09:14:02.000Z",
+    };
+  }
+  writeFileSync(
+    join(invocation.fixtureDir, "dispatch-registry.json"),
+    `${JSON.stringify(registry, null, 2)}\n`,
+  );
   return invocation.fixtureDir;
 }
 

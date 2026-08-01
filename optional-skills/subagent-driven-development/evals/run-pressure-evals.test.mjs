@@ -316,63 +316,53 @@ describe("deterministic SDD pressure evaluator", () => {
       .toContain("outside every permitted root");
   });
 
-  it("deduplicates a repeated dispatch key across processes and retains the original application", async () => {
+  it("creates a second child for a repeated dispatch, because the runtime has no dedup", async () => {
     const root = makeTemporaryDirectory();
     const env = {
       SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
       SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
       SDD_EVAL_POLICY_MODE: "tiered",
     };
-    const first = (await loadFakeTools(env)).get("spawn_subsession");
-    const key = "a".repeat(64) + ":task-2:implement:attempt-1";
-    const original = JSON.parse(text(await first.execute("c1", {
-      prompt: "/tier-advanced\nDo the task.", cwd: "/eval/worktree", dispatchKey: key,
-    })));
-    expect(original.dispatch.reused).toBe(false);
+    const spawn = (await loadFakeTools(env)).get("spawn_subsession");
+    const first = JSON.parse(
+      text(await spawn.execute("c1", { prompt: "Do the task.", cwd: "/eval/worktree", tier: "advanced" })),
+    );
+    const second = JSON.parse(
+      text(await spawn.execute("c2", { prompt: "Do the task.", cwd: "/eval/worktree", tier: "advanced" })),
+    );
 
-    // A separate extension instance simulates a second Pi process, and the
-    // policy/mapping change must not alter the retained application.
-    const second = (await loadFakeTools({ ...env, SDD_EVAL_POLICY_MODE: "exact" })).get("spawn_subsession");
-    const replay = JSON.parse(text(await second.execute("c2", {
-      prompt: "/tier-advanced\nDo the task.", cwd: "/eval/worktree", dispatchKey: key,
-    })));
-    expect(replay.dispatch.reused).toBe(true);
-    expect(replay.sessionId).toBe(original.sessionId);
-    expect(replay.policyApplication).toEqual(original.policyApplication);
+    // This is the property the controller must be built against: an identical
+    // call yields a NEW child. Any design that assumes idempotent replay is
+    // assuming a guarantee the runtime does not offer.
+    expect(first.sessionId).not.toBe(second.sessionId);
+    expect(first.cwd).toBe("/eval/worktree");
+    expect(Object.keys(first)).toEqual(["sessionId", "cwd"]);
   });
 
-  it("rejects a reused key whose canonical inputs conflict", async () => {
-    const root = makeTemporaryDirectory();
-    const spawn = (await loadFakeTools({
-      SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
-      SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
-    })).get("spawn_subsession");
-    const key = "b".repeat(64) + ":task-2:implement:attempt-1";
-    await spawn.execute("c1", { prompt: "/tier-advanced\nA", cwd: "/eval/worktree", dispatchKey: key });
-
-    expect(text(await spawn.execute("c2", { prompt: "/tier-advanced\nB", cwd: "/eval/worktree", dispatchKey: key })))
-      .toContain("conflicting canonical inputs");
-    expect(text(await spawn.execute("c3", { prompt: "/tier-advanced\nA", cwd: "/other", dispatchKey: key })))
-      .toContain("conflicting canonical inputs");
-    // Identity covers the directive bytes, so a tier change is never a replay.
-    expect(text(await spawn.execute("c4", { prompt: "/tier-frontier\nA", cwd: "/eval/worktree", dispatchKey: key })))
-      .toContain("conflicting canonical inputs");
-  });
-
-  it("rejects an over-long dispatch key and a tier disagreeing with the directive", async () => {
+  it("accepts a typed tier with no directive and rejects one that disagrees", async () => {
     const root = makeTemporaryDirectory();
     const spawn = (await loadFakeTools({
       SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
       SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
     })).get("spawn_subsession");
 
-    expect(text(await spawn.execute("c1", { prompt: "/tier-advanced\nA", dispatchKey: "x".repeat(241) })))
-      .toContain("dispatchKey must match");
-    expect(text(await spawn.execute("c2", {
-      prompt: "/tier-advanced\nA", dispatchKey: "k1", tier: "frontier",
-    }))).toContain("disagrees with leading directive");
-    expect(text(await spawn.execute("c3", { prompt: "No directive here.", dispatchKey: "k2", tier: "advanced" })))
-      .toContain("tier supplied without a leading directive");
+    // The typed tier binds. A prompt with no directive is entirely normal.
+    expect(JSON.parse(text(await spawn.execute("c1", { prompt: "No directive.", tier: "advanced" }))).sessionId)
+      .toMatch(/^fake-child-/u);
+
+    // An agreeing echo is fine.
+    expect(
+      JSON.parse(text(await spawn.execute("c2", { prompt: "/tier-advanced\nA", tier: "advanced" }))).sessionId,
+    ).toMatch(/^fake-child-/u);
+
+    // A disagreeing echo fails before child creation, matching the real
+    // leadingTierDirective() guard.
+    expect(text(await spawn.execute("c3", { prompt: "/tier-frontier\nA", tier: "advanced" })))
+      .toContain("disagrees with typed tier");
+
+    // A tier outside the ladder cannot resolve to a model.
+    expect(text(await spawn.execute("c4", { prompt: "A", tier: "turbo" })))
+      .toMatch(/not in the configured ladder|must be equal to one of/u);
   });
 
   it("exposes no policy or spawn contract when capability mode is incompatible", async () => {
@@ -384,8 +374,8 @@ describe("deterministic SDD pressure evaluator", () => {
     });
     const policy = JSON.parse(text(await tools.get("get_model_policy").execute("c1", {})));
     expect(policy.contractVersion).not.toBe(1);
-    expect(text(await tools.get("spawn_subsession").execute("c2", { prompt: "/tier-advanced\nA", dispatchKey: "k" })))
-      .toContain("does not support dispatchKey");
+    expect(text(await tools.get("spawn_subsession").execute("c2", { prompt: "A", tier: "advanced" })))
+      .toContain("does not support a typed tier");
     // Call logging is retained even when the contract is unavailable.
     expect(readFileSync(join(root, "tool-log.jsonl"), "utf8")).toContain("get_model_policy");
   });
@@ -485,7 +475,7 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(delivered).toContain("/tmp/sdd-out/.fixtures/run-2/worktree");
   });
 
-  it("pre-seeds the crash-recovery registry so replay recovers the original child", async () => {
+  it("pre-seeds an observed child so a crossed spawn window is discoverable", async () => {
     const root = makeTemporaryDirectory();
     const args = parseEvaluatorArgs([
       "--condition", "candidate", "--scenario", "dispatch-intent-crash-recovery",
@@ -494,23 +484,24 @@ describe("deterministic SDD pressure evaluator", () => {
     const invocation = buildPiInvocation(args, 1);
     prepareRepetitionWorkspace(args, invocation);
 
-    const seed = args.scenario.seedDispatchRegistry;
-    const spawn = (await loadFakeTools({
+    const tools = await loadFakeTools({
       SDD_EVAL_READ_ROOTS_JSON: invocation.env.SDD_EVAL_READ_ROOTS_JSON,
       SDD_EVAL_TOOL_LOG: invocation.env.SDD_EVAL_TOOL_LOG,
-      // Policy moved to Exact and the mapping changed after the crash.
-      SDD_EVAL_POLICY_MODE: "exact",
-    })).get("spawn_subsession");
+      SDD_EVAL_POLICY_MODE: "tiered",
+    });
 
-    const replay = JSON.parse(text(await spawn.execute("c1", {
-      prompt: seed.renderedPrompt,
-      cwd: invocation.fixtureDir + "/worktree",
-      dispatchKey: seed.key,
-    })));
-    expect(replay.dispatch.reused).toBe(true);
-    expect(replay.sessionId).toBe("fake-child-original-8");
-    // The original Tiered/Advanced application survives the policy change.
-    expect(replay.policyApplication).toEqual(seed.policyApplication);
+    // The controller's only recovery affordance is observing what exists. There
+    // is no key to replay, so the child must be discoverable by listing.
+    const listed = JSON.parse(text(await tools.get("list_subsessions").execute("c1", {})));
+    expect(listed).toEqual([
+      { sessionId: "fake-child-0001", cwd: invocation.fixtureDir + "/worktree" },
+    ]);
+
+    const transcript = JSON.parse(
+      text(await tools.get("read_subsession").execute("c2", { sessionId: "fake-child-0001" })),
+    );
+    expect(transcript.requestedTier).toBe("advanced");
+    expect(transcript.effectiveTier).toBe("advanced");
   });
 
   it("writes scenario fixtures into the per-repetition fixture root", () => {
@@ -655,12 +646,14 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(exactEnv.SDD_EVAL_POLICY_MODE).toBe("exact");
     expect(exactEnv.SDD_EVAL_LADDER_VALID).toBe("false");
 
-    // The recovery scenario says the parent moved to Exact after the crash.
+    // The recovery scenario is tiered: its subject is the crossed spawn window,
+    // not a policy-mode change. Mode churn was only meaningful when a reused key
+    // could return a stale application, which the runtime never offered.
     const recovery = parseEvaluatorArgs([
       "--condition", "candidate", "--scenario", "dispatch-intent-crash-recovery",
       "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/o",
     ]);
-    expect(buildPiInvocation(recovery, 1).env.SDD_EVAL_POLICY_MODE).toBe("exact");
+    expect(buildPiInvocation(recovery, 1).env.SDD_EVAL_POLICY_MODE).toBe("tiered");
 
     // The mismatch scenario needs parent and child projections to disagree.
     const mismatch = parseEvaluatorArgs([
@@ -670,40 +663,46 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(buildPiInvocation(mismatch, 1).env.SDD_EVAL_CHILD_TIER_OVERRIDE).toBe("fast");
   });
 
-  it("returns ignored-exact and the inherited tuple in exact mode", async () => {
+  it("reports exact mode through the policy tool, not through the spawn result", async () => {
     const root = makeTemporaryDirectory();
-    const spawn = (await loadFakeTools({
+    const tools = await loadFakeTools({
       SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
       SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
       SDD_EVAL_POLICY_MODE: "exact",
       SDD_EVAL_LADDER_VALID: "false",
-    })).get("spawn_subsession");
-    const result = JSON.parse(text(await spawn.execute("c1", {
-      prompt: "/tier-advanced\nImplement Task 2.", cwd: "/w", dispatchKey: "k-exact-1",
-    })));
-    expect(result.policyApplication.outcome).toBe("ignored-exact");
-    expect(result.policyApplication.mode).toBe("exact");
-    // The directive is still recorded as requested even though it did not apply.
-    expect(result.policyApplication.requestedDirective).toBe("/tier-advanced");
+    });
+
+    // Exact mode is a property of the parent's policy, which the controller
+    // inspects before dispatching. The spawn result carries no policy evidence,
+    // so a controller must gate on the inspection rather than on the response.
+    const policy = JSON.parse(text(await tools.get("get_model_policy").execute("c1", {})));
+    expect(policy.policy.mode).toBe("exact");
+    expect(policy.ladder.valid).toBe(false);
+
+    const result = JSON.parse(
+      text(await tools.get("spawn_subsession").execute("c2", { prompt: "Implement Task 2.", cwd: "/w" })),
+    );
+    expect(Object.keys(result)).toEqual(["sessionId", "cwd"]);
   });
 
-  it("projects a child tier that disagrees with the parent when configured", async () => {
+  it("shows a child whose effective tier disagrees with what was requested", async () => {
     const root = makeTemporaryDirectory();
     const tools = await loadFakeTools({
       SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
       SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
       SDD_EVAL_CHILD_TIER_OVERRIDE: "fast",
     });
-    const parent = JSON.parse(text(await tools.get("spawn_subsession").execute("c1", {
-      prompt: "/tier-standard\nReview Task 3.", cwd: "/w", dispatchKey: "k-mismatch-1",
-    })));
-    const child = JSON.parse(text(await tools.get("read_subsession").execute("c2", {
-      sessionId: parent.sessionId,
-    })));
-    const projected = child.entries.find((entry) => entry.kind === "policy-application");
-    expect(parent.policyApplication.tier).toBe("standard");
-    expect(projected.policyApplication.tier).toBe("fast");
-    expect(projected.modelVisible).toBe(false);
+    const parent = JSON.parse(
+      text(await tools.get("spawn_subsession").execute("c1", { prompt: "Review Task 3.", cwd: "/w", tier: "standard" })),
+    );
+    const child = JSON.parse(
+      text(await tools.get("read_subsession").execute("c2", { sessionId: parent.sessionId })),
+    );
+
+    // The controller cannot learn this from the spawn result, which returns only
+    // { sessionId, cwd }. Confirming the tier bound requires inspecting the child.
+    expect(child.requestedTier).toBe("standard");
+    expect(child.effectiveTier).toBe("fast");
   });
 
   it("writes nothing outside the requested output directory", () => {

@@ -39,16 +39,17 @@ const TIER_COMMANDS = {
   exactOutcome: "ignored-exact",
 };
 
+// Matches references/capability-contract.md and the real tool: a typed tier is
+// the binding channel, the result carries only { sessionId, cwd }, and there is
+// no dispatch key and no deduplication.
 const TRACKED_DISPATCH = {
   contractVersion: CONTRACT_VERSION,
-  dispatchKey: true,
   tierField: true,
   scope: "parent-session",
-  canonicalInputs: ["cwd", "rawPrompt"],
-  resultPolicyApplication: true,
+  canonicalInputs: ["cwd", "prompt", "tier"],
+  returnsSessionId: true,
 };
 
-const DISPATCH_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,240}$/u;
 
 function readJsonEnv(name) {
   const raw = process.env[name];
@@ -243,7 +244,7 @@ export default function fakeSddTools(pi) {
     name: "spawn_subsession",
     label: "Spawn Subsession",
     description: spawnAdvertisesContract
-      ? "Dispatch a tracked child with an idempotent dispatchKey and policy-application details."
+      ? "Dispatch a tracked child with a typed tier that binds its model."
       : "Dispatch a child session.",
     promptSnippet: "Dispatch a tracked child session",
     parameters: {
@@ -251,76 +252,50 @@ export default function fakeSddTools(pi) {
       properties: {
         prompt: { type: "string" },
         cwd: { type: "string" },
-        dispatchKey: { type: "string" },
-        tier: { type: "string" },
+        tier: {
+          type: "string",
+          enum: ["economy", "fast", "standard", "advanced", "capable", "frontier"],
+        },
       },
       required: ["prompt"],
       additionalProperties: false,
     },
+    // Mirrors the real tool, verified against spawnSubsessionTool.ts and
+    // piSessionService.ts: it accepts { prompt, cwd, tier }, returns
+    // { sessionId, cwd }, and performs NO deduplication. There is no dispatch
+    // key and no reuse, so a repeated call creates a second child. A fake that
+    // deduplicated would let a controller pass by relying on a guarantee the
+    // runtime does not provide.
     execute: (_toolCallId, params) => {
       const prompt = String(params?.prompt ?? "");
       const cwd = String(params?.cwd ?? process.cwd());
-      const key = typeof params?.dispatchKey === "string" ? params.dispatchKey : "";
       const declaredTier = typeof params?.tier === "string" ? params.tier : undefined;
-      logCall("spawn_subsession", { dispatchKey: key, cwd, tier: declaredTier, promptPrefix: prompt.slice(0, 64) });
+      logCall("spawn_subsession", { cwd, tier: declaredTier, promptPrefix: prompt.slice(0, 64) });
 
       if (!spawnAdvertisesContract) {
-        return textResult("ERROR: this spawn_subsession does not support dispatchKey or policy-application details");
+        return textResult("ERROR: this spawn_subsession does not support a typed tier");
       }
-      if (!DISPATCH_KEY_PATTERN.test(key)) {
-        return textResult("ERROR: dispatchKey must match ^[A-Za-z0-9._:-]{1,240}$");
+      if (declaredTier !== undefined && TIER_TUPLES[declaredTier] === undefined) {
+        return textResult(`ERROR: tier "${declaredTier}" is not in the configured ladder`);
       }
 
+      // The typed tier binds the model. A leading directive is a human-readable
+      // echo with no control effect, but one that disagrees with the typed tier
+      // is rejected before child creation, matching leadingTierDirective().
       const parsed = leadingDirective(prompt);
-      if (declaredTier !== undefined) {
-        if (parsed === null) {
-          return textResult("ERROR: tier supplied without a leading directive");
-        }
-        if (declaredTier !== parsed.tier) {
-          return textResult(`ERROR: tier "${declaredTier}" disagrees with leading directive "${parsed.directive}"`);
-        }
+      if (declaredTier !== undefined && parsed !== null && parsed.tier !== declaredTier) {
+        return textResult(
+          `ERROR: leading directive "${parsed.directive}" disagrees with typed tier "${declaredTier}"`,
+        );
       }
 
-      // Identity compares cwd and the raw prompt, directive bytes included.
-      const normalized = prompt.replace(/^\uFEFF/u, "").replaceAll("\r\n", "\n").trim();
       const registry = loadRegistry();
-      const existing = registry[key];
-      if (existing !== undefined) {
-        if (existing.cwd !== cwd || existing.normalizedPrompt !== normalized) {
-          return textResult("ERROR: dispatchKey reused with conflicting canonical inputs");
-        }
-        // Original application is retained even after policy or mapping changes.
-        return textResult(JSON.stringify({
-          contractVersion: CONTRACT_VERSION,
-          sessionId: existing.sessionId,
-          dispatch: { key, reused: true },
-          policyApplication: existing.policyApplication,
-        }, null, 2));
-      }
-
-      const mode = policyMode();
-      const configured = process.env.SDD_EVAL_SPAWN_OUTCOME ?? "directive-applied";
-      const outcome = mode === "exact" ? "ignored-exact" : configured;
-      const tier = parsed?.tier ?? "standard";
-      const resolved = mode === "exact" ? TIER_TUPLES.advanced : (TIER_TUPLES[tier] ?? TIER_TUPLES.standard);
-      const policyApplication = {
-        requestedDirective: parsed?.directive ?? "",
-        outcome,
-        mode,
-        ...(parsed === null ? {} : { tier }),
-        resolved,
-        at: new Date().toISOString(),
-      };
-      const sessionId = `fake-child-${key.slice(-12)}`;
-      registry[key] = { cwd, normalizedPrompt: normalized, sessionId, policyApplication };
+      const sequence = Object.keys(registry).length + 1;
+      const sessionId = `fake-child-${String(sequence).padStart(4, "0")}`;
+      registry[sessionId] = { cwd, tier: declaredTier ?? null, at: new Date().toISOString() };
       saveRegistry(registry);
 
-      return textResult(JSON.stringify({
-        contractVersion: CONTRACT_VERSION,
-        sessionId,
-        dispatch: { key, reused: false },
-        policyApplication,
-      }, null, 2));
+      return textResult(JSON.stringify({ sessionId, cwd }, null, 2));
     },
   });
 
@@ -334,7 +309,7 @@ export default function fakeSddTools(pi) {
       logCall("list_subsessions", );
       const registry = loadRegistry();
       return textResult(JSON.stringify(
-        Object.entries(registry).map(([key, record]) => ({ dispatchKey: key, sessionId: record.sessionId })),
+        Object.entries(registry).map(([sessionId, record]) => ({ sessionId, cwd: record.cwd })),
         null,
         2,
       ));
@@ -377,19 +352,23 @@ export default function fakeSddTools(pi) {
       const sessionId = String(params?.sessionId ?? "");
       logCall("read_subsession", { sessionId });
       const registry = loadRegistry();
-      const record = Object.values(registry).find((entry) => entry.sessionId === sessionId);
+      const record = registry[sessionId];
       if (record === undefined) return textResult(`ERROR: unknown sessionId: ${sessionId}`);
 
+      // The child's effective tier is observable from its transcript, which is
+      // how a controller confirms the typed tier actually bound. The override
+      // simulates a child that ran at a different tier than requested.
       const mismatch = process.env.SDD_EVAL_CHILD_TIER_OVERRIDE;
-      const projected = mismatch === undefined
-        ? record.policyApplication
-        : { ...record.policyApplication, resolved: TIER_TUPLES[mismatch] ?? record.policyApplication.resolved, tier: mismatch };
+      const effectiveTier = mismatch ?? record.tier;
+      const resolved = TIER_TUPLES[effectiveTier] ?? TIER_TUPLES.standard;
 
-      // The application entry precedes the cleaned task and is model-invisible.
       return textResult(JSON.stringify({
         sessionId,
+        cwd: record.cwd,
+        requestedTier: record.tier,
+        effectiveTier,
+        resolved,
         entries: [
-          { kind: "policy-application", modelVisible: false, policyApplication: projected },
           { kind: "task", modelVisible: true, text: "Implement the assigned task." },
           { kind: "report", modelVisible: true, text: "Status: DONE" },
         ],

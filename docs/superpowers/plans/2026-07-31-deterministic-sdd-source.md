@@ -1309,7 +1309,7 @@ The first workflow section of `SKILL.md` must require this order, using `referen
 
 1. Confirm the plan path and dedicated worktree intent without mutating either.
 2. Confirm `get_model_policy` exists and returns the complete versioned inspection contract: active policy, current runtime tuple, next-request tuple, ladder status, supported tier commands, and tracked-dispatch capability.
-3. Confirm tracked spawn advertises idempotent `dispatchKey` and spawn result policy evidence.
+3. Confirm tracked spawn accepts a typed `tier` that binds the child's model. The runtime offers **no** dispatch key and **no** deduplication, so do not look for idempotency evidence and do not treat its absence as a capability failure.
 4. In Tiered mode, require all six current machine mappings valid and resolvable; in Exact mode, retain the exact tuple and expect tier directives to be ignored visibly.
 5. If any contract is absent/incompatible, report `CAPABILITY_BLOCKED`, cause, required capability, and zero-dispatch/zero-mutation evidence; stop.
 6. Run `sdd-state validate-plan`; if invalid, report `PLAN_INVALID`; never guess.
@@ -1325,8 +1325,9 @@ Keep the core loop concise and refer to `references/state-machine.md` and `refer
 - resolve scripts/prompts/references relative to this explicitly loaded `SKILL.md`, never from the current directory or another same-name installation;
 - reload/validate canonical state before each action;
 - repair only a missing final audit marker through `repair-audit` with current expected revision, and never while `show` reports a live/unknown lock;
-- record dispatch intent before calling the tool, taking the key only from the helper's current-state output;
-- recover intent by reissuing the same `dispatchKey`, cwd, and the prompt bytes stored in that intent; never re-render on recovery, because identity compares prompt bytes and a drifted renderer turns a valid replay into a key conflict; validate a reused result against the stored original pre-spawn inspection, not a newer policy/ladder;
+- record dispatch intent, including the exact rendered prompt bytes, before calling the tool; the `dispatchKey` is controller-owned, comes only from the helper's current-state output, and is never passed to `spawn_subsession`;
+- treat a recorded intent with no `sessionId` as `DISPATCH_AMBIGUOUS`: the runtime cannot deduplicate, so a repeated spawn creates a second child rather than recovering the first. Inspect for an observed child before acting, then leave the state only through a persisted ruling that either adopts an observed session id or reissues the stored prompt bytes accepting a possible orphan;
+- reissue the stored bytes verbatim and never re-render on recovery, because re-rendering couples recovery to renderer output;
 - never hand-edit state/audit, poll, implement, review, or fix in coordinator context;
 - use exactly one SDD-owned active child at a time and never parallelize implementation tasks;
 - use fresh children for implementer, each fix round, each reviewer, and final roles;
@@ -1347,15 +1348,17 @@ Include one compact table:
 | Fix rounds 1–3 | Implementer |
 | Fix round 4 | Implementer +1 |
 | Fix round 5 | Implementer +2 |
-| Scoped re-reviewer | Fixer +1, Standard floor, Frontier cap |
+| Scoped re-reviewer | Implementer +1, Standard floor, Frontier cap |
 | Final reviewer/fixer/re-reviewer | Frontier |
 
-Every rendered prompt begins with the helper-returned absolute canonical directive; the controller never calculates or edits a tier string inline. Dispatch intent stores the complete versioned pre-spawn inspection before the tool call. After spawn, compare child and parent evidence:
+Every rendered prompt is produced by `render-prompt`, which emits the canonical directive echo; the controller never calculates or edits a tier string inline. The typed `tier` argument is what binds the model. Dispatch intent stores the complete pre-spawn inspection and the rendered prompt bytes before the tool call.
 
-- Fresh Tiered success (`dispatch.reused: false`) requires requested/effective target tier, a valid resolved tuple, and identical parent/child application under the stored pre-spawn contract.
-- Fresh Exact success requires requested directive plus `ignored-exact`, unchanged stored inherited tuple, and identical parent/child application.
-- Reused success requires the identical dispatch key/cwd/raw prompt, reissued from the bytes stored in intent rather than re-rendered, and identical parent/child **original** application validated against the inspection stored in intent; policy or ladder changes since the first call are intentionally ignored.
-- Any other outcome records `DISPATCH_MISMATCH_BLOCKED` before child work can satisfy a task.
+The tool returns only `{ sessionId, cwd }`, so a spawn response carries no policy evidence and cannot be validated against one. Confirm binding by inspecting the child:
+
+- Success requires the recorded `sessionId` correlated to the intent's `dispatchKey` in the run's own ledger, and a child whose effective tier equals the requested tier.
+- A child whose effective tier differs from the requested tier records `DISPATCH_MISMATCH_BLOCKED`.
+- In Exact mode the parent's own policy inspection is the gate, checked **before** dispatch; tier directives are visibly ignored and the spawn result says nothing about it.
+- An intent with no recorded `sessionId` is `DISPATCH_AMBIGUOUS` and requires a persisted ruling. It is never resolved by spawning again and hoping.
 
 - [ ] **Step 6: Preserve bounded context, review, and completion rules**
 
