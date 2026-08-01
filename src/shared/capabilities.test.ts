@@ -40,6 +40,21 @@ describe("PI WEBUI capabilities", () => {
     })).toContain(modelTiers);
   });
 
+  it("requires web and session daemon support for session model policy", () => {
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsModelPolicy] },
+      sessiond: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsModelPolicy] },
+    })).toContain(PI_WEBUI_CAPABILITIES.sessionsModelPolicy);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [PI_WEBUI_CAPABILITIES.sessionsModelPolicy] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(PI_WEBUI_CAPABILITIES.sessionsModelPolicy);
+
+    expect(parseKnownPiWebUiCapabilities(["sessions.modelPolicy", "unknown.capability"]))
+      .toEqual([PI_WEBUI_CAPABILITIES.sessionsModelPolicy]);
+  });
+
   it("requires web and session daemon support for authoritative session persistence", () => {
     expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
     expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
