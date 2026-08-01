@@ -6,8 +6,8 @@ import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGr
 import { writeClipboardText } from "../clipboard";
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
-import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
-import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, type MinimapMarker } from "../chatMinimapGeometry";
+import { ChatScrollController, distanceFromScrollBottom, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
+import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, minimapViewportsEqual, type MinimapMarker } from "../chatMinimapGeometry";
 import type { QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionWarningSeverity } from "../api";
 import { formatCost, formatTokenCount } from "../utils/format";
 import { computeMessageCounts, sessionUsageDetail, sessionUsageTooltip, type DetailRow, type SessionUsageDetail } from "./sessionUsageDisplay";
@@ -30,6 +30,7 @@ import {
 import type { ChatLine, ChatPart } from "./shared";
 import { chatStyles, renderSessionWarningIcon } from "./shared";
 import "./ChatMinimap";
+import type { ChatMinimap } from "./ChatMinimap";
 import "./FormattedText";
 import "./ToolExecutionView";
 
@@ -329,13 +330,13 @@ export class ChatView extends LitElement {
   @property({ type: Boolean }) warningsVisible = true;
   @property({ attribute: false }) onLoadMore?: () => void;
   @query(".chat") private chat?: HTMLDivElement;
+  @query("chat-minimap") private _minimap?: ChatMinimap;
   @query("dialog.image-zoom") private imageZoomDialog?: HTMLDialogElement;
   @state() private pinnedToBottom = true;
   @state() private zoomedImage: { src: string; alt: string } | undefined = undefined;
   @state() private expandedMetaKey: string | undefined;
   @state() private copiedMessageKey: string | undefined;
   @state() private forkingEntryId: string | undefined;
-  @state() private currentConversationIndex: number | undefined;
   @state() private collapsedNotificationTargetKeys: ReadonlySet<string> = new Set();
   @state() private retainedEmptyNotificationTrayTargetKey: string | undefined;
   private pendingNotificationFocus: PendingNotificationFocus | undefined;
@@ -345,7 +346,7 @@ export class ChatView extends LitElement {
   private suppressLoadMoreRequests = false;
   private loadMoreCheckFrame: number | undefined;
   private scrollToBottomFrame: number | undefined;
-  private conversationRailFrame: number | undefined;
+  private minimapViewportFrame: number | undefined;
   private groupedMessagesInput?: ChatLine[];
   private groupedMessagesStart = 0;
   private groupedMessagesCache: ChatGroup[] = [];
@@ -361,7 +362,15 @@ export class ChatView extends LitElement {
   @state() private loadMoreRequested = false;
   @state() private sessionInfoOpen = false;
   @state() private _minimapMarkers: MinimapMarker[] = [];
-  @state() private _minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
+  /**
+   * Only the `visible` flag participates in ChatView's own rendering, because it
+   * widens the transcript padding. The ratios are forwarded straight to the
+   * `chat-minimap` child instead of being held as reactive state: they change on
+   * every scroll frame, and re-rendering this component would rebuild the whole
+   * transcript template for a change only the rail can show.
+   */
+  @state() private _minimapVisible = false;
+  private _minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
   private _minimapLoadedPercent = 100;
   private _minimapMeasureTimer: ReturnType<typeof setTimeout> | undefined;
   private _resizeObserver: ResizeObserver | undefined;
@@ -488,7 +497,7 @@ export class ChatView extends LitElement {
     if (this.restoreScrollFrame !== undefined) cancelAnimationFrame(this.restoreScrollFrame);
     if (this.loadMoreCheckFrame !== undefined) cancelAnimationFrame(this.loadMoreCheckFrame);
     if (this.scrollToBottomFrame !== undefined) cancelAnimationFrame(this.scrollToBottomFrame);
-    if (this.conversationRailFrame !== undefined) cancelAnimationFrame(this.conversationRailFrame);
+    if (this.minimapViewportFrame !== undefined) cancelAnimationFrame(this.minimapViewportFrame);
     if (this._minimapMeasureTimer !== undefined) {
       clearTimeout(this._minimapMeasureTimer);
       this._minimapMeasureTimer = undefined;
@@ -519,6 +528,7 @@ export class ChatView extends LitElement {
     this.pendingScrollRestoreSessionId = undefined;
     this.pendingScrollRestorePosition = undefined;
     this._minimapMarkers = [];
+    this._minimapVisible = false;
     this._minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
     this._minimapLoadedPercent = 100;
     this.prependRestoreToken += 1;
@@ -550,7 +560,7 @@ export class ChatView extends LitElement {
     if (changed.has("hasMore") && !this.hasMore) this.loadMoreRequested = false;
     if (changed.has("sessionId")) this.restoreScrollPosition();
     if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
-    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) { this.scheduleConversationRailUpdate(); this._requestMinimapMeasure(); }
+    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) { this.scheduleMinimapViewportUpdate(); this._requestMinimapMeasure(); }
     if (changed.has("messages") && !changed.has("sessionId")) this._updateMinimapViewport();
     if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore")) this.continuePendingScrollRestore();
     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
@@ -582,7 +592,7 @@ export class ChatView extends LitElement {
     return html`
       ${this.renderTopNotices()}
       ${this.renderNotificationLiveRegions()}
-      <div class="chat-wrap" style=${(this._minimapViewport.visible && this.messages.length > 0 && this.messageTotal > 0) ? "--pi-minimap-right:36px" : ""}>
+      <div class="chat-wrap" style=${(this._minimapVisible && this.messages.length > 0 && this.messageTotal > 0) ? "--pi-minimap-right:36px" : ""}>
         ${this.renderConversationRail()}
         <div class="chat" @scroll=${() => { this.onScroll(); }} @wheel=${(event: WheelEvent) => { this.onWheel(event); }} @touchstart=${(event: TouchEvent) => { this.onTouchStart(event); }} @touchmove=${(event: TouchEvent) => { this.onTouchMove(event); }}>
           ${this.renderHistoryBoundary()}
@@ -1054,13 +1064,6 @@ export class ChatView extends LitElement {
     return Math.max(1, this.messageTotal, this.messageStart + this.messages.length);
   }
 
-  private conversationPositionPercent(total = this.conversationDisplayTotal()): number {
-    if (total <= 1) return 100;
-    const fallbackIndex = this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart;
-    const index = clampNumber(this.currentConversationIndex ?? fallbackIndex, 0, total - 1);
-    return clampPercent((index / (total - 1)) * 100);
-  }
-
   private renderHistoryBoundary() {
     const range = this.historyRangeLabel();
     if (this.loadingMore) return html`<div class="history-boundary"><span>Loading earlier messages…</span>${range}</div>`;
@@ -1310,8 +1313,9 @@ export class ChatView extends LitElement {
   private onScroll() {
     this.requestLoadMoreIfNeeded();
     this.updatePinnedToBottomFromScroll();
-    this.scheduleConversationRailUpdate();
-    this._updateMinimapViewport();
+    // Scroll events can outpace frames, so the rail update is coalesced into one
+    // frame rather than running per event.
+    this.scheduleMinimapViewportUpdate();
     if (!this.suppressScrollSave) this.scheduleScrollPositionSave();
   }
 
@@ -1530,27 +1534,12 @@ export class ChatView extends LitElement {
     });
   }
 
-  private scheduleConversationRailUpdate(): void {
-    if (this.conversationRailFrame !== undefined) return;
-    this.conversationRailFrame = requestAnimationFrame(() => {
-      this.conversationRailFrame = undefined;
-      this.updateConversationRailPosition();
+  private scheduleMinimapViewportUpdate(): void {
+    if (this.minimapViewportFrame !== undefined) return;
+    this.minimapViewportFrame = requestAnimationFrame(() => {
+      this.minimapViewportFrame = undefined;
+      this._updateMinimapViewport();
     });
-  }
-
-  private updateConversationRailPosition(): void {
-    if (!this.messages.length || this.messageTotal <= 0) {
-      this.currentConversationIndex = undefined;
-      return;
-    }
-    const total = this.conversationDisplayTotal();
-    const article = this.firstVisibleArticle();
-    const index = Number(article?.dataset["index"]);
-    if (Number.isFinite(index)) {
-      this.currentConversationIndex = clampNumber(index, 0, Math.max(0, total - 1));
-      return;
-    }
-    this.currentConversationIndex = clampNumber(this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart, 0, Math.max(0, total - 1));
   }
 
   private scrollMarkers(): HTMLElement[] {
@@ -1559,17 +1548,6 @@ export class ChatView extends LitElement {
 
   private scrollMarkerAt(markerId: string): HTMLElement | undefined {
     return this.scrollMarkers().find((marker) => marker.dataset["markerId"] === markerId);
-  }
-
-  private firstVisibleArticle(): HTMLElement | undefined {
-    const chat = this.chat;
-    if (chat === undefined) return undefined;
-    const primaryArticles = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg"));
-    return findFirstVisibleArticle(chat, primaryArticles) ?? findFirstVisibleArticle(chat, this.articles());
-  }
-
-  private articles(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg, details.msg"));
   }
 
   private scrollAnchorElements(): HTMLElement[] {
@@ -1619,7 +1597,7 @@ export class ChatView extends LitElement {
   private _updateMinimapViewport(): void {
     const chat = this.chat;
     if (!chat) return;
-    this._minimapViewport = computeMinimapViewport({
+    const viewport = computeMinimapViewport({
       scrollHeight: chat.scrollHeight,
       clientHeight: chat.clientHeight,
       scrollTop: chat.scrollTop,
@@ -1627,6 +1605,22 @@ export class ChatView extends LitElement {
     this._minimapLoadedPercent = this.hasMore
       ? clampPercent((this.messages.length / this.conversationDisplayTotal()) * 100)
       : 100;
+    if (minimapViewportsEqual(this._minimapViewport, viewport)) return;
+    this._minimapViewport = viewport;
+    // Re-render ChatView only when the transcript padding must change; otherwise
+    // hand the new geometry to the rail directly.
+    if (this._minimapVisible !== viewport.visible) this._minimapVisible = viewport.visible;
+    else this._pushMinimapViewport();
+  }
+
+  /** Forward current rail geometry to the minimap without re-rendering the transcript. */
+  private _pushMinimapViewport(): void {
+    const minimap = this._minimap;
+    if (minimap === undefined) return;
+    minimap.scrollRatio = this._minimapViewport.scrollRatio;
+    minimap.viewportRatio = this._minimapViewport.viewportRatio;
+    minimap.visible = this._minimapViewport.visible;
+    minimap.loadedPercent = this._minimapLoadedPercent;
   }
 
   private _requestMinimapMeasure(): void {
