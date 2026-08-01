@@ -23,7 +23,7 @@ export function finalizeShellMessage(messages: ChatLine[], event: Extract<Sessio
     ? lastPart.text
     : replaceShellOutput(lastPart.text, event.output);
   const notes: string[] = [];
-  if (!lastPart.text.includes("\n\n") && (event.output === undefined || event.output === "")) notes.push("(no output)");
+  if ((event.output === undefined && !lastPart.text.includes("\n\n")) || event.output === "") notes.push("(no output)");
   if (event.isError === true && (event.output === undefined || event.output === "")) notes.push("Bash command failed");
   if (event.exitCode != null) notes.push(`exit ${String(event.exitCode)}`);
   if (event.cancelled === true) notes.push("cancelled");

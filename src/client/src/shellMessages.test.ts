@@ -19,6 +19,23 @@ describe("shell messages", () => {
     ]);
   });
 
+  it("shows no output when authoritative empty output replaces partial chunks", () => {
+    let messages = [shellStartMessage("printf output")];
+    messages = appendShellChunk(messages, "partial output");
+
+    messages = finalizeShellMessage(messages, {
+      type: "shell.end",
+      output: "",
+      exitCode: 0,
+      cancelled: false,
+      truncated: false,
+    });
+
+    expect(messages).toEqual([
+      { role: "bash", parts: [{ type: "text", text: "$ printf output\n\n(no output)\nexit 0" }] },
+    ]);
+  });
+
   it("retains accumulated chunks when shell completion has no output", () => {
     let messages = [shellStartMessage("printf output")];
     messages = appendShellChunk(messages, "partial $ output");
