@@ -732,8 +732,18 @@ export class PiSessionService implements SessionRouteService {
    * could not be proven. Deliberately *not* cleared by inspection refresh: only
    * an explicit successful policy application clears it, because the runtime
    * tuple — not the persisted entry — is what became ambiguous.
+   *
+   * Keyed by session *id* rather than by the runtime session object so the block
+   * is daemon-owned: it survives a runtime rebind, a reload, and a close/reopen
+   * of the same session, none of which prove anything about the ambiguous tuple.
    */
-  private readonly modelPolicyRuntimeBlocks = new WeakMap<PiAgentSession, string>();
+  private readonly modelPolicyRuntimeBlocks = new Map<string, string>();
+  /**
+   * Sessions inside the apply-and-persist window of a policy transition. During
+   * that window the runtime tuple is transient (model set, thinking not yet, or
+   * persistence not yet confirmed), so no prompt may reach Pi.
+   */
+  private readonly modelPolicyMutationCounts = new Map<string, number>();
   private readonly heartbeat: NodeJS.Timeout;
   private readonly commandService: SessionCommandService<PiAgentSession>;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
@@ -1012,6 +1022,8 @@ export class PiSessionService implements SessionRouteService {
     this.pendingSessionOpens.clear();
     this.activities.clear();
     this.compactionPromptQueues.clear();
+    this.modelPolicyRuntimeBlocks.clear();
+    this.modelPolicyMutationCounts.clear();
     this.authLossWarnings.clear();
     this.subsessionParents.clear();
     this.subsessionChildren.clear();
@@ -1542,7 +1554,9 @@ export class PiSessionService implements SessionRouteService {
    * The only interface that changes a session's Exact/Tiered policy. Applies one
    * complete transition atomically and publishes a single confirmed status; a
    * corrupt newest entry is repaired only by the explicit update supplied here,
-   * never executed as a silent fallback.
+   * never executed as a silent fallback. A transition that fails after the plan
+   * is resolved publishes one error/blocked status before the route error, so
+   * other clients learn the session refused the change.
    */
   async setModelPolicy(ref: PiSessionLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse> {
     const action = "change the session model policy";
@@ -1553,7 +1567,10 @@ export class PiSessionService implements SessionRouteService {
     // A malformed newest entry contributes only a starting exact branch for the
     // new explicit entry; it is never treated as an executable current policy.
     const current = inspection.kind === "invalid" ? inspection.fallback : inspection.policy;
-    const policy = await this.applySessionModelPolicy(session, current, update);
+    const policy = await this.applySessionModelPolicy(session, current, update, {
+      action,
+      onTransitionFailure: (reason) => { this.publishModelPolicyTransitionFailure(session, reason); },
+    });
     const resolved = this.exactSelectionFromSession(session);
     this.publishActivity(
       session,
@@ -1711,10 +1728,21 @@ export class PiSessionService implements SessionRouteService {
       this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp", images, echoUserMessage);
       return;
     }
+    if (this.isModelPolicyMutationActive(session)) {
+      this.retainPromptDuringModelPolicyMutation(session, promptText, behavior ?? "followUp", images, echoUserMessage);
+      return;
+    }
     void this.submitPrompt(session, promptText, behavior, images, echoUserMessage);
   }
 
   private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true): Promise<void> {
+    // A policy transition may have opened while this prompt waited in the
+    // compaction queue. The runtime tuple is transient until the transition
+    // persists, so retain the input instead of reaching Pi with a partial pair.
+    if (this.isModelPolicyMutationActive(session)) {
+      this.retainPromptDuringModelPolicyMutation(session, text, behavior ?? "followUp", images, echoUserMessage, "front");
+      return Promise.resolve();
+    }
     // Re-check before any activity publication or provider call: a prompt held
     // in the compaction queue may have waited while the policy entry changed.
     try {
@@ -1742,6 +1770,29 @@ export class PiSessionService implements SessionRouteService {
     queue.push({ kind, text, ...(images.length > 0 ? { images } : {}), ...(echoUserMessage ? {} : { echoUserMessage: false }) });
     this.compactionPromptQueues.set(session.sessionId, queue);
     this.publishActivity(session, "message queued during compaction", "active");
+    this.publishStatus(session);
+  }
+
+  /**
+   * Hold prompt input for the duration of a policy transition, reusing the
+   * existing queue so the post-mutation drain submits it once the confirmed
+   * model/thinking pair is persisted. A prompt taken back out of the queue is
+   * re-retained at the front so relative order is preserved.
+   */
+  private retainPromptDuringModelPolicyMutation(
+    session: PiAgentSession,
+    text: string,
+    kind: QueuedPromptKind,
+    images: ImageContent[] = [],
+    echoUserMessage = true,
+    position: "front" | "back" = "back",
+  ): void {
+    const queue = this.compactionPromptQueues.get(session.sessionId) ?? [];
+    const queued: QueuedPrompt = { kind, text, ...(images.length > 0 ? { images } : {}), ...(echoUserMessage ? {} : { echoUserMessage: false }) };
+    if (position === "front") queue.unshift(queued);
+    else queue.push(queued);
+    this.compactionPromptQueues.set(session.sessionId, queue);
+    this.publishActivity(session, "message queued during model policy change", "active");
     this.publishStatus(session);
   }
 
@@ -2998,7 +3049,7 @@ export class PiSessionService implements SessionRouteService {
     const active = this.active.get(sessionId);
     if (active === undefined) return;
     const { session } = active.runtime;
-    if (session.isCompacting) {
+    if (session.isCompacting || this.isModelPolicyMutationActive(session)) {
       this.scheduleCompactionQueueDrain(sessionId, 100);
       return;
     }
@@ -3358,7 +3409,7 @@ export class PiSessionService implements SessionRouteService {
 
   /** Effective block: an unproven runtime restoration outranks an entry defect. */
   private modelPolicyBlockedReason(session: PiAgentSession): string | undefined {
-    return this.modelPolicyRuntimeBlocks.get(session) ?? this.modelPolicyEntryReasons.get(session);
+    return this.modelPolicyRuntimeBlocks.get(session.sessionId) ?? this.modelPolicyEntryReasons.get(session);
   }
 
   /**
@@ -3376,18 +3427,22 @@ export class PiSessionService implements SessionRouteService {
       this.inspectAndCacheSessionModelPolicy(session);
       return;
     }
-    await this.applySessionModelPolicy(session, current, initializer);
+    // Root creation reports failure through its own abort/dispose cleanup rather
+    // than publishing a failed transition for a session no client has seen.
+    await this.applySessionModelPolicy(session, current, initializer, { action: "initialize the session model policy" });
   }
 
   /**
    * The single policy transition path. Validates the complete target before any
-   * setter, applies model then thinking under the serialized entry-mutation
+   * setter, re-checks that no conflicting work started during that async
+   * validation, applies model then thinking under the serialized entry-mutation
    * seam, verifies the effective pair, and only then persists and caches.
    */
   private async applySessionModelPolicy(
     session: PiAgentSession,
     current: SessionModelPolicy,
     update: SessionModelPolicyUpdate,
+    options: { action: string; onTransitionFailure?: (reason: string) => void },
   ): Promise<SessionModelPolicy> {
     const plan = planSessionModelPolicyUpdate(current, update, (tier) => {
       const resolved = this.modelTierRegistry.resolve(tier);
@@ -3396,8 +3451,13 @@ export class PiSessionService implements SessionRouteService {
     // Validation happens before the mutation opens, so a rejected target leaves
     // the runtime and the persisted policy untouched.
     const target = await this.resolveAvailableExactSelection(session, plan.target);
+    // Refresh/validation awaited above, so a prompt or another mutation may have
+    // started meanwhile. Re-check here — synchronously adjacent to the mutation
+    // open, and *outside* it so the mutation is never its own conflict — to close
+    // the await-to-setter race without touching tree-navigation behavior.
+    this.assertModelPolicyMutationIdle(session, options.action);
 
-    return this.runSessionEntryMutation(session, "change session model policy", async () => {
+    return this.runSessionModelPolicyMutation(session, "change session model policy", async () => {
       const previous = this.exactSelectionFromSession(session);
       try {
         await this.applyExactSelection(session, target);
@@ -3406,17 +3466,48 @@ export class PiSessionService implements SessionRouteService {
         const reason = error instanceof Error ? error.message : String(error);
         if (!await this.restoreExactSelection(session, previous)) {
           this.modelPolicyRuntimeBlocks.set(
-            session,
+            session.sessionId,
             `MODEL_POLICY_BLOCKED: ${reason}; the previous model and thinking pair could not be restored`,
           );
         }
         this.inspectAndCacheSessionModelPolicy(session);
+        options.onTransitionFailure?.(reason);
         throw error;
       }
-      this.modelPolicyRuntimeBlocks.delete(session);
+      this.modelPolicyRuntimeBlocks.delete(session.sessionId);
       this.inspectAndCacheSessionModelPolicy(session);
       return plan.policy;
     });
+  }
+
+  /**
+   * Serialized policy-transition seam. Adds the policy-mutation marker on top of
+   * the shared entry-mutation lifecycle so prompt submission can tell a transient
+   * policy window apart from ordinary session work, and drains any prompt input
+   * retained during that window once the tuple is settled again.
+   */
+  private async runSessionModelPolicyMutation<T>(session: PiAgentSession, action: string, operation: () => Promise<T>): Promise<T> {
+    this.modelPolicyMutationCounts.set(session.sessionId, (this.modelPolicyMutationCounts.get(session.sessionId) ?? 0) + 1);
+    try {
+      return await this.runSessionEntryMutation(session, action, operation);
+    } finally {
+      decrementMapCount(this.modelPolicyMutationCounts, session.sessionId);
+      if (!this.isModelPolicyMutationActive(session)) this.scheduleCompactionQueueDrain(session.sessionId);
+    }
+  }
+
+  private isModelPolicyMutationActive(session: PiAgentSession): boolean {
+    return (this.modelPolicyMutationCounts.get(session.sessionId) ?? 0) > 0;
+  }
+
+  /**
+   * Tell other clients a policy transition failed. Called after the failure state
+   * (including any `MODEL_POLICY_BLOCKED`) is recorded and before the route error
+   * propagates, so the published status already carries the blocked reason.
+   */
+  private publishModelPolicyTransitionFailure(session: PiAgentSession, reason: string): void {
+    this.publishActivity(session, "model policy change failed", "error", reason);
+    this.publishStatus(session);
   }
 
   /**
@@ -3436,7 +3527,7 @@ export class PiSessionService implements SessionRouteService {
   private assertExactModelPolicyMutationAllowed(session: PiAgentSession, action: string): SessionModelPolicy {
     this.assertModelPolicyMutationIdle(session, action);
     const inspection = this.inspectAndCacheSessionModelPolicy(session);
-    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session);
+    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session.sessionId);
     if (runtimeBlock !== undefined) throw new Error(`Cannot ${action}: ${runtimeBlock}`);
     if (inspection.kind === "invalid") {
       throw new Error(`Cannot ${action}: the session model policy entry is invalid (${inspection.reason}). Repair the policy first.`);
@@ -3459,30 +3550,42 @@ export class PiSessionService implements SessionRouteService {
     currentPolicy: SessionModelPolicy,
     operation: () => Promise<T>,
   ): Promise<T> {
-    return this.runSessionEntryMutation(session, action, async () => {
-      const previous = this.exactSelectionFromSession(session);
-      const result = await operation();
-      const policy: SessionModelPolicy = {
-        mode: "exact",
-        exact: this.exactSelectionFromSession(session),
-        ...(currentPolicy.tier === undefined ? {} : { tier: currentPolicy.tier }),
-      };
-      try {
-        this.appendSessionModelPolicy(session, policy);
-      } catch (error: unknown) {
-        const reason = error instanceof Error ? error.message : String(error);
-        if (!await this.restoreExactSelection(session, previous)) {
-          this.modelPolicyRuntimeBlocks.set(
-            session,
-            `MODEL_POLICY_BLOCKED: ${reason}; the previous model and thinking pair could not be restored`,
-          );
+    let transitionFailure: string | undefined;
+    try {
+      return await this.runSessionModelPolicyMutation(session, action, async () => {
+        const previous = this.exactSelectionFromSession(session);
+        const result = await operation();
+        const policy: SessionModelPolicy = {
+          mode: "exact",
+          exact: this.exactSelectionFromSession(session),
+          ...(currentPolicy.tier === undefined ? {} : { tier: currentPolicy.tier }),
+        };
+        try {
+          this.appendSessionModelPolicy(session, policy);
+        } catch (error: unknown) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (!await this.restoreExactSelection(session, previous)) {
+            this.modelPolicyRuntimeBlocks.set(
+              session.sessionId,
+              `MODEL_POLICY_BLOCKED: ${reason}; the previous model and thinking pair could not be restored`,
+            );
+          }
+          this.inspectAndCacheSessionModelPolicy(session);
+          // Only a failure that already moved the runtime tuple is announced; an
+          // operation precondition ("Only one model available") keeps its plain
+          // route error and publishes nothing.
+          transitionFailure = reason;
+          throw error;
         }
         this.inspectAndCacheSessionModelPolicy(session);
-        throw error;
-      }
-      this.inspectAndCacheSessionModelPolicy(session);
-      return result;
-    });
+        return result;
+      });
+    } catch (error: unknown) {
+      // Published after the mutation closed so the status reports the settled
+      // (blocked or restored) state rather than "updating session".
+      if (transitionFailure !== undefined) this.publishModelPolicyTransitionFailure(session, transitionFailure);
+      throw error;
+    }
   }
 
   /**
@@ -3492,7 +3595,7 @@ export class PiSessionService implements SessionRouteService {
    */
   private assertPromptModelPolicyAllowed(session: PiAgentSession): void {
     const inspection = this.inspectAndCacheSessionModelPolicy(session);
-    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session);
+    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session.sessionId);
     if (runtimeBlock !== undefined) throw new Error(`Cannot send a prompt: ${runtimeBlock}`);
     if (inspection.kind === "invalid") {
       throw new Error(`Cannot send a prompt: the session model policy entry is invalid (${inspection.reason}). Repair the policy first.`);
