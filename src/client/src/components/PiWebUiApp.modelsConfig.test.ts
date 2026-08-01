@@ -5,7 +5,7 @@ import type { Project } from "../api";
 import { initialAppState, type AppState } from "../appState";
 // Template inspection is proportionate here: these tests target custom-element
 // callback boundaries between the navigation, overlays, and application shell.
-import { isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
+import { findTemplateContaining, templateStrings, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 afterEach(() => {
@@ -384,23 +384,6 @@ function sessionBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
   const template = findTemplateContaining(renderApp(app), "<session-browser-dialog");
   if (template === undefined) throw new Error("PiWebUiApp did not render session-browser-dialog");
   return template;
-}
-
-function findTemplateContaining(value: unknown, marker: string): TemplateResult | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const template = findTemplateContaining(item, marker);
-      if (template !== undefined) return template;
-    }
-    return undefined;
-  }
-  if (!isTemplateResult(value)) return undefined;
-  if (templateStrings(value).some((part) => part.includes(marker))) return value;
-  for (const child of templateValues(value)) {
-    const template = findTemplateContaining(child, marker);
-    if (template !== undefined) return template;
-  }
-  return undefined;
 }
 
 function templateCallbackAfterMarker(template: TemplateResult, marker: string): NavigationCallback {

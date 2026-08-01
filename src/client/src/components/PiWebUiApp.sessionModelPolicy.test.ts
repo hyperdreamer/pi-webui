@@ -21,7 +21,7 @@ import type {
 import { modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { SessionController } from "../controllers/sessionController";
-import { isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
+import { findTemplateContaining, isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 afterEach(() => {
@@ -202,6 +202,33 @@ describe("PiWebUiApp session model policy capability gate", () => {
     expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).toBeUndefined();
   });
 
+  it("withholds the status projection the composer would otherwise fall back to", () => {
+    const app = createApp();
+    // The runtime has not been negotiated yet while a session status carrying a
+    // policy projection has already arrived. PromptEditor falls back to
+    // `status.modelPolicy`, so leaving it in place would render a control with no
+    // callbacks and a Retry wired to nothing.
+    setAppState(app, activeState({ selectedMachine: remoteMachine }));
+
+    const editor = promptEditorTemplate(app);
+    const status = promptEditorStatus(editor);
+
+    expect(status.modelPolicy).toBeUndefined();
+    // Everything else the composer displays from the status is untouched.
+    expect(status.model).toEqual({ provider: "openai", id: "gpt-default" });
+    expect(status.thinkingLevel).toBe("medium");
+  });
+
+  it("keeps the full status when the capability is available", () => {
+    const app = createApp();
+    setAppState(app, activeState({
+      selectedMachine: remoteMachine,
+      machineRuntimes: { [remoteMachine.id]: machineRuntime([PI_WEBUI_CAPABILITIES.sessionsModelPolicy]) },
+    }));
+
+    expect(promptEditorStatus(promptEditorTemplate(app)).modelPolicy).toEqual(exactPolicyStatus());
+  });
+
   it("supplies the policy control for a remote peer advertising sessions.modelPolicy", () => {
     const app = createApp();
     setAppState(app, activeState({
@@ -358,8 +385,32 @@ describe("PiWebUiApp starter composer policy", () => {
     expect(templateValueAfterMarker(editor, ".modelPolicyStatus=")).toEqual({
       mode: "exact",
       resolved: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
-      ladderValid: false,
+      // The catalog is not known yet. That is not an invalid ladder, and
+      // reporting it as one raises a configuration alarm that does not exist.
+      ladderValid: true,
     });
+  });
+
+  it("does not report an invalid ladder merely because the catalog has not arrived", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    const pending = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings").mockReturnValueOnce(pending.promise);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
+
+    const loadingStatus = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyLoading=")).toBe(true);
+    expect(loadingStatus.ladderValid).toBe(true);
+    expect(loadingStatus.blockedReason).toBeUndefined();
+
+    pending.resolve({ ...validCatalog(), valid: false, configError: "missing model-tier ladder in settings.json" });
+    await flush();
+
+    // A catalog that actually arrived invalid still reports an invalid ladder.
+    expect(policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).ladderValid).toBe(false);
   });
 
   it("preserves the remembered Exact branch when the starter chooses a Tiered policy, and writes no Pi default", async () => {
@@ -400,6 +451,36 @@ describe("PiWebUiApp starter composer policy", () => {
       model: { provider: "openai", id: "gpt-default", name: "Default" },
       thinkingLevel: "medium",
     });
+  });
+
+  it("reports the exact tuple, not the remembered tier's entry, after the starter returns to Exact", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
+    await flush();
+
+    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
+    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+
+    // The canonical tier stays remembered, exactly as a persisted policy keeps it.
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "exact",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+    // What the trigger and the panel's "Current:" line report must be what the
+    // session will actually start from, which in Exact mode is the exact tuple.
+    const status = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
+    expect(status.mode).toBe("exact");
+    expect(status.tier).toBe("advanced");
+    expect(status.resolved).toEqual({ model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" });
+    expect(status.blockedReason).toBeUndefined();
   });
 
   it("keeps an unresolvable starter tier repairable by reporting it as blocked with a policy present", async () => {
@@ -533,6 +614,63 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" });
   });
 
+  it("forwards a Tiered starter choice when the session is started from the nav control", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(undefined);
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await loadModelTierCatalog(app, "local");
+    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
+
+    await startSessionAndOpenChat(app);
+
+    expect(start).toHaveBeenCalledWith({ mode: "tiered", tier: "advanced" });
+  });
+
+  it("snapshots the exact tuple after the starter returns to Exact from a remembered tier", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(undefined);
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await loadModelTierCatalog(app, "local");
+    const save = saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="));
+    save({ mode: "tiered", tier: "advanced" });
+    save({ mode: "exact", exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" } });
+
+    startSessionPrompt(app, "explore the repo");
+
+    // The remembered tier must not leak into the request: Exact mode starts from
+    // the exact tuple, which is also what the status reports.
+    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+    });
+  });
+
+  it("clears the starter draft once the start screen is left so a later start screen does not reapply it", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await loadModelTierCatalog(app, "local");
+    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
+    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
+
+    // A successful start selects the new session, which is what takes the start
+    // screen out of view.
+    const session = activeSession();
+    applyStatePatch(app, { sessions: [session], selectedSession: session });
+
+    expect(starterModelPolicy(app)).toBeUndefined();
+  });
+
   it("passes no policy for an untouched Exact starter", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
@@ -614,6 +752,21 @@ function setAppState(app: PiWebUiApp, state: AppState): void {
   if (!Reflect.set(app, "state", state)) throw new Error("Could not set PiWebUiApp state");
 }
 
+/** Drive a real `setState()` so its transition side effects run. */
+function applyStatePatch(app: PiWebUiApp, patch: Partial<AppState>): void {
+  const method: unknown = Reflect.get(app, "setState");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.setState is not callable");
+  Reflect.apply(method, app, [patch]);
+}
+
+function startSessionAndOpenChat(app: PiWebUiApp): Promise<void> {
+  const method: unknown = Reflect.get(app, "startSessionAndOpenChat");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.startSessionAndOpenChat is not callable");
+  const result: unknown = Reflect.apply(method, app, []);
+  if (!isPromise(result)) throw new Error("PiWebUiApp.startSessionAndOpenChat did not return a promise");
+  return result;
+}
+
 function sessionController(app: PiWebUiApp): SessionController {
   const controller: unknown = Reflect.get(app, "sessions");
   if (!(controller instanceof SessionController)) throw new Error("PiWebUiApp session controller is unavailable");
@@ -632,23 +785,6 @@ function promptEditorTemplate(app: PiWebUiApp): TemplateResult {
   const template = findTemplateContaining(renderApp(app), "<prompt-editor");
   if (template === undefined) throw new Error("PiWebUiApp did not render prompt-editor");
   return template;
-}
-
-function findTemplateContaining(value: unknown, marker: string): TemplateResult | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const template = findTemplateContaining(item, marker);
-      if (template !== undefined) return template;
-    }
-    return undefined;
-  }
-  if (!isTemplateResult(value)) return undefined;
-  if (templateStrings(value).some((part) => part.includes(marker))) return value;
-  for (const child of templateValues(value)) {
-    const template = findTemplateContaining(child, marker);
-    if (template !== undefined) return template;
-  }
-  return undefined;
 }
 
 function loadModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
@@ -765,6 +901,28 @@ function policyResponse(value: unknown): SessionModelPolicyResponse {
   return value;
 }
 
+function sessionStatusValue(value: unknown): SessionStatus {
+  if (!isSessionStatus(value)) throw new Error("Expected a session status");
+  return value;
+}
+
+/**
+ * The `.status` value bound on `<prompt-editor>` itself.
+ *
+ * `.status=` is not unique in this subtree — `<chat-view>` binds it too, and the
+ * shared marker helpers recurse into nested templates — so scan only the
+ * prompt-editor template's own chunks, which is where all of its bindings live.
+ */
+function promptEditorStatus(editor: TemplateResult): SessionStatus {
+  const strings = templateStrings(editor);
+  const values = templateValues(editor);
+  for (let index = 0; index < values.length; index += 1) {
+    if (strings[index]?.includes(".status=") !== true) continue;
+    return sessionStatusValue(values[index]);
+  }
+  throw new Error("prompt-editor did not bind a status");
+}
+
 function isAppState(value: unknown): value is AppState {
   return typeof value === "object" && value !== null && "selectedWorkspace" in value;
 }
@@ -791,6 +949,10 @@ function isClientPolicyStatus(value: unknown): value is ClientSessionModelPolicy
 
 function isPolicyResponse(value: unknown): value is SessionModelPolicyResponse {
   return typeof value === "object" && value !== null && "contractVersion" in value && "session" in value;
+}
+
+function isSessionStatus(value: unknown): value is SessionStatus {
+  return typeof value === "object" && value !== null && "sessionId" in value && "isStreaming" in value;
 }
 
 function isPromise(value: unknown): value is Promise<void> {

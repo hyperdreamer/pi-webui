@@ -3,7 +3,7 @@ import { customElement, query, state } from "lit/decorators.js";
 import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
-import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
 import { modelPolicyDraftFromPolicy, selectDraftTier, sessionModelPolicyUpdateFromDraft } from "./sessionModelPolicyDraft";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -587,6 +587,15 @@ export class PiWebUiApp extends LitElement {
     this.handleWorkspaceChange(previous, this.state);
     if (!this.shouldShowSessionStartScreen(previous) && this.shouldShowSessionStartScreen(this.state) && this.state.selectedWorkspace !== undefined) {
       void this.loadStarterSessionDefaults(this.state.selectedWorkspace);
+    }
+    // A successful session start (from the composer or the nav button) moves the
+    // start screen out of view. Clear the starter draft here, through the same
+    // transition that (re)loads it on the way back in, so returning to the start
+    // screen in the same workspace never silently reapplies an earlier Tiered
+    // choice. This does not run mid-request: the snapshot carried into the
+    // request is read synchronously before the pending session is inserted.
+    if (this.shouldShowSessionStartScreen(previous) && !this.shouldShowSessionStartScreen(this.state)) {
+      this.starterModelPolicy = undefined;
     }
     this.handleMachineChange(previous, this.state);
     if (machineActivitySubscriptionInputsChanged(previous, this.state)) this.syncMachineActivitySubscriptions();
@@ -1779,9 +1788,14 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
+    // Read the starter snapshot synchronously, before the pending session row is
+    // inserted: starting a session from the nav control must honour the starter's
+    // policy choice exactly as sending the first prompt does, or the choice is
+    // silently replaced by daemon defaults.
+    const modelPolicy = this.starterModelPolicyStartSnapshot();
     // `startSession()` remains in flight until the backend session resolves;
     // open the chat as soon as the controller has inserted the temporary row.
-    const start = this.sessions.startSession().catch((error: unknown) => {
+    const start = this.sessions.startSession(modelPolicy).catch((error: unknown) => {
       if (shouldComplete()) this.setState({ error: String(error) });
     });
     if (shouldComplete()) await this.focusChatComposer();
@@ -1973,6 +1987,15 @@ export class PiWebUiApp extends LitElement {
    * `blockedReason` is diagnostic here, exactly as it is for a live session: a
    * starter Tiered choice whose tier does not resolve still ships a `policy`, so
    * the control renders a repairable form rather than a dead end.
+   *
+   * Two things this must not misreport. The resolved tuple is only a tier entry
+   * while the policy is actually Tiered — a persisted policy legitimately keeps a
+   * remembered canonical tier in Exact mode, and there is no server confirmation
+   * for a starter, so the local exact tuple is the only authoritative source of
+   * what the session will start from. And an unknown (still loading, or failed)
+   * catalog is not an invalid ladder: reporting `ladderValid: false` before the
+   * catalog arrives would assert a configuration error that does not exist and
+   * announce it to assistive tech beside the loading text.
    */
   private starterModelPolicyInputs(): { status: ClientSessionModelPolicyStatus; response: SessionModelPolicyResponse } | undefined {
     const defaults = this.starterSessionDefaults;
@@ -1982,14 +2005,14 @@ export class PiWebUiApp extends LitElement {
     const catalog = this.selectedMachineModelTierCatalog();
     const selectedTier = policy.tier;
     const selectedTierRow = selectedTier === undefined ? undefined : catalog?.rows[selectedTier];
-    const selectedTierEntry = selectedTier !== undefined && selectedTierRow?.valid === true
+    const selectedTierEntry = policy.mode === "tiered" && selectedTier !== undefined && selectedTierRow?.valid === true
       ? catalog?.ladder?.[selectedTier]
       : undefined;
     const status: ClientSessionModelPolicyStatus = {
       mode: policy.mode,
       ...(selectedTier === undefined ? {} : { tier: selectedTier }),
       resolved: selectedTierEntry ?? policy.exact,
-      ladderValid: catalog?.valid === true,
+      ladderValid: catalog === undefined || catalog.valid,
       ...(policy.mode === "tiered" && selectedTierEntry === undefined
         ? { blockedReason: catalog?.configError ?? "Choose a valid model tier before starting" }
         : {}),
@@ -3373,7 +3396,7 @@ export class PiWebUiApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy === undefined ? undefined : state.status?.modelPolicy} .modelPolicyResponse=${activePolicy === undefined ? undefined : state.modelPolicy} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onOpenModelPolicy=${activePolicy === undefined ? undefined : this.handleOpenActiveModelPolicy} .onCloseModelPolicy=${activePolicy === undefined ? undefined : this.handleCloseActiveModelPolicy} .onSaveModelPolicy=${activePolicy === undefined ? undefined : this.handleSaveActiveModelPolicy} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
+            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${activePolicy === undefined ? statusWithoutModelPolicy(state.status) : state.status} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy === undefined ? undefined : state.status?.modelPolicy} .modelPolicyResponse=${activePolicy === undefined ? undefined : state.modelPolicy} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onOpenModelPolicy=${activePolicy === undefined ? undefined : this.handleOpenActiveModelPolicy} .onCloseModelPolicy=${activePolicy === undefined ? undefined : this.handleCloseActiveModelPolicy} .onSaveModelPolicy=${activePolicy === undefined ? undefined : this.handleSaveActiveModelPolicy} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
           ` : this.shouldShowSessionStartScreen(state)
             ? this.renderSessionStartScreen(state)
@@ -3532,6 +3555,23 @@ function sameExactSelection(left: ExactModelSelection, right: ExactModelSelectio
   return left.model.provider === right.model.provider
     && left.model.id === right.model.id
     && left.thinkingLevel === right.thinkingLevel;
+}
+
+/**
+ * The status to hand the active composer when policy support is withheld.
+ *
+ * PromptEditor falls back to `status.modelPolicy` when no separate policy status
+ * prop is supplied, so leaving the projection on the status object would let the
+ * control render with no callbacks — a panel whose Retry is wired to nothing.
+ * That window is reachable between a session status arriving and the selected
+ * machine's runtime health populating, so drop the projection at the boundary
+ * that decided support is unavailable rather than relying on the component.
+ */
+function statusWithoutModelPolicy(status: SessionStatus | undefined): SessionStatus | undefined {
+  if (status?.modelPolicy === undefined) return status;
+  const rest: SessionStatus = { ...status };
+  delete rest.modelPolicy;
+  return rest;
 }
 
 function omitWorkspaceDeletionRun(runs: Record<string, TerminalCommandRun>, workspaceId: string): Record<string, TerminalCommandRun> {
