@@ -1,6 +1,8 @@
 import { LitElement, css, html, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
+import { renderThinkingGauge } from "./promptEditorIcons";
+import { thinkingGauge } from "../../../shared/thinkingLevels";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
 /** Anchored composer menu for selecting a model-supported thinking level. */
@@ -39,11 +41,19 @@ export class SessionThinkingMenu extends LitElement {
         title=${this.label}
         @click=${(event: MouseEvent) => { this.toggleMenu(event.currentTarget); }}
       >
-        <span class="thinking-trigger-label">${this.label}</span>
+        <span class="thinking-trigger-gauge">${renderThinkingGauge(this.triggerGauge())}</span>
         <span class="thinking-chevron" aria-hidden="true">▾</span>
       </button>
       ${this.menuOpen ? this.renderMenu() : null}
     `;
+  }
+
+  /**
+   * Rank the selected level against the levels actually offered for this model, so
+   * a model with three levels shows three bars rather than a fixed six.
+   */
+  private triggerGauge(): { total: number; filled: number } {
+    return thinkingGauge(this.label, this.options.map((option) => option.level));
   }
 
   private renderMenu(): TemplateResult {
@@ -116,7 +126,15 @@ export class SessionThinkingMenu extends LitElement {
     * { box-sizing: border-box; }
     .thinking-trigger { min-width: 0; max-width: 100%; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 9px; font: inherit; font-size: 12px; line-height: 1.3; cursor: pointer; }
     .thinking-trigger:hover, .thinking-trigger:focus-visible { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
-    .thinking-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .thinking-trigger-gauge { flex: 0 0 auto; display: inline-flex; align-items: center; }
+    .thinking-trigger-gauge svg { width: 16px; height: 16px; display: block; pointer-events: none; }
+    .thinking-trigger-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .22; transition: opacity 120ms ease, fill 120ms ease; }
+    .thinking-trigger-gauge .gauge-bar-active { fill: var(--pi-accent, currentColor); opacity: 1; }
+    .thinking-trigger:hover .thinking-trigger-gauge .gauge-bar { opacity: .34; }
+    .thinking-trigger:hover .thinking-trigger-gauge .gauge-bar-active { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) {
+      .thinking-trigger-gauge .gauge-bar { transition: none; }
+    }
     .thinking-chevron { flex: 0 0 auto; color: var(--pi-muted); }
     .thinking-menu { position: fixed; z-index: 10000; width: min(280px, calc(100vw - 16px)); overflow: auto; padding: 4px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); box-shadow: 0 8px 24px var(--pi-shadow); }
     .thinking-item { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 18px; gap: 2px 8px; align-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--pi-text); padding: 7px 8px; font: inherit; text-align: left; cursor: pointer; }

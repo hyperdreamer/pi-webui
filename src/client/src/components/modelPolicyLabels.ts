@@ -1,4 +1,5 @@
 import { type ExactModelSelection, type ModelTier, type TierModelRef } from "../../../shared/apiTypes";
+import { KNOWN_THINKING_LEVELS } from "../../../shared/thinkingLevels";
 
 export const TIER_LABELS: Record<ModelTier, string> = {
   economy: "Economy",
@@ -9,8 +10,13 @@ export const TIER_LABELS: Record<ModelTier, string> = {
   frontier: "Frontier",
 };
 
-/** Canonical ascending thinking-level order. Levels outside this list sort last, in input order. */
-export const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+/** Canonical ascending thinking-level order. */
+/**
+ * Canonical ascending order for presenting thinking levels. Derived from pi's
+ * own list rather than duplicated, so a level pi adds cannot silently sort last
+ * as an unknown.
+ */
+export const THINKING_LEVEL_ORDER = KNOWN_THINKING_LEVELS;
 
 export function describeModel(model: TierModelRef): string {
   return `${model.provider}/${model.id}`;

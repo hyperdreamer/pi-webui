@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClientSessionModelPolicyStatus } from "../../../shared/apiTypes";
 import { SessionModelPolicyControl } from "./SessionModelPolicyControl";
 import { modelKey, THINKING_LEVEL_ORDER } from "./modelPolicyLabels";
+import { KNOWN_THINKING_LEVELS } from "../../../shared/thinkingLevels";
 
 const defaultModel = { provider: "openai", id: "gpt-default" };
 
@@ -355,7 +356,11 @@ describe("SessionModelPolicyControl after panel retirement", () => {
 
 describe("model policy labels", () => {
   it("keeps thinking levels in canonical ascending order", () => {
-    expect(THINKING_LEVEL_ORDER).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"]);
+    expect(THINKING_LEVEL_ORDER).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("covers every level pi knows, so none sorts last as an unknown", () => {
+    expect([...THINKING_LEVEL_ORDER]).toEqual([...KNOWN_THINKING_LEVELS]);
   });
 
   it("builds a stable provider-qualified model key", () => {

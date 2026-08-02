@@ -61,20 +61,35 @@ export function renderStopIcon(): TemplateResult {
  * A gauge whose bar count comes from the available thinking levels (the non-"off"
  * levels) and whose fill reflects the current level's rank. Bars are laid out to
  * fill the 24x24 box regardless of count, so it adapts if pi changes the set.
+ *
+ * Bars share a baseline and climb from a visible floor to near the top of the
+ * box, so rank reads as magnitude at a glance. Corner rounding is a fraction of
+ * bar width rather than a fixed radius, so narrow bars stay rectangular instead
+ * of collapsing into lozenges when the level set is dense.
  */
 export function renderThinkingGauge(gauge: ThinkingGauge): TemplateResult {
   const total = Math.max(gauge.total, 1);
-  const gap = total > 1 ? 1.2 : 0;
+  const gap = total > 1 ? 1.4 : 0;
   const left = 3;
   const right = 21;
+  const baseline = 21;
+  const minHeight = 5;
+  const maxHeight = 18;
   const span = right - left;
-  const barWidth = (span - gap * (total - 1)) / total;
+  // Cap bar width so a level set with one non-off level renders a bar rather than
+  // a box-filling square, and centre the track whatever the count.
+  const rawWidth = (span - gap * (total - 1)) / total;
+  const barWidth = Math.min(rawWidth, 5);
+  const usedWidth = barWidth * total + gap * (total - 1);
+  const originX = left + (span - usedWidth) / 2;
+  const radius = Math.min(0.75, barWidth * 0.3);
   const bars = Array.from({ length: total }, (_unused, i) => {
-    const x = left + i * (barWidth + gap);
-    const height = 4 + ((i + 1) / total) * 12;
-    const y = 20 - height;
+    const x = originX + i * (barWidth + gap);
+    const step = total === 1 ? 1 : i / (total - 1);
+    const height = minHeight + step * (maxHeight - minHeight);
+    const y = baseline - height;
     const active = i < gauge.filled;
-    return svg`<rect class=${active ? "gauge-bar gauge-bar-active" : "gauge-bar"} x=${x} y=${y} width=${barWidth} height=${height} rx="1"></rect>`;
+    return svg`<rect class=${active ? "gauge-bar gauge-bar-active" : "gauge-bar"} x=${x} y=${y} width=${barWidth} height=${height} rx=${radius}></rect>`;
   });
   return svg`
     <svg class="prompt-thinking-gauge" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

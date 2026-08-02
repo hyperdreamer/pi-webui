@@ -926,8 +926,13 @@ export const promptEditorStyles = css`
   .icon-button .prompt-action-icon-filled { fill: currentColor; stroke: none; }
   .send-button:not(:disabled) { color: var(--pi-accent, var(--pi-text)); }
   .stop-button:not(:disabled) { color: var(--pi-danger); }
-  .select-thinking .prompt-thinking-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .28; }
-  .select-thinking .prompt-thinking-gauge .gauge-bar-active { opacity: 1; }
+  .select-thinking .prompt-thinking-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .22; transition: opacity 120ms ease, fill 120ms ease; }
+  .select-thinking .prompt-thinking-gauge .gauge-bar-active { fill: var(--pi-accent, currentColor); opacity: 1; }
+  .select-thinking:hover .prompt-thinking-gauge .gauge-bar { opacity: .34; }
+  .select-thinking:hover .prompt-thinking-gauge .gauge-bar-active { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .select-thinking .prompt-thinking-gauge .gauge-bar { transition: none; }
+  }
   .editor-attach { position: absolute; right: 8px; bottom: 8px; z-index: 2; width: 30px; height: 30px; }
   .editor-attach .prompt-action-icon { width: 16px; height: 16px; }
   textarea, .markdown-editor .cm-editor { box-sizing: border-box; width: 100%; min-height: 54px; max-height: 220px; resize: none; overflow: hidden; border-radius: 8px; border: 1px solid var(--pi-border); background: var(--pi-bg); color: var(--pi-text); font: var(--pi-control-font-size, 16px)/1.4 var(--pi-control-font-family, system-ui, sans-serif); }

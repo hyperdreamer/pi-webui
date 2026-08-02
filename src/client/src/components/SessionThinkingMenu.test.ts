@@ -142,3 +142,88 @@ describe("SessionThinkingMenu", () => {
     expect(matchingRemoval?.[2]).toBe(clickRegistration?.[2]);
   });
 });
+
+describe("trigger gauge", () => {
+  it("shows a bar gauge instead of the level word, so the row keeps a fixed width", async () => {
+    const element = await mountMenu((menu) => {
+      menu.options = thinkingLevelOptions({
+        supported: ["off", "low", "medium", "high"],
+        all: ["off", "low", "medium", "high"],
+        selected: "medium",
+      });
+      menu.label = "medium";
+      menu.editable = true;
+    });
+
+    const trigger = root(element).querySelector(".thinking-trigger");
+
+    expect(trigger?.querySelector("svg")).not.toBeNull();
+    expect(trigger?.textContent.replace(/\s+/g, " ").trim()).toBe("▾");
+  });
+
+  it("keeps the level name reachable for assistive technology and on hover", async () => {
+    const element = await mountMenu((menu) => {
+      menu.options = thinkingLevelOptions({ supported: ["off", "high"], all: ["off", "high"], selected: "high" });
+      menu.label = "high";
+      menu.editable = true;
+    });
+
+    const trigger = root(element).querySelector(".thinking-trigger");
+
+    expect(trigger?.getAttribute("aria-label")).toContain("high");
+    expect(trigger?.getAttribute("title")).toContain("high");
+  });
+
+  it("fills the gauge from the selected level's rank among the offered levels", async () => {
+    const element = await mountMenu((menu) => {
+      menu.options = thinkingLevelOptions({
+        supported: ["off", "low", "medium", "high"],
+        all: ["off", "low", "medium", "high"],
+        selected: "low",
+      });
+      menu.label = "low";
+      menu.editable = true;
+    });
+
+    const active = [...root(element).querySelectorAll(".thinking-trigger rect")]
+      .map((rect) => rect.getAttribute("class")?.includes("gauge-bar-active"));
+
+    expect(active).toEqual([true, false, false]);
+  });
+
+  it("leaves every bar unfilled when thinking is off", async () => {
+    const element = await mountMenu((menu) => {
+      menu.options = thinkingLevelOptions({
+        supported: ["off", "low", "medium"],
+        all: ["off", "low", "medium"],
+        selected: "off",
+      });
+      menu.label = "off";
+      menu.editable = true;
+    });
+
+    const active = [...root(element).querySelectorAll(".thinking-trigger rect")]
+      .map((rect) => rect.getAttribute("class")?.includes("gauge-bar-active"));
+
+    expect(active).toEqual([false, false]);
+  });
+
+  it("still spells out every level inside the open menu", async () => {
+    const element = await mountMenu((menu) => {
+      menu.options = thinkingLevelOptions({
+        supported: ["off", "low", "medium"],
+        all: ["off", "low", "medium", "xhigh"],
+        selected: "low",
+      });
+      menu.label = "low";
+      menu.editable = true;
+    });
+    await open(element);
+
+    const text = root(element).textContent.replace(/\s+/g, " ");
+
+    expect(text).toContain("medium");
+    expect(text).toContain("xhigh");
+    expect(text).toContain("unsupported by this model");
+  });
+});
