@@ -41,7 +41,6 @@ export class SessionModelPolicyControl extends LitElement {
     const policyStatus = this.effectiveStatus();
     if (policyStatus === undefined) return nothing;
     const modeLabel = policyStatus.mode === "tiered" ? "Tiered" : "Exact";
-    const tier = policyStatus.tier;
     const compactDiagnostic = this.compactDiagnostic(policyStatus);
     return html`
       <button
@@ -54,8 +53,6 @@ export class SessionModelPolicyControl extends LitElement {
         @click=${(event: MouseEvent) => { this.toggleModeMenu(event.currentTarget); }}
       >
         <span class="policy-mode">${modeLabel}</span>
-        ${policyStatus.mode === "tiered" && tier !== undefined ? html`<span class="policy-tier">${TIER_LABELS[tier]}</span>` : null}
-        ${policyStatus.mode === "tiered" ? html`<span class="policy-resolution">→ ${describeSelection(policyStatus.resolved)}</span>` : null}
         <span class="policy-chevron" aria-hidden="true">▾</span>
       </button>
       ${this.menuOpen ? this.renderModeMenu(policyStatus.mode) : null}
@@ -161,8 +158,7 @@ export class SessionModelPolicyControl extends LitElement {
     * { box-sizing: border-box; }
     .policy-trigger { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; display: inline-flex; align-items: baseline; gap: 6px; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 4px 9px; font: inherit; font-size: 12px; line-height: 1.3; cursor: pointer; }
     .policy-trigger:hover, .policy-trigger:focus-visible { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
-    .policy-mode { font-weight: 600; }
-    .policy-tier, .policy-resolution { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-muted); }
+    .policy-mode { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
     .policy-chevron { flex: 0 0 auto; color: var(--pi-muted); }
     .policy-mode-menu { position: fixed; z-index: 10000; width: min(240px, calc(100vw - 16px)); overflow: auto; padding: 4px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); box-shadow: 0 8px 24px var(--pi-shadow); }
     .policy-mode-item { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 18px; gap: 2px 8px; align-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--pi-text); padding: 7px 8px; font: inherit; text-align: left; cursor: pointer; }

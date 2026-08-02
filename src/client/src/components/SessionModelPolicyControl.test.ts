@@ -85,18 +85,31 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(controlTrigger.textContent.trim()).toContain("Exact");
   });
 
-  it("renders a Tiered trigger with a read-only resolution and no compact exact-model control", async () => {
+  it("shows only the mode on a Tiered trigger, leaving tier and resolution to the tier menu", async () => {
     const control = await mountControl((element) => {
       element.status = tieredStatus();
     });
 
-    const text = trigger(control).textContent.replace(/\s+/g, " ");
+    const text = trigger(control).textContent.replace(/\s+/g, " ").trim();
 
-    expect(text).toContain("Tiered");
-    expect(text).toContain("Advanced");
-    expect(text).toContain("→ openai/gpt-advanced · high");
+    // The adjacent tier menu owns the tier name and its resolution; repeating
+    // them here rendered the same tuple twice in the composer row. Pin the exact
+    // content so any re-added span fails, not just the two known strings.
+    expect(text).toBe("Tiered ▾");
     expect(shadowRoot(control).querySelectorAll("select")).toHaveLength(0);
     expect(shadowRoot(control).querySelectorAll("button")).toHaveLength(1);
+  });
+
+  it("keeps the full tiered tuple in the trigger tooltip", async () => {
+    const control = await mountControl((element) => {
+      element.status = tieredStatus();
+    });
+
+    const title = trigger(control).getAttribute("title") ?? "";
+
+    expect(title).toContain("Tiered");
+    expect(title).toContain("Advanced");
+    expect(title).toContain("openai/gpt-advanced · high");
   });
 
   it("lets a Tiered trigger shrink and ellipsize inside its assigned narrow flex slot", async () => {
@@ -106,13 +119,13 @@ describe("SessionModelPolicyControl closed trigger", () => {
     });
 
     const triggerRule = componentStyleRule(".policy-trigger");
-    const resolutionRule = componentStyleRule(".policy-tier, .policy-resolution");
+    const modeRule = componentStyleRule(".policy-mode");
 
     expect(control.style.width).toBe("130px");
     expect(triggerRule.flex).toBe("1 1 auto");
     expect(triggerRule.maxWidth).toBe("100%");
     expect(triggerRule.overflow).toBe("hidden");
-    expect(resolutionRule.textOverflow).toBe("ellipsis");
+    expect(modeRule.textOverflow).toBe("ellipsis");
   });
 
   it("stays visible from live status while policy data is loading", async () => {
@@ -167,10 +180,12 @@ describe("SessionModelPolicyControl closed trigger", () => {
       };
     });
 
-    const text = trigger(control).textContent.replace(/\s+/g, " ");
+    // The tooltip is where the resolved tuple now lives, so the no-substitution
+    // guarantee is asserted there rather than in the mode-only pill text.
+    const title = trigger(control).getAttribute("title") ?? "";
 
-    expect(text).toContain("no thinking level");
-    expect(text).not.toContain("· off");
+    expect(title).toContain("no thinking level");
+    expect(title).not.toContain("· off");
   });
 });
 
