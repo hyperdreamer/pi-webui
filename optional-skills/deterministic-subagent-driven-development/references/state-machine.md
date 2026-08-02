@@ -157,9 +157,9 @@ An intent stores the exact rendered prompt bytes, bounded at 384 KiB, before any
 session exists. Recovery reissues those bytes verbatim and never re-renders,
 because re-rendering couples recovery to renderer output.
 
-The typed `tier` selects the model. A leading `/tier-*` line is a human-readable
-echo with no control effect: absent is fine, and disagreeing with the typed tier
-is reported as renderer/formula divergence.
+The typed `tier` selects the model. A leading `Model tier: <tier>` line is a
+human-readable echo with no control effect: absent is fine, and disagreement with
+the typed tier is reported as renderer/formula divergence.
 
 ## Recovery authority
 

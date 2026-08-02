@@ -17,10 +17,10 @@ export const MODEL_POLICY_CONTRACT_VERSION = 1;
  * tier is a binding channel before dispatching anything.
  *
  * `tier` is the only channel. Prompt text never selects a model: the runtime
- * does not scan prompt bytes for directives, so a `/tier-*` line carries no
- * control effect. The one exception is a guard rather than a mechanism -- a
- * leading directive that *disagrees* with the typed tier fails the spawn, so a
- * stale echo cannot imply a tier nobody requested.
+ * does not scan prompt bytes for model-selection commands. A rendered
+ * `Model tier: <tier>` line carries no control effect. The one exception is a
+ * guard rather than a mechanism: a leading label that *disagrees* with the typed
+ * tier fails the spawn, so a stale echo cannot imply a tier nobody requested.
  */
 export const TRACKED_DISPATCH_ADVERTISEMENT = {
   contractVersion: MODEL_POLICY_CONTRACT_VERSION,

@@ -347,14 +347,13 @@ function requirePromptText(value: unknown): string {
   return value;
 }
 
-function leadingTierDirective(prompt: string): ModelTier | undefined {
-  const match = /^(?:\uFEFF)?\/tier-([^\s\r\n]+)(?:[ \t]*(?:\r?\n|$))/u.exec(
-    prompt
-  );
+function leadingTierEcho(prompt: string): ModelTier | undefined {
+  const match =
+    /^(?:\uFEFF)?Model tier: ([^\s\r\n]+)(?:[ \t]*(?:\r?\n|$))/u.exec(prompt);
   if (match === null) return undefined;
   const value = match[1];
   if (value === undefined || !isModelTier(value))
-    throw new Error(`Unknown leading tier directive: /tier-${value ?? ""}`);
+    throw new Error(`Unknown leading model tier label: ${value ?? ""}`);
   return value;
 }
 
@@ -1687,10 +1686,10 @@ export class PiSessionService implements SessionRouteService {
     let initialModel = input.model;
     let initialThinkingLevel: ClientThinkingLevel | undefined;
     if (input.tier !== undefined) {
-      const echoedTier = leadingTierDirective(input.prompt);
+      const echoedTier = leadingTierEcho(input.prompt);
       if (echoedTier !== undefined && echoedTier !== input.tier) {
         throw new Error(
-          `Leading tier directive /tier-${echoedTier} disagrees with typed tier ${input.tier}`
+          `Leading Model tier: ${echoedTier} label disagrees with typed tier ${input.tier}`
         );
       }
       const resolved = this.modelTierRegistry.resolve(input.tier);

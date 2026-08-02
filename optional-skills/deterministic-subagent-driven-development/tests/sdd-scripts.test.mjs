@@ -311,7 +311,7 @@ function renderRole({ role, tier, context, runRoot, name = "context.json" }) {
 /** Compose the exact bytes the renderer must produce. */
 function expectedPrompt({ tier, role, context }) {
   const lines = [
-    `/tier-${tier}`,
+    `Model tier: ${tier}`,
     "",
     templateFor(role).trimEnd(),
     "",
@@ -348,11 +348,11 @@ describe("prompt rendering", () => {
     expect(rendered).toBe(expectedPrompt({ tier: "advanced", role: "implementer", context }));
 
     // Properties the exact comparison must keep implying.
-    expect(rendered.startsWith("/tier-advanced\n")).toBe(true);
+    expect(rendered.startsWith("Model tier: advanced\n")).toBe(true);
     expect(rendered).not.toContain("{{");
   });
 
-  it("puts exactly one blank line between the directive and the contract", () => {
+  it("puts exactly one blank line between the tier label and the contract", () => {
     const { runRoot, worktree } = makeRunRoot();
     const { result, outputPath } = renderRole({
       role: "implementer",
@@ -365,7 +365,11 @@ describe("prompt rendering", () => {
     // The newline count is part of the contract: an intent stores these bytes and
     // a reissue sends them verbatim, so drift here changes what a child receives.
     const rendered = readFileSync(outputPath, "utf8");
-    expect(rendered.split("\n").slice(0, 3)).toEqual(["/tier-economy", "", "# Implementer"]);
+    expect(rendered.split("\n").slice(0, 3)).toEqual([
+      "Model tier: economy",
+      "",
+      "# Implementer",
+    ]);
   });
 
   it("renders every tier", () => {
@@ -378,7 +382,7 @@ describe("prompt rendering", () => {
         runRoot,
       });
       expect(result.status).toBe(0);
-      expect(readFileSync(outputPath, "utf8").startsWith(`/tier-${tier}\n`)).toBe(true);
+      expect(readFileSync(outputPath, "utf8").startsWith(`Model tier: ${tier}\n`)).toBe(true);
     }
   });
 
@@ -856,8 +860,8 @@ describe("tier plumbing through the offline fake", () => {
    * across the four templates; the tier column is the exhaustive part.
    *
    * `implementer` and `formulaRole` name the policy-module inputs whose derived
-   * tier must equal the row's tier, which ties the formula, the rendered
-   * directive, and the typed field into one chain per row.
+   * tier must equal the row's tier, which ties the formula, the rendered label,
+   * and the typed field into one chain per row.
    */
   const TIER_ROWS = [
     { tier: "economy", role: "implementer", formulaRole: "implementer", implementer: "economy" },
@@ -898,10 +902,10 @@ describe("tier plumbing through the offline fake", () => {
       expect(rendered.result.status, rendered.result.stderr).toBe(0);
       const prompt = readFileSync(rendered.outputPath, "utf8");
 
-      // The leading directive is human-readable display text, and it agrees with
+      // The leading label is human-readable display text, and it agrees with
       // both the formula and the tier about to be typed.
-      expect(prompt.split("\n")[0]).toBe(derived.directive);
-      expect(prompt.split("\n")[0]).toBe(`/tier-${tier}`);
+      expect(prompt.split("\n")[0]).toBe(derived.echo);
+      expect(prompt.split("\n")[0]).toBe(`Model tier: ${tier}`);
 
       const { logPath, registryPath, tools } = makeFakeEnvironment({
         SDD_EVAL_POLICY_MODE: "tiered",
@@ -932,7 +936,7 @@ describe("tier plumbing through the offline fake", () => {
       ));
       expect(transcript.requestedTier).toBe(tier);
       expect(transcript.effectiveTier).toBe(tier);
-      expect(transcript.tierOutcome).toBe("applied-tiered");
+      expect(transcript.tierOutcome).toBe("applied-typed");
       // The tuple shape is the contract's ExactModelSelection: model identity
       // plus thinking level, and nothing else.
       expect(Object.keys(transcript.resolved).sort()).toEqual(["model", "thinkingLevel"]);
@@ -976,13 +980,16 @@ describe("tier plumbing through the offline fake", () => {
     expect(ranks.at(-1)).toBeGreaterThan(ranks[0]);
   });
 
-  it("treats the leading directive as display only, with no binding power", () => {
+  it("treats the leading tier label as display only, with no binding power", () => {
     const { registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
-    // A prompt that shouts /tier-frontier but types no tier binds nothing. This
-    // is the inert-control-channel claim stated as a side effect: the child is
-    // recorded with a null tier and never resolves the frontier tuple.
+    // A prompt that says Model tier: frontier but types no tier binds nothing.
+    // This is the inert-control-channel claim stated as a side effect: the child
+    // is recorded with a null tier and never resolves the frontier tuple.
     const spawned = JSON.parse(toolText(
-      tools.get("spawn_subsession").execute("call-1", { prompt: "/tier-frontier\nWork.", cwd: "/eval/worktree" }),
+      tools.get("spawn_subsession").execute("call-1", {
+        prompt: "Model tier: frontier\nWork.",
+        cwd: "/eval/worktree",
+      }),
     ));
     expect(registryRecords(registryPath)[spawned.sessionId].tier).toBeNull();
 
@@ -994,12 +1001,16 @@ describe("tier plumbing through the offline fake", () => {
     expect(transcript.resolved.thinkingLevel).not.toBe("max");
   });
 
-  it("rejects a directive that disagrees with the typed tier, before any child exists", () => {
+  it("rejects a tier label that disagrees with the typed tier before creating a child", () => {
     const { logPath, registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
     const spawn = tools.get("spawn_subsession");
 
     const disagreeing = toolText(
-      spawn.execute("call-1", { prompt: "/tier-frontier\nWork.", cwd: "/eval/worktree", tier: "economy" }),
+      spawn.execute("call-1", {
+        prompt: "Model tier: frontier\nWork.",
+        cwd: "/eval/worktree",
+        tier: "economy",
+      }),
     );
     expect(disagreeing).toContain("disagrees with typed tier");
     // The refusal is only meaningful if nothing was created: a message alone
@@ -1009,9 +1020,13 @@ describe("tier plumbing through the offline fake", () => {
     expect(logRecords(logPath).filter((record) => record.tool === "spawn_subsession")).toHaveLength(1);
 
     // The agreeing form of the same request succeeds, so the rejection is about
-    // disagreement and not about directives in general.
+    // disagreement and not about labels in general.
     const agreeing = JSON.parse(toolText(
-      spawn.execute("call-2", { prompt: "/tier-economy\nWork.", cwd: "/eval/worktree", tier: "economy" }),
+      spawn.execute("call-2", {
+        prompt: "Model tier: economy\nWork.",
+        cwd: "/eval/worktree",
+        tier: "economy",
+      }),
     ));
     expect(registryRecords(registryPath)[agreeing.sessionId].tier).toBe("economy");
   });
@@ -1027,84 +1042,63 @@ describe("tier plumbing through the offline fake", () => {
     expect(registryRecords(registryPath)).toEqual({});
   });
 
-  /**
-   * Exact mode. The requested tier is ignored and the pinned runtime tuple is
-   * unchanged, so a controller must not report a tier as applied.
-   */
-  describe.each(["economy", "advanced", "frontier"])("Exact mode ignores tier %s", (tier) => {
-    it("leaves the runtime tuple identical and reports ignored-exact", () => {
-      const { registryPath, tools } = makeFakeEnvironment({
-        SDD_EVAL_POLICY_MODE: "exact",
-        SDD_EVAL_LADDER_VALID: "false",
+  /** Parent Exact mode does not cancel a child's typed dispatch tier. */
+  describe.each(["economy", "advanced", "frontier"])(
+    "Exact parent still binds typed tier %s",
+    (tier) => {
+      it("keeps the parent pinned while the child runs at the requested tier", () => {
+        const { registryPath, tools } = makeFakeEnvironment({
+          SDD_EVAL_POLICY_MODE: "exact",
+        });
+        const policyTool = tools.get("get_model_policy");
+        const before = JSON.parse(toolText(policyTool.execute("call-1", {})));
+        expect(before.policy.mode).toBe("exact");
+        expect(before.policy.currentTier).toBeNull();
+        expect(before.ladder.valid).toBe(true);
+
+        const spawned = JSON.parse(toolText(
+          tools.get("spawn_subsession").execute("call-2", {
+            prompt: `${tierDirective(tier)}\nWork.`,
+            cwd: "/eval/worktree",
+            tier,
+          }),
+        ));
+        expect(registryRecords(registryPath)[spawned.sessionId].tier).toBe(tier);
+
+        const transcript = JSON.parse(toolText(
+          tools.get("read_subsession").execute("call-3", { sessionId: spawned.sessionId }),
+        ));
+        expect(transcript.requestedTier).toBe(tier);
+        expect(transcript.effectiveTier).toBe(tier);
+        expect(transcript.tierOutcome).toBe("applied-typed");
+
+        const after = JSON.parse(toolText(policyTool.execute("call-4", {})));
+        expect(after.policy).toEqual(before.policy);
       });
-      const policyTool = tools.get("get_model_policy");
+    },
+  );
 
-      const before = JSON.parse(toolText(policyTool.execute("call-1", {})));
-      expect(before.policy.mode).toBe("exact");
-      expect(before.policy.currentTier).toBeNull();
-      // The result advertises no tier slash commands, because the runtime
-      // registers none; only the outcome label survives, on the transcript.
-      expect(before.tierCommands).toBeUndefined();
-      expect(JSON.stringify(before)).not.toContain("/tier-");
-      // Exact mode pins one tuple: what runs now is what the next request runs.
-      expect(before.policy.nextRequestResolved).toEqual(before.policy.currentRuntime);
-      // The pinned tuple is not free to drift. The Exact-mode eval scenario's
-      // prompt narrates the inherited tuple to the controller as
-      // RightCode-OpenAI/gpt-5.6-sol at high, so a fake that pins anything else
-      // would hand the controller policy evidence contradicting its own briefing
-      // and the run would test confusion rather than Exact-mode behavior. The
-      // literal is owned here deliberately: deriving it from the fake would make
-      // this assertion vacuous.
-      expect(before.policy.currentRuntime).toEqual({
-        model: { provider: "RightCode-OpenAI", id: "gpt-5.6-sol" },
-        thinkingLevel: "high",
-      });
-
-      const spawned = JSON.parse(toolText(
-        tools.get("spawn_subsession").execute("call-2", {
-          prompt: `${tierDirective(tier)}\nWork.`,
-          cwd: "/eval/worktree",
-          tier,
-        }),
-      ));
-      // The request was accepted and recorded verbatim; it simply did not bind.
-      expect(registryRecords(registryPath)[spawned.sessionId].tier).toBe(tier);
-
-      const transcript = JSON.parse(toolText(
-        tools.get("read_subsession").execute("call-3", { sessionId: spawned.sessionId }),
-      ));
-      expect(transcript.requestedTier).toBe(tier);
-      expect(transcript.tierOutcome).toBe("ignored-exact");
-      // No effective tier exists in Exact mode, and the child runs the pinned
-      // tuple rather than anything derived from the request.
-      expect(transcript.effectiveTier).toBeNull();
-      expect(transcript.resolved).toEqual(before.policy.currentRuntime);
-
-      const after = JSON.parse(toolText(policyTool.execute("call-4", {})));
-      // Byte-identical, not merely deep-equal on the fields checked above.
-      expect(JSON.stringify(after.policy)).toBe(JSON.stringify(before.policy));
-      expect(after.policy.currentRuntime).toEqual(before.policy.currentRuntime);
-    });
-  });
-
-  it("resolves every Exact-mode request to the same tuple across all six tiers", () => {
+  it("resolves all six typed tiers independently under an Exact parent", () => {
     const { tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "exact" });
     const spawn = tools.get("spawn_subsession");
     const readChild = tools.get("read_subsession");
-    const pinned = JSON.parse(toolText(tools.get("get_model_policy").execute("call-0", {})))
-      .policy.currentRuntime;
 
-    const tuples = TIERS.map((tier) => {
+    const children = TIERS.map((tier) => {
       const spawned = JSON.parse(toolText(
-        spawn.execute(`call-${tier}`, { prompt: `${tierDirective(tier)}\nWork.`, cwd: "/w", tier }),
+        spawn.execute(`call-${tier}`, {
+          prompt: `${tierDirective(tier)}\nWork.`,
+          cwd: "/w",
+          tier,
+        }),
       ));
-      return JSON.parse(toolText(readChild.execute(`read-${tier}`, { sessionId: spawned.sessionId }))).resolved;
+      return JSON.parse(toolText(
+        readChild.execute(`read-${tier}`, { sessionId: spawned.sessionId }),
+      ));
     });
 
-    // In Tiered mode these six are distinct. In Exact mode they must collapse to
-    // the single pinned tuple, which is what "ignored" means concretely.
-    for (const tuple of tuples) expect(tuple).toEqual(pinned);
-    expect(new Set(tuples.map((tuple) => JSON.stringify(tuple))).size).toBe(1);
+    expect(children.map(({ effectiveTier }) => effectiveTier)).toEqual(TIERS);
+    const tuples = children.map(({ resolved }) => JSON.stringify(resolved));
+    expect(new Set(tuples).size).toBe(TIERS.length);
   });
 });
 

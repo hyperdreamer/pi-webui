@@ -40,10 +40,8 @@ const TIER_TUPLES = {
  */
 const EXACT_RUNTIME_TIER = "advanced";
 
-// The runtime registers no tier slash command, so the fake advertises none. It
-// keeps only the exact-mode outcome label, which describes what happens to a
-// directive a human echoed into a prompt: nothing.
-const EXACT_TIER_OUTCOME = "ignored-exact";
+// The runtime registers no tier slash command. The rendered tier label is
+// display-only; `spawn_subsession`'s typed `tier` field is the binding channel.
 
 // Matches references/capability-contract.md and the real tool: a typed tier is
 // the binding channel, the result carries only { sessionId, cwd }, and there is
@@ -182,9 +180,11 @@ function buildPolicyResult() {
   };
 }
 
-function leadingDirective(prompt) {
-  const match = /^\/tier-(economy|fast|standard|advanced|capable|frontier)(?=\s|$)/u.exec(String(prompt ?? ""));
-  return match === null ? null : { directive: match[0], tier: match[1] };
+function leadingTierEcho(prompt) {
+  const match = /^Model tier: (economy|fast|standard|advanced|capable|frontier)(?=\s|$)/u.exec(
+    String(prompt ?? ""),
+  );
+  return match === null ? null : { label: match[0], tier: match[1] };
 }
 
 export default function fakeSddTools(pi) {
@@ -294,13 +294,14 @@ export default function fakeSddTools(pi) {
         return textResult(`ERROR: tier "${declaredTier}" is not in the configured ladder`);
       }
 
-      // The typed tier binds the model. A leading directive is a human-readable
-      // echo with no control effect, but one that disagrees with the typed tier
-      // is rejected before child creation, matching leadingTierDirective().
-      const parsed = leadingDirective(prompt);
+      // The typed tier binds the model. A leading tier label is a
+      // human-readable echo with no control effect, but one that disagrees with
+      // the typed tier is rejected before child creation, matching
+      // leadingTierEcho().
+      const parsed = leadingTierEcho(prompt);
       if (declaredTier !== undefined && parsed !== null && parsed.tier !== declaredTier) {
         return textResult(
-          `ERROR: leading directive "${parsed.directive}" disagrees with typed tier "${declaredTier}"`,
+          `ERROR: leading label "${parsed.label}" disagrees with typed tier "${declaredTier}"`,
         );
       }
 
@@ -370,20 +371,16 @@ export default function fakeSddTools(pi) {
       const record = registry[sessionId];
       if (record === undefined) return textResult(`ERROR: unknown sessionId: ${sessionId}`);
 
-      // The child's effective tier is observable from its transcript, which is
-      // how a controller confirms the typed tier actually bound. The override
-      // simulates a child that ran at a different tier than requested.
+      // A supplied typed tier binds regardless of the parent's policy mode. If
+      // no tier was supplied, the child inherits the parent's current tuple.
+      // The override simulates a child that ran at a different tier.
       const mismatch = process.env.SDD_EVAL_CHILD_TIER_OVERRIDE;
-      const exact = policyMode() === "exact";
-
-      // In Exact mode the typed tier is inert: the child inherits the pinned
-      // runtime tuple and no tier resolution happens at all. Reporting the
-      // requested tier's tuple here would invent an application the runtime
-      // never performed, and would let a controller "confirm" a tier that was
-      // ignored. The outcome name matches EXACT_TIER_OUTCOME.
-      const effectiveTier = exact ? null : (mismatch ?? record.tier);
-      const resolved = exact
+      const effectiveTier = mismatch ?? record.tier;
+      const inherited = policyMode() === "exact"
         ? TIER_TUPLES[EXACT_RUNTIME_TIER]
+        : TIER_TUPLES.standard;
+      const resolved = effectiveTier === null
+        ? inherited
         : (TIER_TUPLES[effectiveTier] ?? TIER_TUPLES.standard);
 
       return textResult(JSON.stringify({
@@ -391,7 +388,7 @@ export default function fakeSddTools(pi) {
         cwd: record.cwd,
         requestedTier: record.tier,
         effectiveTier,
-        tierOutcome: exact ? EXACT_TIER_OUTCOME : "applied-tiered",
+        tierOutcome: record.tier === null ? "inherited-parent" : "applied-typed",
         resolved,
         entries: [
           { kind: "task", modelVisible: true, text: "Implement the assigned task." },

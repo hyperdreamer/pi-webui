@@ -100,10 +100,10 @@ re-reviewer formula takes no round. That is pinned in tests as a deliberate
 decision; changing it requires changing this contract.
 
 `tier` is the binding channel. The rendered prompt also opens with
-`/tier-<lowercase>` as a human-readable echo. The echo carries no control effect —
-the runtime never parses prompt text to select a model — but PI WEBUI does reject
-a leading directive that *disagrees* with the typed tier, so the echo works as a
-cross-check. An absent echo is not an error; a disagreeing one is.
+`Model tier: <lowercase>` as a human-readable echo. The echo carries no control
+effect — the runtime never parses prompt text to select a model — but PI WEBUI
+rejects a leading label that *disagrees* with the typed tier, so the echo works as
+a cross-check. An absent echo is not an error; a disagreeing one is.
 
 ## Identity pinning
 
