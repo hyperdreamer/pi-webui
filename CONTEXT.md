@@ -32,6 +32,10 @@ _Avoid_: Model name, model-only selection
 A session's active Exact or Tiered mode together with its remembered exact model selection and remembered tier.
 _Avoid_: Model group, model category
 
+**Starter model policy preference**:
+A personal, machine-local, workspace-scoped default mode and remembered tier used to initialize future root-session composers. It does not own the exact model selection and does not become a session model policy until a session is created.
+_Avoid_: Global model policy, project policy
+
 **Tier directive**:
 A canonical leading `/tier-*` command that selects or moves a tier without changing the session model policy's mode.
 _Avoid_: Natural-language model request
