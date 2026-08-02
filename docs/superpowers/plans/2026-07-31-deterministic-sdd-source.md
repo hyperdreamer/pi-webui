@@ -1440,11 +1440,11 @@ git commit -m "feat(skills): add deterministic SDD controller"
 
 **Interfaces:** Produces pressure-tested optional source, a deterministic ownership checksum, and isolated proof that the candidate fails closed before activation contracts exist. It does not install or publish the source.
 
-- [ ] **Step 1: Turn observed rationalizations into micro-scenarios**
+- [x] **Step 1: Turn observed rationalizations into micro-scenarios**
 
 Select the three highest-risk rationalizations from baseline/GREEN evidence. For each, add three semantically equivalent wording variants that change urgency, authority, and sunk-cost framing while retaining one objectively correct decision. Keep a no-guidance control. Do not weaken prompts to make the candidate pass.
 
-- [ ] **Step 2: Run repeated candidate/control microtests**
+- [x] **Step 2: Run repeated candidate/control microtests**
 
 Run five repetitions per wording variant under both `candidate` and `no-guidance` with the same exact coordinator model and fake capability configuration. That is 30 runs per rationalization family. Save raw outputs under:
 
@@ -1456,13 +1456,13 @@ Passing threshold: candidate chooses the required state/action and avoids forbid
 
 The two lowest-risk families may run three repetitions instead of five when their first three runs agree; record which families used the reduction and why in `refactor-report.md`. Never reduce family count or drop a condition.
 
-- [ ] **Step 3: Exercise all six requested tiers through fake policy evidence**
+- [x] **Step 3: Exercise all six requested tiers through fake policy evidence**
 
 For each tier, render a role-appropriate prompt and run the fake extension in Tiered mode. Assert tool logs show the absolute directive, deterministic dispatch key, requested tier, effective tier, tuple, and child application event before the cleaned task with model visibility false. Repeat Exact mode for at least Economy, Advanced, and Frontier and assert `ignored-exact` plus unchanged exact tuple. This tests tier behavior, not coordinator model quality; record the distinction.
 
 Rerun each of the five role scenarios in at least three fresh candidate contexts after all wording changes. Manually read every output flagged by deterministic scoring; do not accept a state token alone when the reasoning or side effects violate the contract.
 
-- [ ] **Step 4: Write manifest behavior RED test**
+- [x] **Step 4: Write manifest behavior RED test**
 
 Add a test that reads `pi-webui-skill.json`, independently derives the SHA-256 from sorted runtime file names plus NUL plus bytes, and expects exact equality. Also prove:
 
@@ -1484,7 +1484,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.
 
 Expected: FAIL because the manifest and hash command are absent.
 
-- [ ] **Step 5: Add the ownership/runtime manifest and hash command**
+- [x] **Step 5: Add the ownership/runtime manifest and hash command**
 
 Generate the manifest atomically; never write an intermediate sentinel hash. `scripts/lib/manifest.mjs` owns this exact sorted runtime list:
 
@@ -1531,7 +1531,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.
 
 Expected: tests pass and the newly written manifest already contains the current package version and actual hash.
 
-- [ ] **Step 6: Run real isolated capability blocking with no policy/spawn tools**
+- [x] **Step 6: Run real isolated capability blocking with no policy/spawn tools**
 
 Run five repetitions. Each uses a fresh Git fixture, fresh `PI_CODING_AGENT_DIR`, fresh session directory, JSON-mode output, and the root-confined read extension configured in `absent` mode so it registers **only** `read`—never `get_model_policy` or child tools:
 
@@ -1623,7 +1623,7 @@ These five runs prove the candidate reaches `CAPABILITY_BLOCKED` and cites evide
 
 Use the same fixture, profile isolation, and `absent` policy mode, but additionally register the role harness's confined `write` and non-shell `bash` (allowlisted to read-only `git status`/`git diff`) alongside `read`. Assert the same outcome: `CAPABILITY_BLOCKED`, the capability reference read, no `spawn_subsession` call, no `write` call, unchanged HEAD/tree/status, and absent `.superpowers/sdd` and `result.txt`. A run that creates the workspace or writes a deliverable before reporting the missing contract fails Plan A even if it reports `CAPABILITY_BLOCKED` afterward, because the gate ordering, not the end state, is the contract.
 
-- [ ] **Step 7: Write the refactor report**
+- [x] **Step 7: Write the refactor report**
 
 Create `evals/refactor-report.md` containing exact model/Pi version, controller and role scenario families/repetition counts, any permitted five-to-three repetition reduction and its justification, no-guidance versus candidate outcome counts, manual review of every flagged output, verbatim new rationalizations, their wording/organization/deliberate-noncompliance meta-classification, changes made to close loopholes, six-tier fake-policy results, Exact no-op results, the five tool-absent and three tool-present capability-blocked results, and raw evidence paths.
 
@@ -1645,7 +1645,7 @@ optional-skills/subagent-driven-development/scripts/sdd-state manifest-hash \
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs
 ```
 
-- [ ] **Step 8: Smoke-load the unchanged original before its final seal**
+- [x] **Step 8: Smoke-load the unchanged original before its final seal**
 
 Run a separately isolated, read-only invocation:
 
@@ -1669,7 +1669,7 @@ confined to it.
 
 Expected: the original skill loads and answers; no repository/global-skill mutation occurs. Do not compare the final seal yet—final repository verification must run first.
 
-- [ ] **Step 9: Run final repository verification**
+- [x] **Step 9: Run final repository verification**
 
 ```bash
 optional-skills/subagent-driven-development/scripts/sdd-state \
@@ -1704,7 +1704,7 @@ Expected:
 - only Task 10 intended files are uncommitted;
 - no session-daemon restart is required because Plan A changes no runtime service path.
 
-- [ ] **Step 10: Take the pre-commit original-tree seal, self-review, and commit**
+- [x] **Step 10: Take the pre-commit original-tree seal, self-review, and commit**
 
 After explicit Plan A test/build/smoke commands but before the hook-bearing commit, take a diagnosable observation:
 
@@ -1744,7 +1744,7 @@ git add optional-skills/subagent-driven-development/pi-webui-skill.json \
 git commit -m "test(skills): harden deterministic SDD workflow"
 ```
 
-- [ ] **Step 11: Seal the original after commit-hook verification**
+- [x] **Step 11: Seal the original after commit-hook verification**
 
 The commit runs the repository's staged verification hook, so take the actual final Plan A observation only after that hook succeeds:
 
