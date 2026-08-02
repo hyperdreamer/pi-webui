@@ -26,16 +26,17 @@ hold the exact field names, tokens, and thresholds; this file only points at the
 
 2. **Policy contract.** Read `references/capability-contract.md`, then confirm
    `get_model_policy` returns a version-1 result matching it: active policy, current runtime
-   tuple, next-request tuple, ladder status, tier commands, and tracked-dispatch
-   capability. Reject unknown versions.
+   tuple, next-request tuple, ladder status, and tracked-dispatch capability.
+   Reject unknown versions.
 
-3. **Spawn capability.** Confirm `spawn_subsession` advertises `tierField: true`.
-   The runtime provides **no** dispatch key and **no** deduplication. Never expect
-   idempotency evidence; its absence is not a capability failure.
+3. **Spawn capability.** Confirm the policy result's `trackedDispatch.tierField`
+   is `true`. The runtime provides **no** dispatch key and **no** deduplication.
+   Never expect idempotency evidence; its absence is not a capability failure.
 
-4. **Ladder completeness.** Tiered mode: all six ladder mappings valid and
-   resolvable. Exact mode: retain the runtime tuple; tier directives are visibly
-   ignored.
+4. **Ladder completeness.** All six mappings must resolve in **both** modes:
+   children dispatch by tier whatever the parent's mode, and reviewer/fixer tiers
+   derive by formula, so any unresolvable rung can fail a later round. Exact mode
+   reports `currentTier` as `null` and keeps the runtime tuple.
 
 5. **Capability blocked.** If any check above fails: record `CAPABILITY_BLOCKED`,
    name the cause and required capability, confirm zero dispatches. **Stop.**
@@ -166,7 +167,7 @@ own instructions. Then stop: a mismatch is never diagnosed by spawning another
 child.
 
 **Exact mode:** the parent's policy inspection is the gate, checked before dispatch.
-Tier directives will be visibly ignored in the child; that is expected behavior.
+Tier directives are visibly ignored in the child; that is expected.
 
 ## Bounded Context, Review, and Completion
 

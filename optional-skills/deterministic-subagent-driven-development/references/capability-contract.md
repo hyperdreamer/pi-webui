@@ -16,6 +16,12 @@ Frontier.
 A zero-parameter, read-only tool. It never mutates policy, never applies a tier,
 and never returns credentials or endpoints.
 
+It advertises no tier slash commands. An earlier draft of this file listed
+`/tier-economy`...`/tier-frontier` plus `/tier-up` and `/tier-down`. No such
+command is registered in the runtime: tier selection is the typed `tier` field on
+`spawn_subsession` and nothing else. Advertising them would promise a channel that
+does not exist.
+
 ```ts
 type ModelTier = "economy" | "fast" | "standard" | "advanced" | "capable" | "frontier";
 
@@ -35,13 +41,6 @@ interface GetModelPolicyV1 {
     blockedReason: string | null;
   };
   ladder: { valid: boolean; revision: string | null; blockedReason: string | null };
-  tierCommands: {
-    contractVersion: 1;
-    absolute: readonly ["/tier-economy", "/tier-fast", "/tier-standard", "/tier-advanced", "/tier-capable", "/tier-frontier"];
-    relative: readonly ["/tier-up", "/tier-down"];
-    leadingOnly: true;
-    exactOutcome: "ignored-exact";
-  };
   trackedDispatch: {
     contractVersion: 1;
     tierField: true;
@@ -59,10 +58,11 @@ thinkingLevel }` and carry model identity and supported thinking only.
 
 | Condition | Requirement |
 | --- | --- |
-| Exact mode | `currentTier` is `null`; an invalid ladder is permitted; `currentRuntime` and `nextRequestResolved` are both non-null and equal |
+| Exact mode | `currentTier` is `null`; `currentRuntime` and `nextRequestResolved` are both non-null and equal |
 | Valid tiered mode | `currentTier` is non-null; ladder is complete and valid; latest resolved tuple is non-null |
 | Invalid tiered mode | `nextRequestResolved` may be `null` only when `ladder.blockedReason` is a non-empty actionable reason; this state is capability-blocking |
 | Any policy blocked reason | Capability-blocking regardless of mode |
+| Invalid ladder, either mode | Capability-blocking. Children are dispatched *by tier* whatever the parent's mode, and reviewer/fixer tiers are derived by formula, so any unresolvable rung can fail a later round |
 
 A capability-blocking state yields `CAPABILITY_BLOCKED` before any worktree
 mutation, plan mutation, or dispatch.

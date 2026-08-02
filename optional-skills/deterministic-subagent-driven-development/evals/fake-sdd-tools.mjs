@@ -40,13 +40,10 @@ const TIER_TUPLES = {
  */
 const EXACT_RUNTIME_TIER = "advanced";
 
-const TIER_COMMANDS = {
-  contractVersion: CONTRACT_VERSION,
-  absolute: ["/tier-economy", "/tier-fast", "/tier-standard", "/tier-advanced", "/tier-capable", "/tier-frontier"],
-  relative: ["/tier-up", "/tier-down"],
-  leadingOnly: true,
-  exactOutcome: "ignored-exact",
-};
+// The runtime registers no tier slash command, so the fake advertises none. It
+// keeps only the exact-mode outcome label, which describes what happens to a
+// directive a human echoed into a prompt: nothing.
+const EXACT_TIER_OUTCOME = "ignored-exact";
 
 // Matches references/capability-contract.md and the real tool: a typed tier is
 // the binding channel, the result carries only { sessionId, cwd }, and there is
@@ -161,7 +158,6 @@ function buildPolicyResult() {
         blockedReason: null,
       },
       ladder: { valid, revision: valid ? "rev-7" : null, blockedReason: valid ? null : "ladder incomplete" },
-      tierCommands: TIER_COMMANDS,
       trackedDispatch: TRACKED_DISPATCH,
     };
   }
@@ -182,7 +178,6 @@ function buildPolicyResult() {
       revision: valid ? "rev-7" : null,
       blockedReason: valid ? null : "ladder is missing a tier mapping; repair the ladder before dispatching",
     },
-    tierCommands: TIER_COMMANDS,
     trackedDispatch: TRACKED_DISPATCH,
   };
 }
@@ -385,7 +380,7 @@ export default function fakeSddTools(pi) {
       // runtime tuple and no tier resolution happens at all. Reporting the
       // requested tier's tuple here would invent an application the runtime
       // never performed, and would let a controller "confirm" a tier that was
-      // ignored. The outcome name matches tierCommands.exactOutcome.
+      // ignored. The outcome name matches EXACT_TIER_OUTCOME.
       const effectiveTier = exact ? null : (mismatch ?? record.tier);
       const resolved = exact
         ? TIER_TUPLES[EXACT_RUNTIME_TIER]
@@ -396,7 +391,7 @@ export default function fakeSddTools(pi) {
         cwd: record.cwd,
         requestedTier: record.tier,
         effectiveTier,
-        tierOutcome: exact ? TIER_COMMANDS.exactOutcome : "applied-tiered",
+        tierOutcome: exact ? EXACT_TIER_OUTCOME : "applied-tiered",
         resolved,
         entries: [
           { kind: "task", modelVisible: true, text: "Implement the assigned task." },
