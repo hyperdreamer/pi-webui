@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.0-beta.5
+
+### Patch Changes
+
+- 644174b: Stop global keyboard shortcuts from firing while the Actions palette is open. Pressing a bound shortcut such as the settings shortcut no longer opens a dialog underneath the still-open palette, and multi-key sequences no longer swallow keystrokes meant for the palette's search box. The palette keeps its own Escape, arrow, and Enter handling.
+- 64bb1c0: Add persistent Exact and Tiered model-policy controls to session composers with validated model and thinking-level application.
+- 30e33d0: Add `pi-webui install-extra` for the two opt-in agent skills PI WEBUI now ships: deterministic plan authoring and subagent-driven plan execution. The command explains what it will replace, asks for confirmation, and supports `--dry-run` and `--yes`. It backs up any existing `writing-plans` and `subagent-driven-development` skills plus the skill lock file to a timestamped directory and prints the restore command, carries forward the helper scripts the controller composes with, and removes the stale lock entries that would otherwise let an updater overwrite the installed skills. See `docs/optional-skills.md`.
+- ef4b7b0: Document the two opt-in agent skills the repository carries as source, for deterministic plan authoring and subagent-driven plan execution. A new `docs/optional-skills.md` covers requirements, installation, verification, and what to preserve when replacing the upstream skills of the same purpose; the README links to it. Neither skill ships in the published package, so this changes documentation only.
+
 ## 1.11.0-beta.4
 
 ### Patch Changes
