@@ -7,7 +7,7 @@
     "version": "1.10.3"
   },
   "runtimeHashAlgorithm": "sha256-path-nul-bytes-v1",
-  "runtimeHash": "58613227a85b85156061641079b83a713a311a30a1c936f0ab156096a73250f6",
+  "runtimeHash": "723dff5c57a867db81255e441f547fd7bc24cada35d2803ac02acfe66badb2f4",
   "runtimeFiles": [
     "SKILL.md",
     "prompts/final-reviewer.md",

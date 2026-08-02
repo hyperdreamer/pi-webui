@@ -9,6 +9,7 @@ and never widened; that module is the authority. Transitions live in
 
 - [Plan grammar](#plan-grammar)
 - [Tiers and role formulas](#tiers-and-role-formulas)
+  - [Choosing the implementer tier](#choosing-the-implementer-tier)
 - [Identity pinning](#identity-pinning)
 - [Preflight](#preflight)
 - [Report schemas](#report-schemas)
@@ -65,6 +66,33 @@ Six tiers, ascending: `economy`, `fast`, `standard`, `advanced`, `capable`,
 | Re-reviewer | same formula as the task reviewer |
 | Fixer | implementer, + 1 rung at fix round 4, + 2 rungs at round 5 |
 | Final reviewer, final fixer, final re-reviewer | always `frontier` |
+
+### Choosing the implementer tier
+
+The controller never picks this value; a human does, while writing the plan and
+seeing every task at once. Only the implementer is annotated, because the five
+other roles derive from it. A plan that also names reviewer or fixer tiers invites
+disagreement with `role-tier`, which is authoritative.
+
+| Task shape | Tier |
+| --- | --- |
+| Plan text contains the complete code; the work is transcription plus running tests | `economy` |
+| Single-file mechanical change against an exact spec | `fast` |
+| One or two files, complete spec, no integration concerns | `standard` |
+| Several files with integration concerns, or behavior described in prose rather than code | `advanced` |
+| Requires design judgement or broad codebase understanding | `capable` |
+| Not chosen by hand; final review always runs here | `frontier` |
+
+Two rules override the table.
+
+**`standard` is the floor whenever the implementer must decide anything.** Wall-clock
+and context cost scale with turns taken, and the cheapest models routinely take two
+to three times the turns on multi-step work, costing more in total than the tier
+saved. `economy` is correct only when the plan hands over literal code to transcribe.
+
+**A wrong tier is a cost and latency defect, not a correctness one.** Review gates,
+not tier, are what catch bad implementations. Choose for throughput and spend, and
+do not treat the annotation as a quality lever.
 
 The escalation map is `{1:0, 2:0, 3:0, 4:1, 5:2}`. A consequence worth stating:
 at round 5 the fixer can sit one rung **above** the re-reviewer, because the
