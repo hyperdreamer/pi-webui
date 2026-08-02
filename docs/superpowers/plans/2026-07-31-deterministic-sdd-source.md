@@ -1651,11 +1651,21 @@ Run a separately isolated, read-only invocation:
 
 ```bash
 ORIGINAL=/home/henry/.pi/agent/skills/subagent-driven-development
-pi --print --no-session --no-tools --no-extensions --no-prompt-templates \
+CANDIDATE=$(realpath optional-skills/subagent-driven-development)
+pi --print --no-session --no-builtin-tools --no-extensions --no-prompt-templates \
   --no-context-files --no-skills --skill "$ORIGINAL" \
+  --extension "$CANDIDATE/evals/fake-sdd-tools.mjs" \
   --model "$PI_PROVIDER/$PI_MODEL:$PI_REASONING_LEVEL" \
   "Use the explicitly loaded subagent-driven-development skill. Name its pre-implementation safety gates in one bounded response; do not execute a plan."
 ```
+
+`--no-tools` cannot be used here. Pi gates the entire skills section on an active
+tool named exactly `read` (`dist/core/system-prompt.js`: `if (hasRead && skills.length > 0)`),
+so with no tools the skill loads but never reaches the system prompt, and the model
+correctly refuses to name gates it cannot see. The read-only fake extension supplies
+`read` without granting any mutation or dispatch capability. Set
+`SDD_EVAL_READ_ROOTS_JSON` to the original skill directory so the read tool is
+confined to it.
 
 Expected: the original skill loads and answers; no repository/global-skill mutation occurs. Do not compare the final seal yet—final repository verification must run first.
 
@@ -1667,7 +1677,8 @@ optional-skills/subagent-driven-development/scripts/sdd-state \
 optional-skills/subagent-driven-development/scripts/sdd-state manifest-hash \
   --manifest optional-skills/subagent-driven-development/pi-webui-skill.json
 npx --yes --package=node@22.19.0 node --version | grep '^v22\.19\.'
-npx --yes --package=node@22.19.0 node node_modules/vitest/vitest.mjs run \
+VITEST_ENTRY=$(node -e 'const p=require.resolve("vitest/package.json");console.log(require("path").join(require("path").dirname(p),"vitest.mjs"))')
+npx --yes --package=node@22.19.0 node "$VITEST_ENTRY" run \
   --config vitest.config.ts optional-skills/subagent-driven-development
 npm run verify
 npm run build
@@ -1676,6 +1687,11 @@ node -e 'const p=require("/tmp/pi-webui-plan-a-pack.json"); if (p[0].files.some(
 git diff --check
 git status --short
 ```
+
+`vitest.mjs` is resolved rather than hardcoded because a Git worktree has no
+`node_modules` of its own: dependencies resolve to the main checkout, so the literal
+path `node_modules/vitest/vitest.mjs` fails with `MODULE_NOT_FOUND` when this task
+runs in `.worktrees/sdd`.
 
 `--ignore-scripts` is required. Without it `prepack` runs `npm run build`, whose plugin and Vite progress output goes to stdout ahead of the JSON, so the file starts with `[plugins] built ...` and `require()` fails with `Unexpected token 'p'`. The preceding `npm run build` already produced the artifacts, so skipping scripts here loses no coverage.
 

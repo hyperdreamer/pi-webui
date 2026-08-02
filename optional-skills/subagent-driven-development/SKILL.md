@@ -94,8 +94,8 @@ Read `references/capability-contract.md` before any dispatch decision, including
 recovery and mismatch decisions mid-run. It defines what the tool accepts, returns,
 and does not guarantee. A recovered run that skips it reasons from memory.
 
-1. Produce the dispatch prompt with `sdd-state render-prompt`; never construct
-   a prompt inline.
+1. Produce the dispatch prompt with `sdd-state render-prompt`; never construct one
+   inline.
 2. Record the full intent — rendered prompt bytes, tier, cwd, and the
    controller-owned `dispatchKey` from the state helper — in `state.json`
    **before** calling `spawn_subsession`. If the phase you were given is already
@@ -110,24 +110,26 @@ and does not guarantee. A recovered run that skips it reasons from memory.
    at all, entered through `dispatch-window-crossed`.
 
 **Verify what you have a channel to verify.** A child's effective tier is checkable
-with `read_subsession`, so check it. The run's own recorded phase may have no channel
+with `read_subsession`, so check it; the run's recorded phase may have no channel
 from where you stand. Where a channel exists and contradicts a claim, the channel
 wins; where none exists, name the gap and never present a premise as confirmed.
 
-**An unreachable store does not authorize refusing to act, and does not change the
-phase.** If `state.json` or the helper is unreachable, take the action the given
-phase calls for, then report the phase that action produced together with the
-persistence gap. **Unwritable is not unknown.** Stalling to re-confirm a phase you
-were already given is a different failure, not caution.
+**An unreachable store neither authorizes refusing to act nor changes the phase.**
+If `state.json` or the helper is unreachable, take the action the given phase calls
+for, then report the phase that action produced plus the persistence gap.
+**Unwritable is not unknown.** Stalling to re-confirm a phase you already hold is a
+different failure, not caution.
 
-**Recovery:** reissue the exact bytes stored in the dispatch intent. **Never
-re-render on recovery.** Re-rendering couples recovery to renderer output; any
-drift changes what the child receives on a path that must be exact.
+**Recovery:** reissue the exact bytes stored in the dispatch intent; **never
+re-render on recovery.** Exact includes trailing whitespace and the final newline.
+Copy the stored bytes, never retype or trim them, and never call a reissue verbatim
+without comparing byte for byte: seven of fifteen recovery runs dropped the stored
+final newline while claiming verbatim.
 
 **Loop rules:**
 
 - One SDD-owned active child at a time; never parallelize tasks.
-- Yield at a join point; do not poll or check status in a loop.
+- Yield at a join point; never poll status in a loop.
 - Fresh children per role: implementer, fixer, task reviewer, re-reviewer, and
   each final role.
 - Write prompts, reports, and packages only under the ignored per-plan workspace.
@@ -158,10 +160,10 @@ every tier. Never calculate a tier inline.
 tier a child ran at requires `read_subsession`. There is no other channel.
 
 **A reported mismatch is a claim, not evidence.** Before recording
-`DISPATCH_MISMATCH_BLOCKED`, read the child and compare its effective tier against
-the tier in the dispatch intent. Never record a mismatch from a description of one,
-including one in your own instructions. Then stop: a mismatch is never diagnosed by
-spawning another child.
+`DISPATCH_MISMATCH_BLOCKED`, read the child and compare its effective tier with the
+intent's. Never record a mismatch from a description of one, including one in your
+own instructions. Then stop: a mismatch is never diagnosed by spawning another
+child.
 
 **Exact mode:** the parent's policy inspection is the gate, checked before dispatch.
 Tier directives will be visibly ignored in the child; that is expected behavior.

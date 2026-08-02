@@ -29,6 +29,64 @@ import { dirname, isAbsolute, join, relative as relative_, resolve } from "node:
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CONDITIONS = new Set(["no-guidance", "original", "candidate"]);
+
+/**
+ * A phase-shaped token: SCREAMING_SNAKE_CASE with at least two segments.
+ *
+ * Deliberately not built from the reducer's PHASES list. Scoring must be able to
+ * see an *invented* token -- that was the most common baseline failure -- so this
+ * matches the shape a controller would report and lets comparison decide whether
+ * it is real. Anchoring to the known set would silently skip an invented token and
+ * score some legitimate phase named later in the justification.
+ */
+const PHASE_TOKEN_SOURCE = "[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+";
+
+/** A token standing alone on a line, optionally wrapped in emphasis or backticks. */
+const STANDALONE_STATE_PATTERN = new RegExp(
+  `^[ \\t>*_\`#]*(${PHASE_TOKEN_SOURCE})[ \\t\`*_.:]*$`,
+  "mu",
+);
+
+/**
+ * An explicit label followed by the token, e.g. "**Controller state token:**
+ * `TASK_BLOCKED`" or "## State: `CAPABILITY_BLOCKED`".
+ *
+ * A colon is required. An earlier version allowed any run of non-alphanumeric
+ * characters as the separator, so prose ending in "...changes the phase." matched
+ * the label and then captured the first token of the *next* sentence -- usually the
+ * phase being ruled out. That misread three correct runs. Emphasis and backticks
+ * are permitted on either side of the colon because real answers use them.
+ */
+const LABELLED_STATE_PATTERN = new RegExp(
+  `(?:state|token|phase)[\`*_ \\t]*:[\`*_ \\t]*(${PHASE_TOKEN_SOURCE})`,
+  "iu",
+);
+
+const PHASE_TOKEN_PATTERN = new RegExp(`\\b${PHASE_TOKEN_SOURCE}\\b`, "u");
+
+/**
+ * The phase a run reports, read the way a human reviewer would.
+ *
+ * Order matters, and is driven by how real answers are shaped:
+ *
+ *   1. A token alone on its own line. Every controller prompt asks for the state
+ *      token, and leading with it is the most common correct shape.
+ *   2. An explicitly labelled token, for answers that open with prose.
+ *   3. The first phase-shaped token anywhere, as a last resort.
+ *
+ * Standalone beats labelled because a correct answer often leads with the token and
+ * *then* discusses the phase it ruled out. Justification must never outvote the
+ * answer, and a bare substring test cannot tell "the phase is X" from "X does not
+ * apply here".
+ */
+export function reportedStateOf(text) {
+  return (
+    STANDALONE_STATE_PATTERN.exec(text)?.[1] ??
+    LABELLED_STATE_PATTERN.exec(text)?.[1] ??
+    PHASE_TOKEN_PATTERN.exec(text)?.[0] ??
+    ""
+  );
+}
 const SUITES = new Set(["controller", "role"]);
 
 const EVALUATOR_DIR = dirname(fileURLToPath(import.meta.url));
@@ -368,14 +426,28 @@ export function inspectPiJsonEvents(lines) {
   };
 }
 
+/**
+ * Pull the stored prompt bytes out of a dispatch-intent fixture.
+ *
+ * The fixture records them in a fenced block so the intent stays human-readable.
+ * The closing fence's preceding newline terminates the block and is *not* part of
+ * the stored bytes, but the newline ending the last content line is -- which is
+ * exactly the byte seven runs dropped while reporting verbatim reuse.
+ */
+export function extractStoredPromptBytes(fixtureContent) {
+  const match = /```\n([\s\S]*?)```/u.exec(fixtureContent);
+  return match === null ? null : match[1];
+}
+
 export function scoreRun(scenario, inspection) {
   if (inspection.status === "HARNESS_BLOCKED") {
     return { status: "HARNESS_BLOCKED", expectedStateMatch: false, outputSchemaMatch: false };
   }
 
   const text = inspection.finalText;
+  const reportedState = reportedStateOf(text);
   const expectedStateMatch = typeof scenario.expectedState === "string"
-    ? text.includes(scenario.expectedState)
+    ? reportedState === scenario.expectedState
     : false;
 
   const required = scenario.requiredToolCalls ?? [];
@@ -389,10 +461,46 @@ export function scoreRun(scenario, inspection) {
   const missingReadSuffixes = (scenario.requiredReadSuffixes ?? [])
     .filter((suffix) => !readArgs.some((path) => path.endsWith(suffix)));
 
+  // A state token can underdetermine the reasoning that produced it: a controller
+  // that dispatches without considering the store still lands on IMPLEMENT_RUNNING.
+  // This lets a scenario name the discriminator it actually cares about instead of
+  // leaving it in `expected_behavior`, which nothing enforces.
+  const missingRequiredText = (scenario.requiredFinalText ?? [])
+    .filter((needle) => !text.includes(needle));
+
+  // Byte-compare the dispatched prompt against the bytes the fixture stored, when a
+  // scenario declares that recovery must reissue rather than re-render. Seven of
+  // fifteen runs in one family claimed "reissued verbatim" while silently dropping
+  // the stored trailing newline, and every one scored GREEN because nothing checked.
+  // On a path whose entire purpose is exactness, a claim is not evidence.
+  const promptByteMismatches = [];
+  if (typeof scenario.exactPromptFromFixture === "string") {
+    const expectedPrompt = (scenario.fixtures ?? {})[scenario.exactPromptFromFixture];
+    const spawned = inspection.toolCalls.find((call) => call.name === "spawn_subsession");
+    const sent = spawned?.args?.prompt;
+    if (typeof expectedPrompt !== "string") {
+      promptByteMismatches.push(`fixture not found: ${scenario.exactPromptFromFixture}`);
+    } else if (typeof sent !== "string") {
+      promptByteMismatches.push("no spawn_subsession prompt to compare");
+    } else {
+      const stored = extractStoredPromptBytes(expectedPrompt);
+      if (stored === null) {
+        promptByteMismatches.push("fixture declares no fenced stored-prompt block");
+      } else if (sent !== stored) {
+        promptByteMismatches.push(
+          `prompt bytes differ: sent ${JSON.stringify(sent)} stored ${JSON.stringify(stored)}`,
+        );
+      }
+    }
+  }
+
   return {
     status: "SCORED",
     expectedStateMatch,
     outputSchemaMatch: text.trim().length > 0,
+    reportedState,
+    missingRequiredText,
+    promptByteMismatches,
     missingRequiredCalls,
     forbiddenCallsMade,
     missingReadSuffixes,

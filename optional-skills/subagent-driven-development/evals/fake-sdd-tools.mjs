@@ -31,6 +31,15 @@ const TIER_TUPLES = {
   frontier: { model: { provider: "RightCode-Anthropic", id: "claude-opus-5" }, thinkingLevel: "max" },
 };
 
+/**
+ * The tier the machine is pinned to in Exact mode.
+ *
+ * Exact mode ignores the tier channel entirely, so the parent's runtime tuple is
+ * a fixed pin rather than a ladder resolution. Naming it once keeps the policy
+ * projection and the child projection from drifting apart.
+ */
+const EXACT_RUNTIME_TIER = "advanced";
+
 const TIER_COMMANDS = {
   contractVersion: CONTRACT_VERSION,
   absolute: ["/tier-economy", "/tier-fast", "/tier-standard", "/tier-advanced", "/tier-capable", "/tier-frontier"],
@@ -140,7 +149,7 @@ function buildPolicyResult() {
   }
 
   if (mode === "exact") {
-    const runtime = TIER_TUPLES.advanced;
+    const runtime = TIER_TUPLES[EXACT_RUNTIME_TIER];
     return {
       contractVersion: CONTRACT_VERSION,
       policy: {
@@ -240,6 +249,17 @@ export default function fakeSddTools(pi) {
 
   const spawnAdvertisesContract = capabilityMode() === "complete";
 
+  // `absent` mode registers no dispatch surface: no spawn, no listing, no child
+  // reads. The capability-blocking runs need those tools genuinely missing rather
+  // than present-and-refusing, because a controller reporting CAPABILITY_BLOCKED
+  // while a working spawn tool sits in its toolset has proven nothing about
+  // failing closed. Mutation tools stay independently gated below, so the
+  // tool-present variant can grant real write capability while still withholding
+  // the dispatch contract -- that is what makes restraint a choice rather than an
+  // impossibility.
+  const registersDispatchTools = capabilityMode() !== "absent";
+
+  if (registersDispatchTools) {
   pi.registerTool({
     name: "spawn_subsession",
     label: "Spawn Subsession",
@@ -359,14 +379,24 @@ export default function fakeSddTools(pi) {
       // how a controller confirms the typed tier actually bound. The override
       // simulates a child that ran at a different tier than requested.
       const mismatch = process.env.SDD_EVAL_CHILD_TIER_OVERRIDE;
-      const effectiveTier = mismatch ?? record.tier;
-      const resolved = TIER_TUPLES[effectiveTier] ?? TIER_TUPLES.standard;
+      const exact = policyMode() === "exact";
+
+      // In Exact mode the typed tier is inert: the child inherits the pinned
+      // runtime tuple and no tier resolution happens at all. Reporting the
+      // requested tier's tuple here would invent an application the runtime
+      // never performed, and would let a controller "confirm" a tier that was
+      // ignored. The outcome name matches tierCommands.exactOutcome.
+      const effectiveTier = exact ? null : (mismatch ?? record.tier);
+      const resolved = exact
+        ? TIER_TUPLES[EXACT_RUNTIME_TIER]
+        : (TIER_TUPLES[effectiveTier] ?? TIER_TUPLES.standard);
 
       return textResult(JSON.stringify({
         sessionId,
         cwd: record.cwd,
         requestedTier: record.tier,
         effectiveTier,
+        tierOutcome: exact ? TIER_COMMANDS.exactOutcome : "applied-tiered",
         resolved,
         entries: [
           { kind: "task", modelVisible: true, text: "Implement the assigned task." },
@@ -387,6 +417,8 @@ export default function fakeSddTools(pi) {
       return textResult(JSON.stringify({ yielded: true }, null, 2));
     },
   });
+
+  }
 
   const wantsWrite = writePaths.length > 0 || roleToolMode === "capability-restraint";
   if (wantsWrite) {

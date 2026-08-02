@@ -14,9 +14,13 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  assertRuntimeList,
+  buildManifest,
+  computeRuntimeHash,
   createInitialState,
   dispatchKeyFor,
   fixerTier,
+  ManifestError,
   parsePlanText,
   PHASES,
   reduceState,
@@ -2701,5 +2705,113 @@ describe("crash recovery across the spawn window", () => {
       (name) => name.includes(".tmp.") || name.endsWith(".lock"),
     );
     expect(leftovers).toEqual([]);
+  });
+});
+
+/**
+ * Manifest validation rejections.
+ *
+ * The manifest-content tests in `sdd-scripts.test.mjs` assert properties of the
+ * generated manifest, which the real runtime list never violates -- so removing a
+ * guard left them all passing. These feed the validator the inputs the guards
+ * exist for, so each rejection is pinned by a test that fails when it is removed.
+ */
+describe("manifest validation", () => {
+  const SOURCE_ROOT = join(import.meta.dirname, "..");
+  const PACKAGE_JSON = join(SOURCE_ROOT, "..", "..", "package.json");
+
+  it("rejects a runtime entry that escapes the source root", () => {
+    expect(() => assertRuntimeList(["../package.json"])).toThrow(ManifestError);
+    expect(() => assertRuntimeList(["SKILL.md", "nested/../../escape.md"])).toThrow(
+      /normalized path/u,
+    );
+    // Traversal is refused during list validation, before any path is resolved.
+    expect(() => computeRuntimeHash(join(SOURCE_ROOT, "scripts"), ["lib/../../SKILL.md"])).toThrow(
+      /normalized path/u,
+    );
+  });
+
+  it("rejects an absolute or backslash-separated runtime entry", () => {
+    expect(() => assertRuntimeList(["/etc/passwd"])).toThrow(/must be relative/u);
+    expect(() => assertRuntimeList(["scripts\\lib\\manifest.mjs"])).toThrow(/forward slashes/u);
+  });
+
+  it("rejects development evidence in the runtime list", () => {
+    expect(() => assertRuntimeList(["SKILL.md", "evals/evals.json"])).toThrow(
+      /must not ship development evidence/u,
+    );
+    expect(() => assertRuntimeList(["SKILL.md", "tests/sdd-state.test.mjs"])).toThrow(
+      /must not ship development evidence/u,
+    );
+  });
+
+  it("rejects a duplicated or unsorted runtime list", () => {
+    expect(() => assertRuntimeList(["SKILL.md", "SKILL.md"])).toThrow(/duplicate/u);
+    expect(() => assertRuntimeList(["prompts/implementer.md", "SKILL.md"])).toThrow(/sorted/u);
+  });
+
+  it("rejects an empty or non-array runtime list", () => {
+    expect(() => assertRuntimeList([])).toThrow(/non-empty array/u);
+    expect(() => assertRuntimeList("SKILL.md")).toThrow(/non-empty array/u);
+    expect(() => assertRuntimeList([""])).toThrow(/non-empty strings/u);
+  });
+
+  it("rejects a source package whose version is not semver", () => {
+    const root = mkdtempSync(join(tmpdir(), "sdd-manifest-pkg-"));
+    temporaryRoots.push(root);
+    const write = (value) => {
+      const path = join(root, "package.json");
+      writeFileSync(path, JSON.stringify(value));
+      return path;
+    };
+    expect(() =>
+      buildManifest({
+        sourceRoot: SOURCE_ROOT,
+        packageJsonPath: write({ name: "@scope/pkg", version: "1.2" }),
+      }),
+    ).toThrow(/not valid semver/u);
+    expect(() =>
+      buildManifest({
+        sourceRoot: SOURCE_ROOT,
+        packageJsonPath: write({ name: "@scope/pkg", version: "v1.2.3" }),
+      }),
+    ).toThrow(/not valid semver/u);
+    expect(() =>
+      buildManifest({ sourceRoot: SOURCE_ROOT, packageJsonPath: write({ version: "1.2.3" }) }),
+    ).toThrow(/no name/u);
+    // A prerelease version is legitimate: this package ships beta tags.
+    expect(
+      buildManifest({
+        sourceRoot: SOURCE_ROOT,
+        packageJsonPath: write({ name: "@scope/pkg", version: "1.11.0-beta.2" }),
+      }).sourcePackage.version,
+    ).toBe("1.11.0-beta.2");
+  });
+
+  it("names a missing runtime file rather than surfacing a raw filesystem error", () => {
+    expect(() => computeRuntimeHash(SOURCE_ROOT, ["SKILL.md", "absent-file.md"])).toThrow(
+      /runtime file is missing: absent-file\.md/u,
+    );
+  });
+
+  it("orders path bytes before file bytes so a rename changes the digest", () => {
+    const root = mkdtempSync(join(tmpdir(), "sdd-manifest-hash-"));
+    temporaryRoots.push(root);
+    writeFileSync(join(root, "a.md"), "same");
+    writeFileSync(join(root, "b.md"), "same");
+    // Identical contents under different names must not collide.
+    expect(computeRuntimeHash(root, ["a.md"])).not.toBe(computeRuntimeHash(root, ["b.md"]));
+    // And the delimiter must prevent path/content bytes from being interchangeable.
+    writeFileSync(join(root, "ab.md"), "");
+    writeFileSync(join(root, "a.md"), "b.md");
+    expect(computeRuntimeHash(root, ["a.md"])).not.toBe(computeRuntimeHash(root, ["ab.md"]));
+  });
+
+  it("builds a manifest whose recorded package matches the real root package", () => {
+    const manifest = buildManifest({ sourceRoot: SOURCE_ROOT, packageJsonPath: PACKAGE_JSON });
+    expect(manifest.name).toBe("subagent-driven-development");
+    expect(manifest.distribution).toBe("opt-in");
+    expect(manifest.sourcePackage.name).toBe("@hyperdreamer/pi-webui");
+    expect(manifest.runtimeHash).toMatch(/^[0-9a-f]{64}$/u);
   });
 });

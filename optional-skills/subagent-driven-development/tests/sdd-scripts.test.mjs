@@ -12,6 +12,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -22,8 +23,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { isAbsolute, join, resolve } from "node:path";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import fakeSddTools from "../evals/fake-sdd-tools.mjs";
+import { TIERS, roleTier, tierDirective, tierLabel } from "../scripts/lib/plan-policy.mjs";
 
 const ORIGINAL_SKILL = join(homedir(), ".pi", "agent", "skills", "subagent-driven-development");
 const ORIGINAL_SCRIPTS = join(ORIGINAL_SKILL, "scripts");
@@ -636,5 +639,463 @@ describe("prompt rendering", () => {
     const rendered = readFileSync(outputPath, "utf8");
     expect(rendered).toContain(`- baseSha: ${"a".repeat(40)}`);
     expect(rendered).toContain("- findingIds: F-1, F-2");
+  });
+});
+
+/**
+ * Ownership and runtime-manifest behavior.
+ *
+ * The hash is derived here from first principles -- sorted relative path, NUL,
+ * file bytes, NUL -- rather than by calling the implementation, so a manifest
+ * that agrees with a broken hasher still fails. The test owns the expected
+ * algorithm; the implementation has to match it.
+ */
+describe("runtime ownership manifest", () => {
+  const MANIFEST_PATH = join(SKILL_ROOT, "pi-webui-skill.json");
+  const ROOT_PACKAGE_JSON = join(SKILL_ROOT, "..", "..", "package.json");
+
+  const readManifest = () => JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
+
+  const deriveRuntimeHash = (runtimeFiles) => {
+    const hash = createHash("sha256");
+    for (const relativePath of [...runtimeFiles].sort()) {
+      hash.update(Buffer.from(relativePath, "utf8"));
+      hash.update(Buffer.from([0]));
+      hash.update(readFileSync(join(SKILL_ROOT, relativePath)));
+      hash.update(Buffer.from([0]));
+    }
+    return hash.digest("hex");
+  };
+
+  it("records the canonical name, owner, opt-in distribution, and a semver source version", () => {
+    const manifest = readManifest();
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.name).toBe("subagent-driven-development");
+    expect(manifest.sourcePackage.name).toBe("@hyperdreamer/pi-webui");
+    expect(manifest.distribution).toBe("opt-in");
+    // Recorded version documents which package version produced this tree. It is
+    // deliberately not compared against the current root version: that would fail
+    // every release bump, and prepublishOnly runs verify, so it would break the
+    // release itself until someone regenerated the manifest by hand.
+    expect(manifest.sourcePackage.version).toMatch(
+      /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u,
+    );
+    expect(JSON.parse(readFileSync(ROOT_PACKAGE_JSON, "utf8")).name).toBe(
+      manifest.sourcePackage.name,
+    );
+  });
+
+  it("stores a runtime hash equal to an independently derived digest", () => {
+    const manifest = readManifest();
+    expect(manifest.runtimeHashAlgorithm).toBe("sha256-path-nul-bytes-v1");
+    expect(manifest.runtimeHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(manifest.runtimeHash).toBe(deriveRuntimeHash(manifest.runtimeFiles));
+  });
+
+  it("lists every runtime file, sorted and deduplicated, and all of them exist", () => {
+    const { runtimeFiles } = readManifest();
+    expect(runtimeFiles).toEqual([...runtimeFiles].sort());
+    expect(new Set(runtimeFiles).size).toBe(runtimeFiles.length);
+    expect(existsSync(MANIFEST_PATH)).toBe(true);
+    for (const relativePath of runtimeFiles) {
+      expect(existsSync(join(SKILL_ROOT, relativePath)), relativePath).toBe(true);
+    }
+  });
+
+  it("excludes evaluation and test files from the runtime tree", () => {
+    const { runtimeFiles } = readManifest();
+    // Evals and tests are development evidence. Shipping them would put fake
+    // capability tools and adversarial prompts into a consumer's skill.
+    for (const relativePath of runtimeFiles) {
+      expect(relativePath.startsWith("evals/"), relativePath).toBe(false);
+      expect(relativePath.startsWith("tests/"), relativePath).toBe(false);
+    }
+    expect(runtimeFiles).toContain("SKILL.md");
+    expect(runtimeFiles).toContain("scripts/lib/manifest.mjs");
+  });
+
+  it("keeps every runtime path inside the source directory", () => {
+    const { runtimeFiles } = readManifest();
+    const sourceRoot = resolve(SKILL_ROOT);
+    for (const relativePath of runtimeFiles) {
+      expect(isAbsolute(relativePath), relativePath).toBe(false);
+      expect(relativePath.split("/"), relativePath).not.toContain("..");
+      const resolved = resolve(sourceRoot, relativePath);
+      expect(resolved.startsWith(`${sourceRoot}/`), relativePath).toBe(true);
+    }
+  });
+
+  it("keeps the optional source out of the published package and skill registry", () => {
+    // Plan A is bootstrap-only. Activation is a later phase with its own gate.
+    const rootPackage = JSON.parse(readFileSync(ROOT_PACKAGE_JSON, "utf8"));
+    for (const entry of rootPackage.files ?? []) {
+      expect(entry.includes("optional-skills"), entry).toBe(false);
+    }
+    for (const entry of rootPackage.pi?.skills ?? []) {
+      expect(entry.includes("optional-skills"), entry).toBe(false);
+    }
+  });
+
+  it("recomputes and confirms the stored digest through manifest-hash", () => {
+    const result = runCandidate(["manifest-hash", "--manifest", MANIFEST_PATH]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(readManifest().runtimeHash);
+  });
+
+  it("fails manifest-hash when the stored digest disagrees with the tree", () => {
+    // The tampered copy lives beside the real runtime tree. Verification derives
+    // its source root from the manifest's own directory, so a copy in a temp
+    // directory would fail on missing files instead of the digest -- the right
+    // outcome for the wrong reason, which would not test the integrity gate.
+    const tampered = join(SKILL_ROOT, "pi-webui-skill.mismatch-fixture.json");
+    try {
+      writeFileSync(
+        tampered,
+        `${JSON.stringify({ ...readManifest(), runtimeHash: "0".repeat(64) }, null, 2)}\n`,
+      );
+      const result = runCandidate(["manifest-hash", "--manifest", tampered]);
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain("runtime hash mismatch");
+    } finally {
+      rmSync(tampered, { force: true });
+    }
+  });
+
+  it("fails manifest-hash when a named runtime file is absent", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "sdd-manifest-"));
+    temporaryRoots.push(temporaryRoot);
+    const orphan = join(temporaryRoot, "pi-webui-skill.json");
+    writeFileSync(orphan, `${JSON.stringify(readManifest(), null, 2)}\n`);
+    const result = runCandidate(["manifest-hash", "--manifest", orphan]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain("runtime file is missing");
+  });
+});
+
+/**
+ * Tier plumbing through the offline fake.
+ *
+ * Scope: this exercises the *tier channel* — that a requested tier arrives as a
+ * typed field, binds the child, resolves to one exact tuple, and is inert in
+ * Exact mode. It says nothing about whether the model at a given tier reasons
+ * well. Tier resolution is plumbing; coordinator quality is a separate question
+ * that only live evaluation can answer.
+ *
+ * Evidence comes from real side effects the fake produces — the JSONL tool log,
+ * the dispatch registry, and the child transcript — never from prose a model
+ * emitted. Note the fake's log records name the tool under the key `tool`
+ * (verified in evals/fake-sdd-tools.mjs `logCall`), whereas Pi's own event
+ * records use `name`; asserting the wrong key would silently match nothing.
+ */
+describe("tier plumbing through the offline fake", () => {
+  const environmentOverrides = [];
+
+  afterEach(() => {
+    while (environmentOverrides.length > 0) {
+      const [key, value] = environmentOverrides.pop();
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  /**
+   * Register the fake's tools under a scoped environment.
+   *
+   * The tools read the environment when they execute, not when they register, so
+   * the overrides stay in place until the test ends.
+   */
+  function loadFakeTools(env) {
+    for (const [key, value] of Object.entries(env)) {
+      environmentOverrides.push([key, process.env[key]]);
+      process.env[key] = value;
+    }
+    const tools = new Map();
+    fakeSddTools({
+      registerTool: (definition) => { tools.set(definition.name, definition); },
+      on: () => undefined,
+    });
+    return tools;
+  }
+
+  const toolText = (result) => String(result?.content?.[0]?.text ?? "");
+
+  /** One fake environment per row, so log sequence numbers cannot cross rows. */
+  function makeFakeEnvironment(overrides = {}) {
+    const root = mkdtempSync(join(tmpdir(), "sdd-tier-"));
+    temporaryRoots.push(root);
+    const logPath = join(root, "tool-log.jsonl");
+    const registryPath = join(root, "dispatch-registry.json");
+    const tools = loadFakeTools({
+      SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
+      SDD_EVAL_TOOL_LOG: logPath,
+      ...overrides,
+    });
+    return { root, logPath, registryPath, tools };
+  }
+
+  const logRecords = (logPath) =>
+    existsSync(logPath)
+      ? readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+
+  const registryRecords = (registryPath) =>
+    existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, "utf8")) : {};
+
+  /** Thinking-level ordering, used to check the ladder resolves monotonically. */
+  const THINKING_RANK = { low: 0, medium: 1, high: 2, max: 3 };
+
+  /**
+   * Every tier paired with a role that would plausibly run at it, so each row
+   * renders a real role contract rather than a synthetic prompt. Roles cycle
+   * across the four templates; the tier column is the exhaustive part.
+   *
+   * `implementer` and `formulaRole` name the policy-module inputs whose derived
+   * tier must equal the row's tier, which ties the formula, the rendered
+   * directive, and the typed field into one chain per row.
+   */
+  const TIER_ROWS = [
+    { tier: "economy", role: "implementer", formulaRole: "implementer", implementer: "economy" },
+    { tier: "fast", role: "implementer", formulaRole: "implementer", implementer: "fast" },
+    { tier: "standard", role: "task-reviewer", formulaRole: "task-reviewer", implementer: "fast" },
+    { tier: "advanced", role: "implementer", formulaRole: "implementer", implementer: "advanced" },
+    { tier: "capable", role: "re-reviewer", formulaRole: "re-reviewer", implementer: "advanced" },
+    { tier: "frontier", role: "final-reviewer", formulaRole: "final", implementer: "standard" },
+  ];
+
+  it("covers the whole frozen ladder exactly once", () => {
+    // If a tier is added to the ladder, this table must grow with it, otherwise
+    // the six-tier claim below quietly becomes a five-tier claim.
+    expect(TIER_ROWS.map((row) => row.tier)).toEqual([...TIERS]);
+  });
+
+  it("declares tier as a typed enum parameter, not a prompt convention", () => {
+    const { tools } = makeFakeEnvironment();
+    const schema = tools.get("spawn_subsession").parameters;
+    expect(schema.properties.tier.type).toBe("string");
+    expect(schema.properties.tier.enum).toEqual([...TIERS]);
+    // The binding channel is a declared parameter. `prompt` is a separate field
+    // and carries no tier semantics.
+    expect(Object.keys(schema.properties).sort()).toEqual(["cwd", "prompt", "tier"]);
+  });
+
+  describe.each(TIER_ROWS)("Tiered mode, $tier via the $role prompt", ({ tier, role, formulaRole, implementer }) => {
+    it("binds the typed tier and reports it back through the child transcript", () => {
+      // The tier dispatched is the tier the policy formula derives for this role,
+      // not a value hand-picked for the test. A formula change that moved a role
+      // off this rung fails here rather than silently dispatching the old tier.
+      const derived = roleTier({ implementer, role: formulaRole });
+      expect(derived.tier).toBe(tier);
+
+      const { runRoot, worktree } = makeRunRoot();
+      const context = baseContext(runRoot, worktree);
+      const rendered = renderRole({ role, tier, context, runRoot });
+      expect(rendered.result.status, rendered.result.stderr).toBe(0);
+      const prompt = readFileSync(rendered.outputPath, "utf8");
+
+      // The leading directive is human-readable display text, and it agrees with
+      // both the formula and the tier about to be typed.
+      expect(prompt.split("\n")[0]).toBe(derived.directive);
+      expect(prompt.split("\n")[0]).toBe(`/tier-${tier}`);
+
+      const { logPath, registryPath, tools } = makeFakeEnvironment({
+        SDD_EVAL_POLICY_MODE: "tiered",
+      });
+      const spawned = JSON.parse(toolText(
+        tools.get("spawn_subsession").execute("call-1", { prompt, cwd: worktree, tier }),
+      ));
+      expect(Object.keys(spawned)).toEqual(["sessionId", "cwd"]);
+
+      // 1. The requested tier is a typed field on the recorded spawn call.
+      const spawnCalls = logRecords(logPath).filter((record) => record.tool === "spawn_subsession");
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0].detail.tier).toBe(tier);
+      // Lowercase is the identifier; TitleCase is display only and must never be
+      // what crosses the wire.
+      expect(spawnCalls[0].detail.tier).toBe(tier.toLowerCase());
+      expect(spawnCalls[0].detail.tier).not.toBe(tierLabel(tier));
+
+      // 2. The child was actually created and carries the same lowercase tier.
+      expect(registryRecords(registryPath)[spawned.sessionId]).toMatchObject({
+        cwd: worktree,
+        tier,
+      });
+
+      // 3. The effective tier the child reports, and the resolved tuple.
+      const transcript = JSON.parse(toolText(
+        tools.get("read_subsession").execute("call-2", { sessionId: spawned.sessionId }),
+      ));
+      expect(transcript.requestedTier).toBe(tier);
+      expect(transcript.effectiveTier).toBe(tier);
+      expect(transcript.tierOutcome).toBe("applied-tiered");
+      // The tuple shape is the contract's ExactModelSelection: model identity
+      // plus thinking level, and nothing else.
+      expect(Object.keys(transcript.resolved).sort()).toEqual(["model", "thinkingLevel"]);
+      expect(Object.keys(transcript.resolved.model).sort()).toEqual(["id", "provider"]);
+      expect(transcript.resolved.model.provider).toMatch(/\S/u);
+      expect(transcript.resolved.model.id).toMatch(/\S/u);
+      expect(THINKING_RANK[transcript.resolved.thinkingLevel]).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  it("resolves the six tiers to six distinct, monotonically ordered tuples", () => {
+    const { registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
+    const spawn = tools.get("spawn_subsession");
+    const readChild = tools.get("read_subsession");
+
+    const resolvedByTier = new Map();
+    for (const tier of TIERS) {
+      const spawned = JSON.parse(toolText(
+        spawn.execute(`call-${tier}`, { prompt: `${tierDirective(tier)}\nWork.`, cwd: "/eval/worktree", tier }),
+      ));
+      const transcript = JSON.parse(toolText(readChild.execute(`read-${tier}`, { sessionId: spawned.sessionId })));
+      expect(transcript.effectiveTier).toBe(tier);
+      resolvedByTier.set(tier, transcript.resolved);
+    }
+
+    // Six calls, six children: the runtime does not deduplicate, so each request
+    // must have produced its own row.
+    expect(Object.keys(registryRecords(registryPath))).toHaveLength(TIERS.length);
+
+    // Distinct tuples. If a mutation collapsed two tiers onto one model, a
+    // per-tier equality check would still pass while the ladder had lost a rung.
+    const fingerprints = TIERS.map((tier) => {
+      const tuple = resolvedByTier.get(tier);
+      return `${tuple.model.provider}/${tuple.model.id}:${tuple.thinkingLevel}`;
+    });
+    expect(new Set(fingerprints).size).toBe(TIERS.length);
+
+    // And capability does not go backwards as the ladder ascends.
+    const ranks = TIERS.map((tier) => THINKING_RANK[resolvedByTier.get(tier).thinkingLevel]);
+    expect(ranks).toEqual([...ranks].sort((left, right) => left - right));
+    expect(ranks.at(-1)).toBeGreaterThan(ranks[0]);
+  });
+
+  it("treats the leading directive as display only, with no binding power", () => {
+    const { registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
+    // A prompt that shouts /tier-frontier but types no tier binds nothing. This
+    // is the inert-control-channel claim stated as a side effect: the child is
+    // recorded with a null tier and never resolves the frontier tuple.
+    const spawned = JSON.parse(toolText(
+      tools.get("spawn_subsession").execute("call-1", { prompt: "/tier-frontier\nWork.", cwd: "/eval/worktree" }),
+    ));
+    expect(registryRecords(registryPath)[spawned.sessionId].tier).toBeNull();
+
+    const transcript = JSON.parse(toolText(
+      tools.get("read_subsession").execute("call-2", { sessionId: spawned.sessionId }),
+    ));
+    expect(transcript.requestedTier).toBeNull();
+    expect(transcript.effectiveTier).toBeNull();
+    expect(transcript.resolved.thinkingLevel).not.toBe("max");
+  });
+
+  it("rejects a directive that disagrees with the typed tier, before any child exists", () => {
+    const { logPath, registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
+    const spawn = tools.get("spawn_subsession");
+
+    const disagreeing = toolText(
+      spawn.execute("call-1", { prompt: "/tier-frontier\nWork.", cwd: "/eval/worktree", tier: "economy" }),
+    );
+    expect(disagreeing).toContain("disagrees with typed tier");
+    // The refusal is only meaningful if nothing was created: a message alone
+    // would not prove the spawn failed closed.
+    expect(registryRecords(registryPath)).toEqual({});
+    // The attempt is still observable, so a controller cannot hide it.
+    expect(logRecords(logPath).filter((record) => record.tool === "spawn_subsession")).toHaveLength(1);
+
+    // The agreeing form of the same request succeeds, so the rejection is about
+    // disagreement and not about directives in general.
+    const agreeing = JSON.parse(toolText(
+      spawn.execute("call-2", { prompt: "/tier-economy\nWork.", cwd: "/eval/worktree", tier: "economy" }),
+    ));
+    expect(registryRecords(registryPath)[agreeing.sessionId].tier).toBe("economy");
+  });
+
+  it("refuses a TitleCase tier, because only the lowercase identifier is on the wire", () => {
+    const { registryPath, tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "tiered" });
+    for (const tier of TIERS) {
+      const label = tierLabel(tier);
+      expect(label).not.toBe(tier);
+      expect(toolText(tools.get("spawn_subsession").execute(`call-${tier}`, { prompt: "Work.", tier: label })))
+        .toContain("not in the configured ladder");
+    }
+    expect(registryRecords(registryPath)).toEqual({});
+  });
+
+  /**
+   * Exact mode. The requested tier is ignored and the pinned runtime tuple is
+   * unchanged, so a controller must not report a tier as applied.
+   */
+  describe.each(["economy", "advanced", "frontier"])("Exact mode ignores tier %s", (tier) => {
+    it("leaves the runtime tuple identical and reports ignored-exact", () => {
+      const { registryPath, tools } = makeFakeEnvironment({
+        SDD_EVAL_POLICY_MODE: "exact",
+        SDD_EVAL_LADDER_VALID: "false",
+      });
+      const policyTool = tools.get("get_model_policy");
+
+      const before = JSON.parse(toolText(policyTool.execute("call-1", {})));
+      expect(before.policy.mode).toBe("exact");
+      expect(before.policy.currentTier).toBeNull();
+      expect(before.tierCommands.exactOutcome).toBe("ignored-exact");
+      // Exact mode pins one tuple: what runs now is what the next request runs.
+      expect(before.policy.nextRequestResolved).toEqual(before.policy.currentRuntime);
+      // The pinned tuple is not free to drift. The Exact-mode eval scenario's
+      // prompt narrates the inherited tuple to the controller as
+      // RightCode-OpenAI/gpt-5.6-sol at high, so a fake that pins anything else
+      // would hand the controller policy evidence contradicting its own briefing
+      // and the run would test confusion rather than Exact-mode behavior. The
+      // literal is owned here deliberately: deriving it from the fake would make
+      // this assertion vacuous.
+      expect(before.policy.currentRuntime).toEqual({
+        model: { provider: "RightCode-OpenAI", id: "gpt-5.6-sol" },
+        thinkingLevel: "high",
+      });
+
+      const spawned = JSON.parse(toolText(
+        tools.get("spawn_subsession").execute("call-2", {
+          prompt: `${tierDirective(tier)}\nWork.`,
+          cwd: "/eval/worktree",
+          tier,
+        }),
+      ));
+      // The request was accepted and recorded verbatim; it simply did not bind.
+      expect(registryRecords(registryPath)[spawned.sessionId].tier).toBe(tier);
+
+      const transcript = JSON.parse(toolText(
+        tools.get("read_subsession").execute("call-3", { sessionId: spawned.sessionId }),
+      ));
+      expect(transcript.requestedTier).toBe(tier);
+      expect(transcript.tierOutcome).toBe("ignored-exact");
+      expect(transcript.tierOutcome).toBe(before.tierCommands.exactOutcome);
+      // No effective tier exists in Exact mode, and the child runs the pinned
+      // tuple rather than anything derived from the request.
+      expect(transcript.effectiveTier).toBeNull();
+      expect(transcript.resolved).toEqual(before.policy.currentRuntime);
+
+      const after = JSON.parse(toolText(policyTool.execute("call-4", {})));
+      // Byte-identical, not merely deep-equal on the fields checked above.
+      expect(JSON.stringify(after.policy)).toBe(JSON.stringify(before.policy));
+      expect(after.policy.currentRuntime).toEqual(before.policy.currentRuntime);
+    });
+  });
+
+  it("resolves every Exact-mode request to the same tuple across all six tiers", () => {
+    const { tools } = makeFakeEnvironment({ SDD_EVAL_POLICY_MODE: "exact" });
+    const spawn = tools.get("spawn_subsession");
+    const readChild = tools.get("read_subsession");
+    const pinned = JSON.parse(toolText(tools.get("get_model_policy").execute("call-0", {})))
+      .policy.currentRuntime;
+
+    const tuples = TIERS.map((tier) => {
+      const spawned = JSON.parse(toolText(
+        spawn.execute(`call-${tier}`, { prompt: `${tierDirective(tier)}\nWork.`, cwd: "/w", tier }),
+      ));
+      return JSON.parse(toolText(readChild.execute(`read-${tier}`, { sessionId: spawned.sessionId }))).resolved;
+    });
+
+    // In Tiered mode these six are distinct. In Exact mode they must collapse to
+    // the single pinned tuple, which is what "ignored" means concretely.
+    for (const tuple of tuples) expect(tuple).toEqual(pinned);
+    expect(new Set(tuples.map((tuple) => JSON.stringify(tuple))).size).toBe(1);
   });
 });

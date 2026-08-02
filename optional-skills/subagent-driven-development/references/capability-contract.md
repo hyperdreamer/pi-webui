@@ -147,25 +147,28 @@ server-side deduplication there is nothing to compare against, so both the
 fingerprint and its normalization rules are removed rather than kept as unused
 ceremony.
 
-## Known divergence: the eval fake still models the withdrawn dedup contract
+## Resolved divergence: the eval fake once modelled the withdrawn dedup contract
 
-`evals/fake-sdd-tools.mjs` still implements the earlier draft of this file: a
+`evals/fake-sdd-tools.mjs` originally implemented an earlier draft of this file: a
 `dispatchKey` parameter, a `reused` flag, conflicting-reuse rejection, and a
-returned `policyApplication`. None of that exists in the runtime.
+returned `policyApplication`. None of that exists in the runtime, so a fake
+asserting it could only manufacture confidence in a channel the runtime never had.
 
-This is recorded rather than silently patched, because the fake is baseline
-evidence. Task 3's controller results were produced against it, and rewriting it
-now would invalidate that comparison without re-running the baseline.
+That divergence is **closed**. The fake was realigned to the real contract before
+the controller GREEN run: `spawn_subsession` takes `{ prompt, cwd, tier }`, returns
+`{ sessionId, cwd }`, and creates a new child on every call with no deduplication.
+The two controller scenarios that referenced the withdrawn fields
+(`missing-capability-contract`, `dispatch-intent-crash-recovery`) were regenerated
+against the real contract at the same time.
 
-Scope of the impact, measured rather than assumed:
+The prerequisite this section once stated -- realign the fake and regenerate those
+scenarios before certifying controller behavior -- was therefore satisfied, not
+waived. It is kept here as history because the reasoning still governs: a fake that
+validates a channel the runtime does not implement must never be used to certify
+controller behavior, and the version-1 field list above remains the authority on
+what the fake is allowed to model.
 
-- The **role** suite (`evals/role-evals.json`) does not reference `dispatchKey`,
-  `policyApplication`, `reused`, or `rawPrompt` at all. Role work is unaffected.
-- Two **controller** scenarios reference it: `missing-capability-contract`
-  (`dispatchKey`) and `dispatch-intent-crash-recovery` (`policyApplication`).
-
-The decision: leave the fake alone for role work, and treat realigning it plus
-regenerating those two controller scenarios as a prerequisite of the controller
-GREEN run, not of the role contracts. A fake that validates a channel the runtime
-does not implement can only produce false confidence, so it must not be used to
-certify controller behavior.
+The consequence for evidence is that controller results predating the realignment
+are not comparable to results after it. The baseline reported in
+`evals/baseline-report.md` was recorded against the older fake; `evals/green-report.md`
+notes that limitation rather than presenting the two as a matched pair.

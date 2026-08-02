@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 /** The skill root, resolved from this module so cwd never affects rendering. */
 const SKILL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
+import { verifyManifest, writeManifest } from "./lib/manifest.mjs";
 import { parsePlanText, roleTier } from "./lib/plan-policy.mjs";
 import { renderPrompt } from "./lib/prompt-renderer.mjs";
 import {
@@ -26,6 +27,18 @@ import {
   StoreError,
   transition,
 } from "./lib/state-store.mjs";
+
+export {
+  assertRuntimeList,
+  buildManifest,
+  computeRuntimeHash,
+  ManifestError,
+  readManifest,
+  RUNTIME_FILES,
+  runtimeFilePaths,
+  verifyManifest,
+  writeManifest,
+} from "./lib/manifest.mjs";
 
 export { renderPrompt } from "./lib/prompt-renderer.mjs";
 
@@ -81,6 +94,9 @@ const USAGE = [
   "                             --decision-file DECISION_JSON",
   "  sdd-state render-prompt --tier TIER --role ROLE --context CONTEXT_JSON",
   "                          --output PROMPT_FILE",
+  "  sdd-state manifest-create --source-root SOURCE --package-json PACKAGE_JSON",
+  "                            --output MANIFEST",
+  "  sdd-state manifest-hash --manifest MANIFEST",
 ].join("\n");
 
 /** Require a set of flags, naming every missing one at once. */
@@ -266,6 +282,43 @@ function main(argv) {
       );
       return 0;
     }
+    case "manifest-create": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["source-root", "package-json", "output"]);
+      const manifest = writeManifest({
+        sourceRoot: required["source-root"],
+        packageJsonPath: required["package-json"],
+        outputPath: required.output,
+      });
+      console.log(
+        JSON.stringify({
+          written: required.output,
+          runtimeHash: manifest.runtimeHash,
+          runtimeFileCount: manifest.runtimeFiles.length,
+          sourcePackage: manifest.sourcePackage,
+        }),
+      );
+      return 0;
+    }
+    case "manifest-hash": {
+      const flags = parseFlags(args);
+      const required = requireFlags(flags, ["manifest"]);
+      // Verify against the manifest's own directory so the check cannot be
+      // pointed at an unrelated tree by passing a mismatched source root.
+      const { manifest, runtimeHash } = verifyManifest(
+        required.manifest,
+        dirname(resolve(required.manifest)),
+      );
+      console.log(
+        JSON.stringify({
+          manifest: required.manifest,
+          runtimeHash,
+          runtimeFileCount: manifest.runtimeFiles.length,
+          verified: true,
+        }),
+      );
+      return 0;
+    }
     default:
       throw new Error(command === undefined ? USAGE : `unknown command: ${command}\n${USAGE}`);
   }
@@ -284,6 +337,9 @@ if (isDirectExecution()) {
     console.error(error instanceof Error ? error.message : String(error));
     // A StoreError carries the exit code its failure mode maps to; anything else
     // is a validation failure from argument handling.
+    // A StoreError carries the exit code its failure mode maps to. A ManifestError
+    // is not a StoreError, so integrity failures land on VALIDATION alongside
+    // argument handling -- a wrong hash is a bad input, not lock contention.
     process.exitCode = error instanceof StoreError ? error.code : EXIT.VALIDATION;
   }
 }
