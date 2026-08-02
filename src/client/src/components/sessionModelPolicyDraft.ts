@@ -15,12 +15,40 @@ export interface SessionModelPolicyDraft {
   tier?: ModelTier;
 }
 
+export interface DraftSeedInput {
+  /** Newest persisted policy, when one exists and parsed. */
+  policy?: SessionModelPolicy;
+  /** Tuple the runtime confirmed, or a starter's machine defaults. */
+  liveResolved?: ExactModelSelection;
+  catalog?: ModelTierSettingsResponse;
+}
+
 export function modelPolicyDraftFromPolicy(policy: SessionModelPolicy): SessionModelPolicyDraft {
   return {
     mode: policy.mode,
     exact: cloneExactSelection(policy.exact),
     ...(policy.tier === undefined ? {} : { tier: policy.tier }),
   };
+}
+
+/**
+ * Deterministic draft seed. Every branch is explainable and none invents a
+ * model: an absent policy and absent live tuple produce empty selections that
+ * `isDraftReadyToApply` rejects, so nothing can be applied until the user picks.
+ */
+export function seedModelPolicyDraft(input: DraftSeedInput): SessionModelPolicyDraft {
+  const base = baseDraft(input);
+  if (base.mode !== "tiered" || base.tier !== undefined) return base;
+  const rows = input.catalog?.rows;
+  if (rows === undefined || !Object.hasOwn(rows, "standard") || !rows.standard.valid) return base;
+  return { ...base, tier: "standard" };
+}
+
+function baseDraft(input: DraftSeedInput): SessionModelPolicyDraft {
+  if (input.policy !== undefined) return modelPolicyDraftFromPolicy(input.policy);
+  const live = input.liveResolved;
+  if (live !== undefined) return { mode: "exact", exact: cloneExactSelection(live) };
+  return { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } };
 }
 
 export function selectDraftTier(draft: SessionModelPolicyDraft, tier: ModelTier): SessionModelPolicyDraft {
@@ -79,6 +107,19 @@ export function sessionModelPolicyUpdateFromDraft(
     return undefined;
   }
   return { mode: "tiered", tier };
+}
+
+/**
+ * Whether this draft forms a complete, applicable tuple. Delegates to
+ * `sessionModelPolicyUpdateFromDraft` so completion can never disagree with what
+ * would actually be submitted.
+ */
+export function isDraftReadyToApply(
+  draft: SessionModelPolicyDraft,
+  catalog: ModelTierSettingsResponse | undefined,
+): boolean {
+  if (catalog === undefined) return false;
+  return sessionModelPolicyUpdateFromDraft(draft, catalog) !== undefined;
 }
 
 function isValidExactSelection(

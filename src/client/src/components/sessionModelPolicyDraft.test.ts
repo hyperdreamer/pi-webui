@@ -4,9 +4,12 @@ import type {
   ModelTierLadder,
   ModelTierModelOption,
   ModelTierSettingsResponse,
+  SessionModelPolicy,
 } from "../../../shared/apiTypes";
 import {
+  isDraftReadyToApply,
   modelPolicyDraftFromPolicy,
+  seedModelPolicyDraft,
   selectDraftExact,
   selectDraftTier,
   sessionModelPolicyUpdateFromDraft,
@@ -295,5 +298,171 @@ describe("session model policy drafts", () => {
 
     expect(draft).toEqual(draftBefore);
     expect(catalog).toEqual(catalogBefore);
+  });
+});
+
+describe("seedModelPolicyDraft", () => {
+  it("restores a persisted policy including a remembered tier in exact mode", () => {
+    const catalog = validCatalog();
+    const policy: SessionModelPolicy = {
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
+      tier: "fast",
+    };
+
+    const draft = seedModelPolicyDraft({ policy, catalog });
+
+    expect(draft).toEqual({
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
+      tier: "fast",
+    });
+    expect(isDraftReadyToApply(draft, catalog)).toBe(true);
+  });
+
+  it("falls back to the live resolved tuple when nothing is persisted", () => {
+    const catalog = validCatalog();
+    const liveResolved = { model: { ...repairModelOption.model }, thinkingLevel: "low" };
+
+    const draft = seedModelPolicyDraft({ liveResolved, catalog });
+
+    expect(draft).toEqual({ mode: "exact", exact: liveResolved });
+    expect(isDraftReadyToApply(draft, catalog)).toBe(true);
+  });
+
+  it("seeds an empty exact draft when there is no policy and no live tuple", () => {
+    const catalog = validCatalog();
+    const draft = seedModelPolicyDraft({ catalog });
+
+    expect(draft).toEqual({
+      mode: "exact",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("pre-selects standard for a tiered policy with no tier when that row is valid", () => {
+    const catalog = validCatalog();
+    const policy: SessionModelPolicy = {
+      mode: "tiered",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    };
+
+    const draft = seedModelPolicyDraft({ policy, catalog });
+
+    expect(draft.tier).toBe("standard");
+    expect(isDraftReadyToApply(draft, catalog)).toBe(true);
+  });
+
+  it("leaves the tier unset when the standard row is invalid", () => {
+    const catalog = validCatalog();
+    catalog.rows.standard = { valid: false, reason: "Standard is not configured" };
+    const policy: SessionModelPolicy = {
+      mode: "tiered",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    };
+
+    const draft = seedModelPolicyDraft({ policy, catalog });
+
+    expect(draft.tier).toBeUndefined();
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("does not overwrite a tier the persisted policy already chose", () => {
+    const catalog = validCatalog();
+    const policy: SessionModelPolicy = {
+      mode: "tiered",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+      tier: "frontier",
+    };
+
+    const draft = seedModelPolicyDraft({ policy, catalog });
+
+    expect(draft.tier).toBe("frontier");
+    expect(isDraftReadyToApply(draft, catalog)).toBe(true);
+  });
+
+  it("does not pre-select a tier for an exact draft", () => {
+    const catalog = validCatalog();
+
+    expect(seedModelPolicyDraft({ catalog }).tier).toBeUndefined();
+  });
+});
+
+describe("isDraftReadyToApply", () => {
+  it("is false when the catalog has not loaded", () => {
+    // Valid against validCatalog(), so this isolates catalog absence rather than
+    // also failing on an invalid selection.
+    const draft = modelPolicyDraftFromPolicy({
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
+    });
+
+    expect(isDraftReadyToApply(draft, undefined)).toBe(false);
+    expect(isDraftReadyToApply(draft, validCatalog())).toBe(true);
+  });
+
+  it("is false for an exact draft whose thinking level was cleared by a model change", () => {
+    const catalog = validCatalog();
+    const draft = modelPolicyDraftFromPolicy({
+      mode: "exact",
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" },
+    });
+
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("is false for a tiered draft with no tier chosen", () => {
+    const catalog = validCatalog();
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    };
+
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("agrees with sessionModelPolicyUpdateFromDraft on every input", () => {
+    const catalog = validCatalog();
+    const drafts: SessionModelPolicyDraft[] = [
+      // Ready. Without this row the matrix proves nothing about Exact mode.
+      {
+        mode: "exact",
+        exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
+      },
+      // Not ready: level cleared by a model change.
+      {
+        mode: "exact",
+        exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" },
+      },
+      // Not ready: model absent from the catalog.
+      {
+        mode: "exact",
+        exact: { model: { provider: "openai", id: "not-in-catalog" }, thinkingLevel: "medium" },
+      },
+      // Ready: a level the repair model does support.
+      {
+        mode: "exact",
+        exact: { model: { ...repairModelOption.model }, thinkingLevel: "low" },
+      },
+      // Not ready: a level the repair model does not support.
+      {
+        mode: "exact",
+        exact: { model: { ...repairModelOption.model }, thinkingLevel: "high" },
+      },
+      { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
+      {
+        mode: "tiered",
+        exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+        tier: "standard",
+      },
+      { mode: "tiered", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
+    ];
+
+    for (const draft of drafts) {
+      expect(isDraftReadyToApply(draft, catalog)).toBe(
+        sessionModelPolicyUpdateFromDraft(draft, catalog) !== undefined,
+      );
+    }
   });
 });
