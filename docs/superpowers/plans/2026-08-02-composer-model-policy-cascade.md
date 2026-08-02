@@ -48,18 +48,23 @@ jsdom.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/client/src/components/sessionModelPolicyDraft.test.ts`. Reuse the existing catalog fixture helper in that file; if it is named differently, adapt the call but keep the assertions.
+Append to `src/client/src/components/sessionModelPolicyDraft.test.ts`. That file already defines `validCatalog()`, `defaultModelOption` (`openai/gpt-default`, thinking levels `low`/`medium`/`high`), and `repairModelOption` (`openai/gpt-repair`, levels `off`/`low`). Use those fixtures. The catalog contains **no** `anthropic` models, so any draft naming one is invalid regardless of thinking level.
+
+The matrix must include at least one Exact draft that is genuinely **ready**, or the whole test is vacuous: a predicate hardcoded to reject every Exact draft would pass it. After implementing, temporarily add `if (draft.mode === "exact") return false;` to your implementation and confirm at least one test fails. Remove the mutation before committing.
 
 ```ts
 describe("isDraftReadyToApply", () => {
   it("is false when the catalog has not loaded", () => {
-    const draft = modelPolicyDraftFromPolicy({ mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" } });
+    // Valid against validCatalog(), so this isolates catalog absence rather than
+    // also failing on an invalid selection.
+    const draft = modelPolicyDraftFromPolicy({ mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" } });
     expect(isDraftReadyToApply(draft, undefined)).toBe(false);
+    expect(isDraftReadyToApply(draft, validCatalog())).toBe(true);
   });
 
   it("is false for an exact draft whose thinking level was cleared by a model change", () => {
     const catalog = validCatalog();
-    const draft = modelPolicyDraftFromPolicy({ mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" } });
+    const draft = modelPolicyDraftFromPolicy({ mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" } });
     expect(isDraftReadyToApply(draft, catalog)).toBe(false);
   });
 
@@ -72,8 +77,16 @@ describe("isDraftReadyToApply", () => {
   it("agrees with sessionModelPolicyUpdateFromDraft on every input", () => {
     const catalog = validCatalog();
     const drafts: SessionModelPolicyDraft[] = [
-      { mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" } },
-      { mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" } },
+      // Ready. Without this row the matrix proves nothing about Exact mode.
+      { mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" } },
+      // Not ready: level cleared by a model change.
+      { mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" } },
+      // Not ready: model absent from the catalog.
+      { mode: "exact", exact: { model: { provider: "openai", id: "not-in-catalog" }, thinkingLevel: "medium" } },
+      // Ready: a level the repair model does support.
+      { mode: "exact", exact: { model: { ...repairModelOption.model }, thinkingLevel: "low" } },
+      // Not ready: a level the repair model does not support.
+      { mode: "exact", exact: { model: { ...repairModelOption.model }, thinkingLevel: "high" } },
       { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
       { mode: "tiered", exact: { model: { provider: "", id: "" }, thinkingLevel: "" }, tier: "standard" },
       { mode: "tiered", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
@@ -150,12 +163,12 @@ Chain order, from the spec. Cases 1-4 pick the exact tuple; case 5 then applies 
 ```ts
 describe("seedModelPolicyDraft", () => {
   it("restores a persisted policy including a remembered tier in exact mode", () => {
-    const policy: SessionModelPolicy = { mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" }, tier: "fast" };
-    expect(seedModelPolicyDraft({ policy })).toEqual({ mode: "exact", exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" }, tier: "fast" });
+    const policy: SessionModelPolicy = { mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" }, tier: "fast" };
+    expect(seedModelPolicyDraft({ policy })).toEqual({ mode: "exact", exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" }, tier: "fast" });
   });
 
   it("falls back to the live resolved tuple when nothing is persisted", () => {
-    const liveResolved = { model: { provider: "anthropic", id: "haiku" }, thinkingLevel: "low" };
+    const liveResolved = { model: { ...repairModelOption.model }, thinkingLevel: "low" };
     expect(seedModelPolicyDraft({ liveResolved })).toEqual({ mode: "exact", exact: liveResolved });
   });
 
@@ -606,7 +619,7 @@ describe("starter with no usable machine defaults", () => {
 
     const status = starterPolicyStatus(app);
     expect(status?.blockedReason).toBeUndefined();
-    expect(status?.resolved).toEqual({ model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" });
+    expect(status?.resolved).toEqual({ model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" });
   });
 });
 ```

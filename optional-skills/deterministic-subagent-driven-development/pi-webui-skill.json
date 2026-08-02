@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "deterministic-subagent-driven-development",
+  "distribution": "opt-in",
+  "sourcePackage": {
+    "name": "@hyperdreamer/pi-webui",
+    "version": "1.11.0-beta.4"
+  },
+  "runtimeHashAlgorithm": "sha256-path-nul-bytes-v1",
+  "runtimeHash": "784da54c3cca6d68c338563a6eae8f655d2660ef7b91ada622e028b71222fe86",
+  "runtimeFiles": [
+    "SKILL.md",
+    "prompts/final-reviewer.md",
+    "prompts/implementer.md",
+    "prompts/re-reviewer.md",
+    "prompts/task-reviewer.md",
+    "references/capability-contract.md",
+    "references/plan-contract.md",
+    "references/state-machine.md",
+    "scripts/lib/manifest.mjs",
+    "scripts/lib/plan-policy.mjs",
+    "scripts/lib/prompt-renderer.mjs",
+    "scripts/lib/state-machine.mjs",
+    "scripts/lib/state-store.mjs",
+    "scripts/sdd-state",
+    "scripts/sdd-state.mjs"
+  ]
+}

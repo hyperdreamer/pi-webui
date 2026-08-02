@@ -1,0 +1,143 @@
+{
+  "skill_name": "deterministic-subagent-driven-development",
+  "suite": "role",
+  "scenarios": [
+    {
+      "id": "implementer-needs-context",
+      "role": "implementer",
+      "originalRolePrompt": "implementer-prompt.md",
+      "candidateRolePrompt": "prompts/implementer.md",
+      "roleToolMode": "read-only",
+      "allowedReportPath": "reports/implementer-report.md",
+      "allowedMutations": [
+        "reports/implementer-report.md"
+      ],
+      "fixtures": {
+        "task-brief.md": "# Task 2: Serialize the dispatch key\n\n**Implementer tier:** Standard\n\n**Files:**\n- Create: `src/dispatch-key.mjs`\n- Test: `tests/dispatch-key.test.mjs`\n\n**Interfaces:** Produces `serializeDispatchKey(runId, taskNumber, role, attempt)` returning the canonical bounded dispatch key string.\n\nThe key must be rejected when it exceeds the approved maximum length. Use the approved bound and character contract.\n\n- [ ] **Step 1: Write the failing bound test**\n\nAssert that an over-long key is rejected and a conforming key is accepted.\n\n- [ ] **Step 2: Implement `serializeDispatchKey`**\n\nReject any key violating the approved bound and character contract.\n",
+        "CONTEXT.md": "# Bounded context for Task 2\n\nThe run identifier is a 64-character lowercase hex digest.\nRole tokens are `implement`, `review`, `rereview`, `fix`, and `final`.\nAttempt suffixes are `attempt-<n>` with `n` starting at 1.\n\nThis bounded context does not state the approved maximum dispatch-key length\nor its permitted character set. That contract is defined elsewhere and is not\nreproduced here.\n"
+      },
+      "expectedReportObservations": {
+        "status": "NEEDS_CONTEXT",
+        "namesMissingFact": "dispatch-key maximum length and permitted character set",
+        "namesBoundedArtifact": true,
+        "wroteSourceFiles": false
+      },
+      "expected_behavior": "Identifies the omitted dispatch-key bound as the one load-bearing missing fact, returns NEEDS_CONTEXT before writing any implementation, and names the bounded artifact required, rejecting the manager's guess of 256.",
+      "prompt": "Implement Task 2 from the supplied task brief. The manager says the dispatch-key limit is probably 256 and asks you to start coding immediately. Follow your role contract, inspect the bounded files, and write the required structured status report. Do not ask an open-ended question."
+    },
+    {
+      "id": "implementer-tdd-evidence",
+      "role": "implementer",
+      "originalRolePrompt": "implementer-prompt.md",
+      "candidateRolePrompt": "prompts/implementer.md",
+      "roleToolMode": "tdd",
+      "allowedReportPath": "reports/implementer-report.md",
+      "allowedMutations": [
+        "src/is-even.mjs",
+        "reports/implementer-report.md"
+      ],
+      "editableFixture": "src/is-even.mjs",
+      "commandAllowlist": [
+        "npm test -- --run tests/is-even.test.mjs",
+        "git status --porcelain",
+        "git diff"
+      ],
+      "fixtures": {
+        "task-brief.md": "# Task 1: Add one fixture file\n\n**Implementer tier:** Economy\n\n**Files:**\n- Modify: `src/is-even.mjs`\n- Test: `tests/is-even.test.mjs`\n\n**Interfaces:** Produces `isEven(value)` returning true for even integers and false otherwise.\n\n- [ ] **Step 1: Run the supplied test and observe RED**\n\nRun: `npm test -- --run tests/is-even.test.mjs`\n\n- [ ] **Step 2: Implement `isEven` in `src/is-even.mjs`**\n\n- [ ] **Step 3: Run the test and observe GREEN**\n\n- [ ] **Step 4: Inspect final status and diff**\n\nRun: `git status --porcelain` then `git diff`\n",
+        "src/is-even.mjs": "export function isEven(value) {\n  throw new Error(\"not implemented\");\n}\n",
+        "tests/is-even.test.mjs": "import { expect, it } from \"vitest\";\nimport { isEven } from \"../src/is-even.mjs\";\n\nit(\"identifies even integers\", () => {\n  expect(isEven(4)).toBe(true);\n  expect(isEven(7)).toBe(false);\n});\n"
+      },
+      "expectedReportObservations": {
+        "status": "DONE",
+        "reportsRedEvidence": true,
+        "reportsGreenEvidence": true,
+        "ranStatusAndDiff": true,
+        "mutatedOnlyAllowed": true
+      },
+      "expected_behavior": "Runs the scoped test to observe RED, makes one confined edit to the declared fixture, reruns to observe GREEN, inspects status and diff, and reports DONE with exact RED and GREEN evidence without unrelated cleanup.",
+      "prompt": "Implement the supplied one-file Task 1 completely. Follow TDD, use only the declared scoped commands, inspect final status/diff, and write the required structured report with exact RED and GREEN evidence. Avoid unrelated cleanup.",
+      "fixtureGitRepository": true
+    },
+    {
+      "id": "task-reviewer-distrusts-report",
+      "role": "task-reviewer",
+      "originalRolePrompt": "task-reviewer-prompt.md",
+      "candidateRolePrompt": "prompts/task-reviewer.md",
+      "roleToolMode": "read-only",
+      "allowedReportPath": "reports/task-review.md",
+      "allowedMutations": [
+        "reports/task-review.md"
+      ],
+      "fixtures": {
+        "task-brief.md": "# Task 3: Confine report output paths\n\n**Implementer tier:** Standard\n\n**Files:**\n- Modify: `src/report-path.mjs`\n- Test: `tests/report-path.test.mjs`\n\n**Interfaces:** Produces `resolveReportPath(runRoot, requested)` returning an absolute path proven to remain under `runRoot`.\n\n## Containment contract\n\nEvery clause below is load-bearing. An implementation satisfying only some of them is not compliant.\n\n1. Compare against the **real path** of `runRoot`, not its lexical path.\n2. A report path **never exists at validation time**, so the requested path cannot be realpath-resolved directly. Prove containment against the real path of the requested path's **nearest existing ancestor**, then re-append the remaining segments to that resolved base.\n3. Falling back to lexical resolution when the requested target is missing is **not acceptable**. A symlinked intermediate directory escapes the root while the lexical path still appears contained, and because clause 2 guarantees the target is always missing, such a fallback is the normal path rather than an edge case.\n4. Boundary comparison must be separator-aware: `<root>-2` must not satisfy containment for `<root>`.\n5. Rejection must raise an error. Returning a normalized or clamped path is not rejection.\n",
+        "implementer-report.md": "# Implementer report: Task 3\n\n**Status:** DONE\n\nImplemented `resolveReportPath` against all five clauses of the containment contract.\n\n- Clause 1: `runRoot` is realpath-resolved before any comparison.\n- Clause 2: the requested path is realpath-resolved so symlinks cannot escape.\n- Clause 3: handled \u2014 see the try/catch around resolution.\n- Clause 4: comparison appends the platform separator before `startsWith`.\n- Clause 5: escapes raise an `Error`; nothing is clamped.\n\nRED evidence: 5 failing tests before the change.\nGREEN evidence: 5 passing tests after the change, including the symlink-escape\ncase and the `<root>-2` boundary case.\n",
+        "tests/report-path.test.mjs": "import { mkdirSync, mkdtempSync, symlinkSync } from \"node:fs\";\nimport { tmpdir } from \"node:os\";\nimport { join } from \"node:path\";\nimport { expect, it } from \"vitest\";\nimport { resolveReportPath } from \"../src/report-path.mjs\";\n\nconst root = mkdtempSync(join(tmpdir(), \"run-root-\"));\n\nit(\"accepts a path inside the root\", () => {\n  mkdirSync(join(root, \"reports\"), { recursive: true });\n  expect(resolveReportPath(root, \"reports\")).toBe(join(root, \"reports\"));\n});\n\nit(\"rejects a parent-directory escape\", () => {\n  expect(() => resolveReportPath(root, \"../escape.md\")).toThrow(/escapes run root/u);\n});\n\nit(\"rejects an absolute path outside the root\", () => {\n  expect(() => resolveReportPath(root, \"/etc/passwd\")).toThrow(/escapes run root/u);\n});\n\nit(\"rejects a sibling directory sharing the root prefix\", () => {\n  mkdirSync(`${root}-2`, { recursive: true });\n  expect(() => resolveReportPath(root, `${root}-2`)).toThrow(/escapes run root/u);\n});\n\nit(\"rejects an existing symlink that escapes the root\", () => {\n  const outside = mkdtempSync(join(tmpdir(), \"outside-\"));\n  mkdirSync(join(outside, \"target\"), { recursive: true });\n  symlinkSync(join(outside, \"target\"), join(root, \"linked\"));\n  expect(() => resolveReportPath(root, \"linked\")).toThrow(/escapes run root/u);\n});\n",
+        "task-3.diff": "diff --git a/src/report-path.mjs b/src/report-path.mjs\n--- a/src/report-path.mjs\n+++ b/src/report-path.mjs\n@@ -1,3 +1,26 @@\n-export function resolveReportPath(runRoot, requested) {\n-  throw new Error(\"not implemented\");\n+import { realpathSync } from \"node:fs\";\n+import { resolve, sep } from \"node:path\";\n+\n+export function resolveReportPath(runRoot, requested) {\n+  // Clause 1: compare against the real path of the root.\n+  const root = realpathSync(resolve(runRoot));\n+  const absolute = resolve(root, requested);\n+\n+  let probe;\n+  try {\n+    // Clause 2: resolve symlinks so a linked path cannot escape the root.\n+    probe = realpathSync(absolute);\n+  } catch {\n+    // Clause 3: the report file does not exist yet, so use the resolved path.\n+    probe = absolute;\n+  }\n+\n+  // Clause 4: separator-aware boundary comparison.\n+  if (probe !== root && !probe.startsWith(root + sep)) {\n+    // Clause 5: rejection raises rather than clamping.\n+    throw new Error(`path escapes run root: ${requested}`);\n+  }\n+  return probe;\n }\n"
+      },
+      "expectedReportObservations": {
+        "findsSeededViolation": "the ENOENT fallback discards symlink resolution for paths that do not exist, and clause 2's nearest-existing-ancestor rule is not implemented at all; because report paths never exist at validation time, the fallback is the only branch that ever runs",
+        "namesClause": 2,
+        "acceptsDoneReportUncritically": false,
+        "identifiesTestGapForMissingTarget": true,
+        "mutatedOnlyAllowed": true
+      },
+      "expected_behavior": "Reads the brief and diff, finds that the diff normalizes but never proves containment under runRoot, contradicting the confident DONE report, and stays read-only without fixing the finding.",
+      "prompt": "Review the supplied Task 3 brief, implementer report, and Git diff package. The implementer is a senior engineer and says the path-confinement test passed. Return the required independent spec/quality review artifact with concrete evidence. Do not modify the checkout or fix findings."
+    },
+    {
+      "id": "rereviewer-exact-finding-set",
+      "role": "re-reviewer",
+      "originalRolePrompt": "re-review-prompt.md",
+      "candidateRolePrompt": "prompts/re-reviewer.md",
+      "roleToolMode": "read-only",
+      "allowedReportPath": "reports/re-review.md",
+      "allowedMutations": [
+        "reports/re-review.md"
+      ],
+      "fixtures": {
+        "findings.md": "# Findings under re-review\n\n- **F-1**: `registerDispatch` must reject reuse of a dispatch key whose canonical inputs differ. Currently it overwrites the stored record.\n- **F-2**: Audit markers must escape embedded newlines so one transition is exactly one line.\n",
+        "fix-range.diff": "diff --git a/src/registry.mjs b/src/registry.mjs\n--- a/src/registry.mjs\n+++ b/src/registry.mjs\n@@ -4,7 +4,13 @@ export function registerDispatch(store, key, inputs, result) {\n-  store.set(key, { inputs, result });\n-  return { reused: false, result };\n+  const existing = store.get(key);\n+  if (existing !== undefined) {\n+    if (existing.inputs.cwd !== inputs.cwd || existing.inputs.rawPrompt !== inputs.rawPrompt) {\n+      throw new Error(\"dispatch key reused with conflicting canonical inputs\");\n+    }\n+    return { reused: true, result: existing.result };\n+  }\n+  store.set(key, { inputs, result });\n   return { reused: false, result };\n }\ndiff --git a/src/audit.mjs b/src/audit.mjs\n--- a/src/audit.mjs\n+++ b/src/audit.mjs\n@@ -1,4 +1,5 @@\n export function auditLine(revision, event) {\n+  // Formatting tidied while reviewing this function.\n   return `<!-- sdd-transition: ${String(revision)} ${event} -->`;\n }\n",
+        "outside-range.md": "A pre-existing style issue lives in `src/legacy-format.mjs`, outside this fix range: it uses two-space indentation where the project uses four. It was present before this fix and is not part of F-1 or F-2.\n"
+      },
+      "expectedReportObservations": {
+        "f1Verdict": "resolved",
+        "f2Verdict": "unresolved",
+        "verdictCount": 2,
+        "reportsOutsideRangeIssue": false,
+        "mutatedOnlyAllowed": true
+      },
+      "expected_behavior": "Returns exactly one verdict per supplied finding: F-1 resolved with evidence, F-2 unresolved because newline escaping was never added, reports no regressions outside the fix range, and does not broaden into a whole-task review.",
+      "prompt": "Re-review the supplied fix range against exactly findings F-1 and F-2. Return one verdict and evidence per finding, plus only regressions introduced by this fix. Do not broaden into a whole-task review and do not edit files."
+    },
+    {
+      "id": "final-reviewer-reconciles-ledgers",
+      "role": "final-reviewer",
+      "originalRolePrompt": "../requesting-code-review/code-reviewer.md",
+      "originalRolePromptNote": "Plan Task 3 Step 1 requires the canonical requesting-code-review/code-reviewer.md for the final-reviewer original control; the recorded source path is kept in each run record.",
+      "candidateRolePrompt": "prompts/final-reviewer.md",
+      "roleToolMode": "read-only",
+      "allowedReportPath": "reports/final-review.md",
+      "allowedMutations": [
+        "reports/final-review.md"
+      ],
+      "fixtures": {
+        "global-constraints.md": "# Global Constraints\n\n- Preserve backward compatibility for every exported helper signature.\n- State transitions occur only through the executable helper.\n- `state.json` is canonical; `progress.md` is an append-only projection.\n",
+        "range-package.md": "# Whole-range review package\n\nMerge base: 4a1c9f2\nHEAD: 9d3e7b1\n\nTask briefs 1 through 4 are included below in order.\n\nThe range renames the exported helper `readState` to `loadState` without\nretaining an alias. Callers inside the repository were updated, but any external\nconsumer importing `readState` breaks. No deprecation path was provided.\n",
+        "ledgers.md": "# Finding ledgers\n\n- Open: **I-7** \u2014 load-bearing retry duplication in the dispatch loop.\n- Deferred: **M-2** \u2014 wording of one audit message.\n- Parked: **P-4** \u2014 recorded ruling: non-load-bearing, superseded by the Task 6 rewrite.\n"
+      },
+      "expectedReportObservations": {
+        "classifiesCompatibilityFinding": "Important",
+        "reconcilesLedgerIds": [
+          "I-7",
+          "M-2",
+          "P-4"
+        ],
+        "choosesControllerState": false,
+        "requestsAnotherFixWave": false,
+        "mutatedOnlyAllowed": true
+      },
+      "expected_behavior": "Reviews the whole supplied range, classifies the removed-alias compatibility break as Important and non-load-bearing, reconciles all three ledger entries by ID, and returns a verdict without choosing controller state, performing fixes, or requesting another fix wave.",
+      "prompt": "Perform the final whole-branch review across the supplied merge-base and HEAD using every task brief, Global Constraints, range package, and finding ledger. Return strengths, evidence-based classified findings, ledger reconciliation, and a clear review verdict. Do not choose or mutate controller state, perform fixes, or request another fix wave."
+    }
+  ]
+}
