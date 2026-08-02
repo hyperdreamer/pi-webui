@@ -2,10 +2,11 @@
 
 import { render, type PropertyValues, type TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClientSessionModelPolicyStatus, ModelTierSettingsResponse } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ModelTier, ModelTierSettingsResponse } from "../../../shared/apiTypes";
 import type { SessionStatus } from "../api";
 import { isTemplateResult } from "../templateInspection.testSupport";
 import { PromptEditor } from "./PromptEditor";
+import { thinkingLevelOptions } from "./thinkingLevelOptions";
 
 const tieredPolicyStatus: ClientSessionModelPolicyStatus = {
   mode: "tiered",
@@ -61,41 +62,103 @@ describe("PromptEditor session controls", () => {
     expect(onSelectThinking).toHaveBeenCalledOnce();
   });
 
-  it("renders Tiered policy controls first without duplicate model and thinking controls", () => {
+  it("renders the policy pill and tier menu without a thinking control in Tiered mode", () => {
     const editor = new PromptEditor();
+    const catalog = emptyModelTierCatalog();
     editor.status = sessionStatus(tieredPolicyStatus);
+    editor.modelTierCatalog = catalog;
 
     const controls = renderCompactStatusElement(editor);
+    const tierMenu = renderedTierMenu(controls);
 
-    expect(Array.from(controls.children, (child) => child.localName)).toEqual(["session-model-policy-control"]);
+    expect(Array.from(controls.children, (child) => child.localName)).toEqual([
+      "session-model-policy-control",
+      "session-tier-menu",
+    ]);
+    expect(tierMenu.catalog).toBe(catalog);
+    expect(tierMenu.selectedTier).toBe("advanced");
+    expect(tierMenu.label).toBe("Advanced");
+    expect(tierMenu.editable).toBe(true);
     expect(controls.querySelector('[title="Select model"]')).toBeNull();
+    expect(controls.querySelector("session-thinking-menu")).toBeNull();
     expect(controls.querySelector(".select-thinking")).toBeNull();
   });
 
-  it("renders Exact policy controls before the existing model and thinking controls", () => {
+  it("renders the policy pill, model button, and thinking menu in Exact mode", () => {
     const editor = new PromptEditor();
     const exactPolicyStatus: ClientSessionModelPolicyStatus = { ...tieredPolicyStatus, mode: "exact" };
     const catalog = emptyModelTierCatalog();
+    const options = thinkingLevelOptions({
+      supported: ["low", "medium", "high"],
+      all: [],
+      selected: "high",
+    });
     editor.status = sessionStatus(exactPolicyStatus);
     editor.modelTierCatalog = catalog;
     editor.modelPolicyLoading = true;
     editor.modelPolicyError = "Policy read failed";
+    editor.policyThinkingOptions = options;
 
     const controls = renderCompactStatusElement(editor);
     const policyControl = renderedPolicyControl(controls);
+    const thinkingMenu = renderedThinkingMenu(controls);
 
     expect(Array.from(controls.children, (child) => child.localName)).toEqual([
       "session-model-policy-control",
       "button",
-      "button",
+      "session-thinking-menu",
     ]);
+    expect(controls.querySelector("session-tier-menu")).toBeNull();
     expect(controls.querySelector('[title="Select model"]')).not.toBeNull();
-    expect(controls.querySelector(".select-thinking")).not.toBeNull();
+    expect(controls.querySelector(".select-thinking")).toBeNull();
+    expect(thinkingMenu.options).toBe(options);
+    expect(thinkingMenu.label).toBe("high");
+    expect(thinkingMenu.editable).toBe(true);
     expect(policyControl.status).toBe(exactPolicyStatus);
     expect(policyControl.catalog).toBe(catalog);
     expect(policyControl.loading).toBe(true);
     expect(policyControl.saving).toBe(false);
     expect(policyControl.error).toBe("Policy read failed");
+  });
+
+  it("leaves the legacy controls untouched when there is no policy", () => {
+    const editor = new PromptEditor();
+    const status = sessionStatus(tieredPolicyStatus);
+    delete status.modelPolicy;
+    editor.status = status;
+
+    const controls = renderCompactStatusElement(editor);
+
+    expect(Array.from(controls.children, (child) => child.localName)).toEqual(["button", "button"]);
+    expect(controls.querySelector("session-model-policy-control")).toBeNull();
+    expect(controls.querySelector("session-tier-menu")).toBeNull();
+    expect(controls.querySelector("session-thinking-menu")).toBeNull();
+    expect(controls.querySelector(".select-model")).not.toBeNull();
+    expect(controls.querySelector(".select-thinking")).not.toBeNull();
+  });
+
+  it("forwards policy mode, tier, and thinking selections to their callbacks", () => {
+    const modes: ("exact" | "tiered")[] = [];
+    const tiers: ModelTier[] = [];
+    const thinkingLevels: string[] = [];
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(tieredPolicyStatus);
+    editor.modelTierCatalog = emptyModelTierCatalog();
+    editor.onSelectPolicyMode = (mode) => { modes.push(mode); };
+    editor.onSelectPolicyTier = (tier) => { tiers.push(tier); };
+    editor.onSelectPolicyThinking = (level) => { thinkingLevels.push(level); };
+
+    const tieredControls = renderCompactStatusElement(editor);
+    renderedPolicyControl(tieredControls).onSelectMode?.("exact");
+    renderedTierMenu(tieredControls).onSelectTier?.("frontier");
+
+    editor.status = sessionStatus({ ...tieredPolicyStatus, mode: "exact" });
+    const exactControls = renderCompactStatusElement(editor);
+    renderedThinkingMenu(exactControls).onSelectLevel?.("medium");
+
+    expect(modes).toEqual(["exact"]);
+    expect(tiers).toEqual(["frontier"]);
+    expect(thinkingLevels).toEqual(["medium"]);
   });
 
   it("forwards live invalid blocked status without disabling repair", () => {
@@ -152,6 +215,37 @@ describe("PromptEditor session controls", () => {
     editor.status = sessionStatus(mutatePolicy(tieredPolicyStatus));
 
     expect(statusChangeRequiresRender(editor, previous)).toBe(true);
+  });
+
+  it.each([
+    ["mode callback", "onSelectPolicyMode"],
+    ["tier callback", "onSelectPolicyTier"],
+    ["thinking callback", "onSelectPolicyThinking"],
+    ["thinking options", "policyThinkingOptions"],
+  ] as const)("re-renders when the policy %s changes alongside a cloned status republish", (_label, propertyName) => {
+    const previous = sessionStatus(tieredPolicyStatus);
+    const previousPolicyStatus = clonePolicyStatus(tieredPolicyStatus);
+    const editor = new PromptEditor();
+    editor.modelPolicyStatus = clonePolicyStatus(tieredPolicyStatus);
+    editor.status = {
+      ...previous,
+      modelPolicy: clonePolicyStatus(tieredPolicyStatus),
+      messageCount: 17,
+    };
+    Reflect.set(
+      editor,
+      propertyName,
+      propertyName === "policyThinkingOptions"
+        ? [{ level: "high", supported: true, selected: true }]
+        : vi.fn(),
+    );
+    const changed: PropertyValues<PromptEditor> = new Map();
+    changed.set("status", previous);
+    changed.set("modelPolicyStatus", previousPolicyStatus);
+    if (propertyName === "policyThinkingOptions") changed.set(propertyName, []);
+    else changed.set(propertyName, undefined);
+
+    expect(changeRequiresRender(editor, changed)).toBe(true);
   });
 
   it("retains render gating for an unrelated per-token status republish", () => {
@@ -231,6 +325,7 @@ type RenderedPolicyControl = HTMLElement & {
   saving: boolean;
   editable: boolean;
   error: string;
+  onSelectMode?: (mode: "exact" | "tiered") => void;
 };
 
 function renderCompactStatus(editor: PromptEditor): TemplateResult {
@@ -259,16 +354,32 @@ function renderedPolicyControl(controls: HTMLElement): RenderedPolicyControl {
   return control;
 }
 
+function renderedTierMenu(controls: HTMLElement): HTMLElementTagNameMap["session-tier-menu"] {
+  const menu = controls.querySelector("session-tier-menu");
+  if (menu === null) throw new Error("PromptEditor tier menu did not render");
+  return menu;
+}
+
+function renderedThinkingMenu(controls: HTMLElement): HTMLElementTagNameMap["session-thinking-menu"] {
+  const menu = controls.querySelector("session-thinking-menu");
+  if (menu === null) throw new Error("PromptEditor thinking menu did not render");
+  return menu;
+}
+
 function statusChangeRequiresRender(
   editor: PromptEditor,
   previous: SessionStatus,
   previousPolicyStatus?: ClientSessionModelPolicyStatus,
 ): boolean {
-  const method: unknown = Reflect.get(editor, "shouldUpdate");
-  if (!isShouldUpdate(method)) throw new Error("PromptEditor.shouldUpdate is not callable");
   const changed: PropertyValues<PromptEditor> = new Map();
   changed.set("status", previous);
   if (previousPolicyStatus !== undefined) changed.set("modelPolicyStatus", previousPolicyStatus);
+  return changeRequiresRender(editor, changed);
+}
+
+function changeRequiresRender(editor: PromptEditor, changed: PropertyValues<PromptEditor>): boolean {
+  const method: unknown = Reflect.get(editor, "shouldUpdate");
+  if (!isShouldUpdate(method)) throw new Error("PromptEditor.shouldUpdate is not callable");
   return method.call(editor, changed);
 }
 

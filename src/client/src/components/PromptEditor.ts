@@ -8,6 +8,7 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { api, type FileSuggestion, type PromptAttachment, type SessionStatus, type SlashCommand } from "../api";
 import {
   type ClientSessionModelPolicyStatus,
+  type ModelTier,
   type ModelTierSettingsResponse,
   type PromptAttachmentDelivery,
 } from "../../../shared/apiTypes";
@@ -21,8 +22,12 @@ import { createMobilePromptEnterMedia, readPromptEnterPreference, shouldSendProm
 import { promptEditorStyles, type CompletionItem } from "./shared";
 import { renderAttachIcon, renderCompactIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
+import { TIER_LABELS } from "./modelPolicyLabels";
+import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 import "./AutocompleteMenu";
 import "./SessionModelPolicyControl";
+import "./SessionThinkingMenu";
+import "./SessionTierMenu";
 
 type PendingAttachment = CapturedAttachment & { id: string };
 
@@ -51,6 +56,10 @@ export class PromptEditor extends LitElement {
   @property({ attribute: false }) sessionConfiguration?: Pick<SessionStatus, "model" | "thinkingLevel">;
   @property({ attribute: false }) modelPolicyStatus?: ClientSessionModelPolicyStatus;
   @property({ attribute: false }) modelTierCatalog?: ModelTierSettingsResponse;
+  @property({ attribute: false }) onSelectPolicyMode?: (mode: "exact" | "tiered") => void;
+  @property({ attribute: false }) onSelectPolicyTier?: (tier: ModelTier) => void;
+  @property({ attribute: false }) onSelectPolicyThinking?: (level: string) => void;
+  @property({ attribute: false }) policyThinkingOptions: ThinkingLevelOption[] = [];
   @property({ type: Boolean }) modelPolicyLoading = false;
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
@@ -207,11 +216,29 @@ export class PromptEditor extends LitElement {
             .saving=${this.modelPolicySaving}
             .editable=${policyEditable}
             .error=${this.modelPolicyError}
+            .onSelectMode=${this.onSelectPolicyMode}
           ></session-model-policy-control>
         `}
-        ${policyStatus?.mode === "tiered" ? null : html`
+        ${policyStatus?.mode === "tiered" ? html`
+          <session-tier-menu
+            .catalog=${this.modelTierCatalog}
+            .selectedTier=${policyStatus.tier}
+            .label=${policyStatus.tier === undefined ? "Choose tier" : TIER_LABELS[policyStatus.tier]}
+            .editable=${policyEditable}
+            .onSelectTier=${this.onSelectPolicyTier}
+          ></session-tier-menu>
+        ` : html`
           <button class="select-model" ?disabled=${this.onSelectModel === undefined} title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
-          <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
+          ${policyStatus === undefined ? html`
+            <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
+          ` : html`
+            <session-thinking-menu
+              .options=${this.policyThinkingOptions}
+              .label=${policyStatus.resolved.thinkingLevel}
+              .editable=${policyEditable}
+              .onSelectLevel=${this.onSelectPolicyThinking}
+            ></session-thinking-menu>
+          `}
         `}
       </div>
     `;
