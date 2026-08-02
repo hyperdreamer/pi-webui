@@ -1042,7 +1042,10 @@ describe("tier plumbing through the offline fake", () => {
       const before = JSON.parse(toolText(policyTool.execute("call-1", {})));
       expect(before.policy.mode).toBe("exact");
       expect(before.policy.currentTier).toBeNull();
-      expect(before.tierCommands.exactOutcome).toBe("ignored-exact");
+      // The result advertises no tier slash commands, because the runtime
+      // registers none; only the outcome label survives, on the transcript.
+      expect(before.tierCommands).toBeUndefined();
+      expect(JSON.stringify(before)).not.toContain("/tier-");
       // Exact mode pins one tuple: what runs now is what the next request runs.
       expect(before.policy.nextRequestResolved).toEqual(before.policy.currentRuntime);
       // The pinned tuple is not free to drift. The Exact-mode eval scenario's
@@ -1072,7 +1075,6 @@ describe("tier plumbing through the offline fake", () => {
       ));
       expect(transcript.requestedTier).toBe(tier);
       expect(transcript.tierOutcome).toBe("ignored-exact");
-      expect(transcript.tierOutcome).toBe(before.tierCommands.exactOutcome);
       // No effective tier exists in Exact mode, and the child runs the pinned
       // tuple rather than anything derived from the request.
       expect(transcript.effectiveTier).toBeNull();
