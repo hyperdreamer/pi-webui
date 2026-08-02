@@ -6,12 +6,15 @@
     "src/plugin-api/unstable.ts",
     "extensions/pi-webui.ts",
     "pi-webui-plugins/**/pi-webui-plugin.ts",
-    "scripts/*.mjs"
+    "scripts/*.mjs",
+    "optional-skills/subagent-driven-development/scripts/*.mjs",
+    "optional-skills/subagent-driven-development/evals/{fake-sdd-tools,run-pressure-evals}.mjs"
   ],
   "project": [
     "src/**/*.ts",
     "extensions/**/*.ts",
-    "pi-webui-plugins/**/*.ts"
+    "pi-webui-plugins/**/*.ts",
+    "optional-skills/**/*.mjs"
   ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": ["tsx"],

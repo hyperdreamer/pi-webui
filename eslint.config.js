@@ -8,6 +8,17 @@ export default defineConfig([
     ignores: ["dist/**", "node_modules/**", "plugins/*/dist/**"],
   },
   {
+    files: ["optional-skills/**/*.mjs"],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "module",
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  {
     files: ["src/**/*.ts", "extensions/**/*.ts", "pi-webui-plugins/**/*.ts", "plugins/**/*.ts", "vite.config.ts", "vitest.config.ts"],
     extends: [
       js.configs.recommended,
