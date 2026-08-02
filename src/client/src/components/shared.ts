@@ -187,8 +187,12 @@ export const appStyles = css`
   .session-start-content h1 { margin: 0; color: var(--pi-text-bright); background: linear-gradient(105deg, var(--pi-accent), var(--pi-success), var(--pi-text-bright)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; font-size: clamp(32px, 5vw, 54px); line-height: 1.08; letter-spacing: -.04em; }
   .session-start-copy { max-width: 620px; margin: 0; color: var(--pi-muted); font-size: clamp(15px, 2vw, 18px); line-height: 1.55; }
   .session-start-copy strong { color: var(--pi-text); font-weight: 650; }
-  .session-start-composer { overflow: hidden; border: 1px solid var(--pi-border); border-radius: 18px; background: color-mix(in srgb, var(--pi-surface) 88%, var(--pi-bg)); box-shadow: 0 18px 50px var(--pi-shadow); }
-  .session-start-composer prompt-editor { display: block; }
+  /* No overflow clipping here. The session model policy control opens its panel
+     upward out of the composer (bottom: 100%), and clipping this box hid the
+     panel's header and leading fields behind the composer's top edge. Rounding is
+     preserved by having the only child inherit the radius instead of clipping. */
+  .session-start-composer { border: 1px solid var(--pi-border); border-radius: 18px; background: color-mix(in srgb, var(--pi-surface) 88%, var(--pi-bg)); box-shadow: 0 18px 50px var(--pi-shadow); }
+  .session-start-composer prompt-editor { display: block; border-radius: inherit; }
   .session-start-hint { margin: -4px 0 0; color: var(--pi-dim); font-size: 13px; line-height: 1.45; }
   @media (max-width: 640px) {
     .session-start-screen { place-items: start center; padding: 36px 16px; }
@@ -904,7 +908,11 @@ export const actionPaletteStyles = css`
 
 export const promptEditorStyles = css`
   :host { position: relative; z-index: 5; display: block; color: var(--pi-text); font: 14px system-ui, sans-serif; }
-  footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px; border-top: 1px solid var(--pi-border); }
+  /* Inherits the starter composer's radius so its border and shell-mode background
+     round with the wrapper. The wrapper cannot clip its overflow for that, because
+     it would hide the upward-opening model policy panel. Harmless in the
+     active-session composer, whose wrapper has no radius to inherit. */
+  footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px; border-top: 1px solid var(--pi-border); border-radius: inherit; }
   footer.shell-mode { border-top-color: var(--pi-success); background: var(--pi-success-bg); }
   .editor-wrap { position: relative; min-width: 0; }
   .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
