@@ -44,11 +44,11 @@ function firstText(content: readonly (TextContent | ImageContent)[]): string {
 }
 
 describe("createSubsessionToolDefinitions", () => {
-  it("spawn_subsession forwards parent identity and params from the live context", async () => {
+  it("spawn_subsession forwards parent identity, typed tier, and params from the live context", async () => {
     const spawn = vi.fn(() => Promise.resolve({ sessionId: "child-1", cwd: "/repos/a-feature" }));
     const { spawn: spawnTool } = tools({ spawn });
 
-    const result = await spawnTool.execute("call-1", { prompt: "do it", cwd: "/repos/a-feature" }, undefined, undefined, ctxFor("parent-1", "/sessions/parent-1.jsonl", dispatchModel));
+    const result = await spawnTool.execute("call-1", { prompt: "do it", cwd: "/repos/a-feature", tier: "economy" }, undefined, undefined, ctxFor("parent-1", "/sessions/parent-1.jsonl", dispatchModel));
 
     expect(spawn).toHaveBeenCalledWith({
       spawningCwd: "/repos/a",
@@ -57,6 +57,7 @@ describe("createSubsessionToolDefinitions", () => {
       prompt: "do it",
       cwd: "/repos/a-feature",
       model: dispatchModel,
+      tier: "economy",
     });
     expect(result.details).toEqual({ sessionId: "child-1", cwd: "/repos/a-feature" });
     expect(firstText(result.content)).toContain("Started tracked subsession child-1");

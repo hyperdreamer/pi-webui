@@ -1,4 +1,4 @@
-const DEFAULT_PI_WEBUI_RELEASE_LOOKUP_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_PI_WEBUI_RELEASE_LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
 
 export interface PiWebUiReleaseLookup {
   checkedAtMs: number;

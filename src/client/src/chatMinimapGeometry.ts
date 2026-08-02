@@ -52,6 +52,32 @@ export function clampRatio(value: number): number {
 }
 
 /**
+ * Smallest ratio change the minimap can actually display.
+ *
+ * The rail paints positions as percentages rounded to two decimals, so ratio
+ * differences below this threshold collapse to identical geometry.
+ */
+const MINIMAP_RATIO_EPSILON = 5e-5;
+
+/**
+ * Whether two viewport states would paint the minimap identically.
+ *
+ * Scroll events fire more often than frames and frequently repeat a position,
+ * for example while the scroller is clamped at an extent. Comparing rendered
+ * geometry rather than object identity lets callers skip redundant updates
+ * instead of re-rendering once per event.
+ */
+export function minimapViewportsEqual(
+  left: MinimapViewport,
+  right: MinimapViewport,
+  epsilon = MINIMAP_RATIO_EPSILON,
+): boolean {
+  return left.visible === right.visible
+    && Math.abs(left.scrollRatio - right.scrollRatio) < epsilon
+    && Math.abs(left.viewportRatio - right.viewportRatio) < epsilon;
+}
+
+/**
  * Map a click position on the minimap rail (as a 0–1 ratio) to the target
  * scroll position (as a 0–1 ratio over the scrollable range).
  *

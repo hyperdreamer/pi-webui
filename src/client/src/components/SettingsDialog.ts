@@ -1,17 +1,18 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AppAction } from "../actions";
-import { configApi, piPackagesApi, pluginsApi, type Machine, type MachineRuntime, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse } from "../api";
+import { configApi, modelTiersApi, piPackagesApi, pluginsApi, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
 import "./settings/SettingsSessiondPanel";
 import "./settings/SettingsPackagesPanel";
 import "./settings/SettingsPluginsPanel";
+import "./settings/SettingsModelTiersPanel";
 import "./settings/SettingsShortcutsPanel";
 import { friendlyPiPackageErrorMessage, isPiPackageManagementUnsupported, piPackageManagementSupport, piPackageManagementSupportKey, piPackageMutationFollowUpMessage, piPackageTargetLabel, shouldRefreshGatewayPluginsAfterPiPackageMutation, type PiPackageManagementSupport, type PiPackageOperationState, type PiPackageTargetContext } from "./settings/piPackageSettings";
 import { loadGatewaySettingsData, loadPiPackagesData } from "./settings/settingsDataLoading";
 import { mergeSelectedMachineAccessConfig } from "./settings/settingsMachineAccessConfig";
-import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, settingsMachineTarget, settingsMachineTargetLabel, type AgentProfileSettingsSupport, type SelectedMachineSettingsSupport, type SettingsMachineTarget } from "./settings/settingsMachineTarget";
+import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, settingsMachineTarget, settingsMachineTargetLabel, type AgentProfileSettingsSupport, type SelectedMachineSettingsSupport, type SettingsMachineTarget } from "./settings/settingsMachineTarget";
 import { mergeSelectedMachinePluginConfig, pluginEnabledConfigPatch } from "./settings/settingsPluginConfig";
 import { mergeSelectedMachineSessiondConfig } from "./settings/settingsSessiondConfig";
 
@@ -32,11 +33,13 @@ export class SettingsDialog extends LitElement {
   @state() private selectedPluginConfigResponse: PiWebUiConfigResponse | undefined;
   @state() private selectedPluginsResponse: PiWebUiPluginsResponse | undefined;
   @state() private packagesResponse: PiPackagesResponse | undefined;
+  @state() private modelTiersConfigResponse: ModelTierSettingsResponse | undefined;
   @state() private loading = true;
   @state() private accessLoading = true;
   @state() private sessiondLoading = true;
   @state() private pluginLoading = true;
   @state() private packageLoading = true;
+  @state() private modelTiersLoading = true;
   @state() private saving = false;
   @state() private packageOperation: PiPackageOperationState | undefined;
   @state() private error = "";
@@ -44,6 +47,7 @@ export class SettingsDialog extends LitElement {
   @state() private sessiondError = "";
   @state() private pluginError = "";
   @state() private packageError = "";
+  @state() private modelTiersError = "";
   @state() private savedMessage = "";
   @state() private packageMessage = "";
   private savedMessageTimer: number | undefined;
@@ -53,6 +57,7 @@ export class SettingsDialog extends LitElement {
   private pluginLoadRequestSeq = 0;
   private packageLoadRequestSeq = 0;
   private packageMutationSeq = 0;
+  private modelTiersLoadRequestSeq = 0;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -61,6 +66,7 @@ export class SettingsDialog extends LitElement {
     void this.reloadSessiondState();
     void this.loadPluginsForTarget();
     void this.loadPackagesForTarget();
+    void this.loadModelTiersForTarget();
   }
 
   override disconnectedCallback(): void {
@@ -82,6 +88,8 @@ export class SettingsDialog extends LitElement {
         if (this.isConnected) void this.loadPluginsForTarget(currentTarget);
         this.resetPackageStateForTargetChange();
         if (this.isConnected) void this.loadPackagesForTarget(currentTarget);
+        this.resetModelTiersStateForTargetChange();
+        if (this.isConnected) void this.loadModelTiersForTarget(currentTarget);
         return;
       }
     }
@@ -94,6 +102,8 @@ export class SettingsDialog extends LitElement {
       if (this.isConnected) void this.loadSessiondConfigForTarget(currentTarget);
       this.resetPluginStateForTargetChange();
       if (this.isConnected) void this.loadPluginsForTarget(currentTarget);
+      this.resetModelTiersStateForTargetChange();
+      if (this.isConnected) void this.loadModelTiersForTarget(currentTarget);
     }
     if (!this.packageManagementSupportNeedsReload(changed.get("machineRuntime"), currentTarget)) return;
     this.resetPackageStateForTargetChange();
@@ -117,6 +127,7 @@ export class SettingsDialog extends LitElement {
               ${this.renderNavButton("sessiond", "Session daemon", "Selected machine")}
               ${this.renderNavButton("packages", "Pi packages", "Selected machine")}
               ${this.renderNavButton("plugins", "PI WEBUI plugins", "Selected machine")}
+              ${this.renderNavButton("modeltiers", "Model tiers", "Selected machine")}
               ${this.renderNavButton("shortcuts", "Keyboard", "Gateway shortcuts")}
             </nav>
             <main class="settings-content">
@@ -177,6 +188,21 @@ export class SettingsDialog extends LitElement {
           .onRemovePackage=${(source: string, scope: PiPackageScope) => this.removePiPackage(source, scope)}
           .onUpdatePackage=${(source?: string) => this.updatePiPackage(source)}
         ></settings-packages-panel>
+      `;
+    }
+    if (this.section === "modeltiers") {
+      return html`
+        <settings-model-tiers-panel
+          .response=${this.modelTiersConfigResponse}
+          .loading=${this.modelTiersLoading}
+          .saving=${this.saving}
+          .error=${this.modelTiersError}
+          .savedMessage=${this.savedMessage}
+          .targetLabel=${settingsMachineTargetLabel(this.settingsTarget())}
+          .support=${this.modelTierSettingsSupport()}
+          .onReload=${() => this.loadModelTiersForTarget()}
+          .onSave=${(ladder: ModelTierLadder) => this.saveModelTiers(ladder)}
+        ></settings-model-tiers-panel>
       `;
     }
     if (this.section === "plugins") {
@@ -346,6 +372,30 @@ export class SettingsDialog extends LitElement {
     }
   }
 
+  private async loadModelTiersForTarget(target = this.settingsTarget()): Promise<void> {
+    const requestSeq = ++this.modelTiersLoadRequestSeq;
+    const support = this.modelTierSettingsSupport(target);
+    if (isSelectedMachineSettingsUnsupported(support)) {
+      this.modelTiersConfigResponse = undefined;
+      this.modelTiersLoading = false;
+      this.modelTiersError = support.message ?? `Selected-machine settings are not available on ${settingsMachineTargetLabel(target)}.`;
+      return;
+    }
+    this.modelTiersLoading = true;
+    this.modelTiersError = "";
+    try {
+      const response = await modelTiersApi.settings(target.id);
+      if (!this.isCurrentModelTiersLoad(requestSeq, target)) return;
+      this.modelTiersConfigResponse = response;
+    } catch (error) {
+      if (this.isCurrentModelTiersLoad(requestSeq, target)) {
+        this.modelTiersError = `Failed to load model tier settings from ${settingsMachineTargetLabel(target)}: ${friendlySelectedMachineSettingsErrorMessage(errorMessage(error), target)}`;
+      }
+    } finally {
+      if (this.isCurrentModelTiersLoad(requestSeq, target)) this.modelTiersLoading = false;
+    }
+  }
+
   private async togglePlugin(pluginId: string, enabled: boolean): Promise<void> {
     if (this.saving) return;
     const target = this.settingsTarget();
@@ -462,6 +512,46 @@ export class SettingsDialog extends LitElement {
     }
   }
 
+  private async saveModelTiers(ladder: ModelTierLadder): Promise<void> {
+    if (this.saving) return;
+    const target = this.settingsTarget();
+    const support = this.modelTierSettingsSupport(target);
+    if (isSelectedMachineSettingsUnsupported(support)) {
+      this.modelTiersError = support.message ?? `Selected-machine settings are not available on ${settingsMachineTargetLabel(target)}.`;
+      return;
+    }
+    this.saving = true;
+    this.modelTiersError = "";
+    this.savedMessage = "";
+    try {
+      const response = await modelTiersApi.save(ladder, target.id);
+      if (!this.isCurrentSettingsTarget(target)) return;
+      this.modelTiersConfigResponse = response;
+      if (target.kind === "local" && this.configResponse !== undefined && response.ladder !== undefined) {
+        const ladder = response.ladder;
+        this.configResponse = {
+          ...this.configResponse,
+          config: {
+            ...this.configResponse.config,
+            modelTiers: ladder,
+          },
+          effectiveConfig: {
+            ...this.configResponse.effectiveConfig,
+            modelTiers: ladder,
+          },
+        };
+        this.onConfigSaved?.(this.configResponse.effectiveConfig);
+      }
+      this.showSavedMessage();
+    } catch (error) {
+      if (this.isCurrentSettingsTarget(target)) {
+        this.modelTiersError = `Failed to save model tier settings on ${settingsMachineTargetLabel(target)}: ${friendlySelectedMachineSettingsErrorMessage(errorMessage(error), target)}`;
+      }
+    } finally {
+      this.saving = false;
+    }
+  }
+
   private async installPiPackage(source: string): Promise<void> {
     const target = this.packageTarget();
     await this.runPiPackageMutation({ kind: "install", source }, "install Pi package", target, () => piPackagesApi.install(source, target.id));
@@ -545,6 +635,10 @@ export class SettingsDialog extends LitElement {
     return agentProfileSettingsSupport(target, this.machineRuntime);
   }
 
+  private modelTierSettingsSupport(target = this.settingsTarget()): SelectedMachineSettingsSupport {
+    return modelTierSettingsSupport(target, this.machineRuntime);
+  }
+
   private selectedMachineSettingsSupportNeedsReload(previousRuntime: MachineRuntime | undefined, target: SettingsMachineTarget): boolean {
     const previousSupport = selectedMachineSettingsSupport(target, previousRuntime);
     const currentSupport = this.selectedMachineSettingsSupport(target);
@@ -576,6 +670,10 @@ export class SettingsDialog extends LitElement {
 
   private isCurrentPluginLoad(requestSeq: number, target: SettingsMachineTarget): boolean {
     return requestSeq === this.pluginLoadRequestSeq && this.isCurrentSettingsTarget(target);
+  }
+
+  private isCurrentModelTiersLoad(requestSeq: number, target: SettingsMachineTarget): boolean {
+    return requestSeq === this.modelTiersLoadRequestSeq && this.isCurrentSettingsTarget(target);
   }
 
   private isCurrentPackageLoad(requestSeq: number, target: PiPackageTargetContext): boolean {
@@ -629,6 +727,14 @@ export class SettingsDialog extends LitElement {
     this.packageError = "";
     this.packagesResponse = undefined;
     if (hadPackageOperation) this.saving = false;
+  }
+
+  private resetModelTiersStateForTargetChange(): void {
+    this.modelTiersLoadRequestSeq += 1;
+    this.modelTiersLoading = false;
+    this.modelTiersError = "";
+    this.modelTiersConfigResponse = undefined;
+    this.savedMessage = "";
   }
 
   private showSavedMessage(): void {
@@ -686,7 +792,8 @@ export type SettingsPanelTag =
   | "settings-sessiond-panel"
   | "settings-packages-panel"
   | "settings-plugins-panel"
-  | "settings-shortcuts-panel";
+  | "settings-shortcuts-panel"
+  | "settings-model-tiers-panel";
 
 /**
  * The single custom-element panel the settings dialog renders for a section.
@@ -706,6 +813,8 @@ export function activeSettingsPanelTag(section: SettingsSection): SettingsPanelT
       return "settings-plugins-panel";
     case "shortcuts":
       return "settings-shortcuts-panel";
+    case "modeltiers":
+      return "settings-model-tiers-panel";
     case "general":
       return "settings-general-panel";
   }

@@ -51,7 +51,7 @@ describe("ChatTranscriptStore", () => {
 
   it("keeps live streamed transcript state out of the raw history cache", () => {
     const cache = new MemoryChatHistoryCache();
-    const store = new ChatTranscriptStore(cache);
+    const store = new ChatTranscriptStore(cache, (write) => { write(); });
     const initial = page(0, 2, [{ role: "user", content: "hi" }, { role: "assistant", content: "hel" }]);
     const updated = page(1, 3, [{ role: "assistant", content: "hello" }, { role: "user", content: "next" }]);
 
@@ -70,5 +70,89 @@ describe("ChatTranscriptStore", () => {
       messagePageEnd: 3,
       messagePageTotal: 3,
     });
+  });
+
+  it("coalesces cache writes for a burst of merges", () => {
+    const writes: string[] = [];
+    const cache: ChatHistoryCacheAdapter = {
+      read: () => undefined,
+      write: (sessionId) => { writes.push(sessionId); },
+      remove: () => undefined,
+    };
+    const scheduled: (() => void)[] = [];
+    const store = new ChatTranscriptStore(cache, (write) => { scheduled.push(write); });
+
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }], start: 0, total: 1 });
+    const view = store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }], start: 0, total: 2 });
+
+    // The merged view is available immediately; only the storage write defers.
+    expect(view.messages).toHaveLength(2);
+    expect(writes).toEqual([]);
+
+    for (const write of scheduled.splice(0)) write();
+
+    expect(writes).toEqual(["s1"]);
+  });
+
+  it("writes the latest page when a coalesced write runs", () => {
+    const written: RawMessagePage[] = [];
+    const cache: ChatHistoryCacheAdapter = {
+      read: () => undefined,
+      write: (_sessionId, page) => { written.push(page); },
+      remove: () => undefined,
+    };
+    const scheduled: (() => void)[] = [];
+    const store = new ChatTranscriptStore(cache, (write) => { scheduled.push(write); });
+
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }], start: 0, total: 1 });
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }], start: 0, total: 2 });
+    for (const write of scheduled.splice(0)) write();
+
+    expect(written).toHaveLength(1);
+    expect(written[0]?.messages).toHaveLength(2);
+  });
+
+  it("cancels a pending write when the session is discarded", () => {
+    const writes: string[] = [];
+    const removed: string[] = [];
+    const cache: ChatHistoryCacheAdapter = {
+      read: () => undefined,
+      write: (sessionId) => { writes.push(sessionId); },
+      remove: (sessionId) => { removed.push(sessionId); },
+    };
+    const scheduled: (() => void)[] = [];
+    const store = new ChatTranscriptStore(cache, (write) => { scheduled.push(write); });
+
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }], start: 0, total: 1 });
+    store.discard("s1");
+    for (const write of scheduled.splice(0)) write();
+
+    expect(removed).toEqual(["s1"]);
+    expect(writes).toEqual([]);
+  });
+
+  it("coalesces cache writes independently per session", () => {
+    const writes: string[] = [];
+    const written = new Map<string, RawMessagePage>();
+    const cache: ChatHistoryCacheAdapter = {
+      read: () => undefined,
+      write: (sessionId, history) => {
+        writes.push(sessionId);
+        written.set(sessionId, history);
+      },
+      remove: () => undefined,
+    };
+    const scheduled: (() => void)[] = [];
+    const store = new ChatTranscriptStore(cache, (write) => { scheduled.push(write); });
+
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }], start: 0, total: 1 });
+    store.mergeHistory("s2", { messages: [{ role: "user", content: "c" }], start: 0, total: 1 });
+    store.mergeHistory("s1", { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }], start: 0, total: 2 });
+    store.mergeHistory("s2", { messages: [{ role: "user", content: "c" }, { role: "assistant", content: "d" }], start: 0, total: 2 });
+    for (const write of scheduled.splice(0)) write();
+
+    expect(writes).toEqual(["s1", "s2"]);
+    expect(written.get("s1")?.messages).toHaveLength(2);
+    expect(written.get("s2")?.messages).toHaveLength(2);
   });
 });

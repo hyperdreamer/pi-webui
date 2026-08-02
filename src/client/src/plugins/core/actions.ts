@@ -22,6 +22,7 @@ export function createCoreActions(): PluginAction[] {
       description: "Move keyboard focus to the message composer",
       shortcut: "mod+g c",
       group: "General",
+      closesActionPalette: true,
       run: (context) => { context.focusPrompt(); },
     },
     {
@@ -29,6 +30,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Add Machine",
       description: "Register another PI WEBUI runtime reachable from this gateway",
       group: "Machine",
+      closesActionPalette: true,
       run: (context) => context.addMachine(),
     },
     {
@@ -51,6 +53,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Remove Selected Machine",
       description: "Remove the selected remote machine from this gateway",
       group: "Machine",
+      closesActionPalette: true,
       enabled: (context) => context.state.selectedMachine?.kind === "remote",
       run: (context) => context.removeSelectedMachine(),
     },
@@ -58,6 +61,7 @@ export function createCoreActions(): PluginAction[] {
       id: "project.add",
       title: "Add Project",
       group: "Project",
+      closesActionPalette: true,
       run: (context) => context.addProject(),
     },
     {
@@ -65,6 +69,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Configure Provider Authentication",
       description: "Run /login without tying authentication to a session",
       group: "General",
+      closesActionPalette: true,
       run: (context) => context.configureAuth(),
     },
     {
@@ -72,6 +77,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Remove Provider Authentication",
       description: "Run /logout for stored pi credentials",
       group: "General",
+      closesActionPalette: true,
       run: (context) => context.logoutAuth(),
     },
     {
@@ -79,6 +85,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Select Theme",
       description: "Choose the PI WEBUI color theme",
       group: "Preferences",
+      closesActionPalette: true,
       run: (context) => { context.openThemePicker(); },
     },
     {
@@ -87,6 +94,7 @@ export function createCoreActions(): PluginAction[] {
       description: "Manage PI WEBUI configuration and keyboard shortcuts",
       shortcut: "mod+,",
       group: "Preferences",
+      closesActionPalette: true,
       run: (context) => { context.piWebUiUnstable?.openSettings?.(); },
     },
     {
@@ -101,6 +109,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Go to Chat",
       shortcut: "mod+1",
       group: "Navigation",
+      closesActionPalette: true,
       run: (context) => { context.focusPrompt(); },
     },
     {
@@ -108,6 +117,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Go to Files",
       shortcut: "mod+2",
       group: "Navigation",
+      closesActionPalette: true,
       enabled: hasWorkspace,
       run: (context) => { context.selectMainView("core:workspace.files"); },
     },
@@ -116,6 +126,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Go to Git",
       shortcut: "mod+3",
       group: "Navigation",
+      closesActionPalette: true,
       enabled: hasGitWorkspace,
       run: (context) => { context.selectMainView("core:workspace.git"); },
     },
@@ -124,6 +135,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Go to Terminal",
       shortcut: "mod+4",
       group: "Navigation",
+      closesActionPalette: true,
       enabled: hasWorkspace,
       run: (context) => { context.selectMainView("core:workspace.terminal"); },
     },
@@ -156,6 +168,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Delete Workspace",
       description: "Remove the selected Git worktree",
       group: "Workspace",
+      closesActionPalette: true,
       enabled: hasDeletableWorkspace,
       run: (context) => context.deleteWorkspace(),
     },
@@ -164,6 +177,7 @@ export function createCoreActions(): PluginAction[] {
       title: "Start Session",
       shortcut: "mod+enter",
       group: "Session",
+      closesActionPalette: true,
       enabled: hasWorkspace,
       run: (context) => context.startSession(),
     },

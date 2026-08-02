@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { MODEL_TIERS, type ModelTier } from "./modelTierRegistry.js";
 import type { TranscriptContentKind, TranscriptEntry, TranscriptRole, TranscriptView } from "./subsessionTranscript.js";
 
 /** Lifecycle phase of a tracked subsession as seen by its parent. */
@@ -23,6 +24,8 @@ export interface SpawnSubsessionInvocation {
   cwd: string | undefined;
   /** Current model from the dispatching session, used as the spawned session's default. */
   model?: SpawnSubsessionModel;
+  /** Optional typed tier that the server resolves before creating the child. */
+  tier?: ModelTier;
 }
 
 export interface SubsessionSummary {
@@ -71,6 +74,16 @@ const SpawnSubsessionParams = Type.Object({
   }),
   cwd: Type.Optional(Type.String({
     description: "Child workspace in the same project (worktree or root); defaults to the parent's directory.",
+  })),
+  tier: Type.Optional(Type.Union([
+    Type.Literal(MODEL_TIERS[0]),
+    Type.Literal(MODEL_TIERS[1]),
+    Type.Literal(MODEL_TIERS[2]),
+    Type.Literal(MODEL_TIERS[3]),
+    Type.Literal(MODEL_TIERS[4]),
+    Type.Literal(MODEL_TIERS[5]),
+  ], {
+    description: "Exact model tier for the child; prompt text never selects the tier.",
   })),
 });
 
@@ -197,6 +210,7 @@ export function createSubsessionToolDefinitions(spawningCwd: string, deps: Subse
         prompt: params.prompt,
         cwd: params.cwd,
         ...(ctx.model === undefined ? {} : { model: ctx.model }),
+        ...(params.tier === undefined ? {} : { tier: params.tier }),
       });
       return {
         content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}. Continue other work, then join with yield_to_subsessions; do not poll.` }],

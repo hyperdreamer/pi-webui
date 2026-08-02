@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionEventHub, type RealtimeSocket } from "./sessionEventHub.js";
 
 class FakeSocket extends EventEmitter implements RealtimeSocket {
@@ -7,6 +7,54 @@ class FakeSocket extends EventEmitter implements RealtimeSocket {
   readyState = this.OPEN;
   send = vi.fn();
   terminate = vi.fn();
+}
+
+class FakeClock {
+  now = 1_000;
+
+  constructor() {
+    vi.useFakeTimers();
+    vi.setSystemTime(this.now);
+  }
+
+  readonly setTimeout = (callback: () => void, delayMs: number): ReturnType<typeof setTimeout> => setTimeout(callback, delayMs);
+
+  readonly clearTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+    clearTimeout(handle);
+  };
+
+  advanceBy(durationMs: number): void {
+    this.now += durationMs;
+    vi.advanceTimersByTime(durationMs);
+  }
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function status(messageCount: number) {
+  return {
+    sessionId: "s1",
+    isStreaming: false,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: 0,
+    queuedMessages: [],
+    messageCount,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+  };
+}
+
+function activity(at: string, overrides: { phase?: "active" | "idle" | "error"; label?: string; detail?: string } = {}) {
+  return {
+    sessionId: "s1",
+    phase: "active" as const,
+    label: "receiving response",
+    at,
+    ...overrides,
+  };
 }
 
 describe("SessionEventHub", () => {
@@ -260,5 +308,139 @@ describe("SessionEventHub", () => {
     hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "Renamed" });
 
     expect(globalSocket.send).toHaveBeenCalledWith(JSON.stringify({ type: "session.name", sessionId: "s1", name: "Renamed" }));
+  });
+
+  it("gives a delayed status update its sequence only when its timer sends it", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      intervalMs: 100,
+      now: () => clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const socket = new FakeSocket();
+    hub.add("s1", socket);
+
+    hub.publish("s1", { type: "status.update", status: status(1) });
+    clock.advanceBy(10);
+    hub.publish("s1", { type: "status.update", status: status(2) });
+    hub.publish("s1", { type: "assistant.delta", text: "after status" });
+
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(hub.currentSeq("s1")).toBe(2);
+    expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: "assistant.delta", text: "after status", seq: 2 }));
+
+    clock.advanceBy(90);
+
+    expect(hub.currentSeq("s1")).toBe(3);
+    expect(socket.send).toHaveBeenNthCalledWith(3, JSON.stringify({ type: "status.update", status: status(2), seq: 3 }));
+  });
+
+  it("coalesces timestamp-only activity updates on the session channel", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      intervalMs: 100,
+      now: () => clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const socket = new FakeSocket();
+    hub.add("s1", socket);
+
+    hub.publish("s1", { type: "activity.update", activity: activity("2026-08-01T00:00:00.000Z") });
+    clock.advanceBy(10);
+    hub.publish("s1", { type: "activity.update", activity: activity("2026-08-01T00:00:01.000Z") });
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+
+    clock.advanceBy(90);
+
+    expect(socket.send).toHaveBeenNthCalledWith(2, JSON.stringify({
+      type: "activity.update",
+      activity: activity("2026-08-01T00:00:01.000Z"),
+      seq: 2,
+    }));
+  });
+
+  it("keeps session and global coalescing state independent", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      intervalMs: 100,
+      now: () => clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+
+    hub.publish("s1", { type: "status.update", status: status(1) });
+    clock.advanceBy(10);
+    hub.publishGlobal({ type: "status.update", status: status(1) });
+    hub.publish("s1", { type: "status.update", status: status(2) });
+    hub.publishGlobal({ type: "status.update", status: status(2) });
+
+    expect(sessionSocket.send).toHaveBeenCalledTimes(1);
+    expect(globalSocket.send).toHaveBeenCalledTimes(1);
+
+    clock.advanceBy(90);
+
+    expect(sessionSocket.send).toHaveBeenNthCalledWith(2, JSON.stringify({ type: "status.update", status: status(2), seq: 2 }));
+    expect(globalSocket.send).toHaveBeenCalledTimes(1);
+
+    clock.advanceBy(10);
+
+    expect(globalSocket.send).toHaveBeenNthCalledWith(2, JSON.stringify({ type: "status.update", status: status(2) }));
+  });
+
+  it("never delays or coalesces transcript, error, name, or notification events", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      intervalMs: 100,
+      now: () => clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+    const notification = { id: "daemon-test:1", message: "notice", truncated: false, severity: "warning" as const, receivedAt: "2026-08-01T00:00:00.000Z", order: 1 };
+    const summary = { sessionId: "s1", cwd: "/workspace", inboxRevision: 1, retainedCount: 1, discardedCount: 0, highestSeverity: "warning" as const };
+
+    hub.publish("s1", { type: "status.update", status: status(1) });
+    clock.advanceBy(10);
+    hub.publish("s1", { type: "status.update", status: status(2) });
+    hub.publish("s1", { type: "assistant.delta", text: "a" });
+    hub.publish("s1", { type: "assistant.delta", text: "b" });
+    hub.publish("s1", { type: "session.error", message: "first" });
+    hub.publish("s1", { type: "session.error", message: "second" });
+    hub.publish("s1", { type: "session.name", sessionId: "s1", name: "first" });
+    hub.publish("s1", { type: "session.name", sessionId: "s1", name: "second" });
+    hub.publish("s1", {
+      type: "notifications.inbox",
+      daemonInstanceId: "daemon-test",
+      catalogRevision: 1,
+      summary,
+      dismissThrough: { order: 1, overflowWatermark: 0 },
+      delta: { kind: "added", notification },
+    });
+    hub.publish("s1", {
+      type: "notifications.inbox",
+      daemonInstanceId: "daemon-test",
+      catalogRevision: 2,
+      summary: { ...summary, inboxRevision: 2 },
+      dismissThrough: { order: 1, overflowWatermark: 0 },
+      delta: { kind: "added", notification: { ...notification, id: "daemon-test:2", order: 2 } },
+    });
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "first" });
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "second" });
+    hub.publishNotificationSummary({ type: "notifications.summary", daemonInstanceId: "daemon-test", catalogRevision: 1, summary });
+    hub.publishNotificationSummary({ type: "notifications.summary", daemonInstanceId: "daemon-test", catalogRevision: 2, summary: { ...summary, inboxRevision: 2 } });
+
+    expect(sessionSocket.send).toHaveBeenCalledTimes(9);
+    expect(hub.currentSeq("s1")).toBe(9);
+    expect(globalSocket.send).toHaveBeenCalledTimes(4);
   });
 });

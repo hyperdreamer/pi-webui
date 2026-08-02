@@ -260,11 +260,11 @@ Pin what the runtime actually provides. `spawn_subsession` accepts `{ prompt, cw
 
 Pin two properties of the identity input, because `rawPrompt` serves two purposes with incompatible tolerances. Directive recognition is whitespace-tolerant by design; identity comparison tolerates nothing.
 
-First, the directive bytes stay in the identity input. Stripping the directive before fingerprinting makes two dispatches that differ only in tier byte-identical, so a reused key would return the earlier child for a request that asked for a different tier, reporting `reused: true` with the earlier policy application and no detectable mismatch. That silent tier substitution is strictly worse than a false conflict, so identity must cover the directive.
+First, `tier` is a typed identity input alongside `cwd` and `rawPrompt`. Two dispatches differing only in tier are distinguishable because the tier is a structured field, not because a directive substring happens to be present in the prompt. The prompt bytes are still compared verbatim, so a renderer change is still a visible conflict, but the tier-substitution hazard is closed by the typed field rather than by fingerprinting prose. The fake must therefore read the tier from the `tier` parameter and must **not** parse it out of `rawPrompt`; a fake that recovers the tier by splitting the prompt validates a channel the runtime does not implement and cannot detect a child ignoring the directive.
 
 Second, recovery must never re-render the prompt. Dispatch intent stores the rendered prompt bytes, and recovery reissues those stored bytes verbatim if the controller rules to reissue. Re-rendering couples recovery to renderer output, so any drift — including interior drift such as an added blank line, which trimming cannot absorb — changes what the child receives on a path meant to be exact.
 
-Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child, which must keep the directive at byte zero. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
+Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child. Identity covers the raw prompt bytes plus the typed `tier` as a structured field, so two dispatches differing only in tier stay distinguishable without relying on directive bytes being present in the prompt. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
 
 - [x] **Step 7: Verify and commit Task 1**
 
@@ -1111,7 +1111,7 @@ git commit -m "feat(skills): persist recoverable SDD runs"
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs`
 
-**Interfaces:** Consumes a canonical tier, one static role template, and validated path-only context JSON. Produces a prompt whose first non-whitespace token is exactly `/tier-<lowercase-tier>` and whose report contract is bounded and file-based.
+**Interfaces:** Consumes a canonical tier, one static role template, and validated path-only context JSON. Produces a prompt whose first non-whitespace token is exactly `/tier-<lowercase-tier>` as a human-readable echo of the tier passed as the typed `tier` dispatch parameter. The echo has no control effect; it exists so a human reading a transcript can see the intended tier, and so a renderer/formula divergence is detectable by comparison.
 
 - [x] **Step 1: Write prompt-rendering RED tests**
 
@@ -1224,7 +1224,7 @@ The controller then applies the state-machine rule: unadjudicated or load-bearin
 
 Implement the role-to-template mapping in `scripts/lib/prompt-renderer.mjs` and expose it through the `sdd-state.mjs` CLI facade. Context JSON includes pinned `worktree`/`runRoot` and may contain only documented scalar/path fields and arrays of finding IDs/paths; reject unexpected keys, existing-input realpath escapes, and output paths whose real parent escapes. Render:
 
-1. `/tier-<lowercase-tier>` at byte zero;
+1. `/tier-<lowercase-tier>` at byte zero, as a human-readable echo of the typed `tier` parameter, never as the mechanism that selects the model;
 2. the static role contract;
 3. `## Dispatch Context` with escaped, validated absolute artifact paths and scalar identifiers;
 4. `## Return Channel` requiring the report path and bounded status result.

@@ -1,18 +1,18 @@
-import type { PiWebUiPlugin, WorkspacePanelContext } from "@hyperdreamer/pi-webui/plugin-api";
+import type { ActivityRailContext, PiWebUiPlugin } from "@hyperdreamer/pi-webui/plugin-api";
 import { defineMemoryPanelElement, isMemoryPanelVisible, memoryBadge } from "./memoryPanelElement.js";
 
 interface BundledMemoryAppState {
   readonly memory: import("./memoryData.js").MemoryWorkspaceState;
 }
 
-type BundledMemoryContext = WorkspacePanelContext & {
+type BundledMemoryContext = ActivityRailContext & {
   readonly state: BundledMemoryAppState;
   readonly onRefreshMemory: () => void;
 };
 
 // The core supplies a context compatible with BundledMemoryContext;
 // this is the narrowest boundary type without importing core internals.
-function bundledMemoryContext(context: WorkspacePanelContext): BundledMemoryContext {
+function bundledMemoryContext(context: ActivityRailContext): BundledMemoryContext {
   // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
   return context as BundledMemoryContext;
 }
@@ -25,7 +25,7 @@ const plugin: PiWebUiPlugin = {
 
     return {
       contributions: {
-        workspacePanels: [
+        activityRailItems: [
           {
             id: "workspace.memory",
             title: "Memory",
@@ -40,7 +40,8 @@ const plugin: PiWebUiPlugin = {
               </svg>
             `,
             order: 50,
-            visible: (context) => isMemoryPanelVisible(bundledMemoryContext(context).state.memory),
+            visible: (context) => context.workspaceScope !== undefined
+              && isMemoryPanelVisible(bundledMemoryContext(context).state.memory),
             badge: (context) => memoryBadge(bundledMemoryContext(context).state.memory),
             render: (context) => {
               const memory = bundledMemoryContext(context);

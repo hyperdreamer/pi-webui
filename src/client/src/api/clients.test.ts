@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { PiWebUiConfigValues, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
-import { configApi, filesApi, machinesApi, memoryApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
+import type { ModelTierLadder, PiWebUiConfigValues, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
+import { configApi, filesApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -182,6 +182,26 @@ describe("Models configuration API", () => {
     expect(url).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/models-config/discover");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(requestBody(init))).toEqual(input);
+  });
+});
+
+describe("Model tier settings API", () => {
+  it("uses an encoded application-relative machine route and sends a complete ladder PUT", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = modelTierSettingsResponse();
+    const ladder = response.ladder;
+    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response)]);
+
+    await expect(modelTiersApi.settings("remote /?")).resolves.toEqual(response);
+    await expect(modelTiersApi.save(ladder, "remote /?")).resolves.toEqual(response);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/model-tiers",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/model-tiers",
+    ]);
+    expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({ ladder });
   });
 });
 
@@ -749,4 +769,30 @@ function piWebUiPluginsResponse() {
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function modelTierSettingsResponse() {
+  const model = { provider: "openai", id: "gpt-5.6-luna" };
+  const ladder: ModelTierLadder = {
+    economy: { model, thinkingLevel: "off" },
+    fast: { model, thinkingLevel: "low" },
+    standard: { model, thinkingLevel: "medium" },
+    advanced: { model, thinkingLevel: "high" },
+    capable: { model, thinkingLevel: "xhigh" },
+    frontier: { model, thinkingLevel: "max" },
+  };
+  return {
+    contractVersion: 1 as const,
+    ladder,
+    models: [{ model, name: "Luna", thinkingLevels: ["off", "low", "medium", "high", "xhigh", "max"] }],
+    rows: {
+      economy: { valid: true },
+      fast: { valid: true },
+      standard: { valid: true },
+      advanced: { valid: true },
+      capable: { valid: true },
+      frontier: { valid: true },
+    },
+    valid: true,
+  };
 }

@@ -6,8 +6,8 @@ import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGr
 import { writeClipboardText } from "../clipboard";
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
-import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
-import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, type MinimapMarker } from "../chatMinimapGeometry";
+import { ChatScrollController, distanceFromScrollBottom, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
+import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, minimapViewportsEqual, type MinimapMarker } from "../chatMinimapGeometry";
 import type { QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionWarningSeverity } from "../api";
 import { formatCost, formatTokenCount } from "../utils/format";
 import { computeMessageCounts, sessionUsageDetail, sessionUsageTooltip, type DetailRow, type SessionUsageDetail } from "./sessionUsageDisplay";
@@ -30,6 +30,7 @@ import {
 import type { ChatLine, ChatPart } from "./shared";
 import { chatStyles, renderSessionWarningIcon } from "./shared";
 import "./ChatMinimap";
+import type { ChatMinimap } from "./ChatMinimap";
 import "./FormattedText";
 import "./ToolExecutionView";
 
@@ -77,16 +78,30 @@ interface PendingNotificationFocus {
 
 export interface QueuedMessageSection {
   source: "client" | "server";
+  kind?: "steer" | "followUp";
   heading: string;
   detail: string;
   messages: QueuedSessionMessage[];
 }
 
 export function chatQueuedMessageSections(clientQueued: QueuedSessionMessage[], serverQueued: QueuedSessionMessage[]): QueuedMessageSection[] {
-  return [
+  const serverSections = (["steer", "followUp"] as const).flatMap((kind): QueuedMessageSection[] => {
+    const messages = serverQueued.filter((message) => message.kind === kind);
+    if (messages.length === 0) return [];
+    return [{
+      source: "server",
+      kind,
+      heading: kind === "steer" ? "Steered" : "Follow-up",
+      detail: kind === "steer" ? "Sent together at the next turn" : "Sent together after the agent finishes",
+      messages,
+    }];
+  });
+
+  const sections: (QueuedMessageSection | undefined)[] = [
     clientQueued.length === 0 ? undefined : { source: "client", heading: "Queued until session starts", detail: "Will send once the backend session is ready", messages: clientQueued },
-    serverQueued.length === 0 ? undefined : { source: "server", heading: "Queued messages", detail: `${String(serverQueued.length)} pending`, messages: serverQueued },
-  ].filter((section): section is QueuedMessageSection => section !== undefined);
+    ...serverSections,
+  ];
+  return sections.filter((section): section is QueuedMessageSection => section !== undefined);
 }
 
 export type ChatImagePart = Extract<ChatPart, { type: "image" }>;
@@ -131,9 +146,23 @@ export function chatMessageGroupLabel(defaultOpen: boolean): string {
   return defaultOpen ? "live events" : "events";
 }
 
-/** Whether a queued-message section shows the server clear-queue action. */
-export function chatQueuedSectionShowsClearAction(section: QueuedMessageSection, canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
-  return section.source === "server" && canClearServerQueue && hasClearHandler;
+/** Whether the complete queue presentation contains both live Pi queue kinds. */
+export function chatQueuedSectionsHaveBothServerKinds(sections: QueuedMessageSection[]): boolean {
+  return sections.some((section) => section.source === "server" && section.kind === "steer" && section.messages.length > 0)
+    && sections.some((section) => section.source === "server" && section.kind === "followUp" && section.messages.length > 0);
+}
+
+/** Whether the shared live-queue clear action is available. */
+export function chatQueuedSectionsShowClearAction(sections: QueuedMessageSection[], canClearServerQueue: boolean, hasClearHandler: boolean): boolean {
+  return sections.some((section) => section.source === "server" && section.messages.length > 0) && canClearServerQueue && hasClearHandler;
+}
+
+/** Aggregate-copy text for the non-empty live Pi queue sections. */
+export function chatQueuedMessagesCopyText(sections: QueuedMessageSection[]): string {
+  return sections
+    .filter((section) => section.source === "server" && section.messages.length > 0)
+    .flatMap((section) => section.messages.map((message) => message.text))
+    .join("\n\n");
 }
 
 /** A rendered session-warning row derived from live status warnings. */
@@ -301,13 +330,13 @@ export class ChatView extends LitElement {
   @property({ type: Boolean }) warningsVisible = true;
   @property({ attribute: false }) onLoadMore?: () => void;
   @query(".chat") private chat?: HTMLDivElement;
+  @query("chat-minimap") private _minimap?: ChatMinimap;
   @query("dialog.image-zoom") private imageZoomDialog?: HTMLDialogElement;
   @state() private pinnedToBottom = true;
   @state() private zoomedImage: { src: string; alt: string } | undefined = undefined;
   @state() private expandedMetaKey: string | undefined;
   @state() private copiedMessageKey: string | undefined;
   @state() private forkingEntryId: string | undefined;
-  @state() private currentConversationIndex: number | undefined;
   @state() private collapsedNotificationTargetKeys: ReadonlySet<string> = new Set();
   @state() private retainedEmptyNotificationTrayTargetKey: string | undefined;
   private pendingNotificationFocus: PendingNotificationFocus | undefined;
@@ -317,7 +346,7 @@ export class ChatView extends LitElement {
   private suppressLoadMoreRequests = false;
   private loadMoreCheckFrame: number | undefined;
   private scrollToBottomFrame: number | undefined;
-  private conversationRailFrame: number | undefined;
+  private minimapViewportFrame: number | undefined;
   private groupedMessagesInput?: ChatLine[];
   private groupedMessagesStart = 0;
   private groupedMessagesCache: ChatGroup[] = [];
@@ -333,7 +362,15 @@ export class ChatView extends LitElement {
   @state() private loadMoreRequested = false;
   @state() private sessionInfoOpen = false;
   @state() private _minimapMarkers: MinimapMarker[] = [];
-  @state() private _minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
+  /**
+   * Only the `visible` flag participates in ChatView's own rendering, because it
+   * widens the transcript padding. The ratios are forwarded straight to the
+   * `chat-minimap` child instead of being held as reactive state: they change on
+   * every scroll frame, and re-rendering this component would rebuild the whole
+   * transcript template for a change only the rail can show.
+   */
+  @state() private _minimapVisible = false;
+  private _minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
   private _minimapLoadedPercent = 100;
   private _minimapMeasureTimer: ReturnType<typeof setTimeout> | undefined;
   private _resizeObserver: ResizeObserver | undefined;
@@ -358,6 +395,9 @@ export class ChatView extends LitElement {
   };
   private readonly handleClearServerQueue = (): void => {
     this.onClearServerQueue?.();
+  };
+  private readonly handleCopyAllQueuedMessages = (): void => {
+    void this.copyAllQueuedMessages();
   };
   private readonly handleToggleWarnings = (): void => {
     this.onToggleWarnings?.();
@@ -457,7 +497,7 @@ export class ChatView extends LitElement {
     if (this.restoreScrollFrame !== undefined) cancelAnimationFrame(this.restoreScrollFrame);
     if (this.loadMoreCheckFrame !== undefined) cancelAnimationFrame(this.loadMoreCheckFrame);
     if (this.scrollToBottomFrame !== undefined) cancelAnimationFrame(this.scrollToBottomFrame);
-    if (this.conversationRailFrame !== undefined) cancelAnimationFrame(this.conversationRailFrame);
+    if (this.minimapViewportFrame !== undefined) cancelAnimationFrame(this.minimapViewportFrame);
     if (this._minimapMeasureTimer !== undefined) {
       clearTimeout(this._minimapMeasureTimer);
       this._minimapMeasureTimer = undefined;
@@ -488,6 +528,7 @@ export class ChatView extends LitElement {
     this.pendingScrollRestoreSessionId = undefined;
     this.pendingScrollRestorePosition = undefined;
     this._minimapMarkers = [];
+    this._minimapVisible = false;
     this._minimapViewport = { scrollRatio: 0, viewportRatio: 1, visible: false };
     this._minimapLoadedPercent = 100;
     this.prependRestoreToken += 1;
@@ -519,7 +560,7 @@ export class ChatView extends LitElement {
     if (changed.has("hasMore") && !this.hasMore) this.loadMoreRequested = false;
     if (changed.has("sessionId")) this.restoreScrollPosition();
     if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
-    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) { this.scheduleConversationRailUpdate(); this._requestMinimapMeasure(); }
+    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) { this.scheduleMinimapViewportUpdate(); this._requestMinimapMeasure(); }
     if (changed.has("messages") && !changed.has("sessionId")) this._updateMinimapViewport();
     if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore")) this.continuePendingScrollRestore();
     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
@@ -551,7 +592,7 @@ export class ChatView extends LitElement {
     return html`
       ${this.renderTopNotices()}
       ${this.renderNotificationLiveRegions()}
-      <div class="chat-wrap" style=${(this._minimapViewport.visible && this.messages.length > 0 && this.messageTotal > 0) ? "--pi-minimap-right:36px" : ""}>
+      <div class="chat-wrap" style=${(this._minimapVisible && this.messages.length > 0 && this.messageTotal > 0) ? "--pi-minimap-right:36px" : ""}>
         ${this.renderConversationRail()}
         <div class="chat" @scroll=${() => { this.onScroll(); }} @wheel=${(event: WheelEvent) => { this.onWheel(event); }} @touchstart=${(event: TouchEvent) => { this.onTouchStart(event); }} @touchmove=${(event: TouchEvent) => { this.onTouchMove(event); }}>
           ${this.renderHistoryBoundary()}
@@ -559,9 +600,10 @@ export class ChatView extends LitElement {
             groups,
             (group) => group.kind === "group" ? this.groupRenderKey(group.startIndex) : this.messageAnchorKey(group.index),
             (group, index) => {
-              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.isLiveTailGroup(groups, index));
+              const live = this.isLiveTailGroup(groups, index);
+              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, live);
               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, group.toolName);
-              return this.renderMessage(group.message, group.index);
+              return this.renderMessage(group.message, group.index, live);
             },
           )}
           ${this.renderQueuedMessages()}
@@ -911,12 +953,35 @@ export class ChatView extends LitElement {
   }
 
   private renderQueuedMessages() {
-    const serverQueued = this.status?.queuedMessages ?? [];
-    return html`${chatQueuedMessageSections(this.clientQueuedMessages, serverQueued).map((section) => this.renderQueuedMessageList(section))}`;
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const clientSection = sections.find((section) => section.source === "client");
+    const serverSections = sections.filter((section) => section.source === "server");
+    const hasServerMessages = serverSections.length > 0;
+    const showCopyAll = hasServerMessages;
+    const showClearAll = chatQueuedSectionsShowClearAction(sections, this.canClearServerQueue, this.onClearServerQueue !== undefined);
+    return html`
+      ${clientSection === undefined ? null : this.renderQueuedMessageList(clientSection)}
+      ${(showCopyAll || showClearAll) ? html`
+        <div class="queued-actions">
+          ${showCopyAll ? html`
+            <button type="button" class="queued-action-button" title="Copy all queued messages" @click=${this.handleCopyAllQueuedMessages}>Copy all queues</button>
+          ` : null}
+          ${showClearAll ? html`
+            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear all queues</button>
+          ` : null}
+        </div>
+      ` : null}
+      ${serverSections.map((section) => this.renderQueuedMessageList(section))}
+    `;
+  }
+
+  private async copyAllQueuedMessages(): Promise<void> {
+    const sections = chatQueuedMessageSections(this.clientQueuedMessages, this.status?.queuedMessages ?? []);
+    const serverSections = sections.filter((section) => section.source === "server");
+    await writeClipboardText(chatQueuedMessagesCopyText(serverSections));
   }
 
   private renderQueuedMessageList(section: QueuedMessageSection) {
-    const canClear = chatQueuedSectionShowsClearAction(section, this.canClearServerQueue, this.onClearServerQueue !== undefined);
     return html`
       <aside class="queued-messages" aria-live="polite">
         <div class="queued-header">
@@ -924,13 +989,24 @@ export class ChatView extends LitElement {
             <strong>${section.heading}</strong>
             <small>${section.detail}</small>
           </div>
-          ${canClear ? html`
-            <button type="button" class="queued-clear-button" title="Clear queued messages without stopping active work" @click=${this.handleClearServerQueue}>Clear queue</button>
-          ` : null}
         </div>
         ${section.messages.map((message, index) => html`
           <div class="queued-message">
-            <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+            <div class="queued-message-header">
+              <span class="queued-kind">${message.kind === "steer" ? "Steer" : "Follow-up"} ${String(index + 1)}</span>
+              <button
+                type="button"
+                class="queued-copy-button"
+                title="Copy message"
+                aria-label=${`Copy ${message.kind === "steer" ? "steered" : "follow-up"} message ${String(index + 1)}`}
+                @click=${(event: MouseEvent) => { event.stopPropagation(); void writeClipboardText(message.text); }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+            </div>
             <formatted-text .text=${message.text}></formatted-text>
           </div>
         `)}
@@ -988,13 +1064,6 @@ export class ChatView extends LitElement {
     return Math.max(1, this.messageTotal, this.messageStart + this.messages.length);
   }
 
-  private conversationPositionPercent(total = this.conversationDisplayTotal()): number {
-    if (total <= 1) return 100;
-    const fallbackIndex = this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart;
-    const index = clampNumber(this.currentConversationIndex ?? fallbackIndex, 0, total - 1);
-    return clampPercent((index / (total - 1)) * 100);
-  }
-
   private renderHistoryBoundary() {
     const range = this.historyRangeLabel();
     if (this.loadingMore) return html`<div class="history-boundary"><span>Loading earlier messages…</span>${range}</div>`;
@@ -1021,13 +1090,13 @@ export class ChatView extends LitElement {
     return Math.max(this.messageEnd, this.messageStart + this.messages.length);
   }
 
-  private renderMessage(message: ChatLine, index: number) {
+  private renderMessage(message: ChatLine, index: number, live = false) {
     const toolOnly = this.isToolExecutionOnlyMessage(message);
     return html`
       ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
       <article class=${toolOnly ? "msg tool-execution-shell" : `msg ${message.role}`} data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
         ${toolOnly ? null : this.renderMessageHeader(message, String(index))}
-        ${message.parts.map((part) => this.renderPart(part, message))}
+        ${message.parts.map((part) => this.renderPart(part, message, live))}
       </article>
     `;
   }
@@ -1057,12 +1126,12 @@ export class ChatView extends LitElement {
           <b class="label">${chatMessageGroupLabel(defaultOpen)}</b>
           <span>${summarizeChatGroup(messages)}</span>
         </summary>
-        ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
+        ${open ? this.renderMessageGroupBody(messages, startIndex, defaultOpen) : null}
       </details>
     `;
   }
 
-  private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
+  private renderMessageGroupBody(messages: ChatLine[], startIndex: number, live = false) {
     return html`
       <div class="group-body">
         ${messages.map((message, offset) => {
@@ -1070,7 +1139,7 @@ export class ChatView extends LitElement {
           return html`
             <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
               ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
-              ${message.parts.map((part) => this.renderPart(part, message))}
+              ${message.parts.map((part) => this.renderPart(part, message, live))}
             </section>
           `;
         })}
@@ -1203,15 +1272,15 @@ export class ChatView extends LitElement {
     return label;
   }
 
-  private renderPart(part: ChatPart, message?: ChatLine) {
+  private renderPart(part: ChatPart, message?: ChatLine, live = false) {
     if (part.type === "text" && message?.role === "bash") return html`<pre class="part shell-output">${part.text}</pre>`;
-    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text}></formatted-text>`;
-    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text}></formatted-text></details>`;
+    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text} .live=${live}></formatted-text>`;
+    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text} .live=${live}></formatted-text></details>`;
     if (part.type === "skillInvocation") return html`
       <details class="part skill-invocation">
         <summary><b>[skill]</b> ${part.name}</summary>
         <small>${part.location}</small>
-        <formatted-text .text=${part.content}></formatted-text>
+        <formatted-text .text=${part.content} .live=${live}></formatted-text>
       </details>
     `;
     if (part.type === "skillRead") return html`
@@ -1229,7 +1298,7 @@ export class ChatView extends LitElement {
     if (part.type === "toolResult") return html`
       <details class="part" ?open=${part.isError}>
         <summary>${part.isError ? "✖" : "✓"} ${part.toolName} result</summary>
-        <formatted-text .text=${part.text}></formatted-text>
+        <formatted-text .text=${part.text} .live=${live}></formatted-text>
       </details>
     `;
     return null;
@@ -1244,8 +1313,9 @@ export class ChatView extends LitElement {
   private onScroll() {
     this.requestLoadMoreIfNeeded();
     this.updatePinnedToBottomFromScroll();
-    this.scheduleConversationRailUpdate();
-    this._updateMinimapViewport();
+    // Scroll events can outpace frames, so the rail update is coalesced into one
+    // frame rather than running per event.
+    this.scheduleMinimapViewportUpdate();
     if (!this.suppressScrollSave) this.scheduleScrollPositionSave();
   }
 
@@ -1464,27 +1534,12 @@ export class ChatView extends LitElement {
     });
   }
 
-  private scheduleConversationRailUpdate(): void {
-    if (this.conversationRailFrame !== undefined) return;
-    this.conversationRailFrame = requestAnimationFrame(() => {
-      this.conversationRailFrame = undefined;
-      this.updateConversationRailPosition();
+  private scheduleMinimapViewportUpdate(): void {
+    if (this.minimapViewportFrame !== undefined) return;
+    this.minimapViewportFrame = requestAnimationFrame(() => {
+      this.minimapViewportFrame = undefined;
+      this._updateMinimapViewport();
     });
-  }
-
-  private updateConversationRailPosition(): void {
-    if (!this.messages.length || this.messageTotal <= 0) {
-      this.currentConversationIndex = undefined;
-      return;
-    }
-    const total = this.conversationDisplayTotal();
-    const article = this.firstVisibleArticle();
-    const index = Number(article?.dataset["index"]);
-    if (Number.isFinite(index)) {
-      this.currentConversationIndex = clampNumber(index, 0, Math.max(0, total - 1));
-      return;
-    }
-    this.currentConversationIndex = clampNumber(this.pinnedToBottom ? this.messageStart + this.messages.length - 1 : this.messageStart, 0, Math.max(0, total - 1));
   }
 
   private scrollMarkers(): HTMLElement[] {
@@ -1493,17 +1548,6 @@ export class ChatView extends LitElement {
 
   private scrollMarkerAt(markerId: string): HTMLElement | undefined {
     return this.scrollMarkers().find((marker) => marker.dataset["markerId"] === markerId);
-  }
-
-  private firstVisibleArticle(): HTMLElement | undefined {
-    const chat = this.chat;
-    if (chat === undefined) return undefined;
-    const primaryArticles = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg"));
-    return findFirstVisibleArticle(chat, primaryArticles) ?? findFirstVisibleArticle(chat, this.articles());
-  }
-
-  private articles(): HTMLElement[] {
-    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>("article.msg, details.msg"));
   }
 
   private scrollAnchorElements(): HTMLElement[] {
@@ -1553,7 +1597,7 @@ export class ChatView extends LitElement {
   private _updateMinimapViewport(): void {
     const chat = this.chat;
     if (!chat) return;
-    this._minimapViewport = computeMinimapViewport({
+    const viewport = computeMinimapViewport({
       scrollHeight: chat.scrollHeight,
       clientHeight: chat.clientHeight,
       scrollTop: chat.scrollTop,
@@ -1561,6 +1605,22 @@ export class ChatView extends LitElement {
     this._minimapLoadedPercent = this.hasMore
       ? clampPercent((this.messages.length / this.conversationDisplayTotal()) * 100)
       : 100;
+    if (minimapViewportsEqual(this._minimapViewport, viewport)) return;
+    this._minimapViewport = viewport;
+    // Re-render ChatView only when the transcript padding must change; otherwise
+    // hand the new geometry to the rail directly.
+    if (this._minimapVisible !== viewport.visible) this._minimapVisible = viewport.visible;
+    else this._pushMinimapViewport();
+  }
+
+  /** Forward current rail geometry to the minimap without re-rendering the transcript. */
+  private _pushMinimapViewport(): void {
+    const minimap = this._minimap;
+    if (minimap === undefined) return;
+    minimap.scrollRatio = this._minimapViewport.scrollRatio;
+    minimap.viewportRatio = this._minimapViewport.viewportRatio;
+    minimap.visible = this._minimapViewport.visible;
+    minimap.loadedPercent = this._minimapLoadedPercent;
   }
 
   private _requestMinimapMeasure(): void {

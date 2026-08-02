@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.11.0-beta.4
+
+### Patch Changes
+
+- f448f0d: Keep the Actions palette open after running an action, so toggles and refreshes such as Hide Terminal Tab or Refresh Files can be run several times without reopening it. The palette still closes for actions that move keyboard focus, switch the visible view, or open a dialog, and closes as before with the × button or Escape.
+- d246c42: Fix the browser tab freezing during a surge of concurrent live tool events. Updates from several tools running at once are now coalesced per tool call, so the client no longer mistakes normal concurrency for overload and stops repeatedly refetching the whole session. Recovery refetches are also rate-limited and transcript cache writes are batched.
+
+## 1.11.0-beta.3
+
+### Patch Changes
+
+- d1b2b30: Stop the browser tab from freezing when scrolling quickly through a long conversation. Scrolling no longer re-renders the whole transcript on every scroll event, and the per-frame layout measurement that grew with conversation length has been removed.
+
+## 1.11.0-beta.2
+
+### Patch Changes
+
+- 819360c: Persist the existing Terminal and Info tab visibility choices across PI WEBUI restarts.
+- a7cd71a: Fix browser tabs freezing when a provider streams output very quickly. Streamed text, thinking, shell, and tool-update events are now merged before the transcript is rebuilt, live streaming text no longer fills the markdown render cache with every partial response, and rapid session status/activity updates are coalesced before they are sent to the browser.
+
+## 1.11.0-beta.1
+
+### Patch Changes
+
+- Add a Settings → Model tiers page for editing the six-tier model/thinking ladder used by tracked child sessions, with live validation against the selected machine's available models and thinking levels.
+- 0b53a10: Add plugin-contributed Activity Rail activities with responsive dialog access, and move bundled Memory from the workspace tab to the Activity Rail.
+
+## 1.10.7
+
+### Patch Changes
+
+- 9dab752: Bind tracked child sessions to typed machine model tiers, including the configured thinking level, instead of relying on prompt text for model selection.
+- 7c271bc: Show Steered and Follow-up queues separately and add individual and aggregate copy controls for queued messages.
+
+## 1.10.6
+
+### Patch Changes
+
+- 784cd90: Keep the Workspace Tasks plugin's **Open Terminal** command working when the Terminal tab is hidden.
+
+## 1.10.5
+
+### Patch Changes
+
+- 9bb74e7: Reduce the passive npm release-check cache window to 15 minutes so active PI WEBUI clients discover available updates sooner.
+
+## 1.10.4
+
+### Patch Changes
+
+- 6d991c1: Keep Workspace Memory sections expanded during live updates and avoid unnecessary panel redraws.
+
 ## 1.10.3
 
 ### Patch Changes

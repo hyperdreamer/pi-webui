@@ -14,7 +14,7 @@
     <meta property="og:title" content="PI WEBUI plugins — extend the Pi web UI" />
     <meta
       property="og:description"
-      content="Customize PI WEBUI with trusted browser-side plugins for actions, workspace panels, labels, terminals, and files."
+      content="Customize PI WEBUI with trusted browser-side plugins for actions, Activity Rail activities, workspace panels, labels, terminals, and files."
     />
     <meta property="og:url" content="https://pi-webui.dev/plugins" />
     <meta property="og:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
@@ -23,7 +23,7 @@
     <meta name="twitter:title" content="PI WEBUI plugins — extend the Pi web UI" />
     <meta
       name="twitter:description"
-      content="Customize PI WEBUI with trusted browser-side plugins for actions, workspace panels, labels, terminals, and files."
+      content="Customize PI WEBUI with trusted browser-side plugins for actions, Activity Rail activities, workspace panels, labels, terminals, and files."
     />
     <meta name="twitter:image" content="https://pi-webui.dev/assets/pi-webui-banner.png" />
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
@@ -79,8 +79,8 @@
           <p class="eyebrow"><span class="pulse"></span> Plugin development</p>
           <h1>Customize PI WEBUI with UI plugins.</h1>
           <p>
-            Plugins are trusted browser-side ES modules. They can add actions, workspace panels, and compact workspace
-            labels to the PI WEBUI UI.
+            Plugins are trusted browser-side ES modules. They can add actions, workspace panels, Activity Rail activities,
+            and compact workspace labels to the PI WEBUI UI.
           </p>
         </div>
       </section>
@@ -109,10 +109,16 @@
               <ul>
                 <li><strong>Action palette commands</strong> for custom workflows.</li>
                 <li><strong>Workspace tools and panels</strong> next to Files, Git, and Terminal.</li>
+                <li><strong>Activity Rail activities</strong> as circular controls that open host-owned detail dialogs.</li>
                 <li><strong>Workspace labels</strong> in the workspace list, header, and status bar.</li>
                 <li><strong>Static assets</strong> served from the plugin folder.</li>
                 <li><strong>Browser-side integrations</strong> using documented PI WEBUI plugin context helpers.</li>
               </ul>
+              <p>
+                Activity Rail activities stay in a dedicated host-owned section. Below 1181px, the same visible controls
+                are available from the compact Activity Rail drawer. For the full v1 contract and older-host compatibility
+                branch, read the <a href="plugins.md">Plugin API reference</a>.
+              </p>
               <p>
                 Plugins cannot extend the session daemon or add server-side hooks. They run in the browser UI only.
                 Use documented context helpers for the stable API surface. Daring plugins can reach into PI WEBUI
@@ -217,8 +223,9 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
             <section id="example">
               <h2>Canonical example</h2>
               <p>
-                PI WEBUI ships a real bundled <strong>Info</strong> plugin. It is intentionally small while still using all
-                core contribution types: one action, one workspace label, and one workspace panel.
+                PI WEBUI ships a real bundled <strong>Info</strong> plugin. It is intentionally small while still using three
+                UI contribution types: one action, one workspace label, and one workspace panel. Activity Rail activities are
+                another v1 UI contribution type.
               </p>
               <p>
                 Bundled PI WEBUI plugins are developed as TypeScript in the repository, while their package metadata
@@ -256,24 +263,27 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
 
               <h3>Memory</h3>
               <p>
-                <strong>Memory</strong> adds a read-only <strong>Memory</strong> workspace tab. It reads
+                <strong>Memory</strong> adds a read-only <strong>Memory</strong> Activity Rail activity. It is
+                <strong>Rail-only</strong>: select its circular control to open a host-owned detail dialog. It reads
                 <code>pi-hermes-memory</code>-compatible data through PI WEBUI and never writes, creates, edits, or
                 deletes memories.
               </p>
               <p>
-                The tab shows independently collapsible <strong>Global memory</strong> and
+                The detail dialog shows independently collapsible <strong>Global memory</strong> and
                 <strong>Project-specific memory</strong> groups. Project-specific memory contains entries only for the
                 selected workspace project. Empty or missing memory data appears as a scoped empty state. An unavailable
                 project-specific request displays a scoped <strong>Project-specific unavailable</strong> state while
-                <strong>Global memory</strong> remains available. A failed global-memory request is presented as a panel-level
-                retryable error.
+                <strong>Global memory</strong> remains available. A failed global-memory request is presented as a retryable
+                detail-view error.
               </p>
               <p>
-                The Memory tab is visible only when a compatible memory provider is detected for the active agent
-                profile and project scope. A compatible provider with zero entries still shows the tab but omits the
-                badge. A positive badge totals global and project-specific memory entries. PI WEBUI refreshes the badge
-                immediately after a selected project or workspace change and then checks approximately every 30 seconds. This is polling;
-                PI WEBUI does not promise instant or realtime updates.
+                With a workspace selected, the Memory activity remains visible while memory loads, when data is available,
+                and if a memory request fails. It is hidden only after the provider confirms that the whole memory capability
+                is unavailable. A project-specific unavailable response is a separate scoped detail state; it does not mean
+                the whole provider is unavailable. The count badge appears only for data with one or more entries, so it is
+                omitted in all non-data states and for zero data; when shown, it totals global and project-specific memory
+                entries. PI WEBUI refreshes the badge immediately after a selected project or workspace change and then checks
+                approximately every 30 seconds. This is polling; PI WEBUI does not promise instant or realtime updates.
               </p>
               <ul>
                 <li>Plugin id: <code>workspace-memory</code></li>
@@ -422,7 +432,7 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
               <p>
                 With <a href="machines">machine federation</a>, PI WEBUI also loads discovered plugins from the selected
                 remote machine. Remote plugins are trusted browser-side code like local plugins, but their actions,
-                workspace panels, and workspace labels only appear while that machine is selected.
+                workspace panels, Activity Rail activities, and workspace labels only appear while that machine is selected.
               </p>
               <ul>
                 <li>File and terminal helpers run against the selected remote machine.</li>

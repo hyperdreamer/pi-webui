@@ -26,13 +26,14 @@ The feature must also provide an opt-in deterministic replacement for the common
 1. Each selected machine exposes one complete user-configured six-tier ladder.
 2. Exact/Tiered is an independent, always-visible session choice controlled only through the UI.
 3. Tier commands act only in Tiered mode and are visible no-ops in Exact mode.
-4. A recognized leading directive applies its exact resolved tuple before any subsequent model request.
-5. Busy-session directives are held in a PI WEBUI-owned queue and cannot alter in-flight work.
-6. Root sessions start Exact; independent and tracked children inherit their parent's complete policy.
-7. Child initial directives validate before child creation, so failure leaves no stray child.
-8. Requested and effective policy are visible in the child and returned structurally to its parent.
-9. Tracked SDD dispatch is idempotent across controller compaction and daemon restart.
-10. The replacement SDD skill preserves the original workflow's safety gates except where this specification explicitly replaces a rule.
+4. A recognized leading directive typed by a human applies its exact resolved tuple before any subsequent model request.
+5. A tool-spawned child's tier is bound by the typed `tier` parameter before its first request. Prompt text never selects a model, and a child cannot override the tier its parent set.
+6. Busy-session directives are held in a PI WEBUI-owned queue and cannot alter in-flight work.
+7. Root sessions start Exact; independent and tracked children inherit their parent's complete policy.
+8. Child tier resolution happens before child creation, so failure leaves no stray child.
+9. Requested and effective policy are visible in the child and returned structurally to its parent.
+10. Tracked SDD dispatch is idempotent across controller compaction and daemon restart.
+11. The replacement SDD skill preserves the original workflow's safety gates except where this specification explicitly replaces a rule.
 
 ## Scope
 
@@ -88,7 +89,9 @@ A session's active mode plus its remembered Exact selection and, once chosen, it
 
 ### Tier directive
 
-One canonical leading `/tier-*` command that selects a tier or moves one rung. It never changes session mode.
+One canonical leading `/tier-*` command that selects a tier or moves one rung, used by a **human typing into a session**. It never changes session mode.
+
+A directive is only a control channel where a PI WEBUI request boundary parses it. It has no effect inside a prompt delivered to a child by a tool call, and it is never the binding channel for programmatic dispatch. See [Tier binding is typed, not textual](#tier-binding-is-typed-not-textual).
 
 ### Policy application
 
@@ -407,6 +410,8 @@ Retained requests appear in session status as queued, count toward active work, 
 
 ## Atomic request processing
 
+This seam governs requests submitted **into a session by a human**, where a leading directive is a legitimate control channel. It does not govern tool-spawned children, whose tier arrives as a typed parameter and never as prompt text; see [Tier binding is typed, not textual](#tier-binding-is-typed-not-textual).
+
 All active request paths cross one policy-processing seam:
 
 ```text
@@ -547,12 +552,14 @@ Both child types use this sequence:
 
 ```text
 inherit complete parent policy
-→ parse the initial prompt's leading directive
-→ resolve and validate effective policy
+→ resolve the requested tier:
+    tool-spawned child  → typed `tier` parameter, if supplied
+    human-typed session → the request boundary's parsed leading directive
+→ resolve and validate effective policy against the parent's ladder
 → if invalid, return error without creating a child
 → create child runtime directly with resolved model + thinking
 → persist inherited/effective policy and application entry
-→ append cleaned user task
+→ append the user task verbatim
 → start the agent run
 ```
 
@@ -568,11 +575,27 @@ Add two optional fields to `spawn_subsession`.
 
 `dispatchKey` is a bounded string of at most 240 characters drawn from `[A-Za-z0-9._:-]`.
 
-`tier` is an optional `ModelTier` enum naming the tier the caller intends for the child. It is a declaration of intent, not a second way to request a tier: the prompt directive remains the only mechanism that applies policy, and `tier` is compared against the directive the server parsed. Agreement is required; a `tier` that names a different tier than the leading directive fails validation before the child spawns, and a `tier` supplied with no leading directive is also a failure.
+`tier` is an optional `ModelTier` enum naming the tier the child must run at. **It is the binding channel.** When present, the server resolves it against the parent's ladder and creates the child runtime with that model and thinking level. The child cannot observe, override, or decline it.
 
-The field exists because the directive bytes serve two roles at once. They apply policy *and* they participate in dispatch identity. Inferring machine-checkable intent from bytes that are simultaneously an identity fingerprint is the coupling that makes renderer drift dangerous, so the intended tier is stated separately in a form the server can compare as an enum rather than reparse from text. A caller that omits `tier` keeps the original single-source behavior; a caller that supplies it gets a cross-check that turns a silent tier substitution into a loud rejection.
+### Tier binding is typed, not textual
 
-The deterministic SDD always supplies both. Its `tier` is derived from the executable role formula for the current task, attempt, and round, so a mismatch between `tier` and the rendered directive means the renderer and the formula have diverged, which is exactly the failure the check is for.
+A prompt is data delivered to a model. A tier is a runtime setting applied by the server. Conflating them was the original error in this design, and it fails in two directions.
+
+First, prompt text does not bind. Verified against the shipped SDK: no builtin `/tier-*` command exists, and `agent-session.js` never scans prompt text for slash directives. A `/tier-advanced` line in a tool-delivered prompt is prose the child may honor, paraphrase, restate as "we should use a more capable model," or ignore. Observed behavior in practice is non-compliance.
+
+Second, even where a request boundary *does* parse directives, routing programmatic dispatch through text means the control channel and the dispatch-identity fingerprint are the same bytes. A renderer change silently alters identity; stripping the directive to decouple them makes two different-tier dispatches byte-identical.
+
+Therefore:
+
+- `tier` is the only channel that applies policy to a tool-spawned child.
+- The leading `/tier-*` line in a rendered prompt is a **human-readable echo** with no control effect. It is optional, and its presence or absence never changes which model runs.
+- A caller that omits `tier` gets the parent's inherited policy unchanged. The server does not fall back to parsing the prompt.
+- If `tier` is present and a leading directive is also present, they must agree. Disagreement fails before the child spawns, because it means the caller's formula and its renderer have diverged.
+- Tier resolution failure — unknown tier, missing ladder entry, unavailable model, unsupported thinking level — fails the spawn. It never silently downgrades.
+
+The deterministic SDD always supplies `tier`, derived from the executable role formula for the current task, attempt, and round.
+
+This supersedes the earlier rule that the prompt directive is the only mechanism that applies policy.
 
 The deterministic SDD writes its dispatch intent before invoking the tool and derives a key from stable state. The skill's derivation is run-scoped, so the same plan executed as a new run never collides with an earlier one:
 
@@ -597,7 +620,9 @@ child session ID
 confirmed model-policy application
 ```
 
-The raw prompt is canonical *before* directive stripping. The directive bytes must remain in the identity input: strip them first and two dispatches differing only in tier become byte-identical, so a reused key would return the earlier child for a request that asked for a different tier and report success with the earlier policy application. A false conflict halts a run visibly; a false replay substitutes a weaker model with a clean audit trail. Identity therefore covers the directive.
+Identity covers the raw prompt bytes exactly as delivered, plus the resolved `tier` as a typed field. Because `tier` is now a structured input rather than a substring, two dispatches differing only in tier are distinguishable without depending on directive bytes being present: the false-replay hazard is closed by the typed field, not by fingerprinting prose.
+
+The prompt bytes still participate in identity, so a caller must not re-render on retry. But a renderer change that alters only the human-readable echo now produces a visible conflict on a byte comparison while the tier itself is compared as an enum — the two concerns are no longer carried by the same bytes.
 
 Because identity includes rendered bytes, a caller must not re-derive them on retry. Callers store the rendered prompt with their dispatch intent and reissue the stored bytes verbatim. The fingerprint normalizes a leading byte-order mark, CRLF to LF, and outer whitespace so transport rewriting cannot manufacture a conflict; normalization applies only to the compared copy, never to the bytes delivered to the child, which keep the directive at byte zero.
 
@@ -892,7 +917,7 @@ Final scoped re-review:
   Frontier
 ```
 
-The controller always emits the calculated absolute `/tier-*` command. It never emits `/tier-up` or `/tier-down`.
+The controller passes the calculated tier as the typed `tier` parameter on every dispatch. It never emits `/tier-up` or `/tier-down`, and it never relies on a prompt directive to select a model. Where it includes a leading `/tier-*` line for human readability, that line must equal the tier it passed.
 
 ### Capability preflight
 
@@ -953,7 +978,7 @@ dispatch key
 role
 task
 attempt or round
-requested tier
+requested tier (the typed value passed to the tool)
 prompt/brief/report paths
 rendered prompt bytes
 ```
@@ -1076,6 +1101,10 @@ Tiered cannot be selected. Exact remains available. A Tiered session restored ag
 ### Removed authentication or model
 
 Tier resolution fails with exact provider/model/tier details. The prior session policy/runtime tuple remains. The request remainder does not run.
+
+### Unresolvable tier on dispatch
+
+A `tier` that names no ladder entry, or resolves to an unavailable model or an unsupported thinking level, fails the spawn before a child exists. The parent receives a structured error naming the tier and the reason. The server never substitutes a neighbouring tier and never falls back to the parent's policy, because a silent substitution is exactly the weaker-model swap this design exists to prevent.
 
 ### Unsupported thinking level
 
@@ -1208,8 +1237,10 @@ Evaluation harnesses handle real credentials. A harness that seeds an isolated a
 7. Conflicting key reuse fails.
 8. Dedup survives daemon recreation.
 9. Retry lookup returns original outcome despite later mapping/policy changes.
-10. A `tier` field agreeing with the leading directive is accepted; a `tier` naming a different tier fails before child creation; a `tier` with no leading directive fails; an omitted `tier` preserves directive-only behavior.
-11. Existing lineage, completion, transcript, workspace, and recursion rules remain green.
+10. A typed `tier` binds the child's model before its first provider request, asserted by capturing setter call order rather than inspecting end state. A leading `/tier-*` echo that agrees with `tier` is accepted; one that disagrees fails before child creation; an omitted `tier` inherits parent policy unchanged and does **not** fall back to parsing the prompt.
+11. A prompt whose body contains `/tier-frontier` while `tier` is `Economy`, or which contains no directive at all, produces a child running the `Economy` tuple in both cases. This is the regression test for textual influence: prompt content must have zero effect on model selection.
+12. An unresolvable `tier` fails the spawn, creates no child, and never substitutes a neighbouring tier.
+13. Existing lineage, completion, transcript, workspace, and recursion rules remain green.
 
 ### Route/protocol tests
 
@@ -1354,6 +1385,8 @@ Implementation changes affect session-daemon-loaded code and protocol. Inform th
 ### Natural-language routing
 
 Rejected. Phrases such as "use a capable model" are ambiguous, can appear in quoted content, and cannot guarantee request-boundary ordering.
+
+This rejection originally applied only to free prose while still routing programmatic dispatch through a `/tier-*` string in a prompt body. That was the same mistake in a more disciplined costume: a rigid grammar does not make prompt text a control channel, because nothing downstream is obliged to honor it. Observed behavior confirmed it — children restated the directive as intent rather than obeying it. Programmatic tier selection is now a typed parameter.
 
 ### Exact/Tiered nested inside a model dialog
 

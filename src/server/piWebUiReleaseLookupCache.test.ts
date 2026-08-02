@@ -15,6 +15,34 @@ describe("createPiWebUiReleaseLookupCache", () => {
     expect(load).toHaveBeenCalledWith("0.9.0");
   });
 
+  it("refreshes the default release lookup at the fifteen-minute expiry boundary", async () => {
+    const firstCheckedAtMs = 1_000;
+    let now = firstCheckedAtMs;
+    const load = vi.fn()
+      .mockResolvedValueOnce("1.0.0")
+      .mockResolvedValueOnce("1.1.0");
+    const cache = createPiWebUiReleaseLookupCache(load, { now: () => now });
+
+    await expect(cache.get("0.9.0")).resolves.toMatchObject({
+      latestVersion: "1.0.0",
+      checkedAtMs: firstCheckedAtMs,
+    });
+
+    now = firstCheckedAtMs + (15 * 60 * 1000) - 1;
+    await expect(cache.get("0.9.0")).resolves.toMatchObject({
+      latestVersion: "1.0.0",
+      checkedAtMs: firstCheckedAtMs,
+    });
+    expect(load).toHaveBeenCalledOnce();
+
+    now += 1;
+    await expect(cache.get("0.9.0")).resolves.toMatchObject({
+      latestVersion: "1.1.0",
+      checkedAtMs: now,
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it("bypasses a fresh lookup when forced", async () => {
     let now = 1_000;
     const load = vi.fn()

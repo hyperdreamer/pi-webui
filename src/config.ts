@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import type { PiWebUiAgentDirEnvSource, PiWebUiConfigValues } from "./shared/apiTypes.js";
+import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues } from "./shared/apiTypes.js";
 import { isPiCompanionCommand, usesPiCodingAgentStateCompatibility } from "./shared/activeAgentProfile.js";
 import { isPiWebUiPluginId, piWebUiPluginIdPattern } from "./shared/pluginIds.js";
 
@@ -13,6 +13,8 @@ export interface LoadedPiWebUiConfig {
   path: string;
   exists: boolean;
   config: PiWebUiConfig;
+  /** A malformed external ladder is reported without blocking unrelated config use. */
+  modelTiersError?: string;
 }
 
 export interface EffectivePiWebUiConfig extends Omit<PiWebUiConfig, "uploads" | "spawnSessions" | "subsessions" | "agent"> {
@@ -129,7 +131,13 @@ export function loadPiWebUiConfig(options: LoadOptions = {}): LoadedPiWebUiConfi
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`PI WEBUI config must be a JSON object: ${path}`);
 
-  return { path, exists: true, config: parsePiWebUiConfig(parsed, path) };
+  const parsedConfig = parsePiWebUiConfig(parsed, path, { allowInvalidModelTiers: true });
+  return {
+    path,
+    exists: true,
+    config: parsedConfig.config,
+    ...(parsedConfig.modelTiersError === undefined ? {} : { modelTiersError: parsedConfig.modelTiersError }),
+  };
 }
 
 export function effectivePiWebUiConfig(options: LoadOptions = {}): LoadedEffectivePiWebUiConfig {
@@ -165,7 +173,7 @@ export function resolveEffectivePiWebUiConfig(loaded: LoadedPiWebUiConfig, optio
 export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = {}): LoadedPiWebUiConfig {
   const env = options.env ?? process.env;
   const path = piWebUiConfigPath(env, options.cwd ?? process.cwd());
-  const normalized = parsePiWebUiConfig(piWebUiConfigRecord(config), path);
+  const normalized = parsePiWebUiConfig(piWebUiConfigRecord(config), path).config;
   effectiveAgentConfig(env, normalized);
   const existing = readExistingConfigObject(path);
   if (existing["agent"] !== undefined) parseAgentConfig(existing["agent"], path);
@@ -180,10 +188,16 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
   delete existing["spawnSessions"];
   delete existing["subsessions"];
   delete existing["agent"];
+  if (normalized.modelTiers !== undefined) delete existing["modelTiers"];
   const merged = { ...existing, ...piWebUiConfigRecord(normalized) };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   return { path, exists: true, config: normalized };
+}
+
+export function replacePiWebUiModelTiers(modelTiers: ModelTierLadder, options: LoadOptions = {}): LoadedPiWebUiConfig {
+  const loaded = loadPiWebUiConfig(options);
+  return savePiWebUiConfig({ ...loaded.config, modelTiers }, options);
 }
 
 function readExistingConfigObject(path: string): Record<string, unknown> {
@@ -191,6 +205,11 @@ function readExistingConfigObject(path: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`PI WEBUI config must be a JSON object: ${path}`);
   return parsed;
+}
+
+interface ParsedPiWebUiConfig {
+  config: PiWebUiConfig;
+  modelTiersError?: string;
 }
 
 function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
@@ -203,25 +222,81 @@ function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
     ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
     ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
     ...(config.maxUploadBytes !== undefined ? { maxUploadBytes: config.maxUploadBytes } : {}),
+    ...(config.modelTiers !== undefined ? { modelTiers: config.modelTiers } : {}),
     ...(config.spawnSessions !== undefined ? { spawnSessions: config.spawnSessions } : {}),
     ...(config.subsessions !== undefined ? { subsessions: config.subsessions } : {}),
     ...(config.agent !== undefined ? { agent: config.agent } : {}),
   };
 }
 
-function parsePiWebUiConfig(value: Record<string, unknown>, path: string): PiWebUiConfig {
+function parsePiWebUiConfig(value: Record<string, unknown>, path: string, options: { allowInvalidModelTiers?: boolean } = {}): ParsedPiWebUiConfig {
+  let modelTiers: ModelTierLadder | undefined;
+  let modelTiersError: string | undefined;
+  if (value["modelTiers"] !== undefined) {
+    try {
+      modelTiers = parseModelTiersConfig(value["modelTiers"], path);
+    } catch (error) {
+      if (options.allowInvalidModelTiers !== true) throw error;
+      modelTiersError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   return {
-    ...(value["host"] !== undefined ? { host: parseString(value["host"], "host", path) } : {}),
-    ...(value["port"] !== undefined ? { port: parsePort(value["port"], "port", path) } : {}),
-    ...(value["allowedHosts"] !== undefined ? { allowedHosts: parseAllowedHosts(value["allowedHosts"], path) } : {}),
-    ...(value["shortcuts"] !== undefined ? { shortcuts: parseShortcuts(value["shortcuts"], path) } : {}),
-    ...(value["plugins"] !== undefined ? { plugins: parsePlugins(value["plugins"], path) } : {}),
-    ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
-    ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
-    ...(value["maxUploadBytes"] !== undefined ? { maxUploadBytes: parseMaxUploadBytes(value["maxUploadBytes"], "maxUploadBytes", path) } : {}),
-    ...(value["spawnSessions"] !== undefined ? { spawnSessions: parseSpawnSessions(value["spawnSessions"], path) } : {}),
-    ...(value["subsessions"] !== undefined ? { subsessions: parseSubsessions(value["subsessions"], path) } : {}),
-    ...(value["agent"] !== undefined ? { agent: parseAgentConfig(value["agent"], path) } : {}),
+    config: {
+      ...(value["host"] !== undefined ? { host: parseString(value["host"], "host", path) } : {}),
+      ...(value["port"] !== undefined ? { port: parsePort(value["port"], "port", path) } : {}),
+      ...(value["allowedHosts"] !== undefined ? { allowedHosts: parseAllowedHosts(value["allowedHosts"], path) } : {}),
+      ...(value["shortcuts"] !== undefined ? { shortcuts: parseShortcuts(value["shortcuts"], path) } : {}),
+      ...(value["plugins"] !== undefined ? { plugins: parsePlugins(value["plugins"], path) } : {}),
+      ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
+      ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
+      ...(value["maxUploadBytes"] !== undefined ? { maxUploadBytes: parseMaxUploadBytes(value["maxUploadBytes"], "maxUploadBytes", path) } : {}),
+      ...(modelTiers === undefined ? {} : { modelTiers }),
+      ...(value["spawnSessions"] !== undefined ? { spawnSessions: parseSpawnSessions(value["spawnSessions"], path) } : {}),
+      ...(value["subsessions"] !== undefined ? { subsessions: parseSubsessions(value["subsessions"], path) } : {}),
+      ...(value["agent"] !== undefined ? { agent: parseAgentConfig(value["agent"], path) } : {}),
+    },
+    ...(modelTiersError === undefined ? {} : { modelTiersError }),
+  };
+}
+
+function isModelTierConfigKey(value: string): value is ModelTier {
+  return MODEL_TIERS.some((tier) => tier === value);
+}
+
+export function parseModelTiersConfig(value: unknown, path: string): ModelTierLadder {
+  if (!isRecord(value)) throw new Error(`PI WEBUI config modelTiers must be an object: ${path}`);
+  const unknownKey = Object.keys(value).find((key) => !isModelTierConfigKey(key));
+  if (unknownKey !== undefined) throw new Error(`PI WEBUI config modelTiers contains unknown tier ${JSON.stringify(unknownKey)}: ${path}`);
+  const missingTier = MODEL_TIERS.find((tier) => value[tier] === undefined);
+  if (missingTier !== undefined) throw new Error(`PI WEBUI config modelTiers must define all six canonical tiers; missing ${missingTier}: ${path}`);
+
+  return {
+    economy: parseModelTierEntry(value["economy"], "modelTiers.economy", path),
+    fast: parseModelTierEntry(value["fast"], "modelTiers.fast", path),
+    standard: parseModelTierEntry(value["standard"], "modelTiers.standard", path),
+    advanced: parseModelTierEntry(value["advanced"], "modelTiers.advanced", path),
+    capable: parseModelTierEntry(value["capable"], "modelTiers.capable", path),
+    frontier: parseModelTierEntry(value["frontier"], "modelTiers.frontier", path),
+  };
+}
+
+function parseModelTierEntry(value: unknown, key: string, path: string): ModelTierLadder[ModelTier] {
+  if (!isRecord(value)) throw new Error(`PI WEBUI config ${key} must be an object: ${path}`);
+  const unknownKey = Object.keys(value).find((entryKey) => entryKey !== "model" && entryKey !== "thinkingLevel");
+  if (unknownKey !== undefined) throw new Error(`PI WEBUI config ${key} contains unknown key ${JSON.stringify(unknownKey)}: ${path}`);
+  if (!isRecord(value["model"])) throw new Error(`PI WEBUI config ${key}.model must be an object: ${path}`);
+  const model = value["model"];
+  const modelUnknownKey = Object.keys(model).find((modelKey) => modelKey !== "provider" && modelKey !== "id");
+  if (modelUnknownKey !== undefined) throw new Error(`PI WEBUI config ${key}.model contains unknown key ${JSON.stringify(modelUnknownKey)}: ${path}`);
+  const thinkingLevel = value["thinkingLevel"];
+  if (typeof thinkingLevel !== "string" || thinkingLevel === "") throw new Error(`PI WEBUI config ${key}.thinkingLevel must be a non-empty string: ${path}`);
+  return {
+    model: {
+      provider: parseString(model["provider"], `${key}.model.provider`, path),
+      id: parseString(model["id"], `${key}.model.id`, path),
+    },
+    thinkingLevel,
   };
 }
 

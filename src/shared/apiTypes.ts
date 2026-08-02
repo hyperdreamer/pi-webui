@@ -17,6 +17,7 @@ export const PI_WEBUI_CAPABILITIES = {
   piPackagesManage: "piPackages.manage",
   selectedMachineSettings: "settings.selectedMachine",
   agentProfileConfig: "settings.agentProfile",
+  modelTierSettings: "settings.modelTiers",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -71,6 +72,41 @@ export interface PiWebUiUploadsConfig {
   defaultFolder?: string;
 }
 
+export const MODEL_TIERS = ["economy", "fast", "standard", "advanced", "capable", "frontier"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+
+export interface TierModelRef {
+  provider: string;
+  id: string;
+}
+
+export interface ModelTierEntry {
+  model: TierModelRef;
+  thinkingLevel: string;
+}
+
+export type ModelTierLadder = Record<ModelTier, ModelTierEntry>;
+
+export interface ModelTierModelOption {
+  model: TierModelRef;
+  name?: string;
+  thinkingLevels: string[];
+}
+
+export interface ModelTierRowValidation {
+  valid: boolean;
+  reason?: string;
+}
+
+export interface ModelTierSettingsResponse {
+  contractVersion: 1;
+  ladder?: ModelTierLadder;
+  models: ModelTierModelOption[];
+  rows: Record<ModelTier, ModelTierRowValidation>;
+  valid: boolean;
+  configError?: string;
+}
+
 export interface PiWebUiAgentConfig {
   /** Pi-compatible companion CLI used for diagnostics and safe package-managed updates. */
   command?: string;
@@ -90,6 +126,8 @@ export interface PiWebUiConfigValues {
   uploads?: PiWebUiUploadsConfig;
   /** Maximum accepted HTTP request body size in bytes (uploads/attachments). */
   maxUploadBytes?: number;
+  /** Machine-global exact model and thinking bindings for the six canonical tiers. */
+  modelTiers?: ModelTierLadder;
   /** When true, LLMs can start new sessions via the spawn_session tool. */
   spawnSessions?: boolean;
   /**
@@ -326,6 +364,8 @@ export interface PiWebUiConfigResponse {
   exists: boolean;
   config: PiWebUiConfigValues;
   effectiveConfig: PiWebUiConfigValues;
+  /** Structural model-tier config errors are reportable without blocking Exact sessions. */
+  modelTiersError?: string;
   envOverrides: PiWebUiConfigEnvOverrides;
 }
 

@@ -14,6 +14,16 @@ describe("chatStyles skill presentation", () => {
   });
 });
 
+describe("Activity Rail shell placement", () => {
+  it("overlays the desktop rail in a reserved navigation gutter instead of auto-placing it in the shell grid", () => {
+    const styles = appStyles.cssText;
+
+    expect(styles).toMatch(/aside\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*\}/);
+    expect(styles).toMatch(/\.shell > activity-rail\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*align-self:\s*stretch;[^}]*\}/);
+    expect(styles).toMatch(/@media \(min-width:\s*1181px\)\s*\{[\s\S]*?\.shell > aside\s*\{[^}]*padding-left:\s*44px;[^}]*\}/);
+  });
+});
+
 describe("terminal modal header", () => {
   it("keeps adjusters beside the title and the close control at the far edge", () => {
     const styles = appStyles.cssText;

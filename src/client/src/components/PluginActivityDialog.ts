@@ -1,0 +1,118 @@
+import { LitElement, css, html, type TemplateResult } from "lit";
+import { customElement, property, query } from "lit/decorators.js";
+import { renderActivityRailBody, type ReportActivityRailError } from "../plugins/activityRail";
+import type { ActivityRailContext, QualifiedActivityRailContribution } from "../plugins/types";
+
+const defaultReportActivityRailError: ReportActivityRailError = (phase, contributionId, error) => {
+  console.warn("Plugin activity rail contribution failed", phase, contributionId, error);
+};
+
+@customElement("plugin-activity-dialog")
+export class PluginActivityDialog extends LitElement {
+  @property({ attribute: false }) activity!: QualifiedActivityRailContribution;
+  @property({ attribute: false }) context!: ActivityRailContext;
+  @property({ attribute: false }) onClose?: () => void;
+  @property({ attribute: false }) onReportError?: ReportActivityRailError;
+
+  @query("dialog.plugin-activity-backdrop") private nativeDialog?: HTMLDialogElement;
+  @query(".plugin-activity-close") private closeButton?: HTMLButtonElement;
+
+  override firstUpdated(): void {
+    const dialog = this.nativeDialog;
+    if (dialog?.isConnected !== true) return;
+    dialog.showModal();
+    this.closeButton?.focus();
+  }
+
+  override disconnectedCallback(): void {
+    const dialog = this.nativeDialog;
+    if (dialog?.open === true) dialog.close();
+    super.disconnectedCallback();
+  }
+
+  override render(): TemplateResult {
+    const body = renderActivityRailBody(this.activity, this.context, this.onReportError ?? defaultReportActivityRailError);
+    return html`
+      <dialog
+        class="plugin-activity-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-label=${this.activity.title}
+        @cancel=${this.handleCancel}
+        @click=${this.handleBackdropClick}
+      >
+        <section class="plugin-activity-frame">
+          <header>
+            <span class="plugin-activity-icon" aria-hidden="true">${this.activity.icon}</span>
+            <h2>${this.activity.title}</h2>
+            <button
+              class="plugin-activity-close"
+              type="button"
+              aria-label=${`Close ${this.activity.title}`}
+              @click=${this.close}
+            >×</button>
+          </header>
+          <div class="plugin-activity-body">${body ?? this.renderFailure()}</div>
+        </section>
+      </dialog>
+    `;
+  }
+
+  private readonly close = (): void => {
+    this.onClose?.();
+  };
+
+  private readonly handleCancel = (event: Event): void => {
+    event.preventDefault();
+    this.close();
+  };
+
+  private readonly handleBackdropClick = (event: MouseEvent): void => {
+    if (event.target === event.currentTarget) this.close();
+  };
+
+  private renderFailure(): TemplateResult {
+    return html`<p class="plugin-activity-render-failure">This plugin activity could not be rendered.</p>`;
+  }
+
+  static override styles = css`
+    :host { position: fixed; inset: 0; z-index: 60; display: block; color: var(--pi-text); font: 14px system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    .plugin-activity-backdrop {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      max-width: none;
+      height: 100dvh;
+      max-height: none;
+      margin: 0;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      border: 0;
+      display: grid;
+      place-items: center;
+      background: transparent;
+      color: inherit;
+      overflow: hidden;
+    }
+    .plugin-activity-backdrop::backdrop { background: var(--pi-overlay); }
+    .plugin-activity-frame { width: min(1040px, 100%); height: min(780px, 100%); min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--pi-border); border-radius: 12px; background: var(--pi-bg); box-shadow: 0 20px 64px var(--pi-shadow-strong); }
+    header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--pi-border); }
+    .plugin-activity-icon { flex: 0 0 auto; display: grid; place-items: center; color: var(--pi-muted); }
+    .plugin-activity-icon > svg { width: 24px; height: 24px; }
+    h2, p { margin: 0; }
+    h2 { min-width: 0; flex: 1 1 auto; font-size: 20px; line-height: 1.25; overflow-wrap: anywhere; }
+    .plugin-activity-close { flex: 0 0 auto; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
+    .plugin-activity-close:hover { background: var(--pi-surface-hover); color: var(--pi-text); }
+    .plugin-activity-close:focus-visible, .plugin-activity-body :focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
+    .plugin-activity-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; }
+    .plugin-activity-render-failure { border: 1px solid var(--pi-danger); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
+
+    @media (max-width: 760px) {
+      .plugin-activity-backdrop { padding: 0; }
+      .plugin-activity-frame { width: 100%; height: 100%; border: 0; border-radius: 0; }
+      header, .plugin-activity-body { padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); }
+      header { padding-top: max(12px, env(safe-area-inset-top)); }
+      .plugin-activity-body { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    }
+  `;
+}

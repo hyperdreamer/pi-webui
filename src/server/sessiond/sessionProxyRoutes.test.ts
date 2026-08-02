@@ -43,6 +43,25 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("forwards model-tier reads and complete-ladder replacements", async () => {
+    const ladder = {
+      economy: { model: { provider: "acme", id: "small" }, thinkingLevel: "low" },
+      fast: { model: { provider: "acme", id: "small" }, thinkingLevel: "medium" },
+      standard: { model: { provider: "acme", id: "large" }, thinkingLevel: "medium" },
+      advanced: { model: { provider: "acme", id: "large" }, thinkingLevel: "high" },
+      capable: { model: { provider: "acme", id: "large" }, thinkingLevel: "xhigh" },
+      frontier: { model: { provider: "acme", id: "large" }, thinkingLevel: "max" },
+    };
+    const read = await app.inject({ method: "GET", url: "/api/machines/local/model-tiers" });
+    const update = await app.inject({ method: "PUT", url: "/api/machines/local/model-tiers", payload: { ladder } });
+
+    expect([read.statusCode, update.statusCode]).toEqual([200, 200]);
+    expect(daemon.requests).toEqual([
+      { method: "GET", path: "/model-tiers", body: undefined },
+      { method: "PUT", path: "/model-tiers", body: { ladder } },
+    ]);
+  });
+
   it("forwards queue-clear mutations and their status through the session daemon", async () => {
     const status = { sessionId: "session-1", pendingMessageCount: 0, queuedMessages: [] };
     daemon.respondWith({ statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(status) });

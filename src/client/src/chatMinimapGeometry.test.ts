@@ -6,6 +6,7 @@ import {
   messageTopRatio,
   minimapTooltipTopPositions,
   minimapClickToScrollRatio,
+  minimapViewportsEqual,
   scrollToMinimapTopRatio,
 } from "./chatMinimapGeometry";
 
@@ -201,5 +202,29 @@ describe("extractMinimapScrollRatio", () => {
 
   it("returns undefined for NaN ratio", () => {
     expect(extractMinimapScrollRatio({ ratio: NaN })).toBeUndefined();
+  });
+});
+
+describe("minimapViewportsEqual", () => {
+  const viewport = { scrollRatio: 0.25, viewportRatio: 0.1, visible: true };
+
+  it("treats a recomputed value for an unchanged scroll position as equal", () => {
+    expect(minimapViewportsEqual(viewport, { ...viewport })).toBe(true);
+  });
+
+  it("treats sub-pixel ratio jitter as equal", () => {
+    expect(minimapViewportsEqual(viewport, { ...viewport, scrollRatio: 0.250_01 })).toBe(true);
+  });
+
+  it("reports a displayable scroll change as different", () => {
+    expect(minimapViewportsEqual(viewport, { ...viewport, scrollRatio: 0.26 })).toBe(false);
+  });
+
+  it("reports a displayable viewport-height change as different", () => {
+    expect(minimapViewportsEqual(viewport, { ...viewport, viewportRatio: 0.2 })).toBe(false);
+  });
+
+  it("reports a visibility change as different", () => {
+    expect(minimapViewportsEqual(viewport, { ...viewport, visible: false })).toBe(false);
   });
 });

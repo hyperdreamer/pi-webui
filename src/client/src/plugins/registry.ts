@@ -1,10 +1,11 @@
 import { html, svg } from "lit";
-import type { PiWebUiPluginRegistration, PluginAction, PluginRuntimeContext, QualifiedContributionId, QualifiedPluginAction, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspaceLabelContribution, QualifiedWorkspacePanelContribution, ThemeContribution, ThemePairContribution, WorkspaceLabelContext, WorkspaceLabelContribution, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelContribution } from "./types";
+import type { ActivityRailContext, ActivityRailContribution, PiWebUiPluginRegistration, PluginAction, PluginRuntimeContext, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedPluginAction, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspaceLabelContribution, QualifiedWorkspacePanelContribution, ThemeContribution, ThemePairContribution, WorkspaceLabelContext, WorkspaceLabelContribution, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelContribution } from "./types";
 
 const idPattern = /^[a-z][a-z0-9.-]*$/u;
 const localIdPattern = /^[a-z][a-z0-9.-]*$/u;
 const pluginRuntimeScopes = new WeakMap<PluginRuntimeContext, (pluginId: string) => PluginRuntimeContext>();
 const workspacePanelScopes = new WeakMap<WorkspacePanelContext, (pluginId: string) => WorkspacePanelContext>();
+const activityRailScopes = new WeakMap<ActivityRailContext, (pluginId: string) => ActivityRailContext>();
 
 type RegisteredPluginAction = Omit<PluginAction, "id"> & {
   id: QualifiedContributionId;
@@ -17,6 +18,7 @@ type RegisteredPluginAction = Omit<PluginAction, "id"> & {
 export class PluginRegistry {
   private readonly actions: RegisteredPluginAction[] = [];
   private readonly workspacePanels: QualifiedWorkspacePanelContribution[] = [];
+  private readonly activityRailItems: QualifiedActivityRailContribution[] = [];
   private readonly workspaceLabels: QualifiedWorkspaceLabelContribution[] = [];
   private readonly themes: QualifiedThemeContribution[] = [];
   private readonly themePairs: QualifiedThemePairContribution[] = [];
@@ -36,10 +38,19 @@ export class PluginRegistry {
 
     const apiVersion: unknown = plugin.apiVersion;
     if (apiVersion !== 1) throw new Error(`Unsupported plugin API version for ${id}: ${String(apiVersion)}`);
-    const result = plugin.activate({ apiVersion: 1, pluginId: id, html, svg });
+    const result = plugin.activate({
+      apiVersion: 1,
+      pluginId: id,
+      html,
+      svg,
+      capabilities: { activityRailItems: true },
+    });
     const contributions = result.contributions;
     for (const action of contributions.actions ?? []) this.actions.push(this.qualifyAction(id, action, registration.machineId, registration.sourcePluginId));
     for (const panel of contributions.workspacePanels ?? []) this.workspacePanels.push(this.qualifyWorkspacePanel(id, panel, registration.machineId, registration.sourcePluginId));
+    for (const item of contributions.activityRailItems ?? []) {
+      this.activityRailItems.push(this.qualifyActivityRailItem(id, item, registration.machineId, registration.sourcePluginId));
+    }
     for (const contribution of contributions.workspaceLabels ?? []) this.workspaceLabels.push(this.qualifyWorkspaceLabelContribution(id, contribution, registration.machineId, registration.sourcePluginId));
     if (registration.machineId === undefined) {
       for (const theme of contributions.themes ?? []) this.themes.push(this.qualifyTheme(id, theme));
@@ -72,6 +83,7 @@ export class PluginRegistry {
       if (action.description !== undefined) qualified.description = action.description;
       if (action.shortcut !== undefined) qualified.shortcut = action.shortcut;
       if (action.group !== undefined) qualified.group = action.group;
+      if (action.closesActionPalette !== undefined) qualified.closesActionPalette = action.closesActionPalette;
       if (enabled !== undefined) qualified.enabled = enabled;
       if (disabledReason !== undefined && disabledReason !== "") qualified.disabledReason = disabledReason;
       return qualified;
@@ -80,6 +92,14 @@ export class PluginRegistry {
 
   getWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
     return [...this.workspacePanels].sort((left, right) => (left.order ?? 1000) - (right.order ?? 1000) || left.title.localeCompare(right.title));
+  }
+
+  getActivityRailItems(): QualifiedActivityRailContribution[] {
+    return [...this.activityRailItems].sort((left, right) =>
+      (left.order ?? 1000) - (right.order ?? 1000)
+      || left.title.localeCompare(right.title)
+      || left.id.localeCompare(right.id),
+    );
   }
 
   getThemes(): QualifiedThemeContribution[] {
@@ -118,6 +138,23 @@ export class PluginRegistry {
       visible: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) && (visible?.(workspacePanelContextFor(context, pluginId)) ?? true),
       ...(badge === undefined ? {} : { badge: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) ? badge(workspacePanelContextFor(context, pluginId)) : undefined }),
       render: (context: WorkspacePanelContext) => panel.render(workspacePanelContextFor(context, pluginId)),
+    };
+  }
+
+  private qualifyActivityRailItem(pluginId: string, item: ActivityRailContribution, machineId: string | undefined, sourcePluginId: string | undefined): QualifiedActivityRailContribution {
+    const id = this.qualify(pluginId, item.id);
+    const badge = item.badge;
+    const visible = item.visible;
+    return {
+      ...item,
+      id,
+      pluginId,
+      localId: item.id,
+      ...(machineId === undefined ? {} : { machineId }),
+      ...(sourcePluginId === undefined ? {} : { sourcePluginId }),
+      visible: (context: ActivityRailContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) && (visible?.(activityRailContextFor(context, pluginId)) ?? true),
+      ...(badge === undefined ? {} : { badge: (context: ActivityRailContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) ? badge(activityRailContextFor(context, pluginId)) : undefined }),
+      render: (context: ActivityRailContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) ? item.render(activityRailContextFor(context, pluginId)) : html``,
     };
   }
 
@@ -216,6 +253,10 @@ function workspacePanelContextFor(context: WorkspacePanelContext, pluginId: stri
   return workspacePanelScopes.get(context)?.(pluginId) ?? context;
 }
 
+function activityRailContextFor(context: ActivityRailContext, pluginId: string): ActivityRailContext {
+  return activityRailScopes.get(context)?.(pluginId) ?? context;
+}
+
 export function installPluginRuntimeScope(context: PluginRuntimeContext, scope: (pluginId: string) => PluginRuntimeContext): PluginRuntimeContext {
   pluginRuntimeScopes.set(context, scope);
   return context;
@@ -223,6 +264,14 @@ export function installPluginRuntimeScope(context: PluginRuntimeContext, scope: 
 
 export function installWorkspacePanelScope(context: WorkspacePanelContext, scope: (pluginId: string) => WorkspacePanelContext): WorkspacePanelContext {
   workspacePanelScopes.set(context, scope);
+  return context;
+}
+
+export function installActivityRailScope<T extends ActivityRailContext>(
+  context: T,
+  scope: (pluginId: string) => T,
+): T {
+  activityRailScopes.set(context, scope);
   return context;
 }
 

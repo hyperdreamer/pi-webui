@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Machine, MachineRuntime } from "../../api";
 import { PI_WEBUI_CAPABILITIES } from "../../../../shared/capabilities";
-import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, selectedMachineSettingsUnavailableMessage, settingsMachineTarget, settingsMachineTargetLabel } from "./settingsMachineTarget";
+import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, selectedMachineSettingsUnavailableMessage, settingsMachineTarget, settingsMachineTargetLabel } from "./settingsMachineTarget";
 
 const remoteMachine: Machine = {
   id: "remote-a",
@@ -57,6 +57,26 @@ describe("selected-machine settings target helpers", () => {
     expect(unsupported).toEqual({
       state: "unsupported",
       message: "Pi-compatible agent profile settings are not available on Lab Mac. Update and restart PI WEBUI on that machine, then try again.",
+    });
+  });
+
+  it("gates remote model tier settings on their granular capability", () => {
+    const target = settingsMachineTarget(remoteMachine);
+
+    expect(modelTierSettingsSupport({ id: "local", name: "local", kind: "local" }, undefined)).toEqual({ state: "supported" });
+    expect(modelTierSettingsSupport(target, undefined)).toEqual({ state: "unknown" });
+    expect(modelTierSettingsSupport(target, { ok: false })).toEqual({ state: "unknown" });
+    expect(modelTierSettingsSupport(target, {
+      ok: true,
+      capabilities: [PI_WEBUI_CAPABILITIES.modelTierSettings],
+    })).toEqual({ state: "supported" });
+
+    expect(modelTierSettingsSupport(target, {
+      ok: true,
+      capabilities: [PI_WEBUI_CAPABILITIES.selectedMachineSettings],
+    })).toEqual({
+      state: "unsupported",
+      message: selectedMachineSettingsUnavailableMessage(target),
     });
   });
 

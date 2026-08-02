@@ -9,6 +9,10 @@ export type { LocalContributionId, PluginId, QualifiedContributionId } from "./i
 export type HtmlTemplateTag = (strings: TemplateStringsArray, ...values: unknown[]) => TemplateResult;
 export type SvgTemplateTag = (strings: TemplateStringsArray, ...values: unknown[]) => TemplateResult;
 
+export interface PluginHostCapabilities {
+  activityRailItems?: true;
+}
+
 export interface PiWebUiPluginRegistration {
   id: PluginId;
   plugin: PiWebUiPlugin;
@@ -28,6 +32,7 @@ export interface PluginActivationContext {
   pluginId: PluginId;
   html: HtmlTemplateTag;
   svg: SvgTemplateTag;
+  capabilities?: PluginHostCapabilities;
 }
 
 export interface PluginActivationResult {
@@ -37,6 +42,7 @@ export interface PluginActivationResult {
 export interface PluginContributions {
   actions?: PluginAction[];
   workspacePanels?: WorkspacePanelContribution[];
+  activityRailItems?: ActivityRailContribution[];
   workspaceLabels?: WorkspaceLabelContribution[];
   themes?: ThemeContribution[];
   themePairs?: ThemePairContribution[];
@@ -131,6 +137,8 @@ export interface PluginAction {
   enabled?: (context: PluginRuntimeContext) => boolean;
   /** Explain why a disabled action is visible but unavailable. */
   disabledReason?: (context: PluginRuntimeContext) => string | undefined;
+  /** Close the action palette after this action runs. Defaults to keeping it open. */
+  closesActionPalette?: boolean;
   run: (context: PluginRuntimeContext) => void | Promise<void>;
 }
 
@@ -188,6 +196,41 @@ export interface WorkspacePanelContribution {
 }
 
 export interface QualifiedWorkspacePanelContribution extends WorkspacePanelContribution {
+  id: QualifiedContributionId;
+  pluginId: PluginId;
+  localId: LocalContributionId;
+  machineId?: string;
+  sourcePluginId?: PluginId;
+}
+
+export interface ActivityRailHost {
+  requestRender(): void;
+  close(): void;
+}
+
+export interface ActivityRailWorkspaceScope {
+  workspace: Workspace;
+  files: WorkspaceFiles;
+  terminal: WorkspacePanelTerminal;
+}
+
+export interface ActivityRailContext extends PluginRuntimeContext {
+  machine: PluginMachine;
+  workspaceScope?: ActivityRailWorkspaceScope;
+  host: ActivityRailHost;
+}
+
+export interface ActivityRailContribution {
+  id: LocalContributionId;
+  title: string;
+  icon: TemplateResult;
+  order?: number;
+  visible?: (context: ActivityRailContext) => boolean;
+  badge?: (context: ActivityRailContext) => string | number | TemplateResult | undefined;
+  render: (context: ActivityRailContext) => TemplateResult;
+}
+
+export interface QualifiedActivityRailContribution extends ActivityRailContribution {
   id: QualifiedContributionId;
   pluginId: PluginId;
   localId: LocalContributionId;

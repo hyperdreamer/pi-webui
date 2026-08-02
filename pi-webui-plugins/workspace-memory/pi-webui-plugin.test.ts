@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import plugin from "./pi-webui-plugin.js";
 
-describe("pi-webui workspace-memory plugin", () => {
+describe("pi-webui workspace-memory activity-rail plugin", () => {
   it("exports a PiWebUiPlugin object with apiVersion 1", () => {
     expect(plugin.apiVersion).toBe(1);
   });
@@ -16,7 +16,7 @@ describe("pi-webui workspace-memory plugin", () => {
   });
 
   describe("activate", () => {
-    // Non-browser test stub.  Lit's TemplateResult cannot be constructed in
+    // Non-browser test stub. Lit's TemplateResult cannot be constructed in
     // a plain Node environment, so we provide callable stubs that return a
     // dummy value and cast the context shape once.
     function stubTag(strings: TemplateStringsArray, ...values: unknown[]) {
@@ -25,11 +25,11 @@ describe("pi-webui workspace-memory plugin", () => {
 
     function getStubbedTemplateMarkup(template: unknown): string {
       if (
-        typeof template !== "object" ||
-        template === null ||
-        !("strings" in template) ||
-        !Array.isArray(template.strings) ||
-        !template.strings.every((part) => typeof part === "string")
+        typeof template !== "object"
+        || template === null
+        || !("strings" in template)
+        || !Array.isArray(template.strings)
+        || !template.strings.every((part) => typeof part === "string")
       ) {
         throw new Error("Expected a stubbed SVG template");
       }
@@ -53,41 +53,35 @@ describe("pi-webui workspace-memory plugin", () => {
       expect(result).toHaveProperty("contributions");
     });
 
-    it("contributes exactly one workspace panel", () => {
-      expect(result.contributions.workspacePanels).toHaveLength(1);
+    it("contributes exactly one activity-Rail item and no workspace panel", () => {
+      expect(result.contributions.workspacePanels).toBeUndefined();
+      expect(result.contributions.activityRailItems).toHaveLength(1);
+      expect(memoryActivity().id).toBe("workspace.memory");
+      expect(memoryActivity()).toMatchObject({
+        id: "workspace.memory",
+        title: "Memory",
+        order: 50,
+      });
     });
 
-    it("panel has correct id", () => {
-      expect(result.contributions.workspacePanels?.[0]?.id).toBe("workspace.memory");
-    });
-
-    it("panel has title 'Memory'", () => {
-      expect(result.contributions.workspacePanels?.[0]?.title).toBe("Memory");
-    });
-
-    it("panel has order 50", () => {
-      expect(result.contributions.workspacePanels?.[0]?.order).toBe(50);
-    });
-
-    it("panel has an outlined brain SVG icon without robot eyes", () => {
-      const icon = result.contributions.workspacePanels?.[0]?.icon;
-      const markup = getStubbedTemplateMarkup(icon);
+    it("activity has an outlined brain SVG icon without robot eyes", () => {
+      const markup = getStubbedTemplateMarkup(memoryActivity().icon);
 
       expect(markup).toContain('data-icon="brain"');
       expect(markup).not.toContain("<circle");
     });
 
-    it("panel has a render function", () => {
-      expect(typeof result.contributions.workspacePanels?.[0]?.render).toBe("function");
+    it("activity has a render function", () => {
+      expect(typeof memoryActivity().render).toBe("function");
     });
 
-    it("panel declares visible and badge callbacks", () => {
-      expect(typeof result.contributions.workspacePanels?.[0]?.visible).toBe("function");
-      expect(typeof result.contributions.workspacePanels?.[0]?.badge).toBe("function");
+    it("activity declares visible and badge callbacks", () => {
+      expect(typeof memoryActivity().visible).toBe("function");
+      expect(typeof memoryActivity().badge).toBe("function");
     });
 
     it("badge returns undefined for loading state", () => {
-      const badge = result.contributions.workspacePanels?.[0]?.badge;
+      const badge = memoryActivity().badge;
       if (typeof badge !== "function") throw new Error("Expected badge function");
       // The context shape matches the core BundledMemoryContext; cast for test.
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -95,7 +89,7 @@ describe("pi-webui workspace-memory plugin", () => {
     });
 
     it("badge returns a positive number for populated data", () => {
-      const badge = result.contributions.workspacePanels?.[0]?.badge;
+      const badge = memoryActivity().badge;
       if (typeof badge !== "function") throw new Error("Expected badge function");
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
       expect(badge({
@@ -109,13 +103,32 @@ describe("pi-webui workspace-memory plugin", () => {
       } as unknown as Parameters<typeof badge>[0])).toBe(2);
     });
 
-    it("visible returns false only for unavailable", () => {
-      const visible = result.contributions.workspacePanels?.[0]?.visible;
+    it("hides the activity when no workspace scope is selected", () => {
+      const visible = memoryActivity().visible;
       if (typeof visible !== "function") throw new Error("Expected visible function");
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-      expect(visible({ state: { memory: { kind: "unavailable" } } } as unknown as Parameters<typeof visible>[0])).toBe(false);
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-      expect(visible({ state: { memory: { kind: "loading" } } } as unknown as Parameters<typeof visible>[0])).toBe(true);
+      expect(visible({ state: { memory: { kind: "loading" } } } as unknown as Parameters<typeof visible>[0])).toBe(false);
     });
+
+    it("keeps loading Memory visible only with a workspace scope and hides confirmed unavailability", () => {
+      const visible = memoryActivity().visible;
+      if (typeof visible !== "function") throw new Error("Expected visible function");
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(visible({
+        state: { memory: { kind: "loading" } },
+        workspaceScope: {},
+      } as unknown as Parameters<typeof visible>[0])).toBe(true);
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      expect(visible({
+        state: { memory: { kind: "unavailable" } },
+        workspaceScope: {},
+      } as unknown as Parameters<typeof visible>[0])).toBe(false);
+    });
+
+    function memoryActivity() {
+      const activity = result.contributions.activityRailItems?.[0];
+      if (activity === undefined) throw new Error("Expected a Memory activity-Rail contribution");
+      return activity;
+    }
   });
 });

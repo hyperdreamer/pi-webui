@@ -2,6 +2,7 @@ import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
 import { configApi, effectiveWorkspaceUploadFolder, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
+import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -33,12 +34,13 @@ import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPer
 import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
-import type { LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "../plugins/types";
+import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal } from "../plugins/types";
+import { isActivityRailItemVisible, visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebUiTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
 import { corePlugin } from "../plugins/core";
 import { themePackPlugin } from "../plugins/themes";
 import { loadExternalPlugins } from "../plugins/external";
-import { PluginRegistry, installPluginRuntimeScope, installWorkspacePanelScope } from "../plugins/registry";
+import { PluginRegistry, installActivityRailScope, installPluginRuntimeScope, installWorkspacePanelScope } from "../plugins/registry";
 import { queryNamespace, readNamespacedString, setNamespacedQueryKey } from "../namespacedQueryArgs";
 import { AppShellController } from "../appShell/appShellController";
 import { BrowserResumeController } from "../appShell/browserResumeController";
@@ -51,6 +53,7 @@ import { applyActiveShortcutPreferences } from "../shortcutPreferences";
 import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
 import { fitTerminalModalBounds, moveTerminalModal, resizeTerminalModal, type TerminalModalBounds, type TerminalModalViewport } from "../terminalModalGeometry";
 import { clampTerminalModalFontSize, clampTerminalModalOpacity, readTerminalModalPreferences, writeTerminalModalPreferences } from "../terminalModalPreferences";
+import { readWorkspaceTabVisibility, writeWorkspaceTabVisibility } from "../workspaceTabVisibility";
 import { isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, pendingWorkspaceDeletionIds, targetWorkspaceIdForRun, workspaceDeletionRunFilter } from "../workspaceDeletion";
 import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
 import "./MachineList";
@@ -87,6 +90,7 @@ import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocu
 import "./appShell/AppPanelEdgeControl";
 import "./appShell/AppRefreshControl";
 import "./ActivityRail";
+import "./PluginActivityDialog";
 import "./GitUpdateManagerPanel";
 import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ReorderableRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
@@ -102,9 +106,9 @@ const THEME_OPTION_PREFIX = "theme:";
 const FILES_ROUTE_NAMESPACE = queryNamespace("core:workspace.files");
 const GIT_ROUTE_NAMESPACE = queryNamespace("core:workspace.git");
 const TERMINAL_ROUTE_NAMESPACE = queryNamespace("core:workspace.terminal");
-const MEMORY_WORKSPACE_PLUGIN_ID: PluginId = "workspace-memory";
-const MEMORY_WORKSPACE_PANEL_LOCAL_ID: LocalContributionId = "workspace.memory";
-const MEMORY_WORKSPACE_PANEL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
+const MEMORY_ACTIVITY_RAIL_PLUGIN_ID: PluginId = "workspace-memory";
+const MEMORY_ACTIVITY_RAIL_LOCAL_ID: LocalContributionId = "workspace.memory";
+const MEMORY_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -142,6 +146,19 @@ interface TerminalModalPointerEvent {
   currentTarget: EventTarget | null;
   preventDefault(): void;
   stopPropagation(): void;
+}
+
+interface InternalActivityRailContext extends ActivityRailContext {
+  onRefreshMemory: () => void;
+}
+
+interface ResolvedActivityRailItem {
+  activity: QualifiedActivityRailContribution;
+  context: ActivityRailContext;
+}
+
+interface ActiveActivityRailItem extends ResolvedActivityRailItem {
+  generation: number;
 }
 
 @customElement("pi-webui-app")
@@ -318,6 +335,9 @@ export class PiWebUiApp extends LitElement {
   private remoteRouteRestoreInProgress = false;
   private windowTitleCleanup: (() => void) | undefined;
   private readonly plugins = createPluginRegistry();
+  private readonly reportActivityRailError: ReportActivityRailError = (phase, contributionId, error) => {
+    console.warn("Plugin activity rail contribution failed", phase, contributionId, error);
+  };
   private readonly loadedMachinePluginIds = new Set<string>();
   private readonly machinePluginLoadPromises = new Map<string, Promise<void>>();
   private gatewayPluginLoadPromise: Promise<void> | undefined;
@@ -343,9 +363,15 @@ export class PiWebUiApp extends LitElement {
   private readonly initialTerminalModalPreferences = readTerminalModalPreferences();
   @state() private terminalModalFontSize = this.initialTerminalModalPreferences.fontSize;
   @state() private terminalModalOpacity = this.initialTerminalModalPreferences.opacity;
-  @state() private terminalTabHidden = readTerminalTabHidden();
-  @state() private infoTabHidden = readInfoTabHidden();
+  private readonly initialWorkspaceTabVisibility = readWorkspaceTabVisibility();
+  @state() private terminalTabHidden = this.initialWorkspaceTabVisibility.terminalHidden;
+  @state() private infoTabHidden = this.initialWorkspaceTabVisibility.infoHidden;
   @state() private railOrder: ReorderableRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
+  @state() private compactRailOpen = false;
+  private compactActivityRailLauncher: HTMLElement | undefined;
+  @state() private activeActivityRailId: QualifiedContributionId | undefined;
+  private activeActivityRailGeneration = 0;
+  private activityRailRestoreFocus: (() => void) | undefined;
   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
   @state() private shortcutConfig: PiWebUiShortcutConfig = {};
   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
@@ -371,7 +397,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
-    if (this.settingsSection !== undefined || this.state.treeDialog !== undefined) return;
+    if (this.compactRailOpen || this.activeActivityRailId !== undefined || this.settingsSection !== undefined || this.state.treeDialog !== undefined) return;
     if (this.keyboard.handle(event, this.getDefaultActions(), { shortcuts: this.shortcutConfig })) {
       event.preventDefault();
       event.stopPropagation();
@@ -389,6 +415,11 @@ export class PiWebUiApp extends LitElement {
     // deduplicates acknowledgements for the observed completion order.
     this.committedChatIdentity = selectedChatIdentity(this.state);
     this.syncSelectedSessionReadState();
+    if (this.compactRailOpen && this.appShell.isDesktopActivityRailLayout) this.closeCompactActivityRail();
+    const activeActivityRailId = this.activeActivityRailId;
+    if (activeActivityRailId !== undefined && this.activeActivityRailItem() === undefined) {
+      this.closeActivityRailItem(activeActivityRailId, this.activeActivityRailGeneration);
+    }
   }
 
   private syncSessionWarningVisibility(): void {
@@ -449,7 +480,9 @@ export class PiWebUiApp extends LitElement {
   }
 
   private isChatObscured(): boolean {
-    return this.settingsSection !== undefined
+    return this.compactRailOpen
+      || this.activeActivityRailId !== undefined
+      || this.settingsSection !== undefined
       || this.sessionCleanupDialog !== undefined
       || this.historyWindow !== undefined
       || this.modelsConfigDialogOpen
@@ -1704,35 +1737,41 @@ export class PiWebUiApp extends LitElement {
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
     const panels = this.plugins.getWorkspacePanels();
-    this.synchronizeMemoryPolling(panels, context);
-    return panels.filter((panel) => {
-      if (this.terminalTabHidden && panel.id === "core:workspace.terminal") return false;
-      return panel.visible?.(context) ?? true;
-    });
+    return panels.filter((panel) => panel.visible?.(context) ?? true);
   }
 
-  private synchronizeMemoryPollingForSelectedWorkspace(): void {
-    const workspace = this.state.selectedWorkspace;
-    if (workspace === undefined) {
+  private synchronizeMemoryPollingForSelectedWorkspace(
+    activities: readonly QualifiedActivityRailContribution[] = this.plugins.getActivityRailItems(),
+  ): void {
+    if (this.state.selectedWorkspace === undefined) {
       this.memory.updatePolling(false);
       return;
     }
-    const context = this.createWorkspacePanelContext(workspace);
-    this.synchronizeMemoryPolling(this.plugins.getWorkspacePanels(), context);
+    this.synchronizeMemoryPolling(activities);
   }
 
-  private synchronizeMemoryPolling(panels: readonly QualifiedWorkspacePanelContribution[], context: WorkspacePanelContext): void {
-    const observed = panels.some((panel) => isMemoryWorkspacePanel(panel)
-      && (panel.visible?.(context) ?? true));
+  private synchronizeMemoryPolling(
+    activities: readonly QualifiedActivityRailContribution[],
+  ): void {
+    const observed = activities.some((activity) => isMemoryActivityRailItem(activity)
+      && isActivityRailItemVisible(
+        activity,
+        this.createActivityRailContext(activity.id),
+        this.reportActivityRailError,
+      ));
     this.memory.updatePolling(observed);
   }
 
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
-    return this.workspacePanels().filter((panel) => !this.infoTabHidden || panel.id !== "core:workspace.info");
+    const hiddenTools = this.hiddenWorkspacePanelTools();
+    return this.workspacePanels().filter((panel) => !hiddenTools.includes(panel.id));
   }
 
   private hiddenWorkspacePanelTools(): QualifiedContributionId[] {
-    return this.infoTabHidden ? ["core:workspace.info"] : [];
+    const hiddenTools: QualifiedContributionId[] = [];
+    if (this.terminalTabHidden) hiddenTools.push("core:workspace.terminal");
+    if (this.infoTabHidden) hiddenTools.push("core:workspace.info");
+    return hiddenTools;
   }
 
   private workspacePanelEmptyState(): WorkspacePanelEmptyState {
@@ -1867,6 +1906,14 @@ export class PiWebUiApp extends LitElement {
     };
   }
 
+  private createWorkspacePanelTerminal(workspace: Workspace, machineId: string, origin: string): WorkspacePanelTerminal {
+    const terminalCommandRuns = this.terminalCommandRunsForOrigin(origin, machineId);
+    return {
+      open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
+      runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
+    };
+  }
+
   private createWorkspacePanelContext(workspace: Workspace): WorkspacePanelContext {
     const machine = pluginMachineFromState(this.state);
     const machineId = machine.id;
@@ -1878,10 +1925,7 @@ export class PiWebUiApp extends LitElement {
         state: this.state,
         files: this.createWorkspaceFiles(workspace, machineId),
         prompt: this.createPromptEditor(),
-        terminal: {
-          open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
-          runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
-        },
+        terminal: this.createWorkspacePanelTerminal(workspace, machineId, origin),
         openTerminal: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
         host: this.createWorkspaceHost(),
         piWebUiUnstable: { terminalCommandRuns },
@@ -1930,6 +1974,7 @@ export class PiWebUiApp extends LitElement {
         title: "Clean Up Sessions",
         description: "Preview and manually clean up idle or archived sessions on the selected machine",
         group: "Sessions",
+        closesActionPalette: true,
         ...(canCleanup ? {} : { enabled: false, disabledReason: this.sessionCleanupUnavailableMessage() }),
         run: () => { this.openSessionCleanupDialog(); },
       },
@@ -1988,6 +2033,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the machine selector",
         shortcut: "mod+g m",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("machines"),
       },
       {
@@ -1996,6 +2042,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the projects list",
         shortcut: "mod+g p",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("projects"),
       },
       {
@@ -2004,6 +2051,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the workspaces list",
         shortcut: "mod+g w",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("workspaces"),
       },
       {
@@ -2012,6 +2060,7 @@ export class PiWebUiApp extends LitElement {
         description: "Move keyboard focus to the sessions list",
         shortcut: "mod+g s",
         group: "Navigation",
+        closesActionPalette: true,
         run: () => this.focusNavigationSection("sessions"),
       },
     ];
@@ -2058,6 +2107,7 @@ export class PiWebUiApp extends LitElement {
           console.warn(`Failed to register PI WEBUI plugin ${registration.id}`, error);
         }
       }
+      this.synchronizeMemoryPollingForSelectedWorkspace();
       this.applyPreferredTheme(false);
       this.requestUpdate();
       return true;
@@ -2093,11 +2143,15 @@ export class PiWebUiApp extends LitElement {
   }
 
   private createPluginRuntimeContext(): PluginRuntimeContext {
-    const createContext = (origin: string): PluginRuntimeContext => installPluginRuntimeScope({
+    return this.createPluginRuntimeContextForOrigin("core", selectedMachineId(this.state));
+  }
+
+  private createPluginRuntimeContextForOrigin(origin: string, machineId: string): PluginRuntimeContext {
+    const createContext = (scopedOrigin: string): PluginRuntimeContext => installPluginRuntimeScope({
       state: this.state,
       prompt: this.createPromptEditor(),
       piWebUiUnstable: {
-        terminalCommandRuns: this.terminalCommandRunsForOrigin(origin),
+        terminalCommandRuns: this.terminalCommandRunsForOrigin(scopedOrigin, machineId),
         openSettings: (section) => { this.openSettings(section); },
       },
       openActionPalette: () => { this.setState({ actionPaletteOpen: true }); },
@@ -2127,7 +2181,123 @@ export class PiWebUiApp extends LitElement {
       deleteCachedNewSession: () => this.sessions.deleteCachedNewSession(),
       stopActiveWork: () => this.sessions.stopActiveWork(),
     }, createContext);
+    return createContext(origin);
+  }
+
+  private createActivityRailContext(contributionId: QualifiedContributionId): ActivityRailContext {
+    const machine = pluginMachineFromState(this.state);
+    const workspace = this.state.selectedWorkspace;
+    // Activity callbacks can outlive a render, so host.close is valid only for this active instance.
+    const activityRailGeneration = this.activeActivityRailId === contributionId
+      ? this.activeActivityRailGeneration
+      : undefined;
+    const createContext = (origin: string): InternalActivityRailContext => installActivityRailScope({
+      ...this.createPluginRuntimeContextForOrigin(origin, machine.id),
+      machine,
+      ...(workspace === undefined ? {} : {
+        workspaceScope: {
+          workspace,
+          files: this.createWorkspaceFiles(workspace, machine.id),
+          terminal: this.createWorkspacePanelTerminal(workspace, machine.id, origin),
+        },
+      }),
+      host: {
+        requestRender: () => { this.requestUpdate(); },
+        close: () => {
+          if (activityRailGeneration !== undefined) {
+            this.closeActivityRailItem(contributionId, activityRailGeneration);
+          }
+        },
+      },
+      onRefreshMemory: () => { void this.memory.refresh(); },
+    }, createContext);
     return createContext("core");
+  }
+
+  private activityRailItems(): ActivityRailDisplayItem[] {
+    const activities = this.plugins.getActivityRailItems();
+    this.synchronizeMemoryPollingForSelectedWorkspace(activities);
+    return activities.flatMap((activity) => this.projectActivityRailItems(
+      [activity],
+      this.createActivityRailContext(activity.id),
+    ));
+  }
+
+  private projectActivityRailItems(
+    items: readonly QualifiedActivityRailContribution[],
+    context: ActivityRailContext,
+  ): ActivityRailDisplayItem[] {
+    return visibleActivityRailItems(items, context, this.reportActivityRailError);
+  }
+
+  private activeActivityRailItem(): ActiveActivityRailItem | undefined {
+    const id = this.activeActivityRailId;
+    if (id === undefined) return undefined;
+    const resolved = this.resolveActivityRailItem(id);
+    return resolved === undefined ? undefined : { ...resolved, generation: this.activeActivityRailGeneration };
+  }
+
+  private openActivityRailItem(id: QualifiedContributionId, restoreFocus: () => void): void {
+    if (this.resolveActivityRailItem(id) === undefined) return;
+    this.closeCompactActivityRail();
+    this.activityRailRestoreFocus = restoreFocus;
+    this.activeActivityRailGeneration += 1;
+    this.activeActivityRailId = id;
+  }
+
+  private resolveActivityRailItem(id: QualifiedContributionId): ResolvedActivityRailItem | undefined {
+    const activity = this.plugins.getActivityRailItems().find((item) => item.id === id);
+    if (activity === undefined) return undefined;
+    const context = this.createActivityRailContext(id);
+    if (!this.projectActivityRailItems([activity], context).some((item) => item.id === id)) return undefined;
+    return { activity, context };
+  }
+
+  private closeActivityRailItem(id: QualifiedContributionId, generation: number): void {
+    if (this.activeActivityRailId !== id || this.activeActivityRailGeneration !== generation) return;
+    const restoreFocus = this.activityRailRestoreFocus;
+    this.activityRailRestoreFocus = undefined;
+    this.activeActivityRailId = undefined;
+    if (restoreFocus !== undefined) void this.updateComplete.then(() => {
+      if (this.activeActivityRailId === undefined) restoreFocus();
+    });
+  }
+
+  private readonly closeCompactActivityRail = (): void => {
+    if (!this.compactRailOpen) return;
+    this.compactRailOpen = false;
+    const launcher = this.compactActivityRailLauncher;
+    void this.updateComplete.then(() => {
+      if (!this.compactRailOpen && this.activeActivityRailId === undefined) {
+        if (launcher !== undefined) this.restoreActivityRailFocus(launcher);
+        else this.currentCompactActivityRailLauncher()?.focus();
+      }
+    });
+  };
+
+  private readonly toggleCompactActivityRail = (source?: HTMLElement): void => {
+    if (this.appShell.isDesktopActivityRailLayout) return;
+    if (!this.compactRailOpen && source !== undefined) this.compactActivityRailLauncher = source;
+    this.compactRailOpen = !this.compactRailOpen;
+  };
+
+  private restoreActivityRailFocus(source: HTMLElement): void {
+    if (source.isConnected) {
+      source.focus();
+      return;
+    }
+    const compactLauncher = this.compactActivityRailLauncher;
+    if (compactLauncher?.isConnected === true) {
+      compactLauncher.focus();
+      return;
+    }
+    this.currentCompactActivityRailLauncher()?.focus();
+  }
+
+  private currentCompactActivityRailLauncher(): HTMLElement | undefined {
+    const contextBar = this.renderRoot.querySelector("app-context-bar");
+    const launcher = contextBar?.shadowRoot?.querySelector<HTMLElement>(".activity-rail-action-button");
+    return launcher?.isConnected === true ? launcher : undefined;
   }
 
   private async deleteWorkspace(workspace = this.state.selectedWorkspace): Promise<void> {
@@ -2550,11 +2720,13 @@ export class PiWebUiApp extends LitElement {
   };
 
   private readonly handleOpenTerminalFromRail = (): void => {
+    this.closeCompactActivityRail();
     if (this.state.selectedWorkspace === undefined) return;
     this.terminalModalOpen = true;
   };
 
   private readonly handleOpenGitUpdateManagerFromRail = (): void => {
+    this.closeCompactActivityRail();
     if (this.state.selectedWorkspace === undefined) return;
     this.gitUpdateManagerPanelOpen = true;
   };
@@ -2570,6 +2742,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly handleOpenThemeFromRail = (): void => {
+    this.closeCompactActivityRail();
     this.openThemeDialog();
   };
 
@@ -2690,12 +2863,16 @@ export class PiWebUiApp extends LitElement {
 
   private toggleTerminalTab(): void {
     this.terminalTabHidden = !this.terminalTabHidden;
-    writeTerminalTabHidden(this.terminalTabHidden);
+    this.persistWorkspaceTabVisibility();
   }
 
   private toggleInfoTab(): void {
     this.infoTabHidden = !this.infoTabHidden;
-    writeInfoTabHidden(this.infoTabHidden);
+    this.persistWorkspaceTabVisibility();
+  }
+
+  private persistWorkspaceTabVisibility(): void {
+    writeWorkspaceTabVisibility({ terminalHidden: this.terminalTabHidden, infoHidden: this.infoTabHidden });
   }
 
   private readonly handleStopActiveWork = (): void => {
@@ -2765,7 +2942,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private renderContextBar() {
-    if (!this.appShell.isMobileNavigationLayout) return null;
+    if (this.appShell.isDesktopActivityRailLayout) return null;
     return html`
       <app-context-bar
         .machines=${this.state.machines}
@@ -2776,6 +2953,8 @@ export class PiWebUiApp extends LitElement {
         .refreshControl=${this.appShell.shouldShowAppRefreshInContextBar() ? this.renderAppRefresh() : undefined}
         .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
         .onShowActions=${() => { this.setState({ actionPaletteOpen: true }); }}
+        .activityRailOpen=${this.compactRailOpen}
+        .onToggleActivityRail=${this.toggleCompactActivityRail}
       ></app-context-bar>
     `;
   }
@@ -2910,26 +3089,34 @@ export class PiWebUiApp extends LitElement {
     const showCompact = state.selectedSession !== undefined
       && state.selectedSession.archived !== true;
     const gitUpdateManagerWorkspace = this.gitUpdateManagerPanelOpen ? state.selectedWorkspace : undefined;
+    const activeActivity = this.activeActivityRailItem();
     return html`
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
+        <activity-rail
+          .onOpenTerminal=${this.handleOpenTerminalFromRail}
+          .onOpenGitUpdateManager=${this.handleOpenGitUpdateManagerFromRail}
+          .onOpenTheme=${this.handleOpenThemeFromRail}
+          .terminalCount=${this.state.activeTerminalCount}
+          .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
+          .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
+          .onOpenSystemPrompt=${() => {
+            this.closeCompactActivityRail();
+            if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
+          }}
+          .historyEnabled=${this.canOpenSessionHistory()}
+          .onOpenHistory=${() => { this.closeCompactActivityRail(); this.openSessionHistory(); }}
+          .onOpenInfo=${() => { this.closeCompactActivityRail(); this.openWorkspaceTool("core:workspace.info"); }}
+          .onOpenSettings=${() => { this.closeCompactActivityRail(); this.openSettings(); }}
+          .railOrder=${this.railOrder}
+          .onRailOrderChange=${this.handleRailOrderChange}
+          .pluginItems=${this.activityRailItems()}
+          .onOpenPluginActivity=${(id: QualifiedContributionId, source: HTMLElement) => {
+            this.openActivityRailItem(id, () => { this.restoreActivityRailFocus(source); });
+          }}
+          .compactOpen=${this.compactRailOpen}
+          .onCloseCompact=${this.closeCompactActivityRail}
+        ></activity-rail>
         <aside id="navigation-panel">
-          <activity-rail
-            .onOpenTerminal=${this.handleOpenTerminalFromRail}
-            .onOpenGitUpdateManager=${this.handleOpenGitUpdateManagerFromRail}
-            .onOpenTheme=${this.handleOpenThemeFromRail}
-            .terminalCount=${this.state.activeTerminalCount}
-            .gitUpdateManagerCount=${gitUpdateManagerChangeCount(state.gitStatus?.files ?? [])}
-            .systemPromptEnabled=${this.state.selectedSession !== undefined && this.canViewSystemPrompt()}
-            .onOpenSystemPrompt=${() => {
-              if (this.state.selectedSession !== undefined && this.canViewSystemPrompt()) this.systemPromptDialogOpen = true;
-            }}
-            .historyEnabled=${this.canOpenSessionHistory()}
-            .onOpenHistory=${() => { this.openSessionHistory(); }}
-            .onOpenInfo=${() => { this.openWorkspaceTool("core:workspace.info"); }}
-            .onOpenSettings=${() => { this.openSettings(); }}
-            .railOrder=${this.railOrder}
-            .onRailOrderChange=${this.handleRailOrderChange}
-          ></activity-rail>
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
         ${this.renderNavigationPanelEdgeControl()}
@@ -2950,7 +3137,7 @@ export class PiWebUiApp extends LitElement {
         </main>
         ${this.renderWorkspacePanelEdgeControl()}
         ${this.renderWorkspacePanel()}
-        ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
+        ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { if (closesActionPaletteAfterRun(action)) this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
         ${this.renderSessionTreeNavigator(state)}
         ${this.projectBrowserOpen ? html`<project-browser-dialog
           .projects=${state.projects}
@@ -2983,6 +3170,7 @@ export class PiWebUiApp extends LitElement {
         ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
         ${state.authDialog !== undefined ? html`<auth-dialog .state=${state.authDialog} .onChooseMethod=${(authType: "oauth" | "api_key") => { void this.auth.chooseLoginMethod(authType); }} .onSelectProvider=${(providerId: string, authType: "oauth" | "api_key") => { void this.auth.selectLoginProvider(providerId, authType); }} .onApiKeyInput=${(value: string) => { this.auth.updateApiKey(value); }} .onSaveApiKey=${() => { void this.auth.saveApiKey(); }} .onLogoutProvider=${(providerId: string) => { void this.auth.logoutProvider(providerId); }} .onOAuthInput=${(value: string) => { this.auth.updateOAuthInput(value); }} .onOAuthRespond=${(value?: string) => { void this.auth.respondOAuth(value); }} .onOAuthCancel=${() => { void this.auth.cancelOAuth(); }} .onCancel=${() => { this.auth.closeDialog(); }}></auth-dialog>` : null}
+        ${activeActivity === undefined ? null : html`<plugin-activity-dialog .activity=${activeActivity.activity} .context=${activeActivity.context} .onClose=${() => { this.closeActivityRailItem(activeActivity.activity.id, activeActivity.generation); }} .onReportError=${this.reportActivityRailError}></plugin-activity-dialog>`}
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
@@ -3015,9 +3203,9 @@ function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selecte
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
 }
 
-function isMemoryWorkspacePanel(panel: QualifiedWorkspacePanelContribution): boolean {
-  return panel.id === MEMORY_WORKSPACE_PANEL_ID
-    || (panel.sourcePluginId === MEMORY_WORKSPACE_PLUGIN_ID && panel.localId === MEMORY_WORKSPACE_PANEL_LOCAL_ID);
+function isMemoryActivityRailItem(activity: QualifiedActivityRailContribution): boolean {
+  return activity.id === MEMORY_ACTIVITY_RAIL_ID
+    || (activity.sourcePluginId === MEMORY_ACTIVITY_RAIL_PLUGIN_ID && activity.localId === MEMORY_ACTIVITY_RAIL_LOCAL_ID);
 }
 
 function memoryPollingScopeChanged(previous: AppState, next: AppState): boolean {
@@ -3086,52 +3274,6 @@ function omitWorkspaceDeletionRun(runs: Record<string, TerminalCommandRun>, work
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => { resolve(); }));
-}
-
-const TERMINAL_TAB_HIDDEN_KEY = "pi-webui:terminal-tab-hidden";
-
-function readTerminalTabHidden(): boolean {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return false;
-    return storage.getItem(TERMINAL_TAB_HIDDEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeTerminalTabHidden(hidden: boolean): void {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return;
-    if (hidden) storage.setItem(TERMINAL_TAB_HIDDEN_KEY, "true");
-    else storage.removeItem(TERMINAL_TAB_HIDDEN_KEY);
-  } catch {
-    // Ignore localStorage quota/privacy errors.
-  }
-}
-
-const INFO_TAB_HIDDEN_KEY = "pi-webui:info-tab-hidden";
-
-function readInfoTabHidden(): boolean {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return false;
-    return storage.getItem(INFO_TAB_HIDDEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function writeInfoTabHidden(hidden: boolean): void {
-  try {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    if (storage === undefined) return;
-    if (hidden) storage.setItem(INFO_TAB_HIDDEN_KEY, "true");
-    else storage.removeItem(INFO_TAB_HIDDEN_KEY);
-  } catch {
-    // Ignore localStorage quota/privacy errors.
-  }
 }
 
 function thinkingDescription(level: string): string | undefined {

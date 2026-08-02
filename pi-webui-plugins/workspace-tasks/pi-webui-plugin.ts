@@ -16,6 +16,7 @@ const plugin: PiWebUiPlugin = {
             title: "Open Workspace Tasks",
             description: `Open the workspace Tasks tab. Configure tasks in ${TASKS_CONFIG_PATH}.`,
             group: "Workspace",
+            closesActionPalette: true,
             enabled: (context) => context.state.selectedWorkspace !== undefined,
             run: (context) => {
               if (context.state.selectedWorkspace === undefined) return;

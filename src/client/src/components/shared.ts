@@ -91,9 +91,9 @@ export const appStyles = css`
     :host { --pi-app-safe-area-bottom: env(safe-area-inset-bottom); }
   }
   .shell { --navigation-panel-size: 340px; --workspace-panel-size: minmax(360px, 42vw); --navigation-panel-width: var(--navigation-panel-size); --workspace-panel-width: var(--workspace-panel-size); display: grid; grid-template-columns: var(--navigation-panel-width) 1px minmax(320px, 1fr) 1px var(--workspace-panel-width); height: 100%; min-height: 0; }
-  aside { grid-column: 1; display: flex; flex-direction: row; min-height: 0; overflow: hidden; }
+  aside { grid-column: 1; grid-row: 1; display: flex; flex-direction: row; min-height: 0; overflow: hidden; }
   aside app-navigation-panel { flex: 1 1 auto; min-height: 0; min-width: 0; }
-  activity-rail { flex: 0 0 auto; min-height: 0; }
+  .shell > activity-rail { grid-column: 1; grid-row: 1; align-self: stretch; justify-self: start; z-index: 3; min-height: 0; }
   header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-bottom: 1px solid var(--pi-border); }
   .header-actions { display: flex; align-items: center; gap: 8px; }
   project-list, workspace-list { flex: 0 0 auto; max-height: 26%; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--pi-border-muted); }
@@ -137,6 +137,7 @@ export const appStyles = css`
   .navigation-panel-edge-icon, .workspace-panel-edge-icon { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   workspace-panel { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; }
   @media (min-width: 1181px) {
+    .shell > aside { box-sizing: border-box; padding-left: 44px; }
     .shell.navigation-panel-collapsed { --navigation-panel-width: 44px; }
     .shell.navigation-panel-collapsed > aside { display: flex; }
     .shell.navigation-panel-collapsed > aside > app-navigation-panel { display: none; }
@@ -144,6 +145,7 @@ export const appStyles = css`
     .shell.workspace-panel-collapsed > workspace-panel { display: none; }
   }
   @media (max-width: 1180px) {
+    .shell > activity-rail { position: absolute; width: 0; height: 0; min-height: 0; }
     .shell { grid-template-columns: var(--navigation-panel-width) 1px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     .shell.navigation-panel-collapsed { --navigation-panel-width: 0px; }
     .shell.navigation-panel-collapsed > aside { display: none; }
@@ -621,10 +623,16 @@ export const chatStyles = css`
   .queued-heading { min-width: 0; flex: 1 1 180px; display: grid; gap: 2px; }
   .queued-heading strong { color: var(--pi-warning); }
   .queued-heading small { color: var(--pi-muted); }
-  .queued-clear-button { flex: 0 0 auto; border: 1px solid var(--pi-warning-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-warning); padding: 5px 10px; font: 12px system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
-  .queued-clear-button:hover, .queued-clear-button:focus { border-color: var(--pi-warning); color: var(--pi-text-bright); }
+  .queued-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; }
+  .queued-action-button, .queued-clear-button { flex: 0 0 auto; border: 1px solid var(--pi-warning-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-warning); padding: 5px 10px; font: 12px system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+  .queued-action-button:hover, .queued-action-button:focus-visible, .queued-clear-button:hover, .queued-clear-button:focus-visible { border-color: var(--pi-accent); color: var(--pi-text-bright); }
+  .queued-action-button:focus-visible, .queued-clear-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
   .queued-message { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--pi-border); }
   .queued-message:first-of-type { padding-top: 0; border-top: 0; }
+  .queued-message-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  .queued-copy-button { flex: 0 0 auto; display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--pi-border); border-radius: 4px; background: transparent; color: var(--pi-text-dim); cursor: pointer; }
+  .queued-copy-button:hover, .queued-copy-button:focus-visible { color: var(--pi-accent); border-color: var(--pi-accent); background: var(--pi-surface-hover); }
+  .queued-copy-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
   .queued-kind { color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
   .session-activity { max-width: 100%; min-width: 0; box-sizing: border-box; display: grid; gap: 4px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); color: var(--pi-text); overflow: hidden; }
   .session-activity.compacting { border-color: var(--pi-purple-border); background: var(--pi-purple-surface); }
