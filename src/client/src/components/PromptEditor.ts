@@ -10,8 +10,6 @@ import {
   type ClientSessionModelPolicyStatus,
   type ModelTierSettingsResponse,
   type PromptAttachmentDelivery,
-  type SessionModelPolicyResponse,
-  type SessionModelPolicyUpdate,
 } from "../../../shared/apiTypes";
 import { capturePromptAttachments, effectivePromptAttachmentDelivery, isInlinePromptAttachment, promptAttachmentsCanUseInlineDelivery, type CapturedAttachment } from "../promptAttachmentCapture";
 import { inputModeForDraft, inputModesEqual, type InputMode } from "../inputModes";
@@ -52,14 +50,10 @@ export class PromptEditor extends LitElement {
   /** Persisted defaults shown by the starter before it has a session status. */
   @property({ attribute: false }) sessionConfiguration?: Pick<SessionStatus, "model" | "thinkingLevel">;
   @property({ attribute: false }) modelPolicyStatus?: ClientSessionModelPolicyStatus;
-  @property({ attribute: false }) modelPolicyResponse?: SessionModelPolicyResponse;
   @property({ attribute: false }) modelTierCatalog?: ModelTierSettingsResponse;
   @property({ type: Boolean }) modelPolicyLoading = false;
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
-  @property({ attribute: false }) onOpenModelPolicy?: () => void;
-  @property({ attribute: false }) onCloseModelPolicy?: () => void;
-  @property({ attribute: false }) onSaveModelPolicy?: (update: SessionModelPolicyUpdate) => void;
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
   @query(".attachment-input") private attachmentInput?: HTMLInputElement;
@@ -208,15 +202,11 @@ export class PromptEditor extends LitElement {
         ${policyStatus === undefined ? null : html`
           <session-model-policy-control
             .status=${policyStatus}
-            .response=${this.modelPolicyResponse}
             .catalog=${this.modelTierCatalog}
             .loading=${this.modelPolicyLoading}
             .saving=${this.modelPolicySaving}
             .editable=${policyEditable}
             .error=${this.modelPolicyError}
-            .onOpen=${this.onOpenModelPolicy}
-            .onClose=${this.onCloseModelPolicy}
-            .onSave=${this.onSaveModelPolicy}
           ></session-model-policy-control>
         `}
         ${policyStatus?.mode === "tiered" ? null : html`

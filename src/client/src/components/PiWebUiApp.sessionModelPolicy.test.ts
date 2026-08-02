@@ -1,9 +1,8 @@
 // Template inspection is proportionate here: this node-environment harness
-// verifies PiWebUiApp's composer policy wiring — which inputs and callbacks each
-// prompt-editor receives, whether the capability gate withholds them, and what
-// the starter synthesis contains. Those are Lit property/event bindings on a
-// child custom element, and a real shadow-DOM harness is unavailable in this
-// runner. Assertions stay on observable app state and injected collaborators.
+// verifies PiWebUiApp's composer policy inputs, capability gating, and starter
+// synthesis. Those are Lit property bindings on a child custom element, and a
+// real shadow-DOM harness is unavailable in this runner. Assertions stay on
+// observable app state and injected collaborators.
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
@@ -14,8 +13,6 @@ import type {
   ModelTierModelOption,
   ModelTierSettingsResponse,
   SessionModelPolicy,
-  SessionModelPolicyResponse,
-  SessionModelPolicyUpdate,
   SessionStatus,
 } from "../../../shared/apiTypes";
 import { modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
@@ -188,10 +185,7 @@ describe("PiWebUiApp session model policy capability gate", () => {
     const editor = promptEditorTemplate(app);
 
     expect(templateValueAfterMarker(editor, ".modelPolicyStatus=")).toBeUndefined();
-    expect(templateValueAfterMarker(editor, ".modelPolicyResponse=")).toBeUndefined();
     expect(templateValueAfterMarker(editor, ".modelTierCatalog=")).toBeUndefined();
-    expect(templateValueAfterMarker(editor, ".onOpenModelPolicy=")).toBeUndefined();
-    expect(templateValueAfterMarker(editor, ".onSaveModelPolicy=")).toBeUndefined();
     expect(settings).not.toHaveBeenCalled();
   });
 
@@ -243,65 +237,16 @@ describe("PiWebUiApp session model policy capability gate", () => {
 // ── active composer ─────────────────────────────────────────────────────────
 
 describe("PiWebUiApp active composer policy wiring", () => {
-  it("loads the selected session's policy and the selected machine's catalog once when the dialog opens", async () => {
+  it("passes the live status projection and retained control state", () => {
     const app = createApp();
-    const settings = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue(undefined);
-    setAppState(app, activeState());
-
-    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
-    await flush();
-
-    expect(loadModelPolicy).toHaveBeenCalledOnce();
-    expect(settings).toHaveBeenCalledOnce();
-    expect(settings).toHaveBeenCalledWith("local");
-    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelTierCatalog=")).toEqual(validCatalog());
-  });
-
-  it("passes the live status projection and the lazily read response as separate inputs", () => {
-    const app = createApp();
-    const response: SessionModelPolicyResponse = {
-      contractVersion: 1,
-      policy: { mode: "exact", exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" } },
-      session: activeStatus(exactPolicyStatus()),
-    };
-    setAppState(app, activeState({ modelPolicy: response, isLoadingModelPolicy: true, isSavingModelPolicy: true, modelPolicyError: "nope" }));
+    setAppState(app, activeState({ isLoadingModelPolicy: true, isSavingModelPolicy: true, modelPolicyError: "nope" }));
 
     const editor = promptEditorTemplate(app);
 
     expect(templateValueAfterMarker(editor, ".modelPolicyStatus=")).toEqual(exactPolicyStatus());
-    expect(templateValueAfterMarker(editor, ".modelPolicyResponse=")).toBe(response);
     expect(templateValueAfterMarker(editor, ".modelPolicyLoading=")).toBe(true);
     expect(templateValueAfterMarker(editor, ".modelPolicySaving=")).toBe(true);
     expect(templateValueAfterMarker(editor, ".modelPolicyError=")).toBe("nope");
-  });
-
-  it("delegates a save to the controller without deciding the policy itself", () => {
-    const app = createApp();
-    const saveModelPolicy = vi.spyOn(sessionController(app), "saveModelPolicy").mockResolvedValue(undefined);
-    setAppState(app, activeState());
-
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    expect(saveModelPolicy).toHaveBeenCalledWith({ mode: "tiered", tier: "advanced" });
-  });
-
-  it("drops the held policy response when the dialog closes so exact-route changes do not pay for a re-read", () => {
-    const app = createApp();
-    const response: SessionModelPolicyResponse = {
-      contractVersion: 1,
-      policy: { mode: "exact", exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" } },
-      session: activeStatus(exactPolicyStatus()),
-    };
-    setAppState(app, activeState({ modelPolicy: response, modelPolicyError: "stale failure" }));
-
-    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onCloseModelPolicy="))();
-
-    expect(appState(app).modelPolicy).toBeUndefined();
-    expect(appState(app).modelPolicyError).toBeUndefined();
-    // The trigger keeps rendering from the live status projection, and the
-    // per-machine catalog stays cached for the next open.
-    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).toEqual(exactPolicyStatus());
   });
 });
 
@@ -391,99 +336,7 @@ describe("PiWebUiApp starter composer policy", () => {
     });
   });
 
-  it("does not report an invalid ladder merely because the catalog has not arrived", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    const pending = deferred<ModelTierSettingsResponse>();
-    vi.spyOn(modelTiersApi, "settings").mockReturnValueOnce(pending.promise);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-
-    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
-
-    const loadingStatus = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
-    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyLoading=")).toBe(true);
-    expect(loadingStatus.ladderValid).toBe(true);
-    expect(loadingStatus.blockedReason).toBeUndefined();
-
-    pending.resolve({ ...validCatalog(), valid: false, configError: "missing model-tier ladder in settings.json" });
-    await flush();
-
-    // A catalog that actually arrived invalid still reports an invalid ladder.
-    expect(policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).ladderValid).toBe(false);
-  });
-
-  it("preserves the remembered Exact branch when the starter chooses a Tiered policy, and writes no Pi default", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    const updateDefaults = vi.spyOn(sessionsApi, "updateSessionDefaults");
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-
-    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
-    await flush();
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    expect(starterModelPolicy(app)).toEqual({
-      mode: "tiered",
-      tier: "advanced",
-      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
-    });
-    expect(updateDefaults).not.toHaveBeenCalled();
-    const editor = promptEditorTemplate(app);
-    expect(templateValueAfterMarker(editor, ".modelPolicyStatus=")).toEqual({
-      mode: "tiered",
-      tier: "advanced",
-      resolved: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
-      ladderValid: true,
-    });
-    const response = policyResponse(templateValueAfterMarker(editor, ".modelPolicyResponse="));
-    expect(response.contractVersion).toBe(1);
-    expect(response.policy).toEqual(starterModelPolicy(app));
-    expect(response.session).toMatchObject({
-      sessionId: "starter",
-      isStreaming: false,
-      isCompacting: false,
-      isBashRunning: false,
-      pendingMessageCount: 0,
-      cost: 0,
-      model: { provider: "openai", id: "gpt-default", name: "Default" },
-      thinkingLevel: "medium",
-    });
-  });
-
-  it("reports the exact tuple, not the remembered tier's entry, after the starter returns to Exact", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    voidCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onOpenModelPolicy="))();
-    await flush();
-
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({
-      mode: "exact",
-      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
-    });
-
-    // The canonical tier stays remembered, exactly as a persisted policy keeps it.
-    expect(starterModelPolicy(app)).toEqual({
-      mode: "exact",
-      tier: "advanced",
-      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
-    });
-    // What the trigger and the panel's "Current:" line report must be what the
-    // session will actually start from, which in Exact mode is the exact tuple.
-    const status = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
-    expect(status.mode).toBe("exact");
-    expect(status.tier).toBe("advanced");
-    expect(status.resolved).toEqual({ model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" });
-    expect(status.blockedReason).toBeUndefined();
-  });
-
-  it("keeps an unresolvable starter tier repairable by reporting it as blocked with a policy present", async () => {
+  it("keeps an unresolvable starter tier visible as blocked", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     setAppState(app, starterState());
@@ -499,7 +352,6 @@ describe("PiWebUiApp starter composer policy", () => {
 
     expect(status.blockedReason).toBe("Choose a valid model tier before starting");
     expect(status.resolved).toEqual({ model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" });
-    expect(policyResponse(templateValueAfterMarker(editor, ".modelPolicyResponse=")).policy).not.toBeUndefined();
   });
 
   it("refuses to synthesize a starter policy for a peer without the capability", async () => {
@@ -514,7 +366,6 @@ describe("PiWebUiApp starter composer policy", () => {
     await loadStarterSessionDefaults(app, mainWorkspace);
 
     expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).toBeUndefined();
-    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyResponse=")).toBeUndefined();
   });
 
   it("relinks the Exact branch after a starter model default is confirmed", async () => {
@@ -598,232 +449,6 @@ describe("PiWebUiApp starter policy reset", () => {
 // ── start snapshot ──────────────────────────────────────────────────────────
 
 describe("PiWebUiApp starter policy start snapshot", () => {
-  it("forwards a Tiered starter choice and clears it only after the prompt start succeeds", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(true)));
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    startSessionPrompt(app, "explore the repo");
-
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" }, expect.any(Function));
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
-    await flush();
-    expect(starterModelPolicy(app)).toBeUndefined();
-  });
-
-  it("forwards a Tiered starter choice and clears it only after the nav start succeeds", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(true);
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    await startSessionAndOpenChat(app);
-
-    expect(start).toHaveBeenCalledWith({ mode: "tiered", tier: "advanced" });
-    await flush();
-    expect(starterModelPolicy(app)).toBeUndefined();
-  });
-
-  it("clears a successful prompt start even when initial prompt queueing rejects", async () => {
-    const app = createApp();
-    const completion = deferred<boolean>();
-    const queueError = new Error("queue failed");
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    vi.spyOn(sessionController(app), "startSession").mockReturnValue(completion.promise);
-    vi.spyOn(sessionController(app), "send").mockRejectedValue(queueError);
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    startSessionPrompt(app, "explore the repo");
-    await flush();
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
-
-    completion.resolve(true);
-    await flush();
-
-    expect(starterModelPolicy(app)).toBeUndefined();
-    expect(appState(app).error).toBe(String(queueError));
-  });
-
-  it("retains a failed Tiered starter choice and carries it into a retry", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    let attempt = 0;
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation((...args) => {
-      attempt += 1;
-      const pending: SessionInfo = {
-        ...activeSession(),
-        id: `pending-session-${String(attempt)}`,
-        path: `pi-webui://pending-session/${String(attempt)}`,
-        persisted: false,
-      };
-      applyStatePatch(app, { sessions: [pending], selectedSession: pending });
-      return promptStartFrom(Promise.resolve(false))(...args);
-    });
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-
-    startSessionPrompt(app, "first attempt");
-    await flush();
-
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
-
-    startSessionPrompt(app, "retry attempt");
-    await flush();
-
-    expect(start).toHaveBeenCalledTimes(2);
-    expect(start.mock.calls.map((call) => call[4])).toEqual([
-      { mode: "tiered", tier: "advanced" },
-      { mode: "tiered", tier: "advanced" },
-    ]);
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
-  });
-
-  it("does not clear a starter choice when loading or an unrelated error hides the start screen", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-    const draft = starterModelPolicy(app);
-
-    applyStatePatch(app, { isLoadingSessions: true });
-    expect(starterModelPolicy(app)).toBe(draft);
-
-    applyStatePatch(app, { isLoadingSessions: false });
-    await flush();
-    applyStatePatch(app, { error: "unrelated refresh failure" });
-
-    expect(starterModelPolicy(app)).toBe(draft);
-  });
-
-  it("does not clear a starter choice changed while its start is in flight", async () => {
-    const app = createApp();
-    const completion = deferred<boolean>();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(completion.promise));
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    const save = saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="));
-    save({ mode: "tiered", tier: "advanced" });
-
-    startSessionPrompt(app, "explore the repo");
-    save({ mode: "tiered", tier: "capable" });
-    const changedDraft = starterModelPolicy(app);
-    completion.resolve(true);
-    await flush();
-
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" }, expect.any(Function));
-    expect(starterModelPolicy(app)).toBe(changedDraft);
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "capable" });
-  });
-
-  it("treats a value-equivalent background Exact relink as the same in-flight draft", async () => {
-    const app = createApp();
-    const defaultsCompletion = deferred<SessionDefaultsResponse>();
-    const startCompletion = deferred<boolean>();
-    vi.spyOn(sessionsApi, "sessionDefaults")
-      .mockResolvedValueOnce(starterDefaults())
-      .mockReturnValueOnce(defaultsCompletion.promise);
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(startCompletion.promise));
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    const save = saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="));
-    save({ mode: "tiered", tier: "advanced" });
-    save({ mode: "exact", exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" } });
-    const issuedDraft = starterModelPolicy(app);
-
-    const backgroundRelink = loadStarterSessionDefaults(app, mainWorkspace);
-    startSessionPrompt(app, "explore the repo");
-    defaultsCompletion.resolve(starterDefaults());
-    await backgroundRelink;
-
-    expect(starterModelPolicy(app)).toBe(issuedDraft);
-    expect(starterModelPolicy(app)).toMatchObject({ mode: "exact", tier: "advanced" });
-
-    startCompletion.resolve(true);
-    await flush();
-
-    expect(starterModelPolicy(app)).toBeUndefined();
-  });
-
-  it("does not clear a starter choice after the user moves to another workspace", async () => {
-    const app = createApp();
-    const completion = deferred<boolean>();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    vi.spyOn(sessionController(app), "startSession").mockReturnValue(completion.promise);
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
-    const otherWorkspaceDraft = starterModelPolicy(app);
-
-    await startSessionAndOpenChat(app);
-    setAppState(app, {
-      ...appState(app),
-      selectedWorkspace: featureWorkspace,
-      workspaces: [mainWorkspace, featureWorkspace],
-    });
-    completion.resolve(true);
-    await flush();
-
-    expect(starterModelPolicy(app)).toBe(otherWorkspaceDraft);
-  });
-
-  it("snapshots and reports the exact tuple after the starter returns to Exact from a remembered tier", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    const save = saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="));
-    save({ mode: "tiered", tier: "advanced" });
-    save({ mode: "exact", exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "low" } });
-
-    const status = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
-    startSessionPrompt(app, "explore the repo");
-
-    // The remembered tier must not leak into either observable account of the
-    // impending start: Exact mode reports and sends the same exact tuple.
-    expect(status.resolved).toEqual({ model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "low" });
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, {
-      mode: "exact",
-      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "low" },
-    }, expect.any(Function));
-  });
-
   it("passes no policy for an untouched Exact starter", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
@@ -839,27 +464,6 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, undefined, expect.any(Function));
   });
 
-  it("forwards an Exact selection the starter repaired away from the linked defaults", async () => {
-    const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
-    stubComposerFocus(app);
-    setAppState(app, starterState());
-    await loadStarterSessionDefaults(app, mainWorkspace);
-    await loadModelTierCatalog(app, "local");
-    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({
-      mode: "exact",
-      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
-    });
-
-    startSessionPrompt(app, "explore the repo");
-
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, {
-      mode: "exact",
-      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
-    }, expect.any(Function));
-  });
 });
 
 // ── harness ─────────────────────────────────────────────────────────────────
@@ -871,9 +475,6 @@ function promptStartFrom(
     args[5]?.(started);
   });
 }
-
-type VoidCallback = () => void;
-type SaveCallback = (update: SessionModelPolicyUpdate) => void;
 
 function createApp(): PiWebUiApp {
   const values = new Map<string, string>();
@@ -911,21 +512,6 @@ function appState(app: PiWebUiApp): AppState {
 
 function setAppState(app: PiWebUiApp, state: AppState): void {
   if (!Reflect.set(app, "state", state)) throw new Error("Could not set PiWebUiApp state");
-}
-
-/** Drive a real `setState()` so its transition side effects run. */
-function applyStatePatch(app: PiWebUiApp, patch: Partial<AppState>): void {
-  const method: unknown = Reflect.get(app, "setState");
-  if (typeof method !== "function") throw new Error("PiWebUiApp.setState is not callable");
-  Reflect.apply(method, app, [patch]);
-}
-
-function startSessionAndOpenChat(app: PiWebUiApp): Promise<void> {
-  const method: unknown = Reflect.get(app, "startSessionAndOpenChat");
-  if (typeof method !== "function") throw new Error("PiWebUiApp.startSessionAndOpenChat is not callable");
-  const result: unknown = Reflect.apply(method, app, []);
-  if (!isPromise(result)) throw new Error("PiWebUiApp.startSessionAndOpenChat did not return a promise");
-  return result;
 }
 
 function sessionController(app: PiWebUiApp): SessionController {
@@ -1042,23 +628,8 @@ function setRouteRestoreInProgress(app: PiWebUiApp): void {
   if (!Reflect.set(app, "routeRestoreDepth", 1)) throw new Error("Could not set PiWebUiApp route restore depth");
 }
 
-function voidCallback(value: unknown): VoidCallback {
-  if (!isVoidCallback(value)) throw new Error("Expected a composer policy callback");
-  return value;
-}
-
-function saveCallback(value: unknown): SaveCallback {
-  if (!isSaveCallback(value)) throw new Error("Expected a composer policy save callback");
-  return value;
-}
-
 function policyStatus(value: unknown): ClientSessionModelPolicyStatus {
   if (!isClientPolicyStatus(value)) throw new Error("Expected a policy status");
-  return value;
-}
-
-function policyResponse(value: unknown): SessionModelPolicyResponse {
-  if (!isPolicyResponse(value)) throw new Error("Expected a policy response");
   return value;
 }
 
@@ -1088,14 +659,6 @@ function isAppState(value: unknown): value is AppState {
   return typeof value === "object" && value !== null && "selectedWorkspace" in value;
 }
 
-function isVoidCallback(value: unknown): value is VoidCallback {
-  return typeof value === "function";
-}
-
-function isSaveCallback(value: unknown): value is SaveCallback {
-  return typeof value === "function";
-}
-
 function isSessionModelPolicy(value: unknown): value is SessionModelPolicy {
   return typeof value === "object" && value !== null && "mode" in value && "exact" in value;
 }
@@ -1106,10 +669,6 @@ function isModelTierCatalog(value: unknown): value is ModelTierSettingsResponse 
 
 function isClientPolicyStatus(value: unknown): value is ClientSessionModelPolicyStatus {
   return typeof value === "object" && value !== null && "mode" in value && "resolved" in value && "ladderValid" in value;
-}
-
-function isPolicyResponse(value: unknown): value is SessionModelPolicyResponse {
-  return typeof value === "object" && value !== null && "contractVersion" in value && "session" in value;
 }
 
 function isSessionStatus(value: unknown): value is SessionStatus {

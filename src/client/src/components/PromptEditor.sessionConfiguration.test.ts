@@ -2,7 +2,7 @@
 
 import { render, type PropertyValues, type TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClientSessionModelPolicyStatus, ModelTierSettingsResponse, SessionModelPolicyResponse } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ModelTierSettingsResponse } from "../../../shared/apiTypes";
 import type { SessionStatus } from "../api";
 import { isTemplateResult } from "../templateInspection.testSupport";
 import { PromptEditor } from "./PromptEditor";
@@ -75,24 +75,11 @@ describe("PromptEditor session controls", () => {
   it("renders Exact policy controls before the existing model and thinking controls", () => {
     const editor = new PromptEditor();
     const exactPolicyStatus: ClientSessionModelPolicyStatus = { ...tieredPolicyStatus, mode: "exact" };
-    const status = sessionStatus(exactPolicyStatus);
-    const response: SessionModelPolicyResponse = {
-      contractVersion: 1,
-      policy: { mode: "exact", tier: "advanced", exact: exactPolicyStatus.resolved },
-      session: status,
-    };
     const catalog = emptyModelTierCatalog();
-    const onOpen = vi.fn();
-    const onClose = vi.fn();
-    const onSave = vi.fn();
-    editor.status = status;
-    editor.modelPolicyResponse = response;
+    editor.status = sessionStatus(exactPolicyStatus);
     editor.modelTierCatalog = catalog;
     editor.modelPolicyLoading = true;
     editor.modelPolicyError = "Policy read failed";
-    editor.onOpenModelPolicy = onOpen;
-    editor.onCloseModelPolicy = onClose;
-    editor.onSaveModelPolicy = onSave;
 
     const controls = renderCompactStatusElement(editor);
     const policyControl = renderedPolicyControl(controls);
@@ -105,39 +92,24 @@ describe("PromptEditor session controls", () => {
     expect(controls.querySelector('[title="Select model"]')).not.toBeNull();
     expect(controls.querySelector(".select-thinking")).not.toBeNull();
     expect(policyControl.status).toBe(exactPolicyStatus);
-    expect(policyControl.response).toBe(response);
     expect(policyControl.catalog).toBe(catalog);
     expect(policyControl.loading).toBe(true);
     expect(policyControl.saving).toBe(false);
     expect(policyControl.error).toBe("Policy read failed");
-    expect(policyControl.onOpen).toBe(onOpen);
-    expect(policyControl.onClose).toBe(onClose);
-    expect(policyControl.onSave).toBe(onSave);
   });
 
-  it("forwards live invalid blocked status ahead of a stale valid response without disabling repair", () => {
+  it("forwards live invalid blocked status without disabling repair", () => {
     const livePolicyStatus: ClientSessionModelPolicyStatus = {
       ...tieredPolicyStatus,
       ladderValid: false,
       blockedReason: "runtime could not prove the previous policy was restored",
     };
-    const stalePolicyStatus: ClientSessionModelPolicyStatus = {
-      ...tieredPolicyStatus,
-      ladderValid: true,
-    };
-    const response: SessionModelPolicyResponse = {
-      contractVersion: 1,
-      policy: { mode: "tiered", tier: "advanced", exact: stalePolicyStatus.resolved },
-      session: sessionStatus(stalePolicyStatus),
-    };
     const editor = new PromptEditor();
     editor.status = sessionStatus(livePolicyStatus);
-    editor.modelPolicyResponse = response;
 
     const policyControl = renderedPolicyControl(renderCompactStatusElement(editor));
 
     expect(policyControl.status).toBe(livePolicyStatus);
-    expect(policyControl.status).not.toBe(response.session.modelPolicy);
     expect(policyControl.status?.ladderValid).toBe(false);
     expect(policyControl.status?.blockedReason).toBe("runtime could not prove the previous policy was restored");
     expect(policyControl.editable).toBe(true);
@@ -254,15 +226,11 @@ type RenderCompactStatus = (this: PromptEditor) => TemplateResult | null;
 type ShouldUpdate = (this: PromptEditor, changed: PropertyValues<PromptEditor>) => boolean;
 type RenderedPolicyControl = HTMLElement & {
   status?: ClientSessionModelPolicyStatus;
-  response?: SessionModelPolicyResponse;
   catalog?: ModelTierSettingsResponse;
   loading: boolean;
   saving: boolean;
   editable: boolean;
   error: string;
-  onOpen?: () => void;
-  onClose?: () => void;
-  onSave?: unknown;
 };
 
 function renderCompactStatus(editor: PromptEditor): TemplateResult {
