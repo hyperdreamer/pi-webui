@@ -18,7 +18,7 @@
 - Capture a deterministic whole-tree seal of `/home/henry/.pi/agent/skills/subagent-driven-development/` before and after Plan A; paths, types, modes, symlink targets, directories, and file bytes must match.
 - Run skill RED before creating candidate `SKILL.md`: pressure-test no-guidance and original-skill controls and record verbatim failures/rationalizations.
 - Keep candidate tests isolated with `pi --no-skills --no-extensions --no-prompt-templates --skill <explicit-path>` and a fresh temporary `PI_CODING_AGENT_DIR`/session/fixture per repetition; never rely on discovery order.
-- Evaluation runs cost real model time. The full sequence is on the order of 150 invocations at high thinking levels; budget it before starting Task 3, which is the first task that spends any. Tasks 1 and 2 are free and must both be committed before that budget is touched. The only permitted reduction is dropping the two lowest-risk rationalization families from five repetitions to three when their first three runs agree, recorded in `refactor-report.md`. Never drop a scenario, condition, or role.
+- Evaluation runs consume real model time; the full sequence is on the order of 150 invocations. Select models for capability, not for price: pick the strongest available model appropriate to each role and record the exact model and thinking level used in every run record. Never reduce repetitions, scenarios, conditions, or roles to save cost. The only permitted reduction is dropping the two lowest-risk rationalization families from five repetitions to three when their first three runs agree, recorded in `refactor-report.md`, and only because three agreeing runs already establish the finding — never as an economy measure.
 - Temporary agent profiles must not contain copied credentials. Symlink `auth.json` into the profile rather than copying it, keep directory mode 0700 and file mode 0600, and make cleanup robust to abnormal termination rather than relying only on a normal-exit trap.
 - Every executable task heading is exactly `## Task N: <name>` and contains exactly one `**Implementer tier:** <Tier>` line.
 - Canonical tier order is Economy, Fast, Standard, Advanced, Capable, Frontier.
@@ -61,10 +61,9 @@
 - `optional-skills/subagent-driven-development/scripts/lib/prompt-renderer.mjs` — role schema and first-token prompt rendering.
 - `optional-skills/subagent-driven-development/scripts/lib/manifest.mjs` — ownership/runtime-tree validation and hashing.
 - `optional-skills/subagent-driven-development/scripts/sdd-state` — executable shell adapter.
-- `optional-skills/subagent-driven-development/scripts/sdd-workspace` — per-plan ignored workspace resolver.
-- `optional-skills/subagent-driven-development/scripts/task-brief` — exact task extractor and tier validator.
-- `optional-skills/subagent-driven-development/scripts/review-package` — bounded commit/stat/diff package writer.
 - `optional-skills/subagent-driven-development/pi-webui-skill.json` — opt-in ownership/runtime-file manifest; not an installer.
+
+Inherited from the installed original skill and deliberately **not** recreated here: `scripts/sdd-workspace` (per-plan ignored workspace resolver), `scripts/task-brief` (task text extractor), and `scripts/review-package` (commit/stat/diff package writer). Task 7 tests that the candidate composes with them.
 
 ### Tests and evaluations
 
@@ -97,9 +96,9 @@
 
 **Interfaces:** Consumes repository validation tooling. Produces staged-validation coverage for the optional-skills tree and the frozen version-1 capability/spawn-result contract every later task validates against.
 
-This task spends no model budget. It must be complete and committed before Task 2, because the contract sealed in Step 6 is the reference the evaluator and all later validation compare against.
+This task runs entirely offline. It must be complete and committed before Task 2, because the contract sealed in Step 6 is the reference the evaluator and all later validation compare against.
 
-- [ ] **Step 1: Record the original skill tree seal before creating candidate files**
+- [x] **Step 1: Record the original skill tree seal before creating candidate files**
 
 ```bash
 ORIGINAL=/home/henry/.pi/agent/skills/subagent-driven-development
@@ -141,7 +140,7 @@ python "$SEAL_DIR/seal-tree.py" "$ORIGINAL" \
 
 Expected: one SHA-256 line plus a JSONL record manifest sealing relative paths, file types, modes, symlink targets, empty directories, and regular-file bytes. Do not write under `$ORIGINAL`.
 
-- [ ] **Step 2: Write staged-validation RED coverage**
+- [x] **Step 2: Write staged-validation RED coverage**
 
 Add to `scripts/verify-staged.test.mjs`:
 
@@ -169,7 +168,7 @@ it("routes optional deterministic-SDD files through their complete validators", 
 });
 ```
 
-- [ ] **Step 3: Run the test and verify RED**
+- [x] **Step 3: Run the test and verify RED**
 
 ```bash
 npm test -- --run scripts/verify-staged.test.mjs
@@ -177,7 +176,7 @@ npm test -- --run scripts/verify-staged.test.mjs
 
 Expected: FAIL because optional-skill `.mjs` routing is absent.
 
-- [ ] **Step 4: Add optional-skill validation routing**
+- [x] **Step 4: Add optional-skill validation routing**
 
 Make these exact structural changes:
 
@@ -187,7 +186,7 @@ Make these exact structural changes:
 - `knip.json`: add globs covering optional `scripts/*.mjs` and `evals/{fake-sdd-tools,run-pressure-evals}.mjs` loaders as entries plus `optional-skills/**/*.mjs` as project input; do not make optional source a package runtime entry.
 - `scripts/verify-staged.mjs`: define `OPTIONAL_SDD_PREFIX`, treat its `.mjs` files as lintable, and inject the three deterministic-SDD test paths shown above whenever any path under the prefix is staged.
 
-- [ ] **Step 5: Run staged-validation GREEN**
+- [x] **Step 5: Run staged-validation GREEN**
 
 ```bash
 npm test -- --run scripts/verify-staged.test.mjs
@@ -195,7 +194,7 @@ npm test -- --run scripts/verify-staged.test.mjs
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Pin the version-1 capability and spawn-result contract**
+- [x] **Step 6: Pin the version-1 capability and spawn-result contract**
 
 Create `references/capability-contract.md` before implementing fake tools. This file is the canonical handoff to the later backend plan and is not loaded into no-guidance/original controls. Define `get_model_policy` as a zero-parameter, read-only tool returning this version-1 shape (wire tiers are lowercase; plan tiers remain title case):
 
@@ -227,11 +226,10 @@ interface GetModelPolicyV1 {
   };
   trackedDispatch: {
     contractVersion: 1;
-    dispatchKey: true;
     tierField: true;
     scope: "parent-session";
-    canonicalInputs: readonly ["cwd", "rawPrompt", "tier"];
-    resultPolicyApplication: true;
+    canonicalInputs: readonly ["cwd", "prompt", "tier"];
+    returnsSessionId: true;
   };
 }
 ```
@@ -256,17 +254,19 @@ interface SpawnSubsessionDetailsV1 {
 }
 ```
 
-The child durable application entry projects the identical `policyApplication` value, precedes the cleaned task, and is marked outside model context; fake transcript fixtures expose event order/model-visibility for assertion. Define same-key/same-cwd/same-raw-prompt replay, conflicting reuse failure, and original-result retention after policy/mapping changes. Also pin the server-side key bound that Task 5 enforces: `dispatchKey` is at most 240 characters matching `^[A-Za-z0-9._:-]{1,240}$`, and the server treats it as an opaque bounded string without parsing its structure. Pin the `tier` field as the **binding** channel: a supplied `tier` resolves the child's model and thinking level before its first request, an unresolvable `tier` fails the spawn without creating a child and without substituting a neighbouring tier, and an omitted `tier` inherits the parent's policy unchanged rather than falling back to parsing prompt text. A leading `/tier-*` line in the prompt is a human-readable echo only; when both are present they must agree, and prompt text alone never applies policy. Assert this negatively as well: a prompt body naming a different tier, or naming none, must not change the model that runs. Fresh-dispatch validation uses the pre-spawn inspection; replay validation uses the complete inspection stored in dispatch intent and never compares the replay to current policy/ladder. Missing fields, unknown versions/outcomes, contradictory mode/tier values, malformed tuples, reordered/model-visible application events, or missing child projection fail closed.
+Pin what the runtime actually provides. `spawn_subsession` accepts `{ prompt, cwd, tier }` and returns `{ sessionId, cwd }`. It offers no dispatch key and no server-side deduplication, so the contract cannot promise that a repeated call returns an earlier child. `tier` is the binding channel: a supplied tier resolves to the machine ladder's exact model and thinking level before the child's first request, an unresolvable tier fails the spawn without creating a child, and an omitted tier inherits the parent model. Prompt text never selects a model, so a fake that recovers a tier by splitting the prompt is testing a channel the runtime does not implement. Missing fields, unknown tier values, and unavailable models fail closed.
+
+`dispatchKey` is controller-owned. It names a row in the run's own dispatch ledger, is never sent to the tool, and exists so recovery can correlate its intent to the `sessionId` the tool returned. Correlation is a convenience for inspecting the right child; the authority for whether work happened is commits and artifacts.
 
 Pin two properties of the identity input, because `rawPrompt` serves two purposes with incompatible tolerances. Directive recognition is whitespace-tolerant by design; identity comparison tolerates nothing.
 
 First, `tier` is a typed identity input alongside `cwd` and `rawPrompt`. Two dispatches differing only in tier are distinguishable because the tier is a structured field, not because a directive substring happens to be present in the prompt. The prompt bytes are still compared verbatim, so a renderer change is still a visible conflict, but the tier-substitution hazard is closed by the typed field rather than by fingerprinting prose. The fake must therefore read the tier from the `tier` parameter and must **not** parse it out of `rawPrompt`; a fake that recovers the tier by splitting the prompt validates a channel the runtime does not implement and cannot detect a child ignoring the directive.
 
-Second, replay must never re-render the prompt. Dispatch intent stores the rendered prompt bytes next to the pre-spawn inspection it already stores, and recovery reissues those stored bytes verbatim. Re-rendering couples identity to renderer output, so any drift — including interior drift such as an added blank line after the directive, which trimming cannot absorb — turns a legitimate recovery into conflicting reuse.
+Second, recovery must never re-render the prompt. Dispatch intent stores the rendered prompt bytes, and recovery reissues those stored bytes verbatim if the controller rules to reissue. Re-rendering couples recovery to renderer output, so any drift — including interior drift such as an added blank line, which trimming cannot absorb — changes what the child receives on a path meant to be exact.
 
 Identity comparison additionally normalizes a leading byte-order mark, CRLF to LF, and outer whitespace, so transport-level rewriting does not manufacture a conflict. Normalization applies only to the bytes compared for identity, never to the bytes delivered to the child. Identity covers the raw prompt bytes plus the typed `tier` as a structured field, so two dispatches differing only in tier stay distinguishable without relying on directive bytes being present in the prompt. Normalization is insurance for transport, not a substitute for storing the rendered bytes.
 
-- [ ] **Step 7: Verify and commit Task 1**
+- [x] **Step 7: Verify and commit Task 1**
 
 ```bash
 npm test -- --run scripts/verify-staged.test.mjs
@@ -293,9 +293,9 @@ git commit -m "test(skills): add optional-skill validation and seal SDD contract
 
 **Interfaces:** Consumes the version-1 contract sealed in Task 1 and isolated Pi CLI invocations. Produces a repeatable three-condition evaluator plus scripted fake tools, all exercised offline.
 
-This task spends no model budget: every step runs against fakes with no network. Task 3 is the first task that pays for live runs, so any evaluator or scenario defect must be caught here where retries are free.
+This task runs entirely offline against fakes with no network. Task 3 is the first task that invokes a live model, so any evaluator or scenario defect must be caught here where retries are instant and repeatable.
 
-- [ ] **Step 1: Write evaluator RED tests**
+- [x] **Step 1: Write evaluator RED tests**
 
 Create `evals/run-pressure-evals.test.mjs` with injected, no-network coverage:
 
@@ -342,7 +342,7 @@ describe("deterministic SDD pressure evaluator", () => {
 
 Permit an injected evaluator root in tests while retaining the asserted relative arguments. Add no-network unit cases for original/no-guidance argument construction, temporary-profile seeding/cleanup, root-read symlink escape rejection, exact report-write/edit confinement, non-shell command allowlisting/RED-before-GREEN sequencing, symlink rejection, explicit denial of candidate `evals/` and `tests/`, output containment, unknown scenarios, fake same-key deduplication after registry reload and changed policy/mapping (original application retained), conflicting-key rejection, and `inspectPiJsonEvents` distinguishing assistant text from actual tool-call events.
 
-- [ ] **Step 2: Verify evaluator RED**
+- [x] **Step 2: Verify evaluator RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
@@ -350,7 +350,7 @@ npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure
 
 Expected: FAIL because the evaluator module is absent.
 
-- [ ] **Step 3: Create eight controller pressures and five role-behavior scenarios**
+- [x] **Step 3: Create eight controller pressures and five role-behavior scenarios**
 
 Create `evals/evals.json` with `skill_name`, then these IDs, pressures, and expectations:
 
@@ -465,7 +465,7 @@ Perform the final whole-branch review across the supplied merge-base and HEAD us
 
 Each role scenario stores exact fixture files, one allowed report path, independently derived expected report observations, and an exact `allowedMutations` list (empty except the one TDD source file/report) in `role-evals.json`. The runner's `--suite role` condition uses no role prompt for no-guidance, the explicitly named original role prompt for original, and the rendered repository role prompt for candidate. It passes role guidance as an explicit system-prompt file and never includes expected outcomes in model context.
 
-- [ ] **Step 4: Implement the evaluator and fake tools minimally**
+- [x] **Step 4: Implement the evaluator and fake tools minimally**
 
 `run-pressure-evals.mjs` must:
 
@@ -485,7 +485,7 @@ Each role scenario stores exact fixture files, one allowed report path, independ
 
 `fake-sdd-tools.mjs` reads only `SDD_EVAL_POLICY_MODE`, `SDD_EVAL_LADDER_VALID`, `SDD_EVAL_SPAWN_OUTCOME`, `SDD_EVAL_TOOL_LOG`, `SDD_EVAL_READ_ROOTS_JSON`, `SDD_EVAL_WRITE_PATHS_JSON`, and `SDD_EVAL_ROLE_TOOL_MODE`; appends calls/registries/reports only beside `SDD_EVAL_TOOL_LOG` or at exact ephemeral fixture/output paths; never creates real sessions; and never changes the project checkout or any skill source. It registers a root-confined replacement `read` tool with the built-in-compatible `{ path, offset?, limit? }` input and bounded line output; it resolves real paths, rejects symlink/path escapes, and permits only explicit runtime skill files/directories plus generated scenario fixtures—never evaluator/oracle files. For role suites it registers `write` restricted to one predeclared nonexistent report path and 64 KiB. Only `implementer-tdd-evidence` also receives an `edit` restricted to one declared fixture file and a non-shell `bash` replacement accepting an exact command allowlist; the harness returns RED until the expected edit and GREEN afterward. Controller suites expose no write/edit/bash tools, with one explicit exception: `SDD_EVAL_ROLE_TOOL_MODE=capability-restraint` additionally registers the confined `write` and a non-shell `bash` allowlisted to read-only `git status`/`git diff`, used by Task 10's tool-present capability-blocked runs to prove restraint is a choice rather than an impossibility. Every call in that mode is logged so a mutation attempt is observable. This keeps references observable while `--no-builtin-tools` denies bash/edit/write. It uses the exact version-1 field names and conditional invariants already pinned in `references/capability-contract.md`; later tasks may strengthen validation/tests but may not silently define a different contract. It registers a contract-versioned `get_model_policy` plus scripted `spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, and `yield_to_subsessions` tools. Spawn enforces `dispatchKey`, returns requested/effective policy evidence, and deduplicates repeated keys through a sibling registry beside `SDD_EVAL_TOOL_LOG` so a second Pi process can exercise recovery; the crash-recovery fixture pre-seeds the exact key/cwd/raw-prompt record and original child/application before evaluation. Transcript reads return the same policy evidence followed by the directive-cleaned role task and scripted report, while the application event remains model-invisible. The missing-capability scenario deliberately omits or versions-incompatibly exposes the required contract while retaining call logging.
 
-- [ ] **Step 5: Run evaluator GREEN**
+- [x] **Step 5: Run evaluator GREEN**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
@@ -494,7 +494,7 @@ npx eslint optional-skills/subagent-driven-development/evals/*.mjs
 
 Expected: all checks pass.
 
-- [ ] **Step 6: Verify and commit Task 2**
+- [x] **Step 6: Verify and commit Task 2**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs
@@ -506,7 +506,7 @@ git add optional-skills/subagent-driven-development/evals
 git commit -m "test(skills): add deterministic SDD pressure evaluator"
 ```
 
-Do not proceed until every offline evaluator test passes. Task 3 spends real model budget and cannot be cheaply repeated.
+Do not proceed until every offline evaluator test passes. Task 3 produces the baseline evidence every later comparison depends on, and a harness defect discovered afterward invalidates the whole baseline rather than one run.
 
 ## Task 3: Capture RED baselines with live model runs
 
@@ -518,9 +518,9 @@ Do not proceed until every offline evaluator test passes. Task 3 spends real mod
 
 **Interfaces:** Consumes the committed evaluator from Task 2. Produces observed no-guidance and original-skill baseline evidence recorded before any candidate `SKILL.md` exists.
 
-This is the first task that spends model budget, and it is isolated so a failure here costs only its own runs. It creates no source files: if a scenario or evaluator defect surfaces, stop and repair it in Task 2 rather than patching around it here.
+This is the first task that invokes a live model, and it is isolated so a defect here forces re-running only its own controls. It creates no source files: if a scenario or evaluator defect surfaces, stop and repair it in Task 2 rather than patching around it here.
 
-- [ ] **Step 1: Run RED controls before candidate SKILL.md exists**
+- [x] **Step 1: Run RED controls before candidate SKILL.md exists**
 
 ```bash
 test ! -e optional-skills/subagent-driven-development/SKILL.md
@@ -555,11 +555,11 @@ If neither control exhibits a targeted failure for a scenario, mark that scenari
 
 Grade a control failure on missing or wrong artifacts, not on whether the control was cautious. A control that declines to act but cannot name the exact state token, cannot report the required counters, or cannot distinguish permitted key reuse from minting a new key has failed the scenario, because the controller contract is what the skill supplies. Record which specific artifact was absent or incorrect, so Step 13 evidence shows the gap the skill must close rather than a bare pass/fail.
 
-- [ ] **Step 2: Write observed baseline evidence**
+- [x] **Step 2: Write observed baseline evidence**
 
 Create `evals/baseline-report.md` with environment metadata (date, Pi version, exact model, original tree seal, raw-result directory), one section per eight controller scenarios, and one section per five role scenarios. Record no-guidance/original decisions, reference reads, tool actions, violated expectations, and verbatim rationalizations. Commit concrete observations, not empty report fields.
 
-- [ ] **Step 3: Verify and commit Task 3**
+- [x] **Step 3: Verify and commit Task 3**
 
 ```bash
 git diff --check
@@ -603,7 +603,7 @@ Scanner rules:
 5. Canonical task/global/tier lines permit no indentation or trailing whitespace. Tier fields count only inside their task and outside fences.
 6. Every section ends at the next `^## ` heading found outside a fence, whether or not that heading is canonical. A section never absorbs a following sibling section. This matters concretely: this plan places `## File Map` between `## Global Constraints` and Task 1, and `## Execution Gate` after Task 10. `globalConstraints` must contain only the Global Constraints body, and Task 10's block must end before `## Execution Gate`. Non-canonical `## ` headings that are neither Global Constraints nor a task are ordinary document structure: they terminate the preceding section and are not themselves captured.
 
-- [ ] **Step 1: Write the happy-path plan-parser test**
+- [x] **Step 1: Write the happy-path plan-parser test**
 
 Start `tests/sdd-state.test.mjs` with a two-task literal plan and this assertion:
 
@@ -642,7 +642,7 @@ describe("deterministic SDD plan contract", () => {
 });
 ```
 
-- [ ] **Step 2: Run the happy-path parser test and verify RED**
+- [x] **Step 2: Run the happy-path parser test and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -650,11 +650,11 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: FAIL because `sdd-state.mjs` does not exist.
 
-- [ ] **Step 3: Implement only canonical plan extraction**
+- [x] **Step 3: Implement only canonical plan extraction**
 
 Create `scripts/lib/plan-policy.mjs` with one `TIERS` constant and `parsePlanText`. Create a side-effect-free `sdd-state.mjs` facade that re-exports it. For this happy-path slice only, split normalized LF lines, recognize the already-pinned canonical task/global/tier matches in `VALID_PLAN`, capture exact task blocks, and return `implementerTier`. Do not yet add malformed-input rejection, fence state, numbering/cardinality guards, CLI, or tier formulas.
 
-- [ ] **Step 4: Run the happy path GREEN**
+- [x] **Step 4: Run the happy path GREEN**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -662,7 +662,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: the happy-path test passes.
 
-- [ ] **Step 5: Add malformed-plan and fence RED tests**
+- [x] **Step 5: Add malformed-plan and fence RED tests**
 
 Use the acceptance grammar and scanner rules pinned above; Task 8 later documents them but never redefines them.
 
@@ -670,7 +670,7 @@ Add table-driven failures for numbering not starting at 1, gaps, duplicates, unk
 
 Add section-boundary cases using this plan's own shape: a non-canonical `## ` heading between Global Constraints and Task 1 must not appear in `globalConstraints`, and a non-canonical `## ` heading after the final task must not appear in that task's block. Assert against the real plan file at `docs/superpowers/plans/2026-07-31-deterministic-sdd-source.md`: `globalConstraints` must not contain `File Map`, and Task 10's block must not contain `Execution Gate`.
 
-- [ ] **Step 6: Run strict-parser tests and verify RED**
+- [x] **Step 6: Run strict-parser tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -678,7 +678,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: at least the malformed-heading/fence cases fail while the happy path remains green.
 
-- [ ] **Step 7: Implement strict parser validation and return to GREEN**
+- [x] **Step 7: Implement strict parser validation and return to GREEN**
 
 Extend the scanner with this deterministic algorithm:
 
@@ -689,7 +689,7 @@ Extend the scanner with this deterministic algorithm:
 
 Run the full parser suite and confirm all cases pass.
 
-- [ ] **Step 8: Add tier-formula RED tests**
+- [x] **Step 8: Add tier-formula RED tests**
 
 ```js
 it("derives reviewer tiers with a Standard floor and Frontier cap", () => {
@@ -707,15 +707,15 @@ it("escalates only fix rounds four and five", () => {
 
 Add unknown-tier and round 0/6/non-integer rejection. Run the file; expected: formula imports fail while parser tests remain green.
 
-- [ ] **Step 9: Implement tier formulas from one ladder and return to GREEN**
+- [x] **Step 9: Implement tier formulas from one ladder and return to GREEN**
 
 Export the frozen six-value `TIERS` array. Resolve indexes through one validating lookup. Reviewer/re-reviewer use `max(Standard, tier+1)` capped at Frontier; fixer validates rounds 1–5 and adds 0/1/2 rungs for rounds 1–3/4/5. Run the state test file and lint both ESM modules.
 
-- [ ] **Step 10: Write CLI/facade RED tests**
+- [x] **Step 10: Write CLI/facade RED tests**
 
 Spawn `sdd-state validate-plan VALID_FILE` and assert exit 0 plus independently computed SHA-256/task JSON. Spawn an invalid plan and assert exit 2/stderr/no stdout. Exercise `role-tier` for implementer/task-reviewer/fixer/re-reviewer/final roles, including required/rejected round arguments. Import the facade in a child process and assert no CLI output or exit side effect.
 
-- [ ] **Step 11: Implement the thin CLI and validate this plan**
+- [x] **Step 11: Implement the thin CLI and validate this plan**
 
 Add guarded direct execution to `sdd-state.mjs`; keep all parser/formula logic in `lib/plan-policy.mjs`. `role-tier` prints `{ "tier": "<TitleCase>", "directive": "/tier-<lowercase>" }` and rejects irrelevant/missing rounds. Add the executable wrapper:
 
@@ -736,7 +736,7 @@ optional-skills/subagent-driven-development/scripts/sdd-state \
 
 Expected: tests/lint pass; JSON lists every task in this file with `implementerTier` and matching digest.
 
-- [ ] **Step 12: Commit Task 4**
+- [x] **Step 12: Commit Task 4**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts/sdd-state \
@@ -757,9 +757,21 @@ git commit -m "feat(skills): validate tiered SDD plans"
 
 **Interfaces:** Consumes immutable version-1 state and one typed event. Produces `createInitialState`, `reduceState`, and `validateState` from `scripts/lib/state-machine.mjs`, re-exported by the CLI facade. The reducer performs no filesystem, Git, tool, random, or clock work.
 
+**Scope boundary for Tasks 5–7.** The candidate's contribution is one thing: a code reducer that mechanically refuses illegal transitions. It is not a reimplementation of the original SDD.
+
+The justification is measured, not assumed. In the Task 3 baseline, both conditions on `post-compaction-illegal-transition` produced the correct phase token and then inverted the canonical-artifact rule, asserting the append-only ledger was authoritative and `state.json` a derived cache. Both invented repair mechanisms; one minted a fabricated dispatch key. That gap is unreachable by reasoning because it is a convention the skill defines. Prose instructing a controller to trust a ledger is advice; a reducer that rejects the transition is enforcement.
+
+Inherit from the original skill rather than rebuild:
+
+- **Git and artifacts as ground truth.** Its ledger discipline — "trust the ledger and `git log` over your own recollection" — is the recovery model this plan adopts. The reducer makes that discipline mandatory instead of advisory.
+- **The plan-scoped workspace layout** and its working `sdd-workspace`, `task-brief`, and `review-package` scripts.
+- **Its operational wisdom**, which these tasks do not attempt to replace: dispatch-prompt hygiene, artifact handover instead of context pasting, turn-count-over-token-price economics, and the four implementer status semantics.
+
+Explicitly out of scope for Tasks 5–7: model selection, which the typed `tier` parameter already binds deterministically in PI WEBUI; and dispatch-level idempotency, which the runtime does not offer.
+
 This task covers initial state, capability and plan gates, and the task-dispatch/context loop. Task 6 completes the same module with the review, fix, and final loops and writes the transition reference. Splitting at this seam keeps each child's working set to one loop family; the module is importable and fully green at the end of this task even though the reducer is not yet total.
 
-- [ ] **Step 1: Write initial-state and capability-gate RED tests**
+- [x] **Step 1: Write initial-state and capability-gate RED tests**
 
 ```js
 const initial = createInitialState({
@@ -772,8 +784,8 @@ const initial = createInitialState({
   baseRef: "main",
   mergeBase: "b".repeat(40),
   tasks: [
-    { number: 1, implementerTier: "Economy" },
-    { number: 2, implementerTier: "Advanced" },
+    { number: 1, implementerTier: "economy" },
+    { number: 2, implementerTier: "advanced" },
   ],
   at: "2026-07-31T00:00:00.000Z",
 });
@@ -783,7 +795,7 @@ expect(initial).toMatchObject({
   revision: 0,
   phase: "CAPABILITY_CHECK",
   currentTask: 1,
-  currentImplementerTier: "Economy",
+  currentImplementerTier: "economy",
   contextAttempts: 0,
   fixRound: 0,
   finalFixUsed: false,
@@ -799,7 +811,7 @@ expect(reduceState(initial, {
 
 Add invalid Tiered ladder, valid Tiered, valid Exact, identity-field, unknown-version, input-immutability, 256/257 finding-record, 8 KiB/8 KiB+1 audit-line, and 1 MiB/1 MiB+1 serialized-state cases.
 
-- [ ] **Step 2: Run capability tests and verify RED**
+- [x] **Step 2: Run capability tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -807,35 +819,33 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: reducer imports fail while Task 4 parser/tier tests remain green.
 
-- [ ] **Step 3: Implement schema validation and capability/plan gates only**
+- [x] **Step 3: Implement schema validation and capability/plan gates only**
 
 Create `lib/state-machine.mjs` with a frozen phase/event transition map. `createInitialState` validates/bounds identity plus the complete immutable task-number/tier index, derives/stores `runId`, and constructs all version-1 fields explicitly. `reduceState` deep-clones validated input, looks up exactly one `(phase,event.type)` handler, applies it, increments revision once, builds one-line `lastTransition`, validates the whole result, and returns it. For this slice implement only capability-confirmed/missing, plan-valid/invalid/conflict, and persisted preflight-ruling events. Re-export from the facade.
 
 Run the state tests. Expected: capability/gate cases pass; no task-loop tests exist yet.
 
-- [ ] **Step 4: Write task-dispatch/context RED tests**
+- [x] **Step 4: Write task-dispatch/context RED tests**
 
 Cover with literal events:
 
 - accepted preflight enters `WORKSPACE_READY`;
-- `dispatch-intended` requires role, helper-derived key, title-case requested tier, prompt/report/brief paths, attempt, expected outcome, the complete validated pre-spawn policy inspection/contract versions, and the exact rendered prompt bytes that will be sent;
-- `dispatch-intended` rejects an intent whose stored rendered prompt is absent, or whose stored bytes do not begin with the canonical directive for the requested tier at byte zero; an intent that cannot be replayed byte-for-byte is not a valid intent;
-- the helper computes `runId = sha256(planDigest + NUL + worktree + NUL + branch + NUL + mergeBase + NUL + createdAt)` and `dispatchKey = "<runId>:task-<n>:<role>:attempt-<n>:round-<n>"` (omit round only for non-fix roles); callers never supply arbitrary key text;
+- `dispatch-intended` requires role, helper-derived key, lowercase requested tier, prompt/report/brief paths, attempt, expected outcome, and the exact rendered prompt bytes that will be sent;
+- `dispatch-intended` rejects an intent whose stored rendered prompt is absent; an intent that cannot be reissued verbatim is not a valid intent. It does **not** require any particular leading bytes: the typed `tier` argument selects the model, and a `/tier-*` line is an optional human-readable echo;
+- the helper computes `runId = sha256(planDigest + NUL + worktree + NUL + branch + NUL + mergeBase + NUL + createdAt)` and `dispatchKey = "<runId>:task-<n>:<role>:attempt-<n>:round-<n>"` (omit round only for non-fix roles). `dispatchKey` is **controller-owned**: it names a row in the run's own dispatch ledger and is never passed to `spawn_subsession`, which accepts only `{ prompt, cwd, tier }`;
 - `dispatch-intended` rejects any requested tier that differs from the executable role formula for the current task/attempt/round;
-- `dispatch-intended` records the `tier` field value that will accompany the spawn call, and rejects an intent whose `tier` disagrees with either the role formula or the directive at byte zero of the stored rendered prompt; divergence between formula and renderer is reported as such rather than as a generic validation error;
+- `dispatch-intended` records the `tier` value that will accompany the spawn call. If the rendered prompt happens to carry a leading `/tier-*` echo, a disagreement between echo and typed tier is reported as renderer/formula divergence; an absent echo is not an error;
 - keys match `^[A-Za-z0-9._:-]{1,240}$`; artifact paths are normalized/absolute/beneath the pinned worktree run root;
-- fresh `dispatch-started` accepts Tiered requested-tier evidence or Exact `ignored-exact` with the tuple stored in pre-spawn intent, and stores identical parent/child projections;
-- reused `dispatch-started` requires identical key/cwd/raw prompt and identical parent/child original application, validates it against the intent's stored pre-spawn inspection, and never re-resolves against current parent policy/ladder;
-- mismatched projections or effective policy enter `DISPATCH_MISMATCH_BLOCKED`;
+- `dispatch-started` records the returned `sessionId` against the intent's key, so the ledger maps controller identity to runtime identity;
 - child completion enters `IMPLEMENT_RESULT` before status classification;
 - DONE advances to review intent; observational DONE_WITH_CONCERNS carries concern evidence; correctness/scope concerns require a decision;
 - two context enrichments are legal at the same planned tier; third NEEDS_CONTEXT blocks without incrementing fixRound;
 - BLOCKED enters `TASK_BLOCKED` immediately;
-- intent without child ID preserves exact key/cwd/raw-prompt identity for replay, including the stored rendered prompt bytes, so recovery can reissue them without calling the renderer;
-- a replay whose supplied prompt differs from the stored rendered bytes is rejected rather than silently re-fingerprinted, and the rejection names renderer drift as the cause so the failure is diagnosable rather than appearing as an unexplained key conflict;
+- an intent recorded without a `sessionId` enters `DISPATCH_AMBIGUOUS` rather than claiming a replay guarantee the runtime cannot provide. The runtime has no idempotency: a crash between the spawn call and the ledger write can orphan a child. The reducer's contract is therefore **detectable** non-idempotency, not prevented duplication — the controller always knows the window was crossed and stops for a ruling;
+- resolving `DISPATCH_AMBIGUOUS` requires an explicit persisted ruling naming either an observed child session id (adopt it) or a decision to reissue the stored prompt bytes (accepting a possible orphan). The reducer never picks for the controller;
 - while any dispatch is running, every second SDD-owned dispatch event is rejected, enforcing one active child and no parallel task implementation.
 
-- [ ] **Step 5: Run task-loop tests and verify RED**
+- [x] **Step 5: Run task-loop tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -843,11 +853,11 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: new task-loop cases fail while capability/gate cases remain green.
 
-- [ ] **Step 6: Implement task-dispatch/context handlers and return to GREEN**
+- [x] **Step 6: Implement task-dispatch/context handlers and return to GREEN**
 
-Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path/policy-application validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including versioned pre-spawn inspection, the exact rendered prompt bytes, and canonical cwd/raw-prompt digest—before child ID. Bound the stored prompt at the same 384 KiB limit as a rendered prompt. Fresh/reused result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
+Add only the task-loop handlers from Step 4, importing tier formulas from `plan-policy.mjs` rather than copying a ladder. Centralize bounded string/path validators; reject control characters and escape human text so no audit line can forge `<!-- sdd-transition:`. Store the complete dispatch intent—including the exact rendered prompt bytes—before the session id, so a crash leaves a reissuable record. Bound the stored prompt at the same 384 KiB limit as a rendered prompt. Fresh and ambiguous result handlers are separate and can clear/replace intent only through legal role-specific transitions. Run the state suite and lint; expected: all current cases pass.
 
-- [ ] **Step 7: Verify and commit Task 5**
+- [x] **Step 7: Verify and commit Task 5**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -873,11 +883,11 @@ Expected: every dispatch/context case passes. The reducer is not yet total, so c
 
 **Interfaces:** Extends the reducer from Task 5 with task-review, fix-round, and final-review handling, then proves the reducer is total over the documented phase set. Still no filesystem, Git, tool, random, or clock work.
 
-- [ ] **Step 1: Write task-review/fix-loop RED tests**
+- [x] **Step 1: Write task-review/fix-loop RED tests**
 
 Prove task completion requires spec PASS plus quality APPROVED; initial task reviewer tier is Implementer+1 with Standard floor/Frontier cap; Critical/Important/spec-failure/confirmed-real-gap findings open a fix round; Minor/out-of-scope/cannot-verify entries remain explicit; rounds are 1–5 only with fixer/re-reviewer tiers matching the formulas; each fix/re-review uses a new dispatch identity; `rereview-finished` only pins results; explicit controller events choose another fix, completion, block, or one persisted non-load-bearing park ruling; round-five load-bearing residual blocks; and no event can silently drop an open/deferred/parked finding ID.
 
-- [ ] **Step 2: Run task-review tests and verify RED**
+- [x] **Step 2: Run task-review tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -885,15 +895,15 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: new review/fix cases fail while capability/task-loop cases remain green.
 
-- [ ] **Step 3: Implement task-review/fix handlers and return to GREEN**
+- [x] **Step 3: Implement task-review/fix handlers and return to GREEN**
 
 Add handlers for reviewer intent/start/result, controller finding adjudication, fix intent/start/result, re-review intent/start/result pinning, explicit re-review adjudication, bounded parking, and task completion/next-task selection. Next-task selection derives `currentImplementerTier` only from the immutable plan task index stored at initialization. Finding updates are set operations keyed by immutable finding ID: every prior ID must remain open, move to deferred/parked, move to bounded `findingResolutions` with evidence, or cause rejection. Run the state suite.
 
-- [ ] **Step 4: Write final-review/fix RED tests**
+- [x] **Step 4: Write final-review/fix RED tests**
 
 Prove final review/fix/re-review intents require Frontier; final review either completes cleanly or opens exactly one Frontier final-fix wave; reviewer output records evidence but cannot select phase; final re-review blocks unadjudicated/load-bearing residuals; contestable non-load-bearing residuals need an explicit persisted park ruling; a second final-fix wave is impossible; and COMPLETE requires final-review evidence plus reconciled ledgers.
 
-- [ ] **Step 5: Run final-loop tests and verify RED**
+- [x] **Step 5: Run final-loop tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -901,11 +911,11 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: final-loop cases fail while all task-level cases remain green.
 
-- [ ] **Step 6: Implement final handlers and return to GREEN**
+- [x] **Step 6: Implement final handlers and return to GREEN**
 
 Add the final-review/fix/re-review handlers and COMPLETE/FINAL_BLOCKED guards only. Use the same immutable finding ledger operations as task review. Run the full state test file and lint.
 
-- [ ] **Step 7: Write the transition reference and verify reducer completeness**
+- [x] **Step 7: Write the transition reference and verify reducer completeness**
 
 Create `references/state-machine.md` with a table of contents and these canonical phases:
 
@@ -917,7 +927,8 @@ TASK_REVIEW_DISPATCH_INTENT TASK_REVIEW_RUNNING TASK_REVIEW_DECISION
 FIX_DISPATCH_INTENT FIX_RUNNING REREVIEW_DISPATCH_INTENT REREVIEW_RUNNING
 TASK_COMPLETE FINAL_REVIEW_DISPATCH_INTENT FINAL_REVIEW_RUNNING
 FINAL_FIX_DISPATCH_INTENT FINAL_FIX_RUNNING FINAL_REREVIEW_DISPATCH_INTENT
-FINAL_REREVIEW_RUNNING DISPATCH_MISMATCH_BLOCKED FINAL_BLOCKED COMPLETE
+FINAL_REREVIEW_RUNNING DISPATCH_MISMATCH_BLOCKED DISPATCH_AMBIGUOUS
+FINAL_BLOCKED COMPLETE
 ```
 
 Use these canonical event names and destinations; result events may choose only the listed guarded destination:
@@ -955,7 +966,7 @@ For every transition, document source, event, payload, destination, counters/led
 
 Run the full state suite. Temporarily permit round six; the cap test must fail. Restore. Temporarily remove one prior finding during adjudication; the ledger-retention test must fail. Restore and rerun green. Also prove the production order capability-confirmed → plan-valid → persisted preflight decision reaches every gate phase legally after run initialization.
 
-- [ ] **Step 8: Commit Task 6**
+- [x] **Step 8: Commit Task 6**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts/lib/state-machine.mjs \
@@ -972,14 +983,15 @@ git commit -m "feat(skills): complete deterministic SDD state machine"
 - Modify: `optional-skills/subagent-driven-development/scripts/sdd-state.mjs`
 - Create: `optional-skills/subagent-driven-development/scripts/lib/state-store.mjs`
 - Modify: `optional-skills/subagent-driven-development/tests/sdd-state.test.mjs`
-- Create: `optional-skills/subagent-driven-development/scripts/sdd-workspace`
-- Create: `optional-skills/subagent-driven-development/scripts/task-brief`
-- Create: `optional-skills/subagent-driven-development/scripts/review-package`
 - Create: `optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs`
 
-**Interfaces:** Consumes validated plans, Git identity, expected revision, typed event JSON files, and recorded Git ranges. Produces atomic state writes, audit repair, exact task briefs, and bounded review packages. No command dispatches a child.
+**Interfaces:** Consumes validated plans, Git identity, expected revision, and typed event JSON files. Produces atomic state writes and audit repair. No command dispatches a child.
 
-- [ ] **Step 1: Write atomic state/lock RED tests**
+Ground truth for "was this work done" is the same as the original SDD's: commits in Git and artifacts on disk, not session identity. The ledger correlates a controller-owned `dispatchKey` to a runtime `sessionId` so recovery can inspect the right child, but a lost correlation degrades to inspecting commits and reports rather than to an unrecoverable run.
+
+**Reuse, do not reimplement.** The original skill already ships working `scripts/sdd-workspace`, `scripts/task-brief`, and `scripts/review-package`, and its plan-scoped workspace layout is the design this plan adopts. Do not recreate them. The candidate's contribution is the state store and the reducer that guards transitions; artifact plumbing is inherited. If a specific behavior is missing, extend the inherited script's contract in a later task with evidence for why, rather than forking a parallel copy that can drift.
+
+- [x] **Step 1: Write atomic state/lock RED tests**
 
 Using real temporary directories and child processes, prove:
 
@@ -994,7 +1006,7 @@ Using real temporary directories and child processes, prove:
 
 Inject filesystem operations only for the rename failure; exercise real filesystem locking/concurrency otherwise.
 
-- [ ] **Step 2: Run atomic-state tests and verify RED**
+- [x] **Step 2: Run atomic-state tests and verify RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs
@@ -1002,17 +1014,17 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: persistence imports/CLI fail while pure reducer tests remain green.
 
-- [ ] **Step 3: Implement serialized state replacement and return to GREEN**
+- [x] **Step 3: Implement serialized state replacement and return to GREEN**
 
 In `lib/state-store.mjs`, implement this exact mutation protocol using injected filesystem, clock/ID, and repository-identity adapters (the CLI owns Git subprocesses and supplies `createdAt`; the model never invents timestamps/tokens): write/fsync a complete owner record (random token, PID, hostname, time) to a unique sibling file; atomically hard-link it to the fixed lock path so acquisition cannot expose a metadata-empty lock; remove the unique file; reread state under lock; recompute plan digest and inspect worktree/branch/merge-base identity; validate expected revision; reduce in memory; write/fsync a sibling temp JSON file; rename/fsync directory; append/fsync one audit line; unlink the lock in `finally`. `show` only reads/validates. Re-export commands through the facade. Lock or revision contention exits 3, validation 2, identity/corruption 4, audit-repair-needed 5, unresolved lock 6.
 
 Provide CLI forms `init --plan PLAN --state STATE --progress PROGRESS --repo-root ROOT --worktree TREE --branch BRANCH --base-ref REF --merge-base SHA`, read-only `show`, and `transition --expected-revision N --event-file EVENT_JSON`. Event input is always a bounded UTF-8 JSON file under the run root, never shell-inline JSON; caller-supplied transition timestamps/tokens are rejected and the injected store clock/ID adapter supplies them. Run Step 1 tests to green before proceeding.
 
-- [ ] **Step 4: Write audit-repair/stale-lock RED tests**
+- [x] **Step 4: Write audit-repair/stale-lock RED tests**
 
-Add cases proving missing final marker is reported by read-only `show`; when a live lock exists, `show` reports `RUN_LOCKED` and never recommends repair; `repair-audit --expected-revision N` appends exactly one marker under lock; concurrent repairs append once; progress ahead/duplicate/conflicting markers are corruption; dispatch intent without child ID survives load; abrupt process death leaves an inspectable lock; and only a dead same-host PID plus exact token and persisted decision can clear it.
+Add cases proving missing final marker is reported by read-only `show`; when a live lock exists, `show` reports `RUN_LOCKED` and never recommends repair; `repair-audit --expected-revision N` appends exactly one marker under lock; concurrent repairs append once; progress ahead/duplicate/conflicting markers are corruption; a dispatch intent without a session id survives load as `DISPATCH_AMBIGUOUS`; abrupt process death leaves an inspectable lock; and only a dead same-host PID plus exact token and persisted decision can clear it.
 
-- [ ] **Step 5: Implement bounded recovery commands and return to GREEN**
+- [x] **Step 5: Implement bounded recovery commands and return to GREEN**
 
 Add:
 
@@ -1024,43 +1036,44 @@ sdd-state clear-stale-lock --state STATE --expected-owner-token TOKEN --decision
 
 `repair-audit` uses the lock/reread protocol and only projects `lastTransition`. `clear-stale-lock` never guesses: require matching token, same hostname, absent PID, and `{ "action":"clear-stale-lock", "ownerToken":"...", "reason":"...", "approvedAt":"..." }`. It emits a bounded receipt; before any further dispatch, the controller records that receipt through `recovery-ruling-recorded` at the unchanged expected revision. Run audit/lock tests to green.
 
-- [ ] **Step 6: Write workspace/task-brief RED tests**
+- [x] **Step 6: Write inherited-script compatibility RED tests**
 
-In `tests/sdd-scripts.test.mjs`, create a real temporary Git repository and prove:
+In `tests/sdd-scripts.test.mjs`, create a real temporary Git repository and prove the candidate composes with the original skill's scripts rather than replacing them:
 
-1. `sdd-workspace PLAN` returns `<root>/.superpowers/sdd/<slug>-<digest8>`, creates a self-ignoring `*\n` file, and leaves status unchanged.
-2. Different canonical plan paths do not collide.
-3. `task-brief PLAN 2 OUT` atomically writes Task 2, plan digest, exact `implementerTier`, and Global Constraints when the plan has them; 256 KiB passes and 256 KiB+1 fails without output.
-4. Missing/duplicate/malformed tier exits 2 and leaves no output.
-5. `sdd-state`, `sdd-workspace`, and `task-brief` are executable.
+1. `sdd-workspace PLAN` returns a plan-scoped directory, creates a self-ignoring `*\n` file, and leaves `git status` unchanged.
+2. Different plan basenames do not collide.
+3. `task-brief PLAN 2 OUT` writes Task 2's text, and the extracted brief's `**Implementer tier:**` line matches what `validate-plan` reports for that task. This is the contract that keeps brief text and dispatched tier from diverging.
+4. `review-package BASE HEAD OUT` emits commit log, stat, and diff without changing HEAD, index, or status.
 
-- [ ] **Step 7: Run workspace/brief tests and verify RED**
+Resolve the scripts from the installed original skill directory, and skip with an explicit message if it is absent, so the suite states its dependency instead of silently passing.
+
+- [x] **Step 7: Verify inherited-script composition**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs
 ```
 
-Expected: failures for the missing workspace/brief scripts while state-store tests remain green.
+Expected: compatibility cases fail until the parser/CLI agreement in Step 8 is settled, while state-store tests remain green.
 
-- [ ] **Step 8: Implement workspace/task-brief scripts and return to GREEN**
+- [x] **Step 8: Reconcile the plan grammar with the inherited extractor**
 
-All shell scripts use `#!/usr/bin/env bash`, `set -euo pipefail`, quoted paths, and `git rev-parse --show-toplevel`.
+The inherited `task-brief` matches `^#+[ \t]+Task[ \t]+[0-9]+` — any heading depth, no tier field required. Task 4's parser requires exactly `## Task N: Title` plus `**Implementer tier:** <Tier>`, and rejects other depths as non-canonical. `writing-plans` currently emits `### Task N:` with no tier line, so the strict parser rejects every plan that skill produces.
 
-`sdd-workspace` canonicalizes the plan path, derives `<slug>-<sha256(path)[0:8]>`, creates the run directory only after controller capability/plan gates, writes `.superpowers/sdd/.gitignore` as exactly `*\n`, and prints only the absolute path. `task-brief` delegates to `sdd-state extract-task PLAN TASK_NUMBER OUT`; that ESM command atomically writes plan identity/digest, optional Global Constraints, exact task block, and `implementerTier`. Run Step 6 tests to green.
+This is a real incompatibility and must be resolved explicitly, not left to discovery during a run. Implement the reconciliation as follows:
 
-- [ ] **Step 9: Write review-package RED tests**
+- `validate-plan` gains a diagnostic that names the exact defect and the exact repair for a non-canonical plan: which heading depth was found, which is required, and which tasks lack a tier line;
+- the plan contract states that a tier-annotated plan is a precondition of the deterministic controller, not something it infers. A plan without tiers enters `PLAN_INVALID` with that diagnostic. Never guess a tier;
+- a compatibility test pins both directions: a canonical `## Task N:` plan with tier lines is accepted by the parser *and* extractable by the inherited `task-brief`; an H3 plan is rejected by the parser with the actionable diagnostic.
 
-In a temporary Git repository, prove `review-package BASE HEAD OUT` emits ordered commit log, stat, name-status, and diff without changing HEAD/index/status. Require valid commits and base-ancestor-head. Test paths with spaces and a diff over 200 KiB: output must retain full stat/name-status/numstat plus an explicit truncation marker. Invalid/non-ancestor ranges exit 2 and leave no partial output; script is executable.
+Do not loosen the parser to accept H3. The strictness is the point: an unannotated plan cannot drive tiered dispatch, and silently accepting one would reintroduce tier guessing.
 
-- [ ] **Step 10: Implement review-package and return to GREEN**
+- [x] **Step 9: Exercise crash recovery and full Task 7 verification**
 
-Implement exactly the three-argument script. Verify commits with `git rev-parse --verify`, ancestry with `git merge-base --is-ancestor`, gather each section using argument arrays/quoted SHAs, and atomically rename the completed package. Never checkout/reset/stage. Run `sdd-scripts.test.mjs` to green.
+Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before recording a session id. Restart with read-only `show`; assert the stored key, cwd, tier, and rendered prompt bytes remain, and that the reported next action is a ruling on `DISPATCH_AMBIGUOUS` rather than an automatic replay.
 
-- [ ] **Step 11: Exercise crash recovery and full Task 7 verification**
+Prove recovery does not re-render. Recover the intent through `show`, confirm the stored rendered prompt bytes come back byte-for-byte, and confirm a reissue can be constructed from stored state alone with no call into `render-prompt`. Re-rendering is what couples recovery to renderer output; storing the bytes is the fix.
 
-Initialize a temporary run, transition to `IMPLEMENT_DISPATCH_INTENT`, and stop before child ID. Restart with read-only `show`; assert exact key/cwd/raw prompt/policy intent remains and the next documented action is identical-key replay.
-
-Prove the replay path does not re-render. Recover the intent through `show`, confirm the stored rendered prompt bytes come back byte-for-byte, and confirm a replay can be constructed from stored state alone with no call into `render-prompt`. Then simulate renderer drift: render the same context with an extra newline after the directive, submit it as a replay for the same key, and assert it is rejected as renderer drift rather than accepted or reported as an unexplained key conflict. This is the regression guard for the failure where identity is coupled to renderer output.
+Prove the ambiguity is surfaced, not hidden. Assert `show` reports the crossed window explicitly, that no transition out of `DISPATCH_AMBIGUOUS` is possible without a persisted ruling, and that a ruling naming an observed session id and a ruling choosing reissue both produce distinct, recorded outcomes. The runtime offers no idempotency, so the guarantee under test is that a possible duplicate is always visible and never silently resolved.
 
 Delete the final audit marker; prove `show` is byte-for-byte read-only, then repair with expected revision and prove exactly one marker returns. Race two transitions and two repairs again at CLI level.
 
@@ -1072,7 +1085,7 @@ npx eslint "optional-skills/subagent-driven-development/scripts/**/*.mjs"
 
 Expected: all tests/lint pass with no stale temp/lock files.
 
-- [ ] **Step 12: Commit Task 7**
+- [x] **Step 10: Commit Task 7**
 
 ```bash
 git add optional-skills/subagent-driven-development/scripts \
@@ -1100,7 +1113,7 @@ git commit -m "feat(skills): persist recoverable SDD runs"
 
 **Interfaces:** Consumes a canonical tier, one static role template, and validated path-only context JSON. Produces a prompt whose first non-whitespace token is exactly `/tier-<lowercase-tier>` as a human-readable echo of the tier passed as the typed `tier` dispatch parameter. The echo has no control effect; it exists so a human reading a transcript can see the intended tier, and so a renderer/formula divergence is detectable by comparison.
 
-- [ ] **Step 1: Write prompt-rendering RED tests**
+- [x] **Step 1: Write prompt-rendering RED tests**
 
 Add tests for a new CLI:
 
@@ -1131,7 +1144,7 @@ Build `expectedImplementerPrompt` in the test from the role template plus the su
 
 Also test every tier, unknown role/tier rejection, missing required path, non-absolute or out-of-root path, symlink escape, control characters, unexpected keys, output atomicity, role-specific required fields, and rendered size at 384 KiB/384 KiB+1. Add a determinism case: rendering the same context twice produces byte-identical output, and rendering it in a different working directory or with a different process start time produces the same bytes. Expected values are derived from input/real paths, not template implementation.
 
-- [ ] **Step 2: Verify prompt-rendering RED**
+- [x] **Step 2: Verify prompt-rendering RED**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs \
@@ -1140,11 +1153,11 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.te
 
 Expected: fail because prompt rendering/templates are absent.
 
-- [ ] **Step 3: Verify the pinned capability contract before writing consumers**
+- [x] **Step 3: Verify the pinned capability contract before writing consumers**
 
 Read `references/capability-contract.md` and run the no-network fake-contract tests created in Task 2. Confirm prompt/state field names use its exact wire casing and tuple shape. If role/controller needs cannot be expressed by version 1, stop for a written contract decision; do not silently widen the fake or skill. Later Plan B must implement this pinned contract.
 
-- [ ] **Step 4: Write the exact plan contract reference**
+- [x] **Step 4: Write the exact plan contract reference**
 
 `references/plan-contract.md` must define:
 
@@ -1162,7 +1175,7 @@ Read `references/capability-contract.md` and run the no-network fake-contract te
 
 Avoid duplicating the transition table; link to `state-machine.md`.
 
-- [ ] **Step 5: Write the implementer role contract**
+- [x] **Step 5: Write the implementer role contract**
 
 `prompts/implementer.md` must instruct the child to:
 
@@ -1178,7 +1191,7 @@ Avoid duplicating the transition table; link to `state-machine.md`.
 
 For a fix role, state explicitly that this is a fresh child: read the finding package and current files, do not assume previous-child memory, fix only adjudicated findings, test them, and write a new report. The package includes prior attempted corrections and why each failed; the child must read that history and must not repeat a correction already recorded as failed.
 
-- [ ] **Step 6: Write task reviewer and re-reviewer contracts**
+- [x] **Step 6: Write task reviewer and re-reviewer contracts**
 
 `task-reviewer.md` is read-only and must independently check task brief/global constraints, Git range, code, tests, scope, and security. It reports:
 
@@ -1193,7 +1206,7 @@ It must not trust the implementer summary, mutate the worktree/index/HEAD, or pe
 
 `re-reviewer.md` is read-only and receives the exact open finding set for one fix round plus that fix's Git range. It returns one RESOLVED, STILL_PRESENT, REGRESSION, or NEEDS_CONTEXT verdict per finding with concrete evidence, and may report regressions introduced by the scoped fix. It may not expand into an unrelated whole-task review.
 
-- [ ] **Step 7: Write the final reviewer contract**
+- [x] **Step 7: Write the final reviewer contract**
 
 `final-reviewer.md` must preserve the independent review guarantees from `requesting-code-review/code-reviewer.md`, including precise base/head inspection, read-only worktree behavior, plan alignment, architecture, error handling, security, tests, production readiness, severity calibration, strengths, file:line evidence, and a clear verdict.
 
@@ -1207,7 +1220,7 @@ Add deterministic SDD final rules:
 
 The controller then applies the state-machine rule: unadjudicated or load-bearing residuals enter `FINAL_BLOCKED`; contestable/non-load-bearing residuals can be parked only through an explicit persisted ruling; a second final-fix wave is never allowed.
 
-- [ ] **Step 8: Implement deterministic prompt rendering**
+- [x] **Step 8: Implement deterministic prompt rendering**
 
 Implement the role-to-template mapping in `scripts/lib/prompt-renderer.mjs` and expose it through the `sdd-state.mjs` CLI facade. Context JSON includes pinned `worktree`/`runRoot` and may contain only documented scalar/path fields and arrays of finding IDs/paths; reject unexpected keys, existing-input realpath escapes, and output paths whose real parent escapes. Render:
 
@@ -1218,13 +1231,13 @@ Implement the role-to-template mapping in `scripts/lib/prompt-renderer.mjs` and 
 
 Write via the same atomic helper. Do not use general-purpose template evaluation or shell interpolation.
 
-- [ ] **Step 9: Run the candidate role prompts as consuming agents**
+- [x] **Step 9: Run the candidate role prompts as consuming agents**
 
 Run all five `role-evals.json` scenarios under `--suite role --condition candidate` with the same current model, fresh temporary profile/fixture, root-confined reads, and only the scenario's confined report/TDD tools. Require the expected structured report, required reads/tool sequence, and allowed side effects only. Compare against Task 3 no-guidance/original role evidence.
 
 For each failure, record the verbatim choice, classify it as missing wording, poor organization, or deliberate noncompliance, revise only the responsible prompt/reference, and rerun the full affected role scenario. Create `evals/role-green-report.md` with environment, raw paths, output/tool-read evidence, baseline comparison, and any remaining activation blocker.
 
-- [ ] **Step 10: Run GREEN and behavior checks**
+- [x] **Step 10: Run GREEN and behavior checks**
 
 ```bash
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-state.test.mjs \
@@ -1237,7 +1250,7 @@ git diff --check
 
 Then render one prompt for each role and inspect it manually for role boundaries, first-token directive, concrete paths, no unresolved markers, and no coordinator-history dump.
 
-- [ ] **Step 11: Commit Task 8**
+- [x] **Step 11: Commit Task 8**
 
 ```bash
 git add optional-skills/subagent-driven-development/references/plan-contract.md \
@@ -1264,7 +1277,7 @@ git commit -m "feat(skills): define deterministic SDD dispatch contracts"
 
 **Interfaces:** Consumes an approved plan, available deterministic policy/dispatch tools, and executable helpers. Produces one recoverable SDD run or a named blocked state; it never silently degrades to original SDD behavior.
 
-- [ ] **Step 1: Confirm the RED gate before writing SKILL.md**
+- [x] **Step 1: Confirm the RED gate before writing SKILL.md**
 
 ```bash
 test ! -e optional-skills/subagent-driven-development/SKILL.md
@@ -1277,7 +1290,7 @@ rg -n "^### (implementer-needs-context|implementer-tdd-evidence|task-reviewer-di
 
 Expected: candidate absent; all eight controller and five role baseline sections exist. Read raw outputs and list the exact rationalizations the controller skill must counter.
 
-- [ ] **Step 2: Write trigger-only frontmatter**
+- [x] **Step 2: Write trigger-only frontmatter**
 
 Use exactly one frontmatter field beyond name:
 
@@ -1290,13 +1303,13 @@ description: Use when executing a written implementation plan whose tasks declar
 
 Do not put workflow summary, tier formulas, installation claims, or PI WEBUI version claims in description. In the body, name `using-git-worktrees`, `test-driven-development`, `requesting-code-review`, and `finishing-a-development-branch` as required related workflows at their corresponding boundaries; the child prompts remain self-contained rather than assuming a child has loaded parent skills.
 
-- [ ] **Step 3: Write the capability and validation gates**
+- [x] **Step 3: Write the capability and validation gates**
 
 The first workflow section of `SKILL.md` must require this order, using `references/capability-contract.md` as the exact schema rather than inferring compatibility from tool names:
 
 1. Confirm the plan path and dedicated worktree intent without mutating either.
 2. Confirm `get_model_policy` exists and returns the complete versioned inspection contract: active policy, current runtime tuple, next-request tuple, ladder status, supported tier commands, and tracked-dispatch capability.
-3. Confirm tracked spawn advertises idempotent `dispatchKey` and spawn result policy evidence.
+3. Confirm tracked spawn accepts a typed `tier` that binds the child's model. The runtime offers **no** dispatch key and **no** deduplication, so do not look for idempotency evidence and do not treat its absence as a capability failure.
 4. In Tiered mode, require all six current machine mappings valid and resolvable; in Exact mode, retain the exact tuple and expect tier directives to be ignored visibly.
 5. If any contract is absent/incompatible, report `CAPABILITY_BLOCKED`, cause, required capability, and zero-dispatch/zero-mutation evidence; stop.
 6. Run `sdd-state validate-plan`; if invalid, report `PLAN_INVALID`; never guess.
@@ -1305,15 +1318,16 @@ The first workflow section of `SKILL.md` must require this order, using `referen
 
 Before step 7, reading capability/plan/Git identity is permitted but workspace creation, Git mutation, deliverable editing, and dispatch are forbidden. After step 7, only SDD recovery artifacts may change until preflight has a persisted resolution.
 
-- [ ] **Step 4: Write the state-owned orchestration loop**
+- [x] **Step 4: Write the state-owned orchestration loop**
 
 Keep the core loop concise and refer to `references/state-machine.md` and `references/plan-contract.md` for detail. It must say:
 
 - resolve scripts/prompts/references relative to this explicitly loaded `SKILL.md`, never from the current directory or another same-name installation;
 - reload/validate canonical state before each action;
 - repair only a missing final audit marker through `repair-audit` with current expected revision, and never while `show` reports a live/unknown lock;
-- record dispatch intent before calling the tool, taking the key only from the helper's current-state output;
-- recover intent by reissuing the same `dispatchKey`, cwd, and the prompt bytes stored in that intent; never re-render on recovery, because identity compares prompt bytes and a drifted renderer turns a valid replay into a key conflict; validate a reused result against the stored original pre-spawn inspection, not a newer policy/ladder;
+- record dispatch intent, including the exact rendered prompt bytes, before calling the tool; the `dispatchKey` is controller-owned, comes only from the helper's current-state output, and is never passed to `spawn_subsession`;
+- treat a recorded intent with no `sessionId` as `DISPATCH_AMBIGUOUS`: the runtime cannot deduplicate, so a repeated spawn creates a second child rather than recovering the first. Inspect for an observed child before acting, then leave the state only through a persisted ruling that either adopts an observed session id or reissues the stored prompt bytes accepting a possible orphan;
+- reissue the stored bytes verbatim and never re-render on recovery, because re-rendering couples recovery to renderer output;
 - never hand-edit state/audit, poll, implement, review, or fix in coordinator context;
 - use exactly one SDD-owned active child at a time and never parallelize implementation tasks;
 - use fresh children for implementer, each fix round, each reviewer, and final roles;
@@ -1323,7 +1337,7 @@ Keep the core loop concise and refer to `references/state-machine.md` and `refer
 
 Include a compact transition overview and link the exhaustive table rather than copying it.
 
-- [ ] **Step 5: Write deterministic tier and dispatch rules**
+- [x] **Step 5: Write deterministic tier and dispatch rules**
 
 Include one compact table:
 
@@ -1334,17 +1348,19 @@ Include one compact table:
 | Fix rounds 1–3 | Implementer |
 | Fix round 4 | Implementer +1 |
 | Fix round 5 | Implementer +2 |
-| Scoped re-reviewer | Fixer +1, Standard floor, Frontier cap |
+| Scoped re-reviewer | Implementer +1, Standard floor, Frontier cap |
 | Final reviewer/fixer/re-reviewer | Frontier |
 
-Every rendered prompt begins with the helper-returned absolute canonical directive; the controller never calculates or edits a tier string inline. Dispatch intent stores the complete versioned pre-spawn inspection before the tool call. After spawn, compare child and parent evidence:
+Every rendered prompt is produced by `render-prompt`, which emits the canonical directive echo; the controller never calculates or edits a tier string inline. The typed `tier` argument is what binds the model. Dispatch intent stores the complete pre-spawn inspection and the rendered prompt bytes before the tool call.
 
-- Fresh Tiered success (`dispatch.reused: false`) requires requested/effective target tier, a valid resolved tuple, and identical parent/child application under the stored pre-spawn contract.
-- Fresh Exact success requires requested directive plus `ignored-exact`, unchanged stored inherited tuple, and identical parent/child application.
-- Reused success requires the identical dispatch key/cwd/raw prompt, reissued from the bytes stored in intent rather than re-rendered, and identical parent/child **original** application validated against the inspection stored in intent; policy or ladder changes since the first call are intentionally ignored.
-- Any other outcome records `DISPATCH_MISMATCH_BLOCKED` before child work can satisfy a task.
+The tool returns only `{ sessionId, cwd }`, so a spawn response carries no policy evidence and cannot be validated against one. Confirm binding by inspecting the child:
 
-- [ ] **Step 6: Preserve bounded context, review, and completion rules**
+- Success requires the recorded `sessionId` correlated to the intent's `dispatchKey` in the run's own ledger, and a child whose effective tier equals the requested tier.
+- A child whose effective tier differs from the requested tier records `DISPATCH_MISMATCH_BLOCKED`.
+- In Exact mode the parent's own policy inspection is the gate, checked **before** dispatch; tier directives are visibly ignored and the spawn result says nothing about it.
+- An intent with no recorded `sessionId` is `DISPATCH_AMBIGUOUS` and requires a persisted ruling. It is never resolved by spawning again and hoping.
+
+- [x] **Step 6: Preserve bounded context, review, and completion rules**
 
 State explicitly:
 
@@ -1364,7 +1380,7 @@ State explicitly:
 
 Add rationalization counters and a compact **Red Flags / Common Mistakes** section derived only from Task 3's observed verbatim baseline behavior. Each entry names the required blocked/decision state and evidence, not motivational prose; do not add hypothetical counters that no baseline exhibited.
 
-- [ ] **Step 7: Run the identical scenarios with candidate guidance**
+- [x] **Step 7: Run the identical scenarios with candidate guidance**
 
 For each scenario:
 
@@ -1377,11 +1393,11 @@ node optional-skills/subagent-driven-development/evals/run-pressure-evals.mjs \
 
 Repeat all eight IDs without altering their prompts. A passing result must choose the expected state, avoid forbidden side effects/tool calls, cite evidence, and read required progressive-disclosure references. If a case fails, record the verbatim choice and run the meta-classification (wording gap, organization gap, or deliberate noncompliance), make the smallest responsible skill/reference/prompt change, then rerun that same case.
 
-- [ ] **Step 8: Write concrete GREEN evidence**
+- [x] **Step 8: Write concrete GREEN evidence**
 
 Create `evals/green-report.md` with environment metadata and side-by-side baseline/candidate behavior per scenario. Include exact tool-log observations, blocked/progressed state, rationalizations removed, any new rationalization, and raw-result directory. Do not claim cross-model or real-product activation evidence in Plan A.
 
-- [ ] **Step 9: Verify SKILL structure and Task 9 scope**
+- [x] **Step 9: Verify SKILL structure and Task 9 scope**
 
 ```bash
 wc -l -w optional-skills/subagent-driven-development/SKILL.md
@@ -1394,7 +1410,7 @@ git diff --check
 
 Expected: `SKILL.md` is below 500 lines and no more than 1800 words; references are direct; tests/lint pass. The budget accommodates roughly eight ordered capability gates, the orchestration loop, the seven-row tier table, four dispatch-validation cases, the preserved safety rules, and an evidence-derived Red Flags section. If the body cannot meet the word target without hiding a load-bearing gate, stop for review rather than silently exceeding it or weakening a gate.
 
-- [ ] **Step 10: Commit Task 9**
+- [x] **Step 10: Commit Task 9**
 
 ```bash
 git add optional-skills/subagent-driven-development/SKILL.md \
@@ -1424,11 +1440,11 @@ git commit -m "feat(skills): add deterministic SDD controller"
 
 **Interfaces:** Produces pressure-tested optional source, a deterministic ownership checksum, and isolated proof that the candidate fails closed before activation contracts exist. It does not install or publish the source.
 
-- [ ] **Step 1: Turn observed rationalizations into micro-scenarios**
+- [x] **Step 1: Turn observed rationalizations into micro-scenarios**
 
 Select the three highest-risk rationalizations from baseline/GREEN evidence. For each, add three semantically equivalent wording variants that change urgency, authority, and sunk-cost framing while retaining one objectively correct decision. Keep a no-guidance control. Do not weaken prompts to make the candidate pass.
 
-- [ ] **Step 2: Run repeated candidate/control microtests**
+- [x] **Step 2: Run repeated candidate/control microtests**
 
 Run five repetitions per wording variant under both `candidate` and `no-guidance` with the same exact coordinator model and fake capability configuration. That is 30 runs per rationalization family. Save raw outputs under:
 
@@ -1440,13 +1456,13 @@ Passing threshold: candidate chooses the required state/action and avoids forbid
 
 The two lowest-risk families may run three repetitions instead of five when their first three runs agree; record which families used the reduction and why in `refactor-report.md`. Never reduce family count or drop a condition.
 
-- [ ] **Step 3: Exercise all six requested tiers through fake policy evidence**
+- [x] **Step 3: Exercise all six requested tiers through fake policy evidence**
 
 For each tier, render a role-appropriate prompt and run the fake extension in Tiered mode. Assert tool logs show the absolute directive, deterministic dispatch key, requested tier, effective tier, tuple, and child application event before the cleaned task with model visibility false. Repeat Exact mode for at least Economy, Advanced, and Frontier and assert `ignored-exact` plus unchanged exact tuple. This tests tier behavior, not coordinator model quality; record the distinction.
 
 Rerun each of the five role scenarios in at least three fresh candidate contexts after all wording changes. Manually read every output flagged by deterministic scoring; do not accept a state token alone when the reasoning or side effects violate the contract.
 
-- [ ] **Step 4: Write manifest behavior RED test**
+- [x] **Step 4: Write manifest behavior RED test**
 
 Add a test that reads `pi-webui-skill.json`, independently derives the SHA-256 from sorted runtime file names plus NUL plus bytes, and expects exact equality. Also prove:
 
@@ -1468,7 +1484,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.
 
 Expected: FAIL because the manifest and hash command are absent.
 
-- [ ] **Step 5: Add the ownership/runtime manifest and hash command**
+- [x] **Step 5: Add the ownership/runtime manifest and hash command**
 
 Generate the manifest atomically; never write an intermediate sentinel hash. `scripts/lib/manifest.mjs` owns this exact sorted runtime list:
 
@@ -1486,11 +1502,8 @@ scripts/lib/plan-policy.mjs
 scripts/lib/prompt-renderer.mjs
 scripts/lib/state-machine.mjs
 scripts/lib/state-store.mjs
-scripts/review-package
 scripts/sdd-state
 scripts/sdd-state.mjs
-scripts/sdd-workspace
-scripts/task-brief
 ```
 
 Add:
@@ -1518,7 +1531,7 @@ npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.
 
 Expected: tests pass and the newly written manifest already contains the current package version and actual hash.
 
-- [ ] **Step 6: Run real isolated capability blocking with no policy/spawn tools**
+- [x] **Step 6: Run real isolated capability blocking with no policy/spawn tools**
 
 Run five repetitions. Each uses a fresh Git fixture, fresh `PI_CODING_AGENT_DIR`, fresh session directory, JSON-mode output, and the root-confined read extension configured in `absent` mode so it registers **only** `read`—never `get_model_policy` or child tools:
 
@@ -1610,7 +1623,7 @@ These five runs prove the candidate reaches `CAPABILITY_BLOCKED` and cites evide
 
 Use the same fixture, profile isolation, and `absent` policy mode, but additionally register the role harness's confined `write` and non-shell `bash` (allowlisted to read-only `git status`/`git diff`) alongside `read`. Assert the same outcome: `CAPABILITY_BLOCKED`, the capability reference read, no `spawn_subsession` call, no `write` call, unchanged HEAD/tree/status, and absent `.superpowers/sdd` and `result.txt`. A run that creates the workspace or writes a deliverable before reporting the missing contract fails Plan A even if it reports `CAPABILITY_BLOCKED` afterward, because the gate ordering, not the end state, is the contract.
 
-- [ ] **Step 7: Write the refactor report**
+- [x] **Step 7: Write the refactor report**
 
 Create `evals/refactor-report.md` containing exact model/Pi version, controller and role scenario families/repetition counts, any permitted five-to-three repetition reduction and its justification, no-guidance versus candidate outcome counts, manual review of every flagged output, verbatim new rationalizations, their wording/organization/deliberate-noncompliance meta-classification, changes made to close loopholes, six-tier fake-policy results, Exact no-op results, the five tool-absent and three tool-present capability-blocked results, and raw evidence paths.
 
@@ -1632,21 +1645,31 @@ optional-skills/subagent-driven-development/scripts/sdd-state manifest-hash \
 npm test -- --run optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs
 ```
 
-- [ ] **Step 8: Smoke-load the unchanged original before its final seal**
+- [x] **Step 8: Smoke-load the unchanged original before its final seal**
 
 Run a separately isolated, read-only invocation:
 
 ```bash
 ORIGINAL=/home/henry/.pi/agent/skills/subagent-driven-development
-pi --print --no-session --no-tools --no-extensions --no-prompt-templates \
+CANDIDATE=$(realpath optional-skills/subagent-driven-development)
+pi --print --no-session --no-builtin-tools --no-extensions --no-prompt-templates \
   --no-context-files --no-skills --skill "$ORIGINAL" \
+  --extension "$CANDIDATE/evals/fake-sdd-tools.mjs" \
   --model "$PI_PROVIDER/$PI_MODEL:$PI_REASONING_LEVEL" \
   "Use the explicitly loaded subagent-driven-development skill. Name its pre-implementation safety gates in one bounded response; do not execute a plan."
 ```
 
+`--no-tools` cannot be used here. Pi gates the entire skills section on an active
+tool named exactly `read` (`dist/core/system-prompt.js`: `if (hasRead && skills.length > 0)`),
+so with no tools the skill loads but never reaches the system prompt, and the model
+correctly refuses to name gates it cannot see. The read-only fake extension supplies
+`read` without granting any mutation or dispatch capability. Set
+`SDD_EVAL_READ_ROOTS_JSON` to the original skill directory so the read tool is
+confined to it.
+
 Expected: the original skill loads and answers; no repository/global-skill mutation occurs. Do not compare the final seal yet—final repository verification must run first.
 
-- [ ] **Step 9: Run final repository verification**
+- [x] **Step 9: Run final repository verification**
 
 ```bash
 optional-skills/subagent-driven-development/scripts/sdd-state \
@@ -1654,7 +1677,8 @@ optional-skills/subagent-driven-development/scripts/sdd-state \
 optional-skills/subagent-driven-development/scripts/sdd-state manifest-hash \
   --manifest optional-skills/subagent-driven-development/pi-webui-skill.json
 npx --yes --package=node@22.19.0 node --version | grep '^v22\.19\.'
-npx --yes --package=node@22.19.0 node node_modules/vitest/vitest.mjs run \
+VITEST_ENTRY=$(node -e 'const p=require.resolve("vitest/package.json");console.log(require("path").join(require("path").dirname(p),"vitest.mjs"))')
+npx --yes --package=node@22.19.0 node "$VITEST_ENTRY" run \
   --config vitest.config.ts optional-skills/subagent-driven-development
 npm run verify
 npm run build
@@ -1663,6 +1687,11 @@ node -e 'const p=require("/tmp/pi-webui-plan-a-pack.json"); if (p[0].files.some(
 git diff --check
 git status --short
 ```
+
+`vitest.mjs` is resolved rather than hardcoded because a Git worktree has no
+`node_modules` of its own: dependencies resolve to the main checkout, so the literal
+path `node_modules/vitest/vitest.mjs` fails with `MODULE_NOT_FOUND` when this task
+runs in `.worktrees/sdd`.
 
 `--ignore-scripts` is required. Without it `prepack` runs `npm run build`, whose plugin and Vite progress output goes to stdout ahead of the JSON, so the file starts with `[plugins] built ...` and `require()` fails with `Unexpected token 'p'`. The preceding `npm run build` already produced the artifacts, so skipping scripts here loses no coverage.
 
@@ -1675,7 +1704,7 @@ Expected:
 - only Task 10 intended files are uncommitted;
 - no session-daemon restart is required because Plan A changes no runtime service path.
 
-- [ ] **Step 10: Take the pre-commit original-tree seal, self-review, and commit**
+- [x] **Step 10: Take the pre-commit original-tree seal, self-review, and commit**
 
 After explicit Plan A test/build/smoke commands but before the hook-bearing commit, take a diagnosable observation:
 
@@ -1715,7 +1744,7 @@ git add optional-skills/subagent-driven-development/pi-webui-skill.json \
 git commit -m "test(skills): harden deterministic SDD workflow"
 ```
 
-- [ ] **Step 11: Seal the original after commit-hook verification**
+- [x] **Step 11: Seal the original after commit-hook verification**
 
 The commit runs the repository's staged verification hook, so take the actual final Plan A observation only after that hook succeeds:
 

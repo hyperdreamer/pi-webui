@@ -42,6 +42,16 @@ const DOCKER_TESTS = [
 const DOCKER_DOCS_TEST = "src/docker/piWebUiDockerDocs.test.ts";
 const PLUGIN_PUBLIC_API_TEST = "pi-webui-plugins/pluginPublicApi.test.ts";
 
+// The optional deterministic-SDD skill tree is not a package runtime entry, so its
+// suites are not reachable by import-following from staged repository sources.
+const OPTIONAL_SDD_PREFIX = "optional-skills/subagent-driven-development/";
+
+const OPTIONAL_SDD_TESTS = [
+  `${OPTIONAL_SDD_PREFIX}evals/run-pressure-evals.test.mjs`,
+  `${OPTIONAL_SDD_PREFIX}tests/sdd-scripts.test.mjs`,
+  `${OPTIONAL_SDD_PREFIX}tests/sdd-state.test.mjs`,
+];
+
 export function parseNullDelimitedPaths(output) {
   const value = Buffer.isBuffer(output) ? output.toString("utf8") : output;
   return value.split("\0").filter((path) => path.length > 0);
@@ -127,6 +137,11 @@ function relatedTestInputs(paths) {
     }
 
     if (path.startsWith("pi-webui-plugins/")) inputs.add(PLUGIN_PUBLIC_API_TEST);
+
+    if (path.startsWith(OPTIONAL_SDD_PREFIX)) {
+      inputs.add(path);
+      for (const test of OPTIONAL_SDD_TESTS) inputs.add(test);
+    }
   }
 
   return [...inputs].sort();
@@ -134,6 +149,7 @@ function relatedTestInputs(paths) {
 
 function isLintablePath(path) {
   if (LINTABLE_ROOT_FILES.has(path)) return true;
+  if (path.startsWith(OPTIONAL_SDD_PREFIX)) return path.endsWith(".mjs");
   return path.endsWith(".ts") && LINTABLE_DIRECTORIES.some((directory) => path.startsWith(directory));
 }
 

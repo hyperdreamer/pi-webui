@@ -103,4 +103,26 @@ describe("staged validation planning", () => {
       ],
     ]);
   });
+
+  it("routes optional deterministic-SDD files through their complete validators", () => {
+    const plan = createValidationPlan([
+      "optional-skills/subagent-driven-development/scripts/sdd-state.mjs",
+      "optional-skills/subagent-driven-development/SKILL.md",
+    ], { pathExists: () => true });
+
+    expect(plan.lint).toEqual({
+      mode: "scoped",
+      files: ["optional-skills/subagent-driven-development/scripts/sdd-state.mjs"],
+    });
+    expect(plan.tests).toEqual({
+      mode: "related",
+      files: [
+        "optional-skills/subagent-driven-development/SKILL.md",
+        "optional-skills/subagent-driven-development/evals/run-pressure-evals.test.mjs",
+        "optional-skills/subagent-driven-development/scripts/sdd-state.mjs",
+        "optional-skills/subagent-driven-development/tests/sdd-scripts.test.mjs",
+        "optional-skills/subagent-driven-development/tests/sdd-state.test.mjs",
+      ],
+    });
+  });
 });

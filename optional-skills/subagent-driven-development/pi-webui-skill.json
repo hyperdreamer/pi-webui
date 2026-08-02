@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "subagent-driven-development",
+  "distribution": "opt-in",
+  "sourcePackage": {
+    "name": "@hyperdreamer/pi-webui",
+    "version": "1.10.3"
+  },
+  "runtimeHashAlgorithm": "sha256-path-nul-bytes-v1",
+  "runtimeHash": "723dff5c57a867db81255e441f547fd7bc24cada35d2803ac02acfe66badb2f4",
+  "runtimeFiles": [
+    "SKILL.md",
+    "prompts/final-reviewer.md",
+    "prompts/implementer.md",
+    "prompts/re-reviewer.md",
+    "prompts/task-reviewer.md",
+    "references/capability-contract.md",
+    "references/plan-contract.md",
+    "references/state-machine.md",
+    "scripts/lib/manifest.mjs",
+    "scripts/lib/plan-policy.mjs",
+    "scripts/lib/prompt-renderer.mjs",
+    "scripts/lib/state-machine.mjs",
+    "scripts/lib/state-store.mjs",
+    "scripts/sdd-state",
+    "scripts/sdd-state.mjs"
+  ]
+}
