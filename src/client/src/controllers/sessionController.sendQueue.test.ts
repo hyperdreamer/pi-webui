@@ -27,13 +27,24 @@ describe("SessionController send queue", () => {
       { api, socket: new FakeSocket() },
     );
 
-    const startAndSend = controller.startSessionWithPrompt("Help me understand this project");
+    const startOutcomes: boolean[] = [];
+    const startAndSend = controller.startSessionWithPrompt(
+      "Help me understand this project",
+      undefined,
+      undefined,
+      "inline",
+      undefined,
+      (started) => { startOutcomes.push(started); },
+    );
 
     expect(state.selectedSession?.id).toMatch(/^pending-session-/);
     expect(promptCalls).toEqual([]);
+    expect(startOutcomes).toEqual([]);
 
     startRequest.resolve(started);
     await startAndSend;
+
+    expect(startOutcomes).toEqual([true]);
 
     expect(promptCalls).toEqual([{ sessionId: started.id, text: "Help me understand this project" }]);
     expect(state.selectedSession?.id).toBe(started.id);

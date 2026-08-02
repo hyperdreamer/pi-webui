@@ -19,7 +19,7 @@ import { ProjectController } from "../controllers/projectController";
 import { ProjectCatalogController } from "../controllers/projectCatalogController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
-import { SessionController, startSessionOutcome } from "../controllers/sessionController";
+import { SessionController } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
 import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
@@ -2921,16 +2921,18 @@ export class PiWebUiApp extends LitElement {
     const workspaceId = this.state.selectedWorkspace?.id;
     const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
-    const start = this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy);
-    void start.then(
+    void this.sessions.startSessionWithPrompt(
+      text,
+      streamingBehavior,
+      attachments,
+      delivery,
+      modelPolicy,
       (started) => {
         this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
       },
-      (error: unknown) => {
-        this.clearStarterModelPolicyAfterSuccessfulStart(startSessionOutcome(start) === true, workspaceId, starterModelPolicy);
-        this.setState({ error: String(error) });
-      },
-    );
+    ).catch((error: unknown) => {
+      this.setState({ error: String(error) });
+    });
     void this.focusChatComposer();
   };
 

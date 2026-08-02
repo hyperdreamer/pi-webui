@@ -602,7 +602,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(true);
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(true)));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -611,7 +611,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
 
     startSessionPrompt(app, "explore the repo");
 
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" });
+    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" }, expect.any(Function));
     expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
     await flush();
     expect(starterModelPolicy(app)).toBeUndefined();
@@ -665,7 +665,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
     let attempt = 0;
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(() => {
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation((...args) => {
       attempt += 1;
       const pending: SessionInfo = {
         ...activeSession(),
@@ -674,7 +674,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
         persisted: false,
       };
       applyStatePatch(app, { sessions: [pending], selectedSession: pending });
-      return Promise.resolve(false);
+      return promptStartFrom(Promise.resolve(false))(...args);
     });
     stubComposerFocus(app);
     setAppState(app, starterState());
@@ -723,7 +723,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     const completion = deferred<boolean>();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockReturnValue(completion.promise);
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(completion.promise));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -737,7 +737,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     completion.resolve(true);
     await flush();
 
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" });
+    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" }, expect.any(Function));
     expect(starterModelPolicy(app)).toBe(changedDraft);
     expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "capable" });
   });
@@ -750,7 +750,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
       .mockResolvedValueOnce(starterDefaults())
       .mockReturnValueOnce(defaultsCompletion.promise);
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockReturnValue(startCompletion.promise);
+    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(startCompletion.promise));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -803,7 +803,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(false);
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -821,14 +821,14 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, {
       mode: "exact",
       exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "low" },
-    });
+    }, expect.any(Function));
   });
 
   it("passes no policy for an untouched Exact starter", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(false);
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -836,14 +836,14 @@ describe("PiWebUiApp starter policy start snapshot", () => {
 
     startSessionPrompt(app, "explore the repo");
 
-    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, undefined);
+    expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, undefined, expect.any(Function));
   });
 
   it("forwards an Exact selection the starter repaired away from the linked defaults", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(false);
+    const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -858,11 +858,19 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, {
       mode: "exact",
       exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
-    });
+    }, expect.any(Function));
   });
 });
 
 // ── harness ─────────────────────────────────────────────────────────────────
+
+function promptStartFrom(
+  completion: Promise<boolean>,
+): (...args: Parameters<SessionController["startSessionWithPrompt"]>) => Promise<void> {
+  return (...args) => completion.then((started) => {
+    args[5]?.(started);
+  });
+}
 
 type VoidCallback = () => void;
 type SaveCallback = (update: SessionModelPolicyUpdate) => void;

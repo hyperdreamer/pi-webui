@@ -129,7 +129,10 @@ describe("PiWebUiApp session onboarding", () => {
     const state = onboardingState();
     setAppState(app, state);
     const controller = appSessionController(app);
-    const startSessionWithPrompt = vi.spyOn(controller, "startSessionWithPrompt").mockResolvedValue(false);
+    const startSessionWithPrompt = vi.spyOn(controller, "startSessionWithPrompt").mockImplementation((...args) => {
+      args[5]?.(false);
+      return Promise.resolve();
+    });
     const focusChatComposer = vi.fn(() => Promise.resolve());
     if (!Reflect.set(app, "focusChatComposer", focusChatComposer)) throw new Error("Could not install prompt focus harness");
     const attachment: PromptAttachment = { kind: "image", mimeType: "image/png", data: "QUJD", name: "sketch.png" };
@@ -139,7 +142,7 @@ describe("PiWebUiApp session onboarding", () => {
     const onSend = startScreenSendHandler(renderSessionStartScreen(app, state));
     onSend("Sketch a plan", undefined, [attachment], "inline");
 
-    expect(startSessionWithPrompt).toHaveBeenCalledWith("Sketch a plan", undefined, [attachment], "inline", undefined);
+    expect(startSessionWithPrompt).toHaveBeenCalledWith("Sketch a plan", undefined, [attachment], "inline", undefined, expect.any(Function));
     expect(focusChatComposer).toHaveBeenCalledOnce();
   });
 });

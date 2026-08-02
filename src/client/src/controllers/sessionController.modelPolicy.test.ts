@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
-import { SessionController, startSessionOutcome } from "./sessionController";
+import { SessionController } from "./sessionController";
 import { defaultApi, deferred, emptyPage, FakeSocket, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
 
 const exact: ExactModelSelection = { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" };
@@ -467,14 +467,24 @@ describe("SessionController model policy state", () => {
     });
     const { controller } = harness(api, { selectedSession: undefined, sessions: [] });
 
-    const startAndSend = controller.startSessionWithPrompt("Plan the migration", undefined, undefined, "inline", tieredUpdate);
+    const startOutcomes: boolean[] = [];
+    const startAndSend = controller.startSessionWithPrompt(
+      "Plan the migration",
+      undefined,
+      undefined,
+      "inline",
+      tieredUpdate,
+      (started) => { startOutcomes.push(started); },
+    );
 
     expect(startCalls).toEqual([tieredUpdate]);
     expect(promptCalls).toEqual([]);
+    expect(startOutcomes).toEqual([]);
 
     startRequest.resolve(selectedSession);
-    expect(await startAndSend).toBe(true);
+    await expect(startAndSend).resolves.toBeUndefined();
 
+    expect(startOutcomes).toEqual([true]);
     expect(promptCalls).toEqual([{ sessionId: selectedSession.id, text: "Plan the migration" }]);
   });
 
@@ -485,11 +495,25 @@ describe("SessionController model policy state", () => {
     const { controller, state } = harness(api, { selectedSession: undefined, sessions: [] });
     vi.spyOn(controller, "send").mockRejectedValue(queueError);
 
-    const startAndSend = controller.startSessionWithPrompt("Plan the migration", undefined, undefined, "inline", tieredUpdate);
+    const lifecycle: string[] = [];
+    const startAndSend = controller.startSessionWithPrompt(
+      "Plan the migration",
+      undefined,
+      undefined,
+      "inline",
+      tieredUpdate,
+      (started) => { lifecycle.push(`started:${String(started)}`); },
+    );
     let settled = false;
     const observed = startAndSend.then(
-      () => { settled = true; },
-      () => { settled = true; },
+      () => {
+        settled = true;
+        lifecycle.push("resolved");
+      },
+      () => {
+        settled = true;
+        lifecycle.push("rejected");
+      },
     );
     await Promise.resolve();
     await Promise.resolve();
@@ -500,17 +524,27 @@ describe("SessionController model policy state", () => {
 
     expect(settledBeforeStart).toBe(false);
     await expect(startAndSend).rejects.toBe(queueError);
-    expect(startSessionOutcome(startAndSend)).toBe(true);
+    expect(lifecycle).toEqual(["started:true", "rejected"]);
     expect(state().selectedSession?.id).toBe(selectedSession.id);
   });
 
-  it("propagates false when starter session creation fails", async () => {
+  it("reports false when starter session creation fails", async () => {
     const api = selectionApi({
       startSession: () => Promise.reject(new Error("backend unavailable")),
     });
     const { controller, state } = harness(api, { selectedSession: undefined, sessions: [] });
 
-    await expect(controller.startSessionWithPrompt("Retry the migration", undefined, undefined, "inline", tieredUpdate)).resolves.toBe(false);
+    const startOutcomes: boolean[] = [];
+    await expect(controller.startSessionWithPrompt(
+      "Retry the migration",
+      undefined,
+      undefined,
+      "inline",
+      tieredUpdate,
+      (started) => { startOutcomes.push(started); },
+    )).resolves.toBeUndefined();
+
+    expect(startOutcomes).toEqual([false]);
 
     expect(state().selectedSession?.id).toMatch(/^pending-session-/);
     expect(state().error).toContain("backend unavailable");
