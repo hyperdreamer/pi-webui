@@ -275,6 +275,31 @@ export function findOptionalTemplateClickHandlerForText<E extends Event = Event>
   return undefined;
 }
 
+/**
+ * The nearest template in the tree whose own static markup contains `marker`,
+ * searched depth-first in document order, or undefined.
+ *
+ * Use to narrow a large parent template down to the sub-template that renders a
+ * specific child element (e.g. `<prompt-editor`, `<session-browser-dialog`)
+ * before reading that child's bindings with the marker helpers above.
+ */
+export function findTemplateContaining(value: unknown, marker: string): TemplateResult | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const template = findTemplateContaining(item, marker);
+      if (template !== undefined) return template;
+    }
+    return undefined;
+  }
+  if (!isTemplateResult(value)) return undefined;
+  if (templateStrings(value).some((part) => part.includes(marker))) return value;
+  for (const child of templateValues(value)) {
+    const template = findTemplateContaining(child, marker);
+    if (template !== undefined) return template;
+  }
+  return undefined;
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
 }

@@ -317,6 +317,72 @@ describe("Pi package API", () => {
 });
 
 describe("session API compatibility", () => {
+  it("reads and updates session model policy through encoded nested-deployment routes", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = sessionModelPolicyResponse();
+    const exact = { model: { provider: "openai", id: "gpt-exact" }, thinkingLevel: "medium" };
+    const exactResponse = {
+      ...response,
+      policy: { mode: "exact", exact, tier: "advanced" },
+      session: {
+        ...response.session,
+        modelPolicy: { mode: "exact", tier: "advanced", resolved: exact, ladderValid: true },
+      },
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse(response),
+      jsonResponse(response),
+      jsonResponse(exactResponse),
+    ]);
+    const session = { id: "s/1", cwd: "/work tree" };
+
+    await expect(sessionsApi.modelPolicy(session, "remote/one")).resolves.toEqual(response);
+    await expect(sessionsApi.setModelPolicy(session, { mode: "tiered", tier: "advanced" }, "remote/one")).resolves.toEqual(response);
+    await expect(sessionsApi.setModelPolicy(session, { mode: "exact", exact }, "remote/one")).resolves.toEqual(exactResponse);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%2Fone/sessions/s%2F1/model-policy?cwd=%2Fwork+tree",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%2Fone/sessions/s%2F1/model-policy",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%2Fone/sessions/s%2F1/model-policy",
+    ]);
+    expect(fetchCall(fetchMock, 1)[1]).toMatchObject({ method: "PUT" });
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({
+      cwd: "/work tree",
+      policy: { mode: "tiered", tier: "advanced" },
+    });
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 2)[1]))).toEqual({
+      cwd: "/work tree",
+      policy: { mode: "exact", exact },
+    });
+  });
+
+  it("preserves the legacy start body when policy is omitted and adds only modelPolicy when provided", async () => {
+    const session = {
+      id: "s-1",
+      path: "/sessions/s-1.jsonl",
+      cwd: "/work tree",
+      created: "2026-08-01T00:00:00.000Z",
+      modified: "2026-08-01T00:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+    };
+    const fetchMock = stubSequenceFetch([jsonResponse(session), jsonResponse(session)]);
+
+    await expect(sessionsApi.startSession("/work tree", "remote/one")).resolves.toEqual(session);
+    await expect(sessionsApi.startSession("/work tree", "remote/one", { mode: "tiered", tier: "advanced" })).resolves.toEqual(session);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/api/machines/remote%2Fone/sessions",
+      "https://pi.example.test/api/machines/remote%2Fone/sessions",
+    ]);
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 0)[1]))).toEqual({ cwd: "/work tree" });
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({
+      cwd: "/work tree",
+      modelPolicy: { mode: "tiered", tier: "advanced" },
+    });
+  });
+
   it("reads and acknowledges daemon-owned unread state through encoded machine routes", async () => {
     const unread = {
       catalogId: "catalog-a",
@@ -721,6 +787,33 @@ describe("workspace file write API", () => {
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type FetchMock = ReturnType<typeof vi.fn<FetchLike>>;
+
+function sessionModelPolicyResponse() {
+  return {
+    contractVersion: 1,
+    policy: {
+      mode: "tiered",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+      tier: "advanced",
+    },
+    session: {
+      sessionId: "s-1",
+      isStreaming: false,
+      isCompacting: false,
+      isBashRunning: false,
+      pendingMessageCount: 0,
+      queuedMessages: [],
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: 0,
+      modelPolicy: {
+        mode: "tiered",
+        tier: "advanced",
+        resolved: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+        ladderValid: true,
+      },
+    },
+  };
+}
 
 function stubJsonFetch(value: unknown): FetchMock {
   return stubResponseFetch(jsonResponse(value));

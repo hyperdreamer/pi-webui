@@ -6,7 +6,13 @@ import { defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } 
 import { LitElement, html, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import { api, type FileSuggestion, type PromptAttachment, type SessionStatus, type SlashCommand } from "../api";
-import type { PromptAttachmentDelivery } from "../../../shared/apiTypes";
+import {
+  type ClientSessionModelPolicyStatus,
+  type ModelTierSettingsResponse,
+  type PromptAttachmentDelivery,
+  type SessionModelPolicyResponse,
+  type SessionModelPolicyUpdate,
+} from "../../../shared/apiTypes";
 import { capturePromptAttachments, effectivePromptAttachmentDelivery, isInlinePromptAttachment, promptAttachmentsCanUseInlineDelivery, type CapturedAttachment } from "../promptAttachmentCapture";
 import { inputModeForDraft, inputModesEqual, type InputMode } from "../inputModes";
 import { machineSessionKey } from "../machineKeys";
@@ -18,6 +24,7 @@ import { promptEditorStyles, type CompletionItem } from "./shared";
 import { renderAttachIcon, renderCompactIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
 import "./AutocompleteMenu";
+import "./SessionModelPolicyControl";
 
 type PendingAttachment = CapturedAttachment & { id: string };
 
@@ -44,6 +51,15 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) showSessionConfiguration = false;
   /** Persisted defaults shown by the starter before it has a session status. */
   @property({ attribute: false }) sessionConfiguration?: Pick<SessionStatus, "model" | "thinkingLevel">;
+  @property({ attribute: false }) modelPolicyStatus?: ClientSessionModelPolicyStatus;
+  @property({ attribute: false }) modelPolicyResponse?: SessionModelPolicyResponse;
+  @property({ attribute: false }) modelTierCatalog?: ModelTierSettingsResponse;
+  @property({ type: Boolean }) modelPolicyLoading = false;
+  @property({ type: Boolean }) modelPolicySaving = false;
+  @property() modelPolicyError = "";
+  @property({ attribute: false }) onOpenModelPolicy?: () => void;
+  @property({ attribute: false }) onCloseModelPolicy?: () => void;
+  @property({ attribute: false }) onSaveModelPolicy?: (update: SessionModelPolicyUpdate) => void;
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
   @query(".attachment-input") private attachmentInput?: HTMLInputElement;
@@ -83,11 +99,19 @@ export class PromptEditor extends LitElement {
 
   protected override shouldUpdate(changed: PropertyValues<this>): boolean {
     // Status updates churn once per token during streaming and hand us a fresh
-    // object reference each time. When nothing else changed, only re-render if a
-    // status field the template actually displays differs, so streaming does not
-    // disturb the editor DOM (and any in-progress touch gesture survives).
-    if (changed.has("status") && changed.size === 1) {
-      return !sessionStatusRenderEqual(changed.get("status"), this.status);
+    // object reference each time. The separately supplied live policy projection
+    // can be replaced in the same parent render, so treat those two inputs as one
+    // status update and ignore it when every displayed field remains equal.
+    if (
+      changed.has("status")
+      && [...changed.keys()].every((key) => key === "status" || key === "modelPolicyStatus")
+    ) {
+      const statusEqual = sessionStatusRenderEqual(changed.get("status"), this.status);
+      const policyStatusEqual = !changed.has("modelPolicyStatus") || modelPolicyStatusRenderEqual(
+        changed.get("modelPolicyStatus"),
+        this.modelPolicyStatus,
+      );
+      return !statusEqual || !policyStatusEqual;
     }
     return true;
   }
@@ -172,15 +196,33 @@ export class PromptEditor extends LitElement {
     const configurationMode = this.status === undefined && this.showSessionConfiguration;
     const status = this.status ?? (configurationMode ? this.sessionConfiguration : undefined);
     if (status === undefined && !configurationMode) return null;
+    const policyStatus = this.modelPolicyStatus ?? this.status?.modelPolicy;
     const model = status?.model?.id ?? (configurationMode ? "Choose default model" : "no model");
     const provider = status?.model?.provider !== undefined && status.model.provider !== "" ? `${status.model.provider}/` : "";
     const thinkingLabel = configurationMode
       ? `Default thinking level: ${thinkingLevelLabel(status?.thinkingLevel)}`
       : `Thinking level: ${thinkingLevelLabel(status?.thinkingLevel)}`;
+    const policyEditable = !this.disabled && !this.modelPolicySaving && !sessionHasActiveWork(this.status);
     return html`
       <div class="compact-status" aria-label=${configurationMode ? "Session defaults" : "Session status"}>
-        <button class="select-model" ?disabled=${this.onSelectModel === undefined} title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
-        <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
+        ${policyStatus === undefined ? null : html`
+          <session-model-policy-control
+            .status=${policyStatus}
+            .response=${this.modelPolicyResponse}
+            .catalog=${this.modelTierCatalog}
+            .loading=${this.modelPolicyLoading}
+            .saving=${this.modelPolicySaving}
+            .editable=${policyEditable}
+            .error=${this.modelPolicyError}
+            .onOpen=${this.onOpenModelPolicy}
+            .onClose=${this.onCloseModelPolicy}
+            .onSave=${this.onSaveModelPolicy}
+          ></session-model-policy-control>
+        `}
+        ${policyStatus?.mode === "tiered" ? null : html`
+          <button class="select-model" ?disabled=${this.onSelectModel === undefined} title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
+          <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
+        `}
       </div>
     `;
   }
@@ -502,17 +544,40 @@ export class PromptEditor extends LitElement {
   static override styles = promptEditorStyles;
 }
 
-// The only `status` fields the template reads directly are the model identity
-// and thinking level (shown in renderCompactStatus). Everything else the editor
-// cares about (canSteer/canStop/isCompacting/sending) is passed as a separate
-// property that Lit already diffs by value. Comparing just these fields lets us
-// ignore the per-token status churn that does not change anything on screen.
+// `status` churns once per token while the compact row only displays model,
+// thinking, policy status, and whether active work makes policy mutation
+// unavailable. Comparing those projections keeps meaningful policy changes
+// visible without disturbing the editor DOM for unrelated token/cost updates.
 function sessionStatusRenderEqual(a: SessionStatus | undefined, b: SessionStatus | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   return a.model?.id === b.model?.id
     && a.model?.provider === b.model?.provider
-    && a.thinkingLevel === b.thinkingLevel;
+    && a.thinkingLevel === b.thinkingLevel
+    && modelPolicyStatusRenderEqual(a.modelPolicy, b.modelPolicy)
+    && sessionHasActiveWork(a) === sessionHasActiveWork(b);
+}
+
+function modelPolicyStatusRenderEqual(
+  a: ClientSessionModelPolicyStatus | undefined,
+  b: ClientSessionModelPolicyStatus | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.mode === b.mode
+    && a.tier === b.tier
+    && a.resolved.model.provider === b.resolved.model.provider
+    && a.resolved.model.id === b.resolved.model.id
+    && a.resolved.thinkingLevel === b.resolved.thinkingLevel
+    && a.ladderValid === b.ladderValid
+    && a.blockedReason === b.blockedReason;
+}
+
+function sessionHasActiveWork(status: SessionStatus | undefined): boolean {
+  return status?.isStreaming === true
+    || status?.isBashRunning === true
+    || status?.isCompacting === true
+    || (status?.pendingMessageCount ?? 0) > 0;
 }
 
 function draftStorageKey(machineId: unknown, sessionId: unknown): string | undefined {

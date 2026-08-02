@@ -2,7 +2,12 @@ import { resolve } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../shared/apiTypes.js";
+import {
+  SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH,
+  SESSION_UNREAD_CATALOG_ID_MAX_LENGTH,
+  type SessionModelPolicyResponse,
+  type SessionModelPolicyUpdate,
+} from "../../shared/apiTypes.js";
 import type {
   MessagePage,
   SessionBulkArchiveResponse,
@@ -52,6 +57,159 @@ afterEach(async () => {
 });
 
 describe("session routes", () => {
+  it("forwards an optional model policy on start while preserving the legacy call shape", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const policy = { mode: "tiered", tier: "advanced" } as const;
+
+    try {
+      const legacy = await routeApp.inject({ method: "POST", url: "/sessions", payload: { cwd: "/legacy" } });
+      const withPolicy = await routeApp.inject({ method: "POST", url: "/sessions", payload: { cwd: "/work", modelPolicy: policy } });
+
+      expect(legacy.statusCode).toBe(200);
+      expect(withPolicy.statusCode).toBe(200);
+      expect(routeService.startCalls).toEqual([
+        { cwd: resolve("/legacy") },
+        { cwd: resolve("/work"), options: { modelPolicy: policy } },
+      ]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("routes model policy inspection and mutation with their required workspace lookups", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const exactPolicy = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "high" },
+    } as const;
+
+    try {
+      const inspection = await routeApp.inject({ method: "GET", url: "/sessions/s-1/model-policy?cwd=%2Fwork%2F.%2F" });
+      const mutation = await routeApp.inject({
+        method: "PUT",
+        url: "/sessions/s-1/model-policy",
+        payload: { cwd: "/work/./", policy: exactPolicy },
+      });
+
+      expect(inspection.statusCode).toBe(200);
+      expect(inspection.json()).toEqual(modelPolicyResponse("s-1"));
+      expect(mutation.statusCode).toBe(200);
+      expect(mutation.json()).toEqual(modelPolicyResponse("s-1"));
+      expect(routeService.modelPolicyCalls).toEqual([{ id: "s-1", cwd: resolve("/work") }]);
+      expect(routeService.setModelPolicyCalls).toEqual([{
+        lookup: { id: "s-1", cwd: resolve("/work") },
+        update: exactPolicy,
+      }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("rejects malformed session model policy requests before calling the service", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const exact = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "high" },
+    } as const;
+    const oversized = "x".repeat(513);
+    const malformed: { method: "POST" | "PUT"; url: string; payload: Record<string, unknown>; error: string }[] = [
+      { method: "POST", url: "/sessions", payload: { modelPolicy: { mode: "tiered", tier: "advanced" } }, error: "cwd field must be a string" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", unexpected: true }, error: "session start field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { policy: exact }, error: "cwd field must be a string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "", policy: exact }, error: "cwd is required" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "   ", policy: exact }, error: "cwd must be an absolute path" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai" }, thinkingLevel: "high" } } }, error: "model id field must be a non-blank string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "tiered" } }, error: "tier field is required" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { ...exact, tier: "advanced" } }, error: "model policy field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "tiered", tier: "unsupported" } }, error: "tier must be one of" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { ...exact, unexpected: true } }, error: "model policy field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "tiered", tier: "advanced", exact: exact.exact } }, error: "model policy field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { ...exact.exact, unexpected: true } } }, error: "exact selection field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { ...exact.exact, model: { ...exact.exact.model, unexpected: true } } } }, error: "model reference field contains unsupported property" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "   ", id: "org/gpt" }, thinkingLevel: "high" } } }, error: "provider field must be a non-blank string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai", id: "   " }, thinkingLevel: "high" } } }, error: "model id field must be a non-blank string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "" } } }, error: "thinkingLevel field must be a non-blank string" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: oversized, id: "org/gpt" }, thinkingLevel: "high" } } }, error: "provider field is too long" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai", id: oversized }, thinkingLevel: "high" } } }, error: "model id field is too long" },
+      { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "/work", policy: { mode: "exact", exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: oversized } } }, error: "thinkingLevel field is too long" },
+    ];
+
+    try {
+      for (const request of malformed) {
+        const response = await routeApp.inject({ method: request.method, url: request.url, payload: request.payload });
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain(request.error);
+      }
+      expect(routeService.startCalls).toEqual([]);
+      expect(routeService.setModelPolicyCalls).toEqual([]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("maps model policy mutation failures through the existing mutation status family", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    routeService.setModelPolicyError = new Error("Session not found");
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const response = await routeApp.inject({
+        method: "PUT",
+        url: "/sessions/s-1/model-policy",
+        payload: {
+          cwd: "/work",
+          policy: { mode: "tiered", tier: "advanced" },
+        },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: "Session not found" });
+      expect(routeService.setModelPolicyCalls).toEqual([{
+        lookup: { id: "s-1", cwd: resolve("/work") },
+        update: { mode: "tiered", tier: "advanced" },
+      }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("uses the cwd query for model policy inspection without requiring a body", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const response = await routeApp.inject({ method: "GET", url: "/sessions/s-1/model-policy?cwd=%2Fother" });
+
+      expect(response.statusCode).toBe(200);
+      expect(routeService.modelPolicyCalls).toEqual([{ id: "s-1", cwd: resolve("/other") }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("returns notification catalog and selected-inbox snapshots with required cwd context", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
@@ -788,6 +946,11 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly historyExportCalls: SessionRouteLookup[] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
+  readonly startCalls: { cwd: string; options?: { modelPolicy?: SessionModelPolicyUpdate } }[] = [];
+  readonly modelPolicyCalls: SessionRouteLookup[] = [];
+  readonly setModelPolicyCalls: { lookup: SessionRouteLookup; update: SessionModelPolicyUpdate }[] = [];
+  setModelPolicyError: Error | undefined;
+
 
   cleanupPreview(request: NormalizedSessionCleanupRequest): Promise<SessionCleanupPreviewResponse> {
     this.cleanupPreviewCalls.push(request);
@@ -859,7 +1022,22 @@ class CapturingRouteSessionService implements SessionRouteService {
   }
 
   list(): never { throw unusedRouteMethod("list"); }
-  start(): never { throw unusedRouteMethod("start"); }
+
+  start(cwd: string, options?: { modelPolicy?: SessionModelPolicyUpdate }): Promise<SessionInfo> {
+    this.startCalls.push(options === undefined ? { cwd } : { cwd, options });
+    return Promise.resolve(pinnedSessionInfo({ id: "started", cwd }));
+  }
+
+  modelPolicy(lookup: SessionRouteLookup): Promise<SessionModelPolicyResponse> {
+    this.modelPolicyCalls.push(lookup);
+    return Promise.resolve(modelPolicyResponse(sessionIdFromLookup(lookup)));
+  }
+
+  setModelPolicy(lookup: SessionRouteLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse> {
+    this.setModelPolicyCalls.push({ lookup, update });
+    if (this.setModelPolicyError !== undefined) return Promise.reject(this.setModelPolicyError);
+    return Promise.resolve(modelPolicyResponse(sessionIdFromLookup(lookup)));
+  }
 
   dismissWarning(lookup: SessionRouteLookup, dismissId: string): Promise<SessionStatus> {
     this.dismissWarningCalls.push({ lookup, dismissId });
@@ -980,6 +1158,27 @@ class CapturingRouteSessionService implements SessionRouteService {
     this.calls.push({ unpin: lookup });
     return Promise.resolve({ ...pinnedSessionInfo(lookup), pinned: false });
   }
+}
+
+function modelPolicyResponse(sessionId: string): SessionModelPolicyResponse {
+  return {
+    contractVersion: 1,
+    policy: {
+      mode: "tiered",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "high" },
+    },
+    session: {
+      sessionId,
+      isStreaming: false,
+      isCompacting: false,
+      isBashRunning: false,
+      pendingMessageCount: 0,
+      queuedMessages: [],
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: 0,
+    },
+  };
 }
 
 function pinnedSessionInfo(lookup: SessionRouteLookup): SessionInfo {

@@ -39,6 +39,8 @@ import { parsePromptAttachments } from "../../shared/promptAttachments.js";
 import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_LIMIT } from "../../shared/apiTypes.js";
 import type {
+  ClientSessionModelPolicyStatus,
+  ExactModelSelection,
   SavedPromptAttachment,
   SessionBulkArchiveResponse,
   SessionBulkDeleteArchivedResponse,
@@ -49,6 +51,9 @@ import type {
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
+  SessionModelPolicyResponse,
+  SessionModelPolicy,
+  SessionModelPolicyUpdate,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
@@ -70,7 +75,14 @@ import {
 } from "./sessionNotificationStore.js";
 import { plainTextTheme } from "./plainTextTheme.js";
 import { SessionUnreadStore, type SessionUnreadMutation } from "./sessionUnreadStore.js";
-import { createModelTierRegistry, isModelTier, runtimeThinkingLevels, type ModelTierRegistry, type ModelTier } from "./modelTierRegistry.js";
+import { createModelTierRegistry, isModelTier, runtimeThinkingLevels, type LadderValidation, type ModelTierRegistry, type ModelTier } from "./modelTierRegistry.js";
+import {
+  inspectSessionModelPolicy,
+  planSessionModelPolicyUpdate,
+  serializeSessionModelPolicy,
+  SESSION_MODEL_POLICY_CUSTOM_TYPE,
+  type SessionModelPolicyInspection,
+} from "./sessionModelPolicy.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -205,6 +217,12 @@ interface StartSessionOptions {
 
 interface InternalStartSessionOptions extends StartSessionOptions {
   creationProvenance?: SessionCreationProvenance;
+  /**
+   * Browser-root policy initializer. `true` records the new runtime's own exact
+   * tuple; an update applies that transition before the root is announced.
+   * Tool-created sessions omit it and stay outside policy initialization.
+   */
+  initializeModelPolicy?: true | SessionModelPolicyUpdate;
 }
 
 function requirePromptText(value: unknown): string {
@@ -401,7 +419,7 @@ interface PendingSessionOpen {
   promise: Promise<ActiveSession<PiSessionRuntime>>;
 }
 
-interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "initialThinkingLevel" | "creationProvenance"> {
+interface CreateSessionRuntimeOptions extends Pick<InternalStartSessionOptions, "initialModel" | "initialThinkingLevel" | "creationProvenance" | "initializeModelPolicy"> {
   notificationGeneration?: SessionNotificationGeneration;
   notifications?: "enabled" | "disabled";
 }
@@ -702,6 +720,43 @@ export class PiSessionService implements SessionRouteService {
   private readonly pendingSessionOpens = new Map<string, PendingSessionOpen>();
   private readonly activities = new Map<string, { phase: "active" | "idle" | "error"; label: string; detail?: string; at: string }>();
   private readonly generationMetrics = new WeakMap<PiAgentSession, GenerationMetrics>();
+  private readonly modelPolicyInspections = new WeakMap<PiAgentSession, SessionModelPolicyInspection>();
+  private readonly modelPolicyLadderValidations = new WeakMap<PiAgentSession, LadderValidation>();
+  /**
+   * Reason the newest persisted policy entry is unusable. Recomputed on every
+   * inspection refresh, so repairing the entry clears it.
+   */
+  private readonly modelPolicyEntryReasons = new WeakMap<PiAgentSession, string>();
+  /**
+   * `MODEL_POLICY_BLOCKED` runtime state from an application whose restoration
+   * could not be proven. Deliberately *not* cleared by inspection refresh: only
+   * an explicit successful policy application clears it, because the runtime
+   * tuple — not the persisted entry — is what became ambiguous.
+   *
+   * Keyed by session *id* rather than by the runtime session object so the block
+   * is daemon-owned: it survives a runtime rebind, a reload, and a close/reopen
+   * of the same session, none of which prove anything about the ambiguous tuple.
+   */
+  private readonly modelPolicyRuntimeBlocks = new Map<string, string>();
+  /**
+   * Sessions inside the apply-and-persist window of a policy transition. During
+   * that window the runtime tuple is transient (model set, thinking not yet, or
+   * persistence not yet confirmed), so no prompt may reach Pi.
+   */
+  private readonly modelPolicyMutationCounts = new Map<string, number>();
+  /**
+   * Tuple last *confirmed* by the policy runtime adapter, captured when the
+   * outermost policy mutation opens and dropped when it closes.
+   *
+   * A status may be published from inside the transition window (the runtime
+   * subscription and the heartbeat both reach `publishStatus`), where the live
+   * runtime tuple is mid-apply: the model is set but the thinking level is not,
+   * so reading it would report a pair that was never requested and never
+   * persisted. `ClientSessionModelPolicyStatus.resolved` promises the last
+   * confirmed tuple, so the window reports this instead of live state. Keyed by
+   * session id to match the mutation counter it is scoped by.
+   */
+  private readonly modelPolicyConfirmedSelections = new Map<string, ExactModelSelection>();
   private readonly heartbeat: NodeJS.Timeout;
   private readonly commandService: SessionCommandService<PiAgentSession>;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
@@ -980,6 +1035,9 @@ export class PiSessionService implements SessionRouteService {
     this.pendingSessionOpens.clear();
     this.activities.clear();
     this.compactionPromptQueues.clear();
+    this.modelPolicyRuntimeBlocks.clear();
+    this.modelPolicyMutationCounts.clear();
+    this.modelPolicyConfirmedSelections.clear();
     this.authLossWarnings.clear();
     this.subsessionParents.clear();
     this.subsessionChildren.clear();
@@ -1031,8 +1089,9 @@ export class PiSessionService implements SessionRouteService {
     return [...unarchivedSessions, ...archivedSessions];
   }
 
-  async start(cwd: string, options: StartSessionOptions = {}): Promise<ClientSession> {
-    return this.startSession(cwd, options);
+  async start(cwd: string, options?: { modelPolicy?: SessionModelPolicyUpdate }): Promise<ClientSession> {
+    const modelPolicy = options?.modelPolicy;
+    return this.startSession(cwd, { initializeModelPolicy: modelPolicy ?? true });
   }
 
   private async startSession(cwd: string, options: InternalStartSessionOptions): Promise<ClientSession> {
@@ -1043,6 +1102,7 @@ export class PiSessionService implements SessionRouteService {
         ...(options.initialModel === undefined ? {} : { initialModel: options.initialModel }),
         ...(options.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: options.initialThinkingLevel }),
         ...(options.creationProvenance === undefined ? {} : { creationProvenance: options.creationProvenance }),
+        ...(options.initializeModelPolicy === undefined ? {} : { initializeModelPolicy: options.initializeModelPolicy }),
       },
     );
     const { session } = active.runtime;
@@ -1074,7 +1134,7 @@ export class PiSessionService implements SessionRouteService {
     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
     const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, input.cwd);
     if (!decision.allowed) throw spawnTargetError(decision);
-    const created = await this.start(decision.cwd, input.model === undefined ? {} : { initialModel: input.model });
+    const created = await this.startSession(decision.cwd, input.model === undefined ? {} : { initialModel: input.model });
     await this.prompt(created.id, input.prompt);
     this.logger.info(
       { spawningCwd: input.spawningCwd, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length },
@@ -1494,6 +1554,48 @@ export class PiSessionService implements SessionRouteService {
     return this.statusFromSession(await this.getOrOpen(ref));
   }
 
+  async modelPolicy(ref: PiSessionLookup): Promise<SessionModelPolicyResponse> {
+    const session = await this.getOrOpen(ref);
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    return {
+      contractVersion: 1,
+      ...(inspection.kind === "invalid" ? {} : { policy: inspection.policy }),
+      session: this.statusFromSession(session),
+    };
+  }
+
+  /**
+   * The only interface that changes a session's Exact/Tiered policy. Applies one
+   * complete transition atomically and publishes a single confirmed status; a
+   * corrupt newest entry is repaired only by the explicit update supplied here,
+   * never executed as a silent fallback. A transition that fails after the plan
+   * is resolved publishes one error/blocked status before the route error, so
+   * other clients learn the session refused the change.
+   */
+  async setModelPolicy(ref: PiSessionLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse> {
+    const action = "change the session model policy";
+    await this.assertWritable(ref);
+    const session = await this.getOrOpen(ref);
+    this.assertModelPolicyMutationIdle(session, action);
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    // A malformed newest entry contributes only a starting exact branch for the
+    // new explicit entry; it is never treated as an executable current policy.
+    const current = inspection.kind === "invalid" ? inspection.fallback : inspection.policy;
+    const policy = await this.applySessionModelPolicy(session, current, update, {
+      action,
+      onTransitionFailure: (reason) => { this.publishModelPolicyTransitionFailure(session, reason); },
+    });
+    const resolved = this.exactSelectionFromSession(session);
+    this.publishActivity(
+      session,
+      `model policy: ${policy.mode}`,
+      "idle",
+      policy.mode === "tiered" ? policy.tier : resolved.model.id,
+    );
+    this.publishStatus(session);
+    return this.modelPolicy(ref);
+  }
+
   async systemPrompt(ref: PiSessionLookup): Promise<ClientSessionSystemPrompt> {
     const systemPrompt = (await this.getOrOpen(ref)).state.systemPrompt;
     return systemPrompt === undefined ? {} : { systemPrompt };
@@ -1531,16 +1633,16 @@ export class PiSessionService implements SessionRouteService {
   async setModel(ref: PiSessionLookup, provider: string, modelId: string): Promise<ClientSessionStatus> {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
-    this.assertTreeNavigationInactive(session, "change models");
+    const currentPolicy = this.assertExactModelPolicyMutationAllowed(session, "change models");
     await session.modelRuntime.refresh({ allowNetwork: false });
-    this.assertTreeNavigationInactive(session, "change models");
+    this.assertModelPolicyMutationIdle(session, "change models");
     const candidates = session.scopedModels.length > 0
       ? session.scopedModels.map((scoped) => scoped.model)
       : session.modelRuntime.getAvailableSnapshot();
     const model = candidates.find((candidate) => candidate.provider === provider && candidate.id === modelId)
       ?? session.modelRuntime.getModel(provider, modelId);
     if (model === undefined) throw new Error(`Model not found: ${provider}/${modelId}`);
-    await this.runSessionEntryMutation(session, "change models", () => session.setModel(model));
+    await this.runExactModelPolicyMutation(session, "change models", currentPolicy, () => session.setModel(model));
     this.publishActivity(session, `model: ${model.id}`, "idle", model.provider);
     this.publishStatus(session);
     return this.statusFromSession(session);
@@ -1549,8 +1651,14 @@ export class PiSessionService implements SessionRouteService {
   async cycleModel(ref: PiSessionLookup, direction: "forward" | "backward"): Promise<ClientSessionStatus> {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
-    const result = await this.runSessionEntryMutation(session, "change models", () => session.cycleModel(direction));
-    if (result === undefined) throw new Error(session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available");
+    const currentPolicy = this.assertExactModelPolicyMutationAllowed(session, "change models");
+    const result = await this.runExactModelPolicyMutation(session, "change models", currentPolicy, async () => {
+      const cycled = await session.cycleModel(direction);
+      if (cycled === undefined) {
+        throw new Error(session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available");
+      }
+      return cycled;
+    });
     this.publishActivity(session, `model: ${result.model.id}`, "idle", result.model.provider);
     this.publishStatus(session);
     return this.statusFromSession(session);
@@ -1564,13 +1672,16 @@ export class PiSessionService implements SessionRouteService {
   async setThinkingLevel(ref: PiSessionLookup, level: string): Promise<ClientSessionStatus> {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
-    this.assertTreeNavigationInactive(session, "change the thinking level");
+    const currentPolicy = this.assertExactModelPolicyMutationAllowed(session, "change the thinking level");
     // pi owns the valid set; validate against the session's live levels rather
     // than a hardcoded union so this stays correct if pi changes the set.
     const available = session.getAvailableThinkingLevels();
     const match = available.find((candidate) => candidate === level);
     if (match === undefined) throw new Error(`Invalid thinking level: ${level}`);
-    session.setThinkingLevel(match);
+    await this.runExactModelPolicyMutation(session, "change the thinking level", currentPolicy, () => {
+      session.setThinkingLevel(match);
+      return Promise.resolve();
+    });
     this.publishActivity(session, `thinking: ${session.thinkingLevel}`, "idle");
     this.publishStatus(session);
     return this.statusFromSession(session);
@@ -1579,9 +1690,12 @@ export class PiSessionService implements SessionRouteService {
   async cycleThinkingLevel(ref: PiSessionLookup): Promise<ClientSessionStatus> {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
-    this.assertTreeNavigationInactive(session, "change the thinking level");
-    const level = session.cycleThinkingLevel();
-    if (level === undefined) throw new Error("Current model does not support thinking");
+    const currentPolicy = this.assertExactModelPolicyMutationAllowed(session, "change the thinking level");
+    const level = await this.runExactModelPolicyMutation(session, "change the thinking level", currentPolicy, () => {
+      const cycled = session.cycleThinkingLevel();
+      if (cycled === undefined) throw new Error("Current model does not support thinking");
+      return Promise.resolve(cycled);
+    });
     this.publishActivity(session, `thinking: ${level}`, "idle");
     this.publishStatus(session);
     return this.statusFromSession(session);
@@ -1615,6 +1729,7 @@ export class PiSessionService implements SessionRouteService {
     await this.assertWritable(ref);
     const session = await this.getOrOpen(ref);
     this.assertTreeNavigationInactive(session, "send a prompt");
+    this.assertPromptModelPolicyAllowed(session);
     this.maybeGenerateSessionName(session, promptText);
     const isQueued = session.isStreaming || session.isCompacting;
     const behavior = isQueued ? requestedBehavior ?? "followUp" : undefined;
@@ -1627,10 +1742,31 @@ export class PiSessionService implements SessionRouteService {
       this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp", images, echoUserMessage);
       return;
     }
+    if (this.isModelPolicyMutationActive(session)) {
+      this.retainPromptDuringModelPolicyMutation(session, promptText, behavior ?? "followUp", images, echoUserMessage);
+      return;
+    }
     void this.submitPrompt(session, promptText, behavior, images, echoUserMessage);
   }
 
   private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true): Promise<void> {
+    // A policy transition may have opened while this prompt waited in the
+    // compaction queue. The runtime tuple is transient until the transition
+    // persists, so retain the input instead of reaching Pi with a partial pair.
+    if (this.isModelPolicyMutationActive(session)) {
+      this.retainPromptDuringModelPolicyMutation(session, text, behavior ?? "followUp", images, echoUserMessage, "front");
+      return Promise.resolve();
+    }
+    // Re-check before any activity publication or provider call: a prompt held
+    // in the compaction queue may have waited while the policy entry changed.
+    try {
+      this.assertPromptModelPolicyAllowed(session);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishActivity(session, "error", "error", message);
+      this.events.publish(session.sessionId, { type: "session.error", message });
+      return Promise.resolve();
+    }
     this.publishActivity(session, behavior === "steer" ? "steering queued" : behavior === "followUp" ? "message queued" : "prompt accepted", "active");
     if (behavior === undefined && echoUserMessage) this.events.publish(session.sessionId, { type: "message.append", message: userMessage(text, images) });
     const promptOptions = buildPromptOptions(behavior, images);
@@ -1648,6 +1784,29 @@ export class PiSessionService implements SessionRouteService {
     queue.push({ kind, text, ...(images.length > 0 ? { images } : {}), ...(echoUserMessage ? {} : { echoUserMessage: false }) });
     this.compactionPromptQueues.set(session.sessionId, queue);
     this.publishActivity(session, "message queued during compaction", "active");
+    this.publishStatus(session);
+  }
+
+  /**
+   * Hold prompt input for the duration of a policy transition, reusing the
+   * existing queue so the post-mutation drain submits it once the confirmed
+   * model/thinking pair is persisted. A prompt taken back out of the queue is
+   * re-retained at the front so relative order is preserved.
+   */
+  private retainPromptDuringModelPolicyMutation(
+    session: PiAgentSession,
+    text: string,
+    kind: QueuedPromptKind,
+    images: ImageContent[] = [],
+    echoUserMessage = true,
+    position: "front" | "back" = "back",
+  ): void {
+    const queue = this.compactionPromptQueues.get(session.sessionId) ?? [];
+    const queued: QueuedPrompt = { kind, text, ...(images.length > 0 ? { images } : {}), ...(echoUserMessage ? {} : { echoUserMessage: false }) };
+    if (position === "front") queue.unshift(queued);
+    else queue.push(queued);
+    this.compactionPromptQueues.set(session.sessionId, queue);
+    this.publishActivity(session, "message queued during model policy change", "active");
     this.publishStatus(session);
   }
 
@@ -2545,6 +2704,7 @@ export class PiSessionService implements SessionRouteService {
     if (notificationGeneration !== undefined) this.notificationGenerationBySession.set(runtime.session, notificationGeneration);
 
     try {
+      this.inspectAndCacheSessionModelPolicy(runtime.session);
       if (options.creationProvenance === "tracked-subsession") {
         await this.publishUnreadMutations(this.unreadStore.excludeSession(
           runtime.session.sessionId,
@@ -2565,6 +2725,7 @@ export class PiSessionService implements SessionRouteService {
             candidateGeneration = this.notificationStore.beginReplacement(priorGeneration, notificationIdentityForSession(session));
             this.notificationGenerationBySession.set(session, candidateGeneration);
           }
+          this.inspectAndCacheSessionModelPolicy(session);
           this.bindRuntime(active, session);
           boundSession = session;
           await this.bindSessionExtensions(session, candidateGeneration);
@@ -2582,6 +2743,9 @@ export class PiSessionService implements SessionRouteService {
         }
       });
       this.active.set(runtime.session.sessionId, active);
+      if (options.initializeModelPolicy !== undefined) {
+        await this.initializeSessionModelPolicy(runtime.session, options.initializeModelPolicy);
+      }
       if (notificationOwnership === "replacement" && notificationGeneration !== undefined) {
         this.publishNotificationMutations(this.notificationStore.commitReplacement(notificationGeneration));
         notificationOwnership = "external";
@@ -2899,7 +3063,7 @@ export class PiSessionService implements SessionRouteService {
     const active = this.active.get(sessionId);
     if (active === undefined) return;
     const { session } = active.runtime;
-    if (session.isCompacting) {
+    if (session.isCompacting || this.isModelPolicyMutationActive(session)) {
       this.scheduleCompactionQueueDrain(sessionId, 100);
       return;
     }
@@ -3220,6 +3384,380 @@ export class PiSessionService implements SessionRouteService {
     this.events.publishGlobal({ type: "activity.update", activity });
   }
 
+  private exactSelectionFromSession(session: PiAgentSession): ExactModelSelection {
+    const model = session.model;
+    if (
+      model === undefined
+      || typeof model.provider !== "string"
+      || model.provider.trim() === ""
+      || typeof model.id !== "string"
+      || model.id.trim() === ""
+    ) {
+      throw new Error("Session model policy requires a resolved runtime model provider and id");
+    }
+    if (typeof session.thinkingLevel !== "string" || session.thinkingLevel.trim() === "") {
+      throw new Error("Session model policy requires a resolved runtime thinking level");
+    }
+    return {
+      model: { provider: model.provider, id: model.id },
+      thinkingLevel: session.thinkingLevel,
+    };
+  }
+
+  private policyEntries(session: PiAgentSession): readonly unknown[] {
+    return session.sessionManager.getEntries?.() ?? session.sessionManager.getBranch();
+  }
+
+  private inspectAndCacheSessionModelPolicy(session: PiAgentSession): SessionModelPolicyInspection {
+    const inspection = inspectSessionModelPolicy(
+      this.policyEntries(session),
+      this.exactSelectionFromSession(session),
+    );
+    const ladderValidation = this.modelTierRegistry.validate();
+    this.modelPolicyInspections.set(session, inspection);
+    this.modelPolicyLadderValidations.set(session, ladderValidation);
+    if (inspection.kind === "invalid") this.modelPolicyEntryReasons.set(session, inspection.reason);
+    else this.modelPolicyEntryReasons.delete(session);
+    return inspection;
+  }
+
+  /** Effective block: an unproven runtime restoration outranks an entry defect. */
+  private modelPolicyBlockedReason(session: PiAgentSession): string | undefined {
+    return this.modelPolicyRuntimeBlocks.get(session.sessionId) ?? this.modelPolicyEntryReasons.get(session);
+  }
+
+  /**
+   * Root-session policy initialization. `true` records the runtime's own tuple;
+   * an update applies the requested transition. Both complete before the caller
+   * of `start()` sees the session, so no prompt can precede the policy.
+   */
+  private async initializeSessionModelPolicy(
+    session: PiAgentSession,
+    initializer: true | SessionModelPolicyUpdate,
+  ): Promise<void> {
+    const current: SessionModelPolicy = { mode: "exact", exact: this.exactSelectionFromSession(session) };
+    if (initializer === true) {
+      this.appendSessionModelPolicy(session, current);
+      this.inspectAndCacheSessionModelPolicy(session);
+      return;
+    }
+    // Root creation reports failure through its own abort/dispose cleanup rather
+    // than publishing a failed transition for a session no client has seen.
+    await this.applySessionModelPolicy(session, current, initializer, { action: "initialize the session model policy" });
+  }
+
+  /**
+   * The single policy transition path. Validates the complete target before any
+   * setter, re-checks that no conflicting work started during that async
+   * validation, applies model then thinking under the serialized entry-mutation
+   * seam, verifies the effective pair, and only then persists and caches.
+   */
+  private async applySessionModelPolicy(
+    session: PiAgentSession,
+    current: SessionModelPolicy,
+    update: SessionModelPolicyUpdate,
+    options: { action: string; onTransitionFailure?: (reason: string) => void },
+  ): Promise<SessionModelPolicy> {
+    const plan = planSessionModelPolicyUpdate(current, update, (tier) => {
+      const resolved = this.modelTierRegistry.resolve(tier);
+      return { model: { provider: resolved.model.provider, id: resolved.model.id }, thinkingLevel: resolved.thinkingLevel };
+    });
+    // Validation happens before the mutation opens, so a rejected target leaves
+    // the runtime and the persisted policy untouched.
+    const target = await this.resolveAvailableExactSelection(session, plan.target);
+    // Refresh/validation awaited above, so a prompt or another mutation may have
+    // started meanwhile. Re-check here — synchronously adjacent to the mutation
+    // open, and *outside* it so the mutation is never its own conflict — to close
+    // the await-to-setter race without touching tree-navigation behavior.
+    this.assertModelPolicyMutationIdle(session, options.action);
+
+    return this.runSessionModelPolicyMutation(session, "change session model policy", async () => {
+      const previous = this.exactSelectionFromSession(session);
+      try {
+        await this.applyExactSelection(session, target);
+        this.appendSessionModelPolicy(session, plan.policy);
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (!await this.restoreExactSelection(session, previous)) {
+          this.modelPolicyRuntimeBlocks.set(
+            session.sessionId,
+            `MODEL_POLICY_BLOCKED: ${reason}; the previous model and thinking pair could not be restored`,
+          );
+        }
+        this.inspectAndCacheSessionModelPolicy(session);
+        options.onTransitionFailure?.(reason);
+        throw error;
+      }
+      this.modelPolicyRuntimeBlocks.delete(session.sessionId);
+      this.inspectAndCacheSessionModelPolicy(session);
+      return plan.policy;
+    });
+  }
+
+  /**
+   * Serialized policy-transition seam. Adds the policy-mutation marker on top of
+   * the shared entry-mutation lifecycle so prompt submission can tell a transient
+   * policy window apart from ordinary session work, and drains any prompt input
+   * retained during that window once the tuple is settled again.
+   */
+  private async runSessionModelPolicyMutation<T>(session: PiAgentSession, action: string, operation: () => Promise<T>): Promise<T> {
+    // Captured before the first setter runs, so this is the confirmed tuple the
+    // window reports. Only the outermost mutation records it: a nested mutation
+    // opens on an already-transient tuple, which would not be confirmed.
+    if (!this.isModelPolicyMutationActive(session)) this.recordConfirmedExactSelection(session);
+    this.modelPolicyMutationCounts.set(session.sessionId, (this.modelPolicyMutationCounts.get(session.sessionId) ?? 0) + 1);
+    try {
+      return await this.runSessionEntryMutation(session, action, operation);
+    } finally {
+      decrementMapCount(this.modelPolicyMutationCounts, session.sessionId);
+      if (!this.isModelPolicyMutationActive(session)) {
+        // The tuple is settled again (applied, restored, or blocked), so live
+        // runtime state is authoritative once more.
+        this.modelPolicyConfirmedSelections.delete(session.sessionId);
+        this.scheduleCompactionQueueDrain(session.sessionId);
+      }
+    }
+  }
+
+  /**
+   * Remember the pre-transition tuple for the status projection. A session whose
+   * runtime has no resolved model has no confirmed tuple to report; that case is
+   * left to the existing `exactSelectionFromSession` failure rather than
+   * substituting anything.
+   */
+  private recordConfirmedExactSelection(session: PiAgentSession): void {
+    try {
+      this.modelPolicyConfirmedSelections.set(session.sessionId, this.exactSelectionFromSession(session));
+    } catch {
+      this.modelPolicyConfirmedSelections.delete(session.sessionId);
+    }
+  }
+
+  private isModelPolicyMutationActive(session: PiAgentSession): boolean {
+    return (this.modelPolicyMutationCounts.get(session.sessionId) ?? 0) > 0;
+  }
+
+  /**
+   * Tell other clients a policy transition failed. Called after the failure state
+   * (including any `MODEL_POLICY_BLOCKED`) is recorded and before the route error
+   * propagates, so the published status already carries the blocked reason.
+   */
+  private publishModelPolicyTransitionFailure(session: PiAgentSession, reason: string): void {
+    this.publishActivity(session, "model policy change failed", "error", reason);
+    this.publishStatus(session);
+  }
+
+  /**
+   * Reject a policy mutation that could race Pi's own entry writes. Tree
+   * navigation is reported first because it is the more specific state.
+   */
+  private assertModelPolicyMutationIdle(session: PiAgentSession, action: string): void {
+    this.assertTreeNavigationInactive(session, action);
+    if (this.hasActiveWork(session)) throw new Error(`Stop current session activity before you ${action}`);
+  }
+
+  /**
+   * Gate for the direct Exact model/thinking routes. They act only in Exact
+   * mode: while Tiered is active the ladder owns the runtime tuple, and while
+   * the runtime is blocked no tuple change may be recorded as authoritative.
+   */
+  private assertExactModelPolicyMutationAllowed(session: PiAgentSession, action: string): SessionModelPolicy {
+    this.assertModelPolicyMutationIdle(session, action);
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session.sessionId);
+    if (runtimeBlock !== undefined) throw new Error(`Cannot ${action}: ${runtimeBlock}`);
+    if (inspection.kind === "invalid") {
+      throw new Error(`Cannot ${action}: the session model policy entry is invalid (${inspection.reason}). Repair the policy first.`);
+    }
+    if (inspection.policy.mode === "tiered") {
+      throw new Error(`Cannot ${action} directly while the session model policy is Tiered. Change the model policy instead.`);
+    }
+    return inspection.policy;
+  }
+
+  /**
+   * Run one Exact route operation and record Pi's *confirmed* resulting pair as
+   * the new authoritative policy inside the same serialized mutation. Pi's own
+   * model-selection clamp is therefore persisted as-is rather than replaced by
+   * an invented target thinking level.
+   */
+  private async runExactModelPolicyMutation<T>(
+    session: PiAgentSession,
+    action: string,
+    currentPolicy: SessionModelPolicy,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    let transitionFailure: string | undefined;
+    try {
+      return await this.runSessionModelPolicyMutation(session, action, async () => {
+        const previous = this.exactSelectionFromSession(session);
+        const result = await operation();
+        const policy: SessionModelPolicy = {
+          mode: "exact",
+          exact: this.exactSelectionFromSession(session),
+          ...(currentPolicy.tier === undefined ? {} : { tier: currentPolicy.tier }),
+        };
+        try {
+          this.appendSessionModelPolicy(session, policy);
+        } catch (error: unknown) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (!await this.restoreExactSelection(session, previous)) {
+            this.modelPolicyRuntimeBlocks.set(
+              session.sessionId,
+              `MODEL_POLICY_BLOCKED: ${reason}; the previous model and thinking pair could not be restored`,
+            );
+          }
+          this.inspectAndCacheSessionModelPolicy(session);
+          // Only a failure that already moved the runtime tuple is announced; an
+          // operation precondition ("Only one model available") keeps its plain
+          // route error and publishes nothing.
+          transitionFailure = reason;
+          throw error;
+        }
+        this.inspectAndCacheSessionModelPolicy(session);
+        return result;
+      });
+    } catch (error: unknown) {
+      // Published after the mutation closed so the status reports the settled
+      // (blocked or restored) state rather than "updating session".
+      if (transitionFailure !== undefined) this.publishModelPolicyTransitionFailure(session, transitionFailure);
+      throw error;
+    }
+  }
+
+  /**
+   * Refuse to reach a provider while the authoritative policy is unusable. This
+   * covers a malformed newest entry and an unproven restoration; it deliberately
+   * does no tier remapping.
+   */
+  private assertPromptModelPolicyAllowed(session: PiAgentSession): void {
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    const runtimeBlock = this.modelPolicyRuntimeBlocks.get(session.sessionId);
+    if (runtimeBlock !== undefined) throw new Error(`Cannot send a prompt: ${runtimeBlock}`);
+    if (inspection.kind === "invalid") {
+      throw new Error(`Cannot send a prompt: the session model policy entry is invalid (${inspection.reason}). Repair the policy first.`);
+    }
+  }
+
+  /**
+   * Bind an exact selection to a currently available runtime model and prove the
+   * target thinking level is supported by that *incoming* model. Pi's
+   * `setThinkingLevel` clamps silently, so this check must precede every setter.
+   */
+  private async resolveAvailableExactSelection(
+    session: PiAgentSession,
+    selection: ExactModelSelection,
+  ): Promise<{ model: AgentModel; selection: ExactModelSelection }> {
+    await session.modelRuntime.refresh({ allowNetwork: false });
+    const candidates = session.scopedModels.length > 0
+      ? session.scopedModels.map((scoped) => scoped.model)
+      : session.modelRuntime.getAvailableSnapshot();
+    const model = candidates.find(
+      (candidate) => candidate.provider === selection.model.provider && candidate.id === selection.model.id,
+    );
+    const described = `${selection.model.provider}/${selection.model.id}`;
+    if (model === undefined) throw new Error(`Model not found: ${described}`);
+    if (!isKnownThinkingLevel(selection.thinkingLevel)) {
+      throw new Error(`Unknown thinking level ${selection.thinkingLevel} for ${described}`);
+    }
+    if (!runtimeThinkingLevels(model).includes(selection.thinkingLevel)) {
+      throw new Error(`Thinking level ${selection.thinkingLevel} is unsupported by ${described}`);
+    }
+    return { model, selection: { model: { provider: model.provider, id: model.id }, thinkingLevel: selection.thinkingLevel } };
+  }
+
+  /**
+   * Model first, then thinking: `setThinkingLevel` clamps against the currently
+   * selected model, so the reverse order can discard a level the incoming model
+   * supports. The effective pair is verified afterwards; a clamped substitute is
+   * a failed transition, never a success.
+   */
+  private async applyExactSelection(
+    session: PiAgentSession,
+    target: { model: AgentModel; selection: ExactModelSelection },
+  ): Promise<void> {
+    const level = target.selection.thinkingLevel;
+    if (!isKnownThinkingLevel(level)) throw new Error(`Unknown thinking level ${level}`);
+    await session.setModel(target.model);
+    session.setThinkingLevel(level);
+    const effective = this.exactSelectionFromSession(session);
+    if (
+      effective.model.provider !== target.selection.model.provider
+      || effective.model.id !== target.selection.model.id
+      || effective.thinkingLevel !== level
+    ) {
+      throw new Error(
+        `Session model policy could not activate ${target.selection.model.provider}/${target.selection.model.id} at thinking level ${level}`
+        + `; the runtime reports ${effective.model.provider}/${effective.model.id} at thinking level ${effective.thinkingLevel}`,
+      );
+    }
+  }
+
+  /**
+   * Put the previous exact pair back in the same model-then-thinking order.
+   * Returns whether the previous pair is *proven* active again; a false result
+   * means the runtime tuple is ambiguous and the session must refuse prompts.
+   */
+  private async restoreExactSelection(session: PiAgentSession, previous: ExactModelSelection): Promise<boolean> {
+    try {
+      const current = this.exactSelectionFromSession(session);
+      if (
+        current.model.provider === previous.model.provider
+        && current.model.id === previous.model.id
+        && current.thinkingLevel === previous.thinkingLevel
+      ) {
+        return true;
+      }
+      const target = await this.resolveAvailableExactSelection(session, previous);
+      await this.applyExactSelection(session, target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private appendSessionModelPolicy(session: PiAgentSession, policy: SessionModelPolicy): void {
+    if (session.sessionManager.appendCustomEntry === undefined) {
+      throw new Error("Cannot persist the session model policy: session persistence is unavailable");
+    }
+    session.sessionManager.appendCustomEntry(
+      SESSION_MODEL_POLICY_CUSTOM_TYPE,
+      serializeSessionModelPolicy(policy),
+    );
+  }
+
+  private modelPolicyStatusFromSession(session: PiAgentSession): ClientSessionModelPolicyStatus {
+    const inspection = this.modelPolicyInspections.get(session);
+    if (inspection === undefined) throw new Error("Session model policy inspection is unavailable");
+    const ladderValidation = this.modelPolicyLadderValidations.get(session);
+    if (ladderValidation === undefined) throw new Error("Session model tier validation is unavailable");
+    // Inside a transition the live tuple is half-applied, so report the tuple
+    // this session last confirmed. `mode` already comes from the unchanged
+    // entry, keeping the published pair internally consistent.
+    const confirmed = this.isModelPolicyMutationActive(session)
+      ? this.modelPolicyConfirmedSelections.get(session.sessionId)
+      : undefined;
+    const resolved = confirmed ?? this.exactSelectionFromSession(session);
+    const blockedReason = this.modelPolicyBlockedReason(session);
+
+    if (inspection.kind === "invalid") {
+      return {
+        mode: "exact",
+        resolved,
+        ladderValid: ladderValidation.valid,
+        ...(blockedReason === undefined ? {} : { blockedReason }),
+      };
+    }
+
+    return {
+      mode: inspection.policy.mode,
+      ...(inspection.policy.tier === undefined ? {} : { tier: inspection.policy.tier }),
+      resolved,
+      ladderValid: ladderValidation.valid,
+      ...(blockedReason === undefined ? {} : { blockedReason }),
+    };
+  }
+
   private statusFromSession(session: PiAgentSession): ClientSessionStatus {
     const stats = session.getSessionStats();
     const model = session.model === undefined ? undefined : modelToClientModel(session.model);
@@ -3231,6 +3769,7 @@ export class PiSessionService implements SessionRouteService {
       persisted: sessionFileExists(session.sessionFile),
       ...(model === undefined ? {} : { model }),
       thinkingLevel: session.thinkingLevel,
+      modelPolicy: this.modelPolicyStatusFromSession(session),
       isStreaming: session.isStreaming,
       isCompacting: session.isCompacting,
       isBashRunning: session.isBashRunning,

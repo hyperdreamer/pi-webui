@@ -125,6 +125,7 @@ describe("PiSessionService", () => {
       };
       const modelTierRegistry = {
         resolve: vi.fn(() => ({ tier: "economy" as const, model, thinkingLevel: "high" as const })),
+        validate: vi.fn(() => ({ valid: true } as const)),
       };
       const service = new PiSessionService(new CapturingSessionEventHub(), {
         agentDir: TEST_AGENT_DIR,
@@ -171,6 +172,7 @@ describe("PiSessionService", () => {
         let index = 0;
         const modelTierRegistry = {
           resolve: vi.fn(() => ({ tier: "economy" as const, model: economyModel, thinkingLevel: "high" as const })),
+          validate: vi.fn(() => ({ valid: true } as const)),
         };
         const service = new PiSessionService(new CapturingSessionEventHub(), {
           agentDir: TEST_AGENT_DIR,
@@ -211,6 +213,7 @@ describe("PiSessionService", () => {
         resolve: vi.fn(() => {
           throw new Error("tier economy names unavailable model acme/small");
         }),
+        validate: vi.fn(() => ({ valid: true } as const)),
       };
       const service = new PiSessionService(new CapturingSessionEventHub(), {
         agentDir: TEST_AGENT_DIR,
@@ -242,7 +245,10 @@ describe("PiSessionService", () => {
       const child = fakeRuntime("child-1", { sessionFile: "/tmp/child-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
       const parentModel = testModel();
       const initialModels: PiAgentSession["model"][] = [];
-      const modelTierRegistry = { resolve: vi.fn() };
+      const modelTierRegistry = {
+        resolve: vi.fn(),
+        validate: vi.fn(() => ({ valid: true } as const)),
+      };
       const runtimes = [parent.runtime, child.runtime];
       let index = 0;
       const service = new PiSessionService(new CapturingSessionEventHub(), {
@@ -317,6 +323,10 @@ describe("PiSessionService", () => {
       await service.spawnSubsession({ spawningCwd: "/workspace", parentSessionId: "parent-1", parentSessionFile: "/tmp/parent-1.jsonl", prompt: "do the slice", cwd: "/workspace-feature" });
 
       expect(parentPersisted).toEqual([
+        {
+          customType: "pi-webui.model-policy",
+          data: { version: 1, mode: "exact", exact: { model: { provider: "anthropic", id: "claude-sonnet-4-5-20250929" }, thinkingLevel: "off" } },
+        },
         {
           customType: "pi-webui.subsession.link",
           data: { version: 1, spawnedBySessionId: "parent-1", spawnedSessionId: "child-1", spawnedSessionFile: "/tmp/child-1.jsonl", cwd: "/workspace-feature" },

@@ -1,5 +1,20 @@
 import type { FastifyInstance } from "fastify";
-import { SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type SessionBulkMutationRequest, type SessionBulkMutationRef, type SessionCleanupRequest, type SessionTreeNavigateRequest, type SessionTreeSummaryChoice, type SessionUnreadAcknowledgeRequest } from "../../shared/apiTypes.js";
+import {
+  MODEL_TIERS,
+  SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH,
+  SESSION_UNREAD_CATALOG_ID_MAX_LENGTH,
+  SESSION_UNREAD_CWD_MAX_LENGTH,
+  SESSION_UNREAD_SESSION_ID_MAX_LENGTH,
+  type ExactModelSelection,
+  type ModelTier,
+  type SessionBulkMutationRequest,
+  type SessionBulkMutationRef,
+  type SessionCleanupRequest,
+  type SessionModelPolicyUpdate,
+  type SessionTreeNavigateRequest,
+  type SessionTreeSummaryChoice,
+  type SessionUnreadAcknowledgeRequest,
+} from "../../shared/apiTypes.js";
 import { projectBrowserMessageResponse } from "../browserMessageProjection.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
@@ -30,6 +45,7 @@ interface AttachmentsRequestBody {
   folder?: unknown;
 }
 
+const MAX_SESSION_MODEL_POLICY_STRING_LENGTH = 512;
 const MAX_NOTIFICATION_SESSION_ID_LENGTH = 512;
 const MAX_NOTIFICATION_CWD_LENGTH = 32 * 1024;
 const MAX_NOTIFICATION_DAEMON_ID_LENGTH = 512;
@@ -46,10 +62,12 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
-  app.post<{ Body: { cwd?: unknown } | undefined }>(`${prefix}/sessions`, async (request, reply) => {
+  app.post<{ Body: unknown }>(`${prefix}/sessions`, async (request, reply) => {
     try {
-      const body = requireRecord(request.body);
-      return await sessions.start(normalizeRequestCwd(requireString(body, "cwd")));
+      const body = sessionStartRequestFromUnknown(request.body);
+      const cwd = normalizeRequestCwd(body.cwd);
+      if (body.modelPolicy === undefined) return await sessions.start(cwd);
+      return await sessions.start(cwd, { modelPolicy: body.modelPolicy });
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }
@@ -220,6 +238,26 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
       return { models: await sessions.availableModels(sessionLookupFromQuery(request.params.sessionId, request.query)) };
     } catch (error) {
       return reply.code(404).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/model-policy`, async (request, reply) => {
+    try {
+      return await sessions.modelPolicy(sessionLookupFromQuery(request.params.sessionId, request.query));
+    } catch (error) {
+      return reply.code(404).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.put<{ Params: { sessionId: string }; Body: unknown }>(`${prefix}/sessions/:sessionId/model-policy`, async (request, reply) => {
+    try {
+      const body = modelPolicyMutationBodyFromUnknown(request.body);
+      return await sessions.setModelPolicy(
+        sessionLookupFromBody(request.params.sessionId, body),
+        sessionModelPolicyUpdateFromUnknown(body["policy"]),
+      );
+    } catch (error) {
+      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
     }
   });
 
@@ -507,6 +545,80 @@ function notificationRef(id: string, cwd: string): { id: string; cwd: string } {
     id: requireNonEmptyBoundedString(id, "sessionId", MAX_NOTIFICATION_SESSION_ID_LENGTH),
     cwd: normalizeRequestCwd(cwd),
   };
+}
+
+function sessionStartRequestFromUnknown(value: unknown): { cwd: string; modelPolicy?: SessionModelPolicyUpdate } {
+  const record = requirePlainRecord(value, "request body");
+  requireExactFields(record, ["cwd", "modelPolicy"], "session start");
+  const cwd = requireString(record, "cwd");
+  if (!Object.hasOwn(record, "modelPolicy")) return { cwd };
+  return { cwd, modelPolicy: sessionModelPolicyUpdateFromUnknown(record["modelPolicy"]) };
+}
+
+function modelPolicyMutationBodyFromUnknown(value: unknown): Record<string, unknown> {
+  const record = requirePlainRecord(value, "request body");
+  requireExactFields(record, ["cwd", "policy"], "model policy mutation");
+  const cwd = normalizeRequestCwd(requireString(record, "cwd"));
+  if (!Object.hasOwn(record, "policy")) throw new Error("policy field is required");
+  return { ...record, cwd };
+}
+
+function sessionModelPolicyUpdateFromUnknown(value: unknown): SessionModelPolicyUpdate {
+  const record = requirePlainRecord(value, "model policy");
+  const mode = record["mode"];
+  if (mode === "exact") {
+    requireExactFields(record, ["mode", "exact"], "model policy");
+    return { mode, exact: exactModelSelectionFromUnknown(record["exact"]) };
+  }
+  if (mode === "tiered") {
+    requireExactFields(record, ["mode", "tier"], "model policy");
+    if (!Object.hasOwn(record, "tier")) throw new Error("tier field is required");
+    return { mode, tier: tierFromUnknown(record["tier"]) };
+  }
+  throw new Error("model policy mode must be exact or tiered");
+}
+
+function exactModelSelectionFromUnknown(value: unknown): ExactModelSelection {
+  const record = requirePlainRecord(value, "exact selection");
+  requireExactFields(record, ["model", "thinkingLevel"], "exact selection");
+  return {
+    model: modelReferenceFromUnknown(record["model"]),
+    thinkingLevel: requireModelPolicyString(record["thinkingLevel"], "thinkingLevel"),
+  };
+}
+
+function modelReferenceFromUnknown(value: unknown): { provider: string; id: string } {
+  const record = requirePlainRecord(value, "model reference");
+  requireExactFields(record, ["provider", "id"], "model reference");
+  return {
+    provider: requireModelPolicyString(record["provider"], "provider"),
+    id: requireModelPolicyString(record["id"], "model id"),
+  };
+}
+
+function tierFromUnknown(value: unknown): ModelTier {
+  if (typeof value !== "string") throw new Error(`tier must be one of: ${MODEL_TIERS.join(", ")}`);
+  for (const tier of MODEL_TIERS) {
+    if (value === tier) return tier;
+  }
+  throw new Error(`tier must be one of: ${MODEL_TIERS.join(", ")}`);
+}
+
+function requireModelPolicyString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} field must be a non-blank string`);
+  if (value.length > MAX_SESSION_MODEL_POLICY_STRING_LENGTH) throw new Error(`${field} field is too long`);
+  return value;
+}
+
+function requirePlainRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!isPlainRecord(value)) throw new Error(`${field} must be an object`);
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function sessionLookupFromQuery(id: string, query: SessionQuery): SessionLookup {

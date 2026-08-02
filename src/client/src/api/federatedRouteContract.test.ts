@@ -26,6 +26,13 @@ afterEach(() => {
 });
 
 describe("federated route contract", () => {
+  it("allowlists active-session model policy inspection and mutation routes", () => {
+    expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("/model-policy"))).toEqual([
+      { method: "GET", path: "/sessions/:sessionId/model-policy" },
+      { method: "PUT", path: "/sessions/:sessionId/model-policy" },
+    ]);
+  });
+
   it("allowlists notification HTTP routes without adding a notification WebSocket", () => {
     expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("notifications"))).toEqual([
       { method: "GET", path: "/sessions/notifications" },

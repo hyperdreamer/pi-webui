@@ -12,7 +12,7 @@ import { StreamEventBuffer, isBufferedStreamEvent } from "../streamEventBuffer";
 import { isArchivableSessionInfo, isTransientNewSessionInfo, sessionPersistenceOptionsForRuntime } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
-import type { PromptAttachmentDelivery, SessionNotificationInboxEvent } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, PromptAttachmentDelivery, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionNotificationInboxEvent } from "../../../shared/apiTypes";
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
@@ -94,6 +94,8 @@ interface PendingSessionStart {
   session: ClientPendingStartSessionInfo;
   queuedSends: QueuedPendingSessionSend[];
   discarded: boolean;
+  /** Starter policy snapshot captured before `POST /sessions`, handed to the request unchanged. */
+  modelPolicy: SessionModelPolicyUpdate | undefined;
 }
 
 interface SuppressedCreatedSession {
@@ -110,6 +112,8 @@ interface SelectedSessionRefreshTarget {
 interface PendingOverloadResync {
   cancel: () => void;
 }
+
+type SelectedModelPolicyStateReset = Pick<AppState, "modelPolicy" | "isLoadingModelPolicy" | "isSavingModelPolicy" | "modelPolicyError">;
 
 export class SessionController {
   private readonly socket: SessionEventSocket;
@@ -136,6 +140,27 @@ export class SessionController {
   private pendingFrame: number | undefined;
   private pendingSessionStartSeq = 0;
   private pendingQueuedSendSeq = 0;
+  // Model policy request ordering. `modelPolicyIssueSeq` stamps every issued
+  // policy request; `modelPolicyLoadSeq`/`modelPolicySaveSeq` hold the newest
+  // issued read/write of each kind, so only the newest of a kind may write its
+  // data or clear its own progress flag. A confirmed write outranks a read: a
+  // read may write only while no save of this selection is in flight and none
+  // has settled since the read was issued, so a GET served before a PUT commits
+  // can never replace the confirmed policy (or drop the PUT's error) with
+  // pre-write state. `modelPolicySavesInFlight` holds only current-selection
+  // saves, so a save abandoned by a selection change cannot suppress the new
+  // selection's reads.
+  private modelPolicyIssueSeq = 0;
+  private modelPolicyLoadSeq = 0;
+  private modelPolicySaveSeq = 0;
+  private modelPolicySettledSaveSeq = 0;
+  private readonly modelPolicySavesInFlight = new Set<number>();
+  // Policy status that arrived with the currently held response. A later status
+  // for the selected session that disagrees with it means the daemon changed the
+  // authoritative policy underneath the held response (every exact-route
+  // mutation appends a fresh Exact branch), so the held remembered branch is
+  // stale and must be re-read.
+  private modelPolicyConfirmedStatus: ClientSessionModelPolicyStatus | undefined;
   private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
   private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
   private readonly selectedSessionRefreshes = new TrailingRefreshCoordinator<string>();
@@ -182,7 +207,7 @@ export class SessionController {
     // session must not cancel the in-flight upload indicator of the session
     // that is still sending; the per-session entry is cleared by send()'s
     // finally block when the request settles.
-    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, availableThinkingLevels: [], treeDialog: undefined });
+    this.setState({ selectedSession: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, availableThinkingLevels: [], ...this.clearSelectedModelPolicyState(), treeDialog: undefined });
   }
 
   deselectSession(options?: { forgetRememberedSelection?: boolean | undefined; updateUrl?: boolean | undefined }) {
@@ -199,25 +224,42 @@ export class SessionController {
     this.deselectSession({ forgetRememberedSelection: true });
   }
 
-  async startSession() {
+  async startSession(modelPolicy?: SessionModelPolicyUpdate): Promise<boolean> {
     const workspace = this.getState().selectedWorkspace;
-    if (!workspace) return;
+    if (!workspace) return false;
     const machineId = selectedMachineId(this.getState());
-    const pending = this.createPendingSessionStart(workspace, machineId);
+    const pending = this.createPendingSessionStart(workspace, machineId, modelPolicy);
     this.pendingSessionStarts.set(pending.tempId, pending);
     this.insertAndSelectPendingSession(pending.session);
     try {
-      const session = await this.api.startSession(workspace.path, machineId);
+      const session = await this.api.startSession(workspace.path, machineId, pending.modelPolicy);
       await this.resolvePendingSessionStart(pending.tempId, session);
+      return true;
     } catch (error) {
       this.failPendingSessionStart(pending.tempId, error);
+      return false;
     }
   }
 
-  async startSessionWithPrompt(text: string, streamingBehavior?: "steer" | "followUp", attachments?: PromptAttachment[], delivery: PromptAttachmentDelivery = "inline"): Promise<void> {
-    const startingSession = this.startSession();
-    await this.send(text, streamingBehavior, attachments, delivery);
-    await startingSession;
+  async startSessionWithPrompt(
+    text: string,
+    streamingBehavior?: "steer" | "followUp",
+    attachments?: PromptAttachment[],
+    delivery: PromptAttachmentDelivery = "inline",
+    modelPolicy?: SessionModelPolicyUpdate,
+    onStarted?: (started: boolean) => void,
+  ): Promise<void> {
+    const startingSession = this.startSession(modelPolicy).then(
+      (started) => ({ rejected: false as const, started }),
+      (error: unknown) => ({ rejected: true as const, started: false, error }),
+    );
+    try {
+      await this.send(text, streamingBehavior, attachments, delivery);
+    } finally {
+      onStarted?.((await startingSession).started);
+    }
+    const startOutcome = await startingSession;
+    if (startOutcome.rejected) throw startOutcome.error;
   }
 
   preferredSession(cwd: string, sessions: SessionInfo[], targetSessionId: string | undefined): SessionInfo | undefined {
@@ -247,6 +289,7 @@ export class SessionController {
       status: session.archived === true ? undefined : this.getState().sessionStatuses[session.id],
       activity: session.archived === true ? undefined : this.getState().sessionActivities[session.id],
       availableThinkingLevels: [],
+      ...this.clearSelectedModelPolicyState(),
     });
     let buffered: SessionUiEvent[] | undefined;
     try {
@@ -903,6 +946,159 @@ export class SessionController {
     }
   }
 
+  /**
+   * Read the selected session's persisted policy from its dedicated endpoint.
+   * A response whose `policy` is omitted is the daemon's corrupt-entry repair
+   * signal and is stored as-is: nothing here substitutes, clamps, or repairs a
+   * blocked or invalid policy client-side.
+   */
+  async loadModelPolicy(): Promise<void> {
+    const target = this.selectedModelPolicyTarget();
+    if (target === undefined) return;
+    const { session, machineId, selectionSeq } = target;
+    const loadSeq = ++this.modelPolicyIssueSeq;
+    this.modelPolicyLoadSeq = loadSeq;
+    const settledSaveSeq = this.modelPolicySettledSaveSeq;
+    // A previous session's confirmed response must not stay visible while the
+    // new read is in flight, and a stale failure must not outlive the retry.
+    // While a save is in flight this read can publish nothing anyway (a
+    // confirmed write outranks it), so the response being saved is left visible
+    // rather than cleared out from under the save.
+    if (this.modelPolicySavesInFlight.size > 0) this.setState({ isLoadingModelPolicy: true });
+    else this.setState({ modelPolicy: undefined, modelPolicyError: undefined, isLoadingModelPolicy: true });
+    try {
+      const response = await this.api.modelPolicy(session, machineId);
+      if (this.canWriteModelPolicyReadResult(session.id, machineId, selectionSeq, loadSeq, settledSaveSeq)) {
+        this.applyConfirmedModelPolicyResponse(response);
+      }
+    } catch (error) {
+      if (this.canWriteModelPolicyReadResult(session.id, machineId, selectionSeq, loadSeq, settledSaveSeq)) this.setState({ modelPolicyError: String(error) });
+    } finally {
+      if (this.modelPolicyLoadSeq === loadSeq) this.setState({ isLoadingModelPolicy: false });
+    }
+  }
+
+  /** Persist a policy choice for the selected session and adopt the confirmed response. */
+  async saveModelPolicy(update: SessionModelPolicyUpdate): Promise<void> {
+    const target = this.selectedModelPolicyTarget();
+    if (target === undefined) return;
+    const { session, machineId, selectionSeq } = target;
+    const saveSeq = ++this.modelPolicyIssueSeq;
+    this.modelPolicySaveSeq = saveSeq;
+    this.modelPolicySavesInFlight.add(saveSeq);
+    // The currently displayed response stays visible while saving so the user
+    // keeps seeing the policy they are editing; only the stale error is dropped.
+    this.setState({ modelPolicyError: undefined, isSavingModelPolicy: true });
+    try {
+      const response = await this.api.setModelPolicy(session, update, machineId);
+      if (this.canWriteModelPolicyWriteResult(session.id, machineId, selectionSeq, saveSeq)) {
+        this.applyConfirmedModelPolicyResponse(response);
+      }
+    } catch (error) {
+      if (this.canWriteModelPolicyWriteResult(session.id, machineId, selectionSeq, saveSeq)) this.setState({ modelPolicyError: String(error) });
+    } finally {
+      // Recorded even when this result was discarded, so a read issued while the
+      // write was in flight still loses to the write instead of resurrecting
+      // pre-write state once the write settles.
+      this.modelPolicySavesInFlight.delete(saveSeq);
+      // Only a save that still owns the current selection may outrank reads; a
+      // save abandoned by a selection change must not suppress the new
+      // selection's reads.
+      if (this.isCurrentSessionSelection(session.id, machineId, selectionSeq) && saveSeq > this.modelPolicySettledSaveSeq) this.modelPolicySettledSaveSeq = saveSeq;
+      if (this.modelPolicySaveSeq === saveSeq) this.setState({ isSavingModelPolicy: false });
+    }
+  }
+
+  /**
+   * Capture the selected session identity a policy request belongs to. Returns
+   * undefined when there is nothing policy-addressable selected (no session, an
+   * archived session, or a client-pending start that has no backend session yet).
+   */
+  private selectedModelPolicyTarget(): { session: SessionRef; machineId: string; selectionSeq: number } | undefined {
+    const state = this.getState();
+    const selected = state.selectedSession;
+    if (selected === undefined || selected.archived === true || isClientPendingStartSessionInfo(selected)) return undefined;
+    return { session: { id: selected.id, cwd: selected.cwd }, machineId: selectedMachineId(state), selectionSeq: this.selectionSeq };
+  }
+
+  /**
+   * A settled policy *read* may write confirmed state only while it still belongs
+   * to the current selection, is the newest issued read, and no write of this
+   * selection has settled or is still in flight since it was issued. A GET
+   * served before a concurrent PUT commits therefore cannot republish pre-write
+   * policy as confirmed, nor drop the write's own error.
+   */
+  private canWriteModelPolicyReadResult(sessionId: string, machineId: string, selectionSeq: number, loadSeq: number, settledSaveSeq: number): boolean {
+    if (loadSeq !== this.modelPolicyLoadSeq) return false;
+    if (this.modelPolicySavesInFlight.size > 0 || this.modelPolicySettledSaveSeq !== settledSaveSeq) return false;
+    return this.isCurrentSessionSelection(sessionId, machineId, selectionSeq);
+  }
+
+  /**
+   * A settled policy *write* may write confirmed state while it still belongs to
+   * the current selection and is the newest issued write, so an older write
+   * resolving late cannot overwrite a newer confirmed one.
+   */
+  private canWriteModelPolicyWriteResult(sessionId: string, machineId: string, selectionSeq: number, saveSeq: number): boolean {
+    return saveSeq === this.modelPolicySaveSeq && this.isCurrentSessionSelection(sessionId, machineId, selectionSeq);
+  }
+
+  /**
+   * Adopt a confirmed policy response. Buffered updates are flushed first (as
+   * `requestSelectedSessionRefresh()` does) so a status published before the
+   * confirmation but still frame-buffered cannot flush afterwards and revert
+   * `status.modelPolicy` to its pre-confirmation value.
+   */
+  private applyConfirmedModelPolicyResponse(response: SessionModelPolicyResponse): void {
+    this.flushPendingUpdates();
+    this.modelPolicyConfirmedStatus = response.session.modelPolicy;
+    this.setState({ modelPolicy: response, modelPolicyError: undefined });
+    this.applyStatus(response.session);
+  }
+
+  /**
+   * Drop a held policy response the daemon has since superseded. Every exact
+   * route mutation (`setModel`, `cycleModel`, `setThinkingLevel`,
+   * `cycleThinkingLevel`) appends a fresh Exact policy branch server-side and
+   * reports the result only through `SessionStatus.modelPolicy`, never through
+   * this feature's response. A status that disagrees with the one the held
+   * response arrived with therefore means `state.modelPolicy` holds a superseded
+   * remembered branch; keeping it would let a later "switch back to Exact" update
+   * persist a tuple the user has already replaced. The remembered branch exists
+   * only in the dedicated endpoint's response, so the held value is dropped and
+   * re-read rather than patched from the status.
+   */
+  private invalidateSupersededModelPolicy(status: SessionStatus): void {
+    const state = this.getState();
+    if (state.selectedSession?.id !== status.sessionId) return;
+    if (state.modelPolicy === undefined || status.modelPolicy === undefined) return;
+    // Nothing to compare against when the confirmed response carried no policy
+    // status (an older daemon), so no status can be read as superseding it.
+    if (this.modelPolicyConfirmedStatus === undefined) return;
+    // A save in flight owns the displayed response until it confirms, and a read
+    // in flight is already fetching a fresh one; both adopt their own status
+    // through the confirmed path.
+    if (this.modelPolicySavesInFlight.size > 0 || state.isLoadingModelPolicy) return;
+    if (modelPolicyStatusesAgree(status.modelPolicy, this.modelPolicyConfirmedStatus)) return;
+    this.setState({ modelPolicy: undefined });
+    void this.loadModelPolicy();
+  }
+
+  /**
+   * Selected-session policy reset, spread into the selection-lifecycle state
+   * writes that already bump `selectionSeq`. In-flight requests are abandoned by
+   * the sequence guards, so a prior session's remembered exact branch, error, or
+   * progress flag never survives a selection or machine change.
+   */
+  private clearSelectedModelPolicyState(): SelectedModelPolicyStateReset {
+    this.modelPolicyLoadSeq = 0;
+    this.modelPolicySaveSeq = 0;
+    this.modelPolicySettledSaveSeq = 0;
+    this.modelPolicySavesInFlight.clear();
+    this.modelPolicyConfirmedStatus = undefined;
+    return { modelPolicy: undefined, isLoadingModelPolicy: false, isSavingModelPolicy: false, modelPolicyError: undefined };
+  }
+
   async listModels() {
     const session = this.getState().selectedSession;
     if (!session || session.archived === true) return [];
@@ -1129,7 +1325,7 @@ export class SessionController {
     });
   }
 
-  private createPendingSessionStart(workspace: Workspace, machineId: string): PendingSessionStart {
+  private createPendingSessionStart(workspace: Workspace, machineId: string, modelPolicy: SessionModelPolicyUpdate | undefined): PendingSessionStart {
     const tempId = `pending-session-${String(++this.pendingSessionStartSeq)}-${Date.now().toString(36)}`;
     const now = new Date().toISOString();
     const session: ClientPendingStartSessionInfo = {
@@ -1145,7 +1341,7 @@ export class SessionController {
       clientPendingStart: true,
       machineId,
     };
-    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false };
+    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false, modelPolicy };
   }
 
   private insertAndSelectPendingSession(session: ClientPendingStartSessionInfo): void {
@@ -1177,6 +1373,7 @@ export class SessionController {
       status: undefined,
       activity,
       availableThinkingLevels: [],
+      ...this.clearSelectedModelPolicyState(),
       treeDialog: undefined,
       ...(activity === undefined ? {} : { sessionActivities: { ...state.sessionActivities, [session.id]: activity } }),
       error: "",
@@ -1376,6 +1573,7 @@ export class SessionController {
       status: state.selectedSession?.id === status.sessionId ? status : state.status,
       activity: state.selectedSession?.id === status.sessionId && clearsStaleActivity ? undefined : state.activity,
     });
+    this.invalidateSupersededModelPolicy(status);
   }
 
   private applySessionName(sessionId: string, name: string | undefined) {
@@ -1563,6 +1761,21 @@ export class SessionController {
 
 function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
   return omitKey(activities, sessionId);
+}
+
+/**
+ * Whether two policy statuses describe the same authoritative policy. Compares
+ * exactly what the daemon changes when the policy moves (mode, remembered tier,
+ * resolved tuple, and blocked state), so an unrelated status republish during
+ * streaming is not mistaken for a policy change.
+ */
+function modelPolicyStatusesAgree(a: ClientSessionModelPolicyStatus, b: ClientSessionModelPolicyStatus): boolean {
+  return a.mode === b.mode
+    && a.tier === b.tier
+    && a.blockedReason === b.blockedReason
+    && a.resolved.thinkingLevel === b.resolved.thinkingLevel
+    && a.resolved.model.provider === b.resolved.model.provider
+    && a.resolved.model.id === b.resolved.model.id;
 }
 
 function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {

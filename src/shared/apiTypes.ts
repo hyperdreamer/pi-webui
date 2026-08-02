@@ -18,6 +18,7 @@ export const PI_WEBUI_CAPABILITIES = {
   selectedMachineSettings: "settings.selectedMachine",
   agentProfileConfig: "settings.agentProfile",
   modelTierSettings: "settings.modelTiers",
+  sessionsModelPolicy: "sessions.modelPolicy",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -91,6 +92,40 @@ export interface ModelTierModelOption {
   model: TierModelRef;
   name?: string;
   thinkingLevels: string[];
+}
+
+export interface ExactModelSelection {
+  model: TierModelRef;
+  thinkingLevel: string;
+}
+
+export type SessionModelPolicyMode = "exact" | "tiered";
+
+export interface SessionModelPolicy {
+  mode: SessionModelPolicyMode;
+  exact: ExactModelSelection;
+  /** Remembered after the first Tiered choice, including while Exact is active. */
+  tier?: ModelTier;
+}
+
+export type SessionModelPolicyUpdate =
+  | { mode: "exact"; exact: ExactModelSelection }
+  | { mode: "tiered"; tier: ModelTier };
+
+export interface ClientSessionModelPolicyStatus {
+  mode: SessionModelPolicyMode;
+  tier?: ModelTier;
+  /** The tuple last confirmed by the policy runtime adapter in this staged slice. */
+  resolved: ExactModelSelection;
+  ladderValid: boolean;
+  blockedReason?: string;
+}
+
+export interface SessionModelPolicyResponse {
+  contractVersion: 1;
+  /** Omitted only when the newest persisted entry is malformed and requires repair. */
+  policy?: SessionModelPolicy;
+  session: SessionStatus;
 }
 
 export interface ModelTierRowValidation {
@@ -853,6 +888,7 @@ export interface SessionStatus {
   persisted?: boolean;
   model?: SessionModel;
   thinkingLevel?: string;
+  modelPolicy?: ClientSessionModelPolicyStatus;
   isStreaming: boolean;
   isCompacting: boolean;
   isBashRunning: boolean;
