@@ -11,7 +11,7 @@ import {
   parsePlanText,
   TIERS,
   tierLabel,
-} from "../../subagent-driven-development/scripts/lib/plan-policy.mjs";
+} from "../../deterministic-subagent-driven-development/scripts/lib/plan-policy.mjs";
 
 const SKILL_DIR = fileURLToPath(new URL("..", import.meta.url)).replace(
   /\/$/u,
@@ -20,7 +20,7 @@ const SKILL_DIR = fileURLToPath(new URL("..", import.meta.url)).replace(
 const REPO_ROOT = resolve(SKILL_DIR, "..", "..");
 const POLICY_PATH = resolve(
   REPO_ROOT,
-  "optional-skills/subagent-driven-development/scripts/lib/plan-policy.mjs"
+  "optional-skills/deterministic-subagent-driven-development/scripts/lib/plan-policy.mjs"
 );
 
 const read = (relative) => readFileSync(resolve(SKILL_DIR, relative), "utf8");

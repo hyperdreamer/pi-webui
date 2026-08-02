@@ -1,13 +1,13 @@
 ---
 name: deterministic-writing-plans
-description: Use when you have a spec or requirements for a multi-step task, before touching code, and the plan will be executed by the deterministic subagent-driven-development controller
+description: Use when you have a spec or requirements for a multi-step task, before touching code, and the plan will be executed by the deterministic deterministic-subagent-driven-development controller
 ---
 
 # Deterministic Writing Plans
 
 ## Overview
 
-Write implementation plans that the deterministic subagent-driven-development
+Write implementation plans that the deterministic deterministic-subagent-driven-development
 controller can run without manual repair. Assume the implementer has zero
 context for this codebase and questionable taste: document which files to
 touch, the actual code, how to test it, and what neighbouring tasks named
@@ -76,7 +76,7 @@ cold, human or agent, has no other orientation.
 # [Feature Name] Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use the deterministic
-> subagent-driven-development controller to implement this plan task-by-task.
+> deterministic-subagent-driven-development controller to implement this plan task-by-task.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -105,7 +105,7 @@ the three final roles are derived by formula from it; naming them in the plan
 invites disagreement with the controller's `role-tier`, which is authoritative.
 
 The tier table lives in the controller's plan contract, at
-`../subagent-driven-development/references/plan-contract.md`, under "Choosing the
+`../deterministic-subagent-driven-development/references/plan-contract.md`, under "Choosing the
 implementer tier". Read it there rather than from a copy here, so there is one
 source of truth. The two skills ship together, so that path resolves; if you
 have installed this skill alone, the table is the one thing you are missing. Two rules from it
@@ -228,5 +228,5 @@ Fix inline; no need to re-review.
 ## Execution Handoff
 
 State where the plan was saved and that it validated. Then hand off to the
-deterministic subagent-driven-development controller, which dispatches a fresh
+deterministic deterministic-subagent-driven-development controller, which dispatches a fresh
 subagent per task with two-stage review between tasks.

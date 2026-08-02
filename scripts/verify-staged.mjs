@@ -44,7 +44,7 @@ const PLUGIN_PUBLIC_API_TEST = "pi-webui-plugins/pluginPublicApi.test.ts";
 
 // The optional deterministic-SDD skill tree is not a package runtime entry, so its
 // suites are not reachable by import-following from staged repository sources.
-const OPTIONAL_SDD_PREFIX = "optional-skills/subagent-driven-development/";
+const OPTIONAL_SDD_PREFIX = "optional-skills/deterministic-subagent-driven-development/";
 
 const OPTIONAL_SDD_TESTS = [
   `${OPTIONAL_SDD_PREFIX}evals/run-pressure-evals.test.mjs`,

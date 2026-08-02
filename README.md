@@ -133,6 +133,11 @@ Validate changes with:
 npm run verify
 ```
 
+This repository also carries two opt-in agent skills as source, for deterministic
+plan authoring and subagent-driven execution. They are not part of the published
+package; see
+[docs/optional-skills.md](https://github.com/hyperdreamer/pi-webui/blob/main/docs/optional-skills.md).
+
 ## Security model
 
 PI WEBUI assumes trusted users, trusted repositories, and trusted server paths.

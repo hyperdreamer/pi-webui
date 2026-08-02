@@ -1,7 +1,7 @@
 // The mistakes a plan author actually makes. Each asserts the parser rejects,
 // so the skill's guidance stays anchored to real behavior rather than belief.
 import { describe, expect, it } from "vitest";
-import { parsePlanText } from "../../subagent-driven-development/scripts/lib/plan-policy.mjs";
+import { parsePlanText } from "../../deterministic-subagent-driven-development/scripts/lib/plan-policy.mjs";
 
 const VALID = [
   "# P",

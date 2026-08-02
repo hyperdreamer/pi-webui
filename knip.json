@@ -7,8 +7,8 @@
     "extensions/pi-webui.ts",
     "pi-webui-plugins/**/pi-webui-plugin.ts",
     "scripts/*.mjs",
-    "optional-skills/subagent-driven-development/scripts/*.mjs",
-    "optional-skills/subagent-driven-development/evals/{fake-sdd-tools,run-pressure-evals}.mjs"
+    "optional-skills/deterministic-subagent-driven-development/scripts/*.mjs",
+    "optional-skills/deterministic-subagent-driven-development/evals/{fake-sdd-tools,run-pressure-evals}.mjs"
   ],
   "project": [
     "src/**/*.ts",

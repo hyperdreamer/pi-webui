@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parsePlanText } from "../../subagent-driven-development/scripts/lib/plan-policy.mjs";
+import { parsePlanText } from "../../deterministic-subagent-driven-development/scripts/lib/plan-policy.mjs";
 
 const SKELETON = fileURLToPath(
   new URL("../templates/plan-skeleton.md", import.meta.url)

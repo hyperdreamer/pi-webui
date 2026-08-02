@@ -1,7 +1,7 @@
 # Example Feature Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use the deterministic
-> subagent-driven-development controller to implement this plan task-by-task.
+> deterministic-subagent-driven-development controller to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One sentence describing what this builds.

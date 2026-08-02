@@ -5,7 +5,7 @@ the input, not by reading the regexes. The pinning tests are in
 `tests/grammar-rejections.test.mjs`; each asserts the specific diagnostic, so a
 reworded message fails loudly instead of passing a loose match.
 
-The authority is `optional-skills/subagent-driven-development/scripts/lib/plan-policy.mjs`:
+The authority is `optional-skills/deterministic-subagent-driven-development/scripts/lib/plan-policy.mjs`:
 
 ```js
 const TASK_HEADING = /^## Task ([1-9][0-9]*): (\S(?:.*\S)?)$/u;
