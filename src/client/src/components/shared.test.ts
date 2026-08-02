@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appStyles, chatStyles } from "./shared";
+import { appStyles, chatStyles, promptEditorStyles } from "./shared";
 
 describe("chatStyles skill presentation", () => {
   it("uses the dedicated blue palette for skill activity and content", () => {
@@ -21,6 +21,26 @@ describe("Activity Rail shell placement", () => {
     expect(styles).toMatch(/aside\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*\}/);
     expect(styles).toMatch(/\.shell > activity-rail\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*align-self:\s*stretch;[^}]*\}/);
     expect(styles).toMatch(/@media \(min-width:\s*1181px\)\s*\{[\s\S]*?\.shell > aside\s*\{[^}]*padding-left:\s*44px;[^}]*\}/);
+  });
+});
+
+describe("starter composer overflow", () => {
+  // The session model policy panel opens upward out of the composer
+  // (`bottom: calc(100% + 6px)`). `overflow: hidden` on the starter wrapper
+  // clipped everything above the composer's top edge, leaving only the last
+  // field and the footer painted over the textarea.
+  it("does not clip the starter composer, so an upward-opening policy panel stays visible", () => {
+    const rule = /\.session-start-composer\s*\{[^}]*\}/.exec(appStyles.cssText)?.[0];
+
+    expect(rule).toBeDefined();
+    expect(rule).not.toMatch(/overflow:/);
+    expect(rule).toMatch(/border-radius:\s*18px;/);
+  });
+
+  it("rounds the composer footer to the wrapper radius instead of clipping the wrapper", () => {
+    // Rounding has to come from the child, because the wrapper cannot clip.
+    expect(promptEditorStyles.cssText).toMatch(/footer\s*\{[^}]*border-radius:\s*inherit;[^}]*\}/);
+    expect(appStyles.cssText).toMatch(/\.session-start-composer prompt-editor\s*\{[^}]*border-radius:\s*inherit;[^}]*\}/);
   });
 });
 
