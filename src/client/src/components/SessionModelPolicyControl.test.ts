@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClientSessionModelPolicyStatus } from "../../../shared/apiTypes";
 import { SessionModelPolicyControl } from "./SessionModelPolicyControl";
 import { modelKey, THINKING_LEVEL_ORDER } from "./modelPolicyLabels";
@@ -67,6 +67,7 @@ function shadowText(control: SessionModelPolicyControl): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
@@ -170,6 +171,148 @@ describe("SessionModelPolicyControl closed trigger", () => {
 
     expect(text).toContain("no thinking level");
     expect(text).not.toContain("· off");
+  });
+});
+
+describe("mode menu", () => {
+  it("opens a two-item menu from the trigger", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+    });
+
+    trigger(control).click();
+    await control.updateComplete;
+
+    const items = [...shadowRoot(control).querySelectorAll(".policy-mode-item")];
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.textContent.trim().split("\n")[0])).toEqual(["Exact model", "Tiered"]);
+    expect(items.map((item) => item.querySelector(".policy-mode-hint")?.textContent.trim() ?? "").every((hint) => hint.length > 0)).toBe(true);
+    expect(items.map((item) => item.querySelector(".policy-mode-check")?.textContent.trim())).toEqual(["✓", ""]);
+    expect(items[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(items[1]?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reports the picked mode and closes", async () => {
+    const picked: string[] = [];
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+      element.onSelectMode = (mode) => { picked.push(mode); };
+    });
+    trigger(control).click();
+    await control.updateComplete;
+
+    shadowRoot(control).querySelectorAll<HTMLElement>(".policy-mode-item")[1]?.click();
+    await control.updateComplete;
+
+    expect(picked).toEqual(["tiered"]);
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("closes on Escape without reporting a mode", async () => {
+    const picked: string[] = [];
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+      element.onSelectMode = (mode) => { picked.push(mode); };
+    });
+    trigger(control).click();
+    await control.updateComplete;
+
+    shadowRoot(control).querySelector(".policy-mode-menu")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
+    await control.updateComplete;
+
+    expect(picked).toEqual([]);
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("closes on an outside click", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+    });
+    trigger(control).click();
+    await control.updateComplete;
+
+    document.body.click();
+    await control.updateComplete;
+
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("does not open while the control is not editable", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = false;
+    });
+
+    trigger(control).click();
+    await control.updateComplete;
+
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("does not open while policy data is loading", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+      element.loading = true;
+    });
+
+    trigger(control).click();
+    await control.updateComplete;
+
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("does not open while a policy update is saving", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.editable = true;
+      element.saving = true;
+    });
+
+    trigger(control).click();
+    await control.updateComplete;
+
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).toBeNull();
+  });
+
+  it("allows a blocked policy to open and report a repair selection", async () => {
+    const picked: string[] = [];
+    const control = await mountControl((element) => {
+      element.status = { ...exactStatus(), blockedReason: "MODEL_POLICY_BLOCKED: repair required" };
+      element.editable = true;
+      element.onSelectMode = (mode) => { picked.push(mode); };
+    });
+
+    trigger(control).click();
+    await control.updateComplete;
+    expect(shadowRoot(control).querySelector(".policy-mode-menu")).not.toBeNull();
+
+    shadowRoot(control).querySelectorAll<HTMLElement>(".policy-mode-item")[1]?.click();
+    await control.updateComplete;
+
+    expect(picked).toEqual(["tiered"]);
+  });
+
+  it("removes its document click listener when disconnected", async () => {
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    const removeEventListener = vi.spyOn(document, "removeEventListener");
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+    });
+    const clickRegistration = addEventListener.mock.calls.find(([type]) => type === "click");
+
+    expect(clickRegistration).toBeDefined();
+    control.remove();
+
+    const matchingRemoval = removeEventListener.mock.calls.find(
+      ([type, listener]) => type === "click" && listener === clickRegistration?.[1],
+    );
+    expect(matchingRemoval).toBeDefined();
+    expect(matchingRemoval?.[2]).toBe(clickRegistration?.[2]);
   });
 });
 
