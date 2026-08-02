@@ -725,15 +725,21 @@ describe("runtime ownership manifest", () => {
     }
   });
 
-  it("keeps the optional source out of the published package and skill registry", () => {
-    // Plan A is bootstrap-only. Activation is a later phase with its own gate.
+  it("ships the runtime source but not the development evidence", () => {
+    // The source is published so `pi-webui install-extra` has something to install
+    // from. Activation is still opt-in: nothing loads these skills automatically.
     const rootPackage = JSON.parse(readFileSync(ROOT_PACKAGE_JSON, "utf8"));
-    for (const entry of rootPackage.files ?? []) {
-      expect(entry.includes("optional-skills"), entry).toBe(false);
-    }
-    for (const entry of rootPackage.pi?.skills ?? []) {
-      expect(entry.includes("optional-skills"), entry).toBe(false);
-    }
+    const files = rootPackage.files ?? [];
+    expect(files).toContain("optional-skills");
+    expect(files).toContain("!optional-skills/**/evals");
+    expect(files).toContain("!optional-skills/**/tests");
+  });
+
+  it("registers no skill for automatic loading", () => {
+    // A `pi.skills` entry would activate these for every session. Installation is
+    // an explicit, confirmed user action instead.
+    const rootPackage = JSON.parse(readFileSync(ROOT_PACKAGE_JSON, "utf8"));
+    expect(rootPackage.pi?.skills).toBeUndefined();
   });
 
   it("recomputes and confirms the stored digest through manifest-hash", () => {

@@ -43,62 +43,59 @@ Six tiers are available, ascending: `economy`, `fast`, `standard`, `advanced`,
 
 ## Install
 
-Skills load from `~/.pi/agent/skills/<name>/`. Copy each directory there,
-keeping the source name:
-
 ```bash
-cp -a optional-skills/deterministic-writing-plans ~/.pi/agent/skills/
-cp -a optional-skills/deterministic-subagent-driven-development ~/.pi/agent/skills/
+pi-webui install-extra --dry-run   # print the plan, change nothing
+pi-webui install-extra             # install, after an interactive confirmation
+pi-webui install-extra --yes       # skip the prompt, for scripted setups
 ```
 
-That installs them alongside anything you already run, under the names
-`deterministic-writing-plans` and `deterministic-subagent-driven-development`.
+The command prints what it will replace, asks for confirmation, and refuses to
+run non-interactively unless `--yes` is passed.
 
-The controller ships a manifest listing the files it needs at runtime; the
-`evals/` and `tests/` directories are development-only and do not need to be
-installed. Verify the copy afterwards:
+### What it does
+
+The shipped directories are named `deterministic-writing-plans` and
+`deterministic-subagent-driven-development`, so they can sit beside the upstream
+skills they derive from. Installation strips that prefix and installs them as
+`writing-plans` and `subagent-driven-development`.
+
+That is deliberate. Sibling skills such as `brainstorming` and `executing-plans`
+route to those names, so installing under the prefixed names would leave those
+references pointing at nothing.
+
+Stripping the prefix is not a directory rename. The skill name appears inside
+hashed runtime files, so the installer rewrites those occurrences, rewrites the
+sibling path the authoring skill uses to reach the tier table, and then
+regenerates the runtime manifest. Verifying afterwards should report
+`"verified": true`:
 
 ```bash
-cd ~/.pi/agent/skills/deterministic-subagent-driven-development
+cd ~/.pi/agent/skills/subagent-driven-development
 scripts/sdd-state manifest-hash --manifest pi-webui-skill.json
 ```
 
-A `"verified": true` result means every runtime file matches the recorded hash.
+### What it replaces, and how to get back
 
-Then confirm the two skills agree, by validating the authoring skill's template
-with the controller's parser:
+Any existing `writing-plans` or `subagent-driven-development` skill is replaced.
+`~/.pi/agent/` is not version controlled, so the installer first moves both into
+a timestamped backup directory and copies `.skill-lock.json` alongside them, then
+prints the restore command.
 
-```bash
-scripts/sdd-state validate-plan \
-  ~/.pi/agent/skills/deterministic-writing-plans/templates/plan-skeleton.md
-```
+Two further things it handles:
 
-Exit code 0 means the pair is installed consistently.
+**Inherited helper scripts.** The controller composes with `sdd-workspace`,
+`task-brief`, and `review-package` rather than reimplementing them;
+`references/plan-contract.md` names the last two as the writers of task briefs and
+review packages. The installer carries them forward from the skill it replaced.
 
-### Replacing the upstream skills instead
-
-Installing under the `deterministic-` names leaves any existing `writing-plans`
-and `subagent-driven-development` skills in place, which is the safe default. If
-you want these to take over instead, there are three things to know.
-
-**Back up first.** `~/.pi/agent/` is not version controlled. There is no diff and
-no revert.
-
-**The name comes from frontmatter, not the directory.** Pi reads the `name` field
-in `SKILL.md` and falls back to the directory name only if it is absent. Copying
-into a directory called `writing-plans` is not enough; change the frontmatter
-name to match, or the skill loads under its original name anyway.
-
-**Other skills route by name.** The `brainstorming` and `executing-plans` skills
-refer to `writing-plans` and `subagent-driven-development` by name. If you
-install only under the `deterministic-` names, those references still point at
-the upstream skills. If you remove the upstream skills without renaming these to
-take their place, those references break.
-
-**Keep three helper scripts.** The controller deliberately does not reimplement
-`sdd-workspace`, `task-brief`, or `review-package`; it composes with the copies
-the upstream `subagent-driven-development` skill ships. Preserve them when
-replacing that skill.
+**Stale lock entries.** The `skills` CLI records provenance in
+`~/.agents/.skill-lock.json`, including a source repository and a folder hash. An
+entry left behind after replacement claims upstream ownership of a directory that
+no longer holds upstream's code, and an updater comparing hashes would treat the
+skill as out of date and overwrite it. The installer removes the two entries it
+owns and leaves every other entry untouched. With no entry, PI WEBUI reports no
+install or update controls for these skills, which is the documented behavior for
+package-provided skills.
 
 ## Use
 

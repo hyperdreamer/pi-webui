@@ -1,13 +1,13 @@
 ---
 name: deterministic-writing-plans
-description: Use when you have a spec or requirements for a multi-step task, before touching code, and the plan will be executed by the deterministic deterministic-subagent-driven-development controller
+description: Use when you have a spec or requirements for a multi-step task, before touching code, and the plan will be executed by the deterministic subagent-driven-development controller
 ---
 
 # Deterministic Writing Plans
 
 ## Overview
 
-Write implementation plans that the deterministic deterministic-subagent-driven-development
+Write implementation plans that the deterministic subagent-driven-development
 controller can run without manual repair. Assume the implementer has zero
 context for this codebase and questionable taste: document which files to
 touch, the actual code, how to test it, and what neighbouring tasks named
@@ -228,5 +228,5 @@ Fix inline; no need to re-review.
 ## Execution Handoff
 
 State where the plan was saved and that it validated. Then hand off to the
-deterministic deterministic-subagent-driven-development controller, which dispatches a fresh
+deterministic subagent-driven-development controller, which dispatches a fresh
 subagent per task with two-stage review between tasks.

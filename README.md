@@ -117,6 +117,21 @@ Project-local PI WEBUI config lives at:
 
 Common configuration includes host/port, path access, uploads, PI WEBUI plugin enablement, shortcuts, and session daemon options. In Settings, machine-affecting config targets the selected machine; gateway host/port/allowed-hosts, remote machine registration, tokens, and keyboard shortcuts stay local.
 
+## Extra skills
+
+PI WEBUI ships two opt-in agent skills for deterministic plan authoring and
+subagent-driven execution. Nothing installs or activates them by default:
+
+```bash
+pi-webui install-extra --dry-run   # show what would change
+pi-webui install-extra             # install, after confirming
+```
+
+They install as `writing-plans` and `subagent-driven-development`, **replacing**
+any existing skills with those names. The command explains the risk, asks for
+confirmation, and backs up both skills and the skill lock file first. See
+[docs/optional-skills.md](https://github.com/hyperdreamer/pi-webui/blob/main/docs/optional-skills.md).
+
 ## Development
 
 `start.sh` (a thin wrapper around `npm run dev`) starts the complete development stack. To run its processes separately:
@@ -132,11 +147,6 @@ Validate changes with:
 ```bash
 npm run verify
 ```
-
-This repository also carries two opt-in agent skills as source, for deterministic
-plan authoring and subagent-driven execution. They are not part of the published
-package; see
-[docs/optional-skills.md](https://github.com/hyperdreamer/pi-webui/blob/main/docs/optional-skills.md).
 
 ## Security model
 
