@@ -33,6 +33,8 @@ boundary, so no dispatch site has to remember to.
 | tier line absent                               | `Task 1 has no Implementer tier`, with the exact line to add                                                               |
 | `## Task 1:` then `## Task 3:`                 | `expected Task 2 but found Task 3`                                                                                         |
 | tier line inside a ``` fence                   | `Task 1 has no Implementer tier` — fenced content is inert                                                                 |
+| two `## Global Constraints` sections           | `duplicate Global Constraints section`                                                                                     |
+| `## Global Constraints` after Task 1           | `Global Constraints must precede the first task`                                                                           |
 
 The depth diagnostic is worth quoting in full, because it repairs the plan for you:
 
@@ -47,6 +49,29 @@ The depth diagnostic is worth quoting in full, because it repairs the plan for y
 The two worth internalizing are the ones that look correct on screen: a
 lowercase tier reads naturally because lowercase is what travels on the wire,
 and a trailing space is invisible. Both are hard errors.
+
+## The `##` truncation trap
+
+Worse than the rule trap below, and the reason to read this file. A plain `##`
+heading inside a task body terminates the task. Every line after it is
+discarded: remaining steps, the commit step, everything. The plan still
+validates, and there is no diagnostic.
+
+Observed, with `## Notes` placed after Step 1 of a three-step task:
+
+```text
+tasks parsed: 1
+body: "- [ ] **Step 1: first**"
+Step 2 survived? false
+Commit step survived? false
+```
+
+`plan-policy.mjs` treats any non-canonical H2 as terminating the open section
+without capturing it. `###` and deeper are safe, as is bold text used as a
+pseudo-heading. Use `###` for any subheading within a task.
+
+Pinned by `tests/grammar-rejections.test.mjs`, which asserts both the loss under
+`##` and the survival under `###`.
 
 ## The horizontal-rule trap
 

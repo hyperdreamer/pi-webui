@@ -34,10 +34,15 @@ grammar is rejected outright with a diagnostic, not repaired. Two consequences:
 - **The grammar is the whole contract.** A hand-written plan that satisfies it
   is just as valid. Nothing checks which skill produced a plan.
 
+**Using the wrong skill?** If no controller will run this plan, use the plain
+`writing-plans` skill instead. The grammar here is additive and harmless to a
+human reader, so a deterministic plan is never wrong for a human to execute, but
+tier annotations are pure overhead when nothing dispatches on them.
+
 ## Non-negotiable grammar
 
 Verified against the controller's parser, not paraphrased. See
-`references/grammar.md` for the observed diagnostics and the six rejections
+`references/grammar.md` for the observed diagnostics and the eight rejections
 pinned in `tests/grammar-rejections.test.mjs`.
 
 - Task heading is exactly `## Task <N>: <Title>`. `###` is an error, not a
@@ -46,12 +51,52 @@ pinned in `tests/grammar-rejections.test.mjs`.
   any code fence, where `<Value>` is TitleCase: `Economy`, `Fast`, `Standard`,
   `Advanced`, `Capable`, or `Frontier`. Lowercase is a hard error. A trailing
   space is a hard error.
-- `## Global Constraints` may appear at most once, before the first task.
+- `## Global Constraints` may appear at most once, and must precede the first
+  task. A second one is a hard error (`duplicate Global Constraints section`);
+  one placed after Task 1 is a hard error (`Global Constraints must precede the
+first task`).
 - Fenced content is inert. A tier line inside a fence does not count, and the
   task will be rejected as having no tier.
 - Do not put a `---` rule immediately after `## Global Constraints` or at the
   end of a task. The parser absorbs it into that section, and the text is
-  injected verbatim into child briefs. Let headings separate sections.
+  injected verbatim into child briefs.
+- **Never use a plain `##` heading inside a task body.** Any non-canonical H2
+  terminates the task silently: every line after it, including remaining steps
+  and the commit step, is discarded with no diagnostic. Use `###` or deeper for
+  subheadings within a task. This is the most destructive mistake available to
+  a plan author, because the plan still validates.
+
+## Plan Document Header
+
+**Every plan MUST start with this header.** The grammar does not enforce it, so
+nothing will reject a plan without it; it is required because a reader arriving
+cold, human or agent, has no other orientation.
+
+```markdown
+# [Feature Name] Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use the deterministic
+> subagent-driven-development controller to implement this plan task-by-task.
+
+**Goal:** [One sentence describing what this builds]
+
+**Architecture:** [2-3 sentences about approach]
+
+**Tech Stack:** [Key technologies/libraries]
+
+## Global Constraints
+
+[The spec's project-wide requirements — version floors, dependency limits,
+naming and copy rules, platform requirements — one line each, with exact
+values copied verbatim from the spec.]
+```
+
+`## Global Constraints` carries a specific obligation. It is injected verbatim
+into **every** task brief, and it is the only channel to a subagent that never
+sees the plan. Copy exact values from the spec rather than summarizing: a child
+cannot infer a version floor stated approximately. One line each. If the spec
+has no project-wide requirements, say so in one explicit line rather than
+omitting the section.
 
 ## Choosing the implementer tier
 
@@ -112,7 +157,24 @@ Every task is dispatched to a fresh subagent that sees only its own brief plus
 
 Each step is one action, two to five minutes: write the failing test; run it and
 confirm it fails; write the minimal implementation; run the tests and confirm
-they pass; commit. Steps use `- [ ]` checkbox syntax so progress is trackable.
+they pass; commit. Steps use `- [ ]` checkbox syntax.
+
+Those boxes are a readability convention here, not the progress mechanism. The
+controller's `state.json` is canonical and it pins the plan's digest, so editing
+the plan mid-run, including ticking a box, changes the digest and halts the run
+for a human decision. Leave the boxes unticked and let the controller track.
+
+## Files blocks
+
+Each task opens with the exact paths it touches, using `path:start-end` line
+ranges for modifications so an implementer edits the right region:
+
+```text
+**Files:**
+- Create: `src/parse/tokens.ts`
+- Modify: `src/cli/index.ts:1-20`
+- Test: `src/parse/tokens.test.ts`
+```
 
 ## Interfaces blocks are load-bearing
 
@@ -157,7 +219,9 @@ checklist you run yourself, not a subagent dispatch.
 4. **Interfaces completeness.** For each task after the first, does its
    Consumes block restate every signature it depends on?
 5. **Grammar.** Run the controller's `validate-plan` against the saved file.
-   Do not hand a plan over that you have not seen parse.
+   Run `sdd-state validate-plan docs/superpowers/plans/<file>.md` from the
+   controller's `scripts/` directory. Do not hand over a plan you have not
+   seen parse.
 
 Fix inline; no need to re-review.
 
