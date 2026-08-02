@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.11.0-beta.6
+
+### Patch Changes
+
+- 31bd51c: Session model policy is now three cascading composer controls instead of a
+  popover form. The mode pill offers Exact or Tiered; Tiered picks a tier and
+  applies at once; Exact opens the searchable model picker and a thinking-level
+  menu limited to the levels that model supports. A machine with no configured
+  model shows the controls unset with an explanation instead of hiding them.
+- 2f2537c: Add the E-Ink Color Paper theme for color e-ink monitors. It keeps a pure-white page background and uses saturated fills that stay legible on panels that desaturate ordinary tints.
+- 9da335d: The composer thinking-level control shows a bar gauge again instead of the
+  level name, so the action row keeps a fixed width as the level changes and
+  matches sessions without a model policy. The gauge fills to the current
+  level's rank among the levels the selected model offers, and the level name
+  stays available in the tooltip and to screen readers. Level names, cost
+  hints, and unsupported markers remain spelled out inside the menu.
+
+  Presentation order now follows pi's own thinking-level list, so `max` sorts
+  after `xhigh` instead of being treated as an unknown level.
+
+- 7e358ad: Upgrade the supported Pi Coding Agent package set to the 0.83.x release series.
+
 ## 1.11.0-beta.5
 
 ### Patch Changes
