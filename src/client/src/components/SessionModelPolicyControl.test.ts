@@ -133,6 +133,14 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(diagnostic?.getAttribute("title")).toContain("runtime rejected the persisted policy");
   });
 
+  it("treats a blank blockedReason as no block rather than an empty chip", async () => {
+    const control = await mountControl((element) => {
+      element.status = { ...exactStatus(), blockedReason: "   " };
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")).toBeNull();
+  });
+
   it("renders nothing without any policy status", async () => {
     const control = await mountControl(() => undefined);
 
