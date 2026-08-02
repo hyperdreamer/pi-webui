@@ -99,6 +99,16 @@ interface SelectedSessionRefreshTarget {
 
 type SelectedModelPolicyStateReset = Pick<AppState, "modelPolicy" | "isLoadingModelPolicy" | "isSavingModelPolicy" | "modelPolicyError">;
 
+const startSessionOutcomes = new WeakMap<Promise<boolean>, MutableSessionStartOutcome>();
+
+interface MutableSessionStartOutcome {
+  started: boolean | undefined;
+}
+
+export function startSessionOutcome(operation: Promise<boolean>): boolean | undefined {
+  return startSessionOutcomes.get(operation)?.started;
+}
+
 export class SessionController {
   private readonly socket: SessionEventSocket;
   private readonly api: typeof defaultApi;
@@ -218,7 +228,7 @@ export class SessionController {
     }
   }
 
-  async startSessionWithPrompt(
+  startSessionWithPrompt(
     text: string,
     streamingBehavior?: "steer" | "followUp",
     attachments?: PromptAttachment[],
@@ -226,9 +236,19 @@ export class SessionController {
     modelPolicy?: SessionModelPolicyUpdate,
   ): Promise<boolean> {
     const startingSession = this.startSession(modelPolicy);
-    await this.send(text, streamingBehavior, attachments, delivery);
-    const started = await startingSession;
-    return started;
+    const startOutcome: MutableSessionStartOutcome = { started: undefined };
+    const operation = (async (): Promise<boolean> => {
+      let started: boolean;
+      try {
+        await this.send(text, streamingBehavior, attachments, delivery);
+      } finally {
+        started = await startingSession;
+        startOutcome.started = started;
+      }
+      return started;
+    })();
+    startSessionOutcomes.set(operation, startOutcome);
+    return operation;
   }
 
   preferredSession(cwd: string, sessions: SessionInfo[], targetSessionId: string | undefined): SessionInfo | undefined {

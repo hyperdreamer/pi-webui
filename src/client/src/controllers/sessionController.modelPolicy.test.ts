@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
-import { SessionController } from "./sessionController";
+import { SessionController, startSessionOutcome } from "./sessionController";
 import { defaultApi, deferred, emptyPage, FakeSocket, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
 
 const exact: ExactModelSelection = { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" };
@@ -476,6 +476,32 @@ describe("SessionController model policy state", () => {
     expect(await startAndSend).toBe(true);
 
     expect(promptCalls).toEqual([{ sessionId: selectedSession.id, text: "Plan the migration" }]);
+  });
+
+  it("waits for a successful start result before propagating an initial send rejection", async () => {
+    const startRequest = deferred<SessionInfo>();
+    const queueError = new Error("queue failed");
+    const api = selectionApi({ startSession: () => startRequest.promise });
+    const { controller, state } = harness(api, { selectedSession: undefined, sessions: [] });
+    vi.spyOn(controller, "send").mockRejectedValue(queueError);
+
+    const startAndSend = controller.startSessionWithPrompt("Plan the migration", undefined, undefined, "inline", tieredUpdate);
+    let settled = false;
+    const observed = startAndSend.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    const settledBeforeStart = settled;
+
+    startRequest.resolve(selectedSession);
+    await observed;
+
+    expect(settledBeforeStart).toBe(false);
+    await expect(startAndSend).rejects.toBe(queueError);
+    expect(startSessionOutcome(startAndSend)).toBe(true);
+    expect(state().selectedSession?.id).toBe(selectedSession.id);
   });
 
   it("propagates false when starter session creation fails", async () => {

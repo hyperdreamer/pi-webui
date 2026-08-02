@@ -19,7 +19,7 @@ import { ProjectController } from "../controllers/projectController";
 import { ProjectCatalogController } from "../controllers/projectCatalogController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
-import { SessionController } from "../controllers/sessionController";
+import { SessionController, startSessionOutcome } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
 import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
@@ -1153,7 +1153,7 @@ export class PiWebUiApp extends LitElement {
       this.starterModelPolicy = { mode: "exact", exact };
       return;
     }
-    if (current.mode === "tiered") return;
+    if (current.mode === "tiered" || sameExactSelection(current.exact, exact)) return;
     this.starterModelPolicy = { ...current, exact };
   }
 
@@ -2921,9 +2921,16 @@ export class PiWebUiApp extends LitElement {
     const workspaceId = this.state.selectedWorkspace?.id;
     const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
-    void this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy).then((started) => {
-      this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
-    });
+    const start = this.sessions.startSessionWithPrompt(text, streamingBehavior, attachments, delivery, modelPolicy);
+    void start.then(
+      (started) => {
+        this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
+      },
+      (error: unknown) => {
+        this.clearStarterModelPolicyAfterSuccessfulStart(startSessionOutcome(start) === true, workspaceId, starterModelPolicy);
+        this.setState({ error: String(error) });
+      },
+    );
     void this.focusChatComposer();
   };
 

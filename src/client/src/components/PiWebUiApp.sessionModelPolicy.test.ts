@@ -635,6 +635,31 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(starterModelPolicy(app)).toBeUndefined();
   });
 
+  it("clears a successful prompt start even when initial prompt queueing rejects", async () => {
+    const app = createApp();
+    const completion = deferred<boolean>();
+    const queueError = new Error("queue failed");
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    vi.spyOn(sessionController(app), "startSession").mockReturnValue(completion.promise);
+    vi.spyOn(sessionController(app), "send").mockRejectedValue(queueError);
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await loadModelTierCatalog(app, "local");
+    saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="))({ mode: "tiered", tier: "advanced" });
+
+    startSessionPrompt(app, "explore the repo");
+    await flush();
+    expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "advanced" });
+
+    completion.resolve(true);
+    await flush();
+
+    expect(starterModelPolicy(app)).toBeUndefined();
+    expect(appState(app).error).toBe(String(queueError));
+  });
+
   it("retains a failed Tiered starter choice and carries it into a retry", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
@@ -715,6 +740,38 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, { mode: "tiered", tier: "advanced" });
     expect(starterModelPolicy(app)).toBe(changedDraft);
     expect(starterModelPolicy(app)).toMatchObject({ mode: "tiered", tier: "capable" });
+  });
+
+  it("treats a value-equivalent background Exact relink as the same in-flight draft", async () => {
+    const app = createApp();
+    const defaultsCompletion = deferred<SessionDefaultsResponse>();
+    const startCompletion = deferred<boolean>();
+    vi.spyOn(sessionsApi, "sessionDefaults")
+      .mockResolvedValueOnce(starterDefaults())
+      .mockReturnValueOnce(defaultsCompletion.promise);
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockReturnValue(startCompletion.promise);
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await loadModelTierCatalog(app, "local");
+    const save = saveCallback(templateValueAfterMarker(promptEditorTemplate(app), ".onSaveModelPolicy="));
+    save({ mode: "tiered", tier: "advanced" });
+    save({ mode: "exact", exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" } });
+    const issuedDraft = starterModelPolicy(app);
+
+    const backgroundRelink = loadStarterSessionDefaults(app, mainWorkspace);
+    startSessionPrompt(app, "explore the repo");
+    defaultsCompletion.resolve(starterDefaults());
+    await backgroundRelink;
+
+    expect(starterModelPolicy(app)).toBe(issuedDraft);
+    expect(starterModelPolicy(app)).toMatchObject({ mode: "exact", tier: "advanced" });
+
+    startCompletion.resolve(true);
+    await flush();
+
+    expect(starterModelPolicy(app)).toBeUndefined();
   });
 
   it("does not clear a starter choice after the user moves to another workspace", async () => {
