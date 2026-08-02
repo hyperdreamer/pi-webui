@@ -4,8 +4,9 @@ import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, 
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
-import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
-import { modelPolicyDraftFromPolicy, selectDraftTier, sessionModelPolicyUpdateFromDraft } from "./sessionModelPolicyDraft";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
+import { isDraftReadyToApply, seedModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
+import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
@@ -114,6 +115,7 @@ const MEMORY_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-memory:works
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
+const MODEL_POLICY_EXACT_APPLY_DELAY_MS = 75;
 
 interface SessionCleanupDialogState {
   preview?: SessionCleanupPreviewResponse | undefined;
@@ -362,6 +364,11 @@ export class PiWebUiApp extends LitElement {
    * `POST /sessions`. Cleared on every workspace/machine change.
    */
   @state() private starterModelPolicy: SessionModelPolicy | undefined;
+  /** Pending active-session edits; the server response remains authoritative. */
+  @state() private activeModelPolicyDraft: SessionModelPolicyDraft | undefined;
+  private activeModelPolicyDraftScope: string | undefined;
+  private activeModelPolicyApplyTimer: number | undefined;
+  private activeModelPolicyApplyGeneration = 0;
   /** Machine the loaded catalog belongs to; guards cross-machine application. */
   private modelTierCatalogMachineId: string | undefined;
   /** Newest issued catalog request; a late response with a lower seq is dropped. */
@@ -559,6 +566,7 @@ export class PiWebUiApp extends LitElement {
     this.systemLightThemeMedia?.removeEventListener("change", this.onSystemLightThemeChange);
     this.keyboard.reset();
     this.auth.dispose();
+    this.resetActiveModelPolicyDraft();
     this.sessions.dispose();
     this.projectCatalog.dispose();
     this.notifications.dispose();
@@ -579,7 +587,10 @@ export class PiWebUiApp extends LitElement {
   private setState(patch: Partial<AppState>) {
     if (!patchChangesState(this.state, patch)) return;
     const previous = this.state;
+    const previousActiveSessionScope = activeSessionModelPolicyScope(previous);
+    const previousPolicyComposerScope = activePolicyComposerScope(previous);
     this.state = { ...this.state, ...patch };
+    if (previousActiveSessionScope !== activeSessionModelPolicyScope(this.state)) this.resetActiveModelPolicyDraft();
     if (selectedChatIdentity(previous) !== selectedChatIdentity(this.state)) {
       this.committedChatIdentity = undefined;
       this.readyChatIdentity = undefined;
@@ -596,6 +607,8 @@ export class PiWebUiApp extends LitElement {
     this.notifications.syncEnvironment(previous, this.state);
     if (previous.selectedProject?.name !== this.state.selectedProject?.name) this.syncWindowTitle();
     this.synchronizeProjectCatalogPolling();
+    const policyComposerScope = activePolicyComposerScope(this.state);
+    if (policyComposerScope !== undefined && policyComposerScope !== previousPolicyComposerScope) this.preloadActiveModelPolicyInputs();
   }
 
   private synchronizeProjectCatalogPolling(): void {
@@ -1500,9 +1513,7 @@ export class PiWebUiApp extends LitElement {
    * the composer keeps its previous Exact-only model/thinking controls.
    */
   private sessionModelPolicySupported(machineId = selectedMachineId(this.state)): boolean {
-    if (machineId === "local") return true;
-    const runtime = this.state.machineRuntimes[machineId];
-    return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsModelPolicy);
+    return sessionModelPolicySupportedForState(this.state, machineId);
   }
 
   /**
@@ -1565,6 +1576,145 @@ export class PiWebUiApp extends LitElement {
   private selectedMachineModelTierCatalog(): ModelTierSettingsResponse | undefined {
     if (this.modelTierCatalogMachineId !== selectedMachineId(this.state)) return undefined;
     return this.modelTierCatalog;
+  }
+
+  /** Begin the two reads needed by policy controls as soon as an active policy appears. */
+  private preloadActiveModelPolicyInputs(): void {
+    void this.sessions.loadModelPolicy();
+    if (this.selectedMachineModelTierCatalog() === undefined && !this.modelTierCatalogLoading) {
+      void this.loadModelTierCatalog(selectedMachineId(this.state));
+    }
+  }
+
+  /**
+   * Return the active composer's one draft, loading its authoritative policy and
+   * model catalog first when needed. A Tiered status without a readable policy
+   * seeds an empty remembered Exact branch; using the tier's runtime resolution
+   * there would silently replace the user's remembered Exact selection.
+   */
+  private async prepareActiveModelPolicyDraft(): Promise<SessionModelPolicyDraft | undefined> {
+    if (!this.sessionModelPolicySupported()) return undefined;
+    const scope = activeSessionModelPolicyScope(this.state);
+    if (scope === undefined || selectedModelPolicyStatus(this.state) === undefined) return undefined;
+    const current = this.activeModelPolicyDraftForState(this.state);
+    if (current !== undefined) return current;
+
+    const loads: Promise<void>[] = [];
+    if (this.state.modelPolicy === undefined) loads.push(this.sessions.loadModelPolicy());
+    if (this.selectedMachineModelTierCatalog() === undefined) {
+      loads.push(this.loadModelTierCatalog(selectedMachineId(this.state)));
+    }
+    await Promise.all(loads);
+    if (activeSessionModelPolicyScope(this.state) !== scope) return undefined;
+    const prepared = this.activeModelPolicyDraftForState(this.state);
+    if (prepared !== undefined) return prepared;
+    const catalog = this.selectedMachineModelTierCatalog();
+    const status = selectedModelPolicyStatus(this.state);
+    if (catalog === undefined || status === undefined) return undefined;
+
+    const policy = this.state.modelPolicy?.policy;
+    let draft: SessionModelPolicyDraft;
+    if (policy !== undefined) {
+      draft = seedModelPolicyDraft({ policy, catalog });
+    } else if (status.mode === "exact") {
+      draft = seedModelPolicyDraft({ liveResolved: status.resolved, catalog });
+    } else {
+      const empty = seedModelPolicyDraft({ catalog });
+      draft = status.tier === undefined
+        ? { ...empty, mode: "tiered" }
+        : selectDraftTier(empty, status.tier);
+    }
+    this.activeModelPolicyDraftScope = scope;
+    this.activeModelPolicyDraft = draft;
+    return draft;
+  }
+
+  private activeModelPolicyDraftForState(state: AppState): SessionModelPolicyDraft | undefined {
+    return this.activeModelPolicyDraftScope === activeSessionModelPolicyScope(state)
+      ? this.activeModelPolicyDraft
+      : undefined;
+  }
+
+  private setActiveModelPolicyDraft(draft: SessionModelPolicyDraft): void {
+    const scope = activeSessionModelPolicyScope(this.state);
+    if (scope === undefined) return;
+    this.activeModelPolicyDraftScope = scope;
+    this.activeModelPolicyDraft = draft;
+  }
+
+  private resetActiveModelPolicyDraft(): void {
+    this.cancelActiveModelPolicyApply();
+    this.activeModelPolicyDraftScope = undefined;
+    this.activeModelPolicyDraft = undefined;
+  }
+
+  private cancelActiveModelPolicyApply(): void {
+    this.activeModelPolicyApplyGeneration += 1;
+    if (this.activeModelPolicyApplyTimer !== undefined) window.clearTimeout(this.activeModelPolicyApplyTimer);
+    this.activeModelPolicyApplyTimer = undefined;
+  }
+
+  /** Coalesce complete Exact tuples; incomplete or invalid tuples never get a timer. */
+  private scheduleActiveExactModelPolicyApply(): void {
+    this.cancelActiveModelPolicyApply();
+    const draft = this.activeModelPolicyDraftForState(this.state);
+    const catalog = this.selectedMachineModelTierCatalog();
+    if (draft?.mode !== "exact" || !isDraftReadyToApply(draft, catalog)) return;
+    const generation = this.activeModelPolicyApplyGeneration;
+    this.activeModelPolicyApplyTimer = window.setTimeout(() => {
+      if (generation !== this.activeModelPolicyApplyGeneration) return;
+      this.activeModelPolicyApplyTimer = undefined;
+      void this.applyActiveModelPolicyDraft();
+    }, MODEL_POLICY_EXACT_APPLY_DELAY_MS);
+  }
+
+  /**
+   * Submit only a draft the shared validator proves complete. The policy endpoint
+   * owns model-then-thinking application and effective-pair verification; this
+   * component adopts no local tuple after a failed write.
+   */
+  private async applyActiveModelPolicyDraft(): Promise<void> {
+    const draft = this.activeModelPolicyDraftForState(this.state);
+    const catalog = this.selectedMachineModelTierCatalog();
+    if (draft === undefined || !isDraftReadyToApply(draft, catalog) || catalog === undefined) return;
+    const update = sessionModelPolicyUpdateFromDraft(draft, catalog);
+    if (update === undefined) return;
+
+    const scope = this.activeModelPolicyDraftScope;
+    const responseBeforeWrite = this.state.modelPolicy;
+    await this.sessions.saveModelPolicy(update);
+    if (scope !== activeSessionModelPolicyScope(this.state) || this.activeModelPolicyDraft !== draft) return;
+
+    if (this.state.modelPolicyError !== undefined) {
+      // The controller has surfaced the server's block. Drop the optimistic
+      // projection so the runtime-confirmed status remains the only displayed pair.
+      this.activeModelPolicyDraftScope = undefined;
+      this.activeModelPolicyDraft = undefined;
+      return;
+    }
+    if (this.state.modelPolicy === responseBeforeWrite) return;
+    const confirmed = this.state.modelPolicy?.policy;
+    if (confirmed === undefined) {
+      this.activeModelPolicyDraftScope = undefined;
+      this.activeModelPolicyDraft = undefined;
+      return;
+    }
+    this.setActiveModelPolicyDraft(seedModelPolicyDraft({ policy: confirmed, catalog }));
+  }
+
+  private policyThinkingOptions(
+    exact: ExactModelSelection,
+    all: readonly string[],
+  ): ThinkingLevelOption[] {
+    const catalog = this.selectedMachineModelTierCatalog();
+    const option = catalog?.models.find((candidate) => (
+      candidate.model.provider === exact.model.provider && candidate.model.id === exact.model.id
+    ));
+    return thinkingLevelOptions({
+      supported: catalog === undefined ? all : option?.thinkingLevels ?? [],
+      all,
+      selected: exact.thinkingLevel,
+    });
   }
 
   private archivedDeleteUnavailableMessage(): string {
@@ -1960,6 +2110,9 @@ export class PiWebUiApp extends LitElement {
     const canSelectDefaultModel = defaults !== undefined && defaults.models.length > 0;
     const canSelectDefaultThinking = defaults !== undefined && defaults.thinkingLevels.length > 0;
     const policy = this.starterModelPolicyInputs();
+    const policyThinkingOptions = policy === undefined || defaults === undefined
+      ? []
+      : this.policyThinkingOptions(this.starterModelPolicy?.exact ?? policy.status.resolved, defaults.thinkingLevels);
     return html`
       <section class="session-start-screen" aria-labelledby="session-start-heading">
         <div class="session-start-content">
@@ -1967,7 +2120,7 @@ export class PiWebUiApp extends LitElement {
           <h1 id="session-start-heading">What would you like to build?</h1>
           <p class="session-start-copy">Start a conversation in <strong>${workspace.label}</strong>. Ask Pi to explore the codebase, plan a change, or help you make it.</p>
           <div class="session-start-composer">
-            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${policy === undefined ? "" : this.modelTierCatalogError} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
+            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${policy === undefined ? "" : this.modelTierCatalogError} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
@@ -2729,7 +2882,26 @@ export class PiWebUiApp extends LitElement {
     this.setState({ modelDialog: undefined });
     const slash = value.indexOf("/");
     if (slash <= 0) return;
-    await this.sessions.setModel(value.slice(0, slash), value.slice(slash + 1));
+    const provider = value.slice(0, slash);
+    const modelId = value.slice(slash + 1);
+    if (!this.sessionModelPolicySupported()) {
+      await this.sessions.setModel(provider, modelId);
+      return;
+    }
+
+    const draft = await this.prepareActiveModelPolicyDraft();
+    if (draft === undefined || draft !== this.activeModelPolicyDraftForState(this.state) || draft.mode !== "exact") return;
+    const catalog = this.selectedMachineModelTierCatalog();
+    const option = catalog?.models.find((candidate) => (
+      candidate.model.provider === provider && candidate.model.id === modelId
+    ));
+    if (option === undefined) {
+      if (catalog !== undefined) this.modelTierCatalogError = `Model ${provider}/${modelId} is unavailable in the model policy catalog`;
+      return;
+    }
+    this.modelTierCatalogError = "";
+    this.setActiveModelPolicyDraft(updateDraftExactModel(draft, option));
+    this.scheduleActiveExactModelPolicyApply();
   }
 
   private openStarterModelDialog(): void {
@@ -2872,7 +3044,26 @@ export class PiWebUiApp extends LitElement {
 
   private async pickThinking(value: string) {
     this.setState({ thinkingDialog: undefined });
-    if (value !== "") await this.sessions.setThinkingLevel(value);
+    if (value === "") return;
+    if (!this.sessionModelPolicySupported()) {
+      await this.sessions.setThinkingLevel(value);
+      return;
+    }
+
+    const draft = await this.prepareActiveModelPolicyDraft();
+    if (draft === undefined || draft !== this.activeModelPolicyDraftForState(this.state) || draft.mode !== "exact") return;
+    const next = updateDraftExactThinking(draft, value);
+    this.setActiveModelPolicyDraft(next);
+    const option = this.selectedMachineModelTierCatalog()?.models.find((candidate) => (
+      candidate.model.provider === next.exact.model.provider && candidate.model.id === next.exact.model.id
+    ));
+    if (option?.thinkingLevels.includes(value) !== true) {
+      this.cancelActiveModelPolicyApply();
+      this.modelTierCatalogError = `Thinking level ${value} is unsupported by ${next.exact.model.provider}/${next.exact.model.id}`;
+      return;
+    }
+    this.modelTierCatalogError = "";
+    this.scheduleActiveExactModelPolicyApply();
   }
 
   private openStarterThinkingDialog(): void {
@@ -2953,53 +3144,91 @@ export class PiWebUiApp extends LitElement {
     this.openStarterThinkingDialog();
   };
 
-  /**
-   * Opening either policy dialog is what triggers the catalog read: the control's
-   * unavailable-state retry calls `onOpen` alone and distinguishes a missing
-   * policy from a missing catalog, so catalog recovery depends on this.
-   */
-  private readonly handleOpenStarterModelPolicy = (): void => {
-    void this.loadModelTierCatalog(selectedMachineId(this.state));
-  };
+  private async ensureStarterModelPolicyCatalog(): Promise<ModelTierSettingsResponse | undefined> {
+    const current = this.selectedMachineModelTierCatalog();
+    if (current !== undefined) return current;
+    await this.loadModelTierCatalog(selectedMachineId(this.state));
+    return this.selectedMachineModelTierCatalog();
+  }
 
-  /**
-   * Apply a starter choice to the local draft only. Choosing Tiered here must not
-   * write a global Pi default; the transition and its validity check both come
-   * from the pure draft module, so no policy decision is made in this component.
-   */
-  private readonly handleSaveStarterModelPolicy = (update: SessionModelPolicyUpdate): void => {
-    const current = this.starterModelPolicy;
-    const catalog = this.selectedMachineModelTierCatalog();
-    if (current === undefined || catalog === undefined) return;
-    const draft = modelPolicyDraftFromPolicy(current);
-    const next = update.mode === "tiered"
-      ? selectDraftTier(draft, update.tier)
-      : { ...draft, mode: "exact" as const, exact: update.exact };
-    if (sessionModelPolicyUpdateFromDraft(next, catalog) === undefined) return;
+  private setStarterModelPolicyDraft(draft: SessionModelPolicyDraft): void {
     this.starterModelPolicy = {
-      mode: next.mode,
-      exact: { model: { ...next.exact.model }, thinkingLevel: next.exact.thinkingLevel },
-      ...(next.tier === undefined ? {} : { tier: next.tier }),
+      mode: draft.mode,
+      exact: { model: { ...draft.exact.model }, thinkingLevel: draft.exact.thinkingLevel },
+      ...(draft.tier === undefined ? {} : { tier: draft.tier }),
     };
+  }
+
+  private readonly handleSelectStarterPolicyMode = async (mode: "exact" | "tiered"): Promise<void> => {
+    const current = this.starterModelPolicy;
+    const catalog = await this.ensureStarterModelPolicyCatalog();
+    if (current === undefined || current !== this.starterModelPolicy || catalog === undefined) return;
+    const draft = seedModelPolicyDraft({ policy: current, catalog });
+    if (draft.mode === mode) return;
+
+    if (mode === "exact") {
+      const next = selectDraftExact(draft);
+      if (!isDraftReadyToApply(next, catalog)) return;
+      this.setStarterModelPolicyDraft(next);
+      return;
+    }
+
+    if (draft.tier === undefined) {
+      // A mode choice is not a tier choice. Show the tier control without
+      // inventing a default; nothing enters the start snapshot until a tier is explicit.
+      this.setStarterModelPolicyDraft({ ...draft, mode: "tiered" });
+      return;
+    }
+    const next = selectDraftTier(draft, draft.tier);
+    if (!isDraftReadyToApply(next, catalog)) return;
+    this.setStarterModelPolicyDraft(next);
   };
 
-  private readonly handleOpenActiveModelPolicy = (): void => {
-    void this.sessions.loadModelPolicy();
-    void this.loadModelTierCatalog(selectedMachineId(this.state));
+  private readonly handleSelectStarterPolicyTier = async (tier: ModelTier): Promise<void> => {
+    const current = this.starterModelPolicy;
+    const catalog = await this.ensureStarterModelPolicyCatalog();
+    if (current === undefined || current !== this.starterModelPolicy || catalog === undefined) return;
+    const next = selectDraftTier(seedModelPolicyDraft({ policy: current, catalog }), tier);
+    if (sessionModelPolicyUpdateFromDraft(next, catalog) === undefined) return;
+    this.setStarterModelPolicyDraft(next);
   };
 
-  /**
-   * Drop the held inspection response when the dialog closes. Every exact-route
-   * model/thinking mutation supersedes it, and keeping it would either cost a
-   * redundant policy GET with a transient `modelPolicy: undefined` or leave a
-   * superseded remembered branch on screen.
-   */
-  private readonly handleCloseActiveModelPolicy = (): void => {
-    this.setState({ modelPolicy: undefined, modelPolicyError: undefined });
+  private readonly handleSelectStarterPolicyThinking = async (level: string): Promise<void> => {
+    await this.pickStarterThinking(level);
   };
 
-  private readonly handleSaveActiveModelPolicy = (update: SessionModelPolicyUpdate): void => {
-    void this.sessions.saveModelPolicy(update);
+  private readonly handleSelectActivePolicyMode = async (mode: "exact" | "tiered"): Promise<void> => {
+    const draft = await this.prepareActiveModelPolicyDraft();
+    if (draft === undefined || draft !== this.activeModelPolicyDraftForState(this.state) || draft.mode === mode) return;
+    this.cancelActiveModelPolicyApply();
+
+    if (mode === "exact") {
+      this.setActiveModelPolicyDraft(selectDraftExact(draft));
+      this.scheduleActiveExactModelPolicyApply();
+      return;
+    }
+
+    if (draft.tier === undefined) {
+      // Preserve an absent remembered tier as absent. The tier menu is the only
+      // place that may choose one, so a mode change cannot silently select Standard.
+      this.setActiveModelPolicyDraft({ ...draft, mode: "tiered" });
+      return;
+    }
+    this.setActiveModelPolicyDraft(selectDraftTier(draft, draft.tier));
+    await this.applyActiveModelPolicyDraft();
+  };
+
+  private readonly handleSelectActivePolicyTier = async (tier: ModelTier): Promise<void> => {
+    const draft = await this.prepareActiveModelPolicyDraft();
+    if (draft === undefined || draft !== this.activeModelPolicyDraftForState(this.state)) return;
+    this.cancelActiveModelPolicyApply();
+    const next = selectDraftTier(draft, tier);
+    this.setActiveModelPolicyDraft(next);
+    await this.applyActiveModelPolicyDraft();
+  };
+
+  private readonly handleSelectActivePolicyThinking = async (level: string): Promise<void> => {
+    await this.pickThinking(level);
   };
 
   private readonly handleOpenTerminalFromRail = (): void => {
@@ -3228,9 +3457,51 @@ export class PiWebUiApp extends LitElement {
    * A policy transport error outranks a catalog error, because the control cannot
    * open its form at all without a policy response.
    */
-  private activeModelPolicyInputs(state: AppState): { error: string } | undefined {
-    if (state.status?.modelPolicy === undefined || !this.sessionModelPolicySupported()) return undefined;
-    return { error: state.modelPolicyError ?? this.modelTierCatalogError };
+  private activeModelPolicyInputs(state: AppState): {
+    error: string;
+    status: ClientSessionModelPolicyStatus;
+    editorStatus: SessionStatus;
+    thinkingOptions: ThinkingLevelOption[];
+  } | undefined {
+    const confirmed = state.status?.modelPolicy;
+    if (state.status === undefined || confirmed === undefined || !this.sessionModelPolicySupported()) return undefined;
+    const draft = this.activeModelPolicyDraftForState(state);
+    if (draft === undefined) {
+      return {
+        error: state.modelPolicyError ?? this.modelTierCatalogError,
+        status: confirmed,
+        editorStatus: state.status,
+        thinkingOptions: this.policyThinkingOptions(confirmed.resolved, state.availableThinkingLevels),
+      };
+    }
+
+    const tier = draft.tier;
+    const tierResolution = tier === undefined || this.selectedMachineModelTierCatalog()?.rows[tier].valid !== true
+      ? undefined
+      : this.selectedMachineModelTierCatalog()?.ladder?.[tier];
+    const resolved = draft.mode === "exact" ? draft.exact : tierResolution ?? confirmed.resolved;
+    const status: ClientSessionModelPolicyStatus = {
+      mode: draft.mode,
+      ...(tier === undefined ? {} : { tier }),
+      resolved: { model: { ...resolved.model }, thinkingLevel: resolved.thinkingLevel },
+      ladderValid: confirmed.ladderValid,
+      ...(confirmed.blockedReason === undefined ? {} : { blockedReason: confirmed.blockedReason }),
+    };
+    const hasDraftModel = draft.exact.model.provider !== "" && draft.exact.model.id !== "";
+    const editorStatus: SessionStatus = draft.mode === "exact"
+      ? {
+          ...state.status,
+          ...(hasDraftModel ? { model: { ...draft.exact.model } } : {}),
+          thinkingLevel: draft.exact.thinkingLevel,
+          modelPolicy: status,
+        }
+      : { ...state.status, modelPolicy: status };
+    return {
+      error: state.modelPolicyError ?? this.modelTierCatalogError,
+      status,
+      editorStatus,
+      thinkingOptions: this.policyThinkingOptions(draft.exact, state.availableThinkingLevels),
+    };
   }
 
   private renderChatView(state: AppState, session: SessionInfo) {
@@ -3426,7 +3697,7 @@ export class PiWebUiApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${activePolicy === undefined ? statusWithoutModelPolicy(state.status) : state.status} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy === undefined ? undefined : state.status?.modelPolicy} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
+            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${activePolicy === undefined ? statusWithoutModelPolicy(state.status) : activePolicy.editorStatus} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy?.status} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${activePolicy?.thinkingOptions ?? []} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onSelectPolicyMode=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyMode} .onSelectPolicyTier=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyTier} .onSelectPolicyThinking=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyThinking} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
           ` : this.shouldShowSessionStartScreen(state)
             ? this.renderSessionStartScreen(state)
@@ -3500,6 +3771,30 @@ function unreadChatIdentity(machineId: string, session: Pick<SessionInfo, "id" |
 function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {
   const session = state.selectedSession;
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
+}
+
+function activeSessionModelPolicyScope(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {
+  const session = state.selectedSession;
+  return session === undefined
+    ? undefined
+    : JSON.stringify([selectedMachineId(state), session.id, session.cwd]);
+}
+
+function activePolicyComposerScope(state: AppState): string | undefined {
+  if (selectedModelPolicyStatus(state) === undefined) return undefined;
+  const machineId = selectedMachineId(state);
+  if (!sessionModelPolicySupportedForState(state, machineId)) return undefined;
+  return activeSessionModelPolicyScope(state);
+}
+
+function selectedModelPolicyStatus(state: Pick<AppState, "status">): ClientSessionModelPolicyStatus | undefined {
+  return state.status?.modelPolicy;
+}
+
+function sessionModelPolicySupportedForState(state: Pick<AppState, "machineRuntimes">, machineId: string): boolean {
+  if (machineId === "local") return true;
+  const runtime = state.machineRuntimes[machineId];
+  return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsModelPolicy);
 }
 
 function isMemoryActivityRailItem(activity: QualifiedActivityRailContribution): boolean {
