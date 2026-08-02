@@ -7,9 +7,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 /** The skill root, resolved from this module so cwd never affects rendering. */
 const SKILL_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -327,7 +327,10 @@ function main(argv) {
 function isDirectExecution() {
   const entryPath = process.argv[1];
   if (entryPath === undefined) return false;
-  return pathToFileURL(resolve(entryPath)).href === import.meta.url;
+  // Node resolves symlinks for import.meta.url but leaves argv[1] as supplied, so
+  // a literal comparison fails when this file is reached through a symlink. That
+  // failure is silent: main() never runs and the exit code is still 0.
+  return realpathSync(resolve(entryPath)) === realpathSync(fileURLToPath(import.meta.url));
 }
 
 if (isDirectExecution()) {

@@ -1099,3 +1099,30 @@ describe("tier plumbing through the offline fake", () => {
     expect(new Set(tuples.map((tuple) => JSON.stringify(tuple))).size).toBe(1);
   });
 });
+
+describe("CLI entrypoint detection survives symlinked paths", () => {
+  // Node resolves symlinks for import.meta.url but leaves process.argv[1] as
+  // given, so a literal comparison fails when the skill is invoked through a
+  // symlink. The CLI then produces no output and still exits 0, which is how
+  // this shipped broken to a skill installed under a symlinked home directory.
+  it("produces output when invoked through a symlinked directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "sdd-symlink-"));
+    const link = join(root, "linked-skill");
+    symlinkSync(SKILL_ROOT, link);
+
+    const viaLink = spawnSync(
+      process.execPath,
+      [
+        join(link, "scripts", "sdd-state.mjs"),
+        "manifest-hash",
+        "--manifest",
+        join(SKILL_ROOT, "pi-webui-skill.json"),
+      ],
+      { encoding: "utf8" }
+    );
+
+    expect(viaLink.status).toBe(0);
+    expect(viaLink.stdout.trim()).not.toBe("");
+    expect(JSON.parse(viaLink.stdout).verified).toBe(true);
+  });
+});

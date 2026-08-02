@@ -4,10 +4,10 @@
   "distribution": "opt-in",
   "sourcePackage": {
     "name": "@hyperdreamer/pi-webui",
-    "version": "1.10.3"
+    "version": "1.11.0-beta.4"
   },
   "runtimeHashAlgorithm": "sha256-path-nul-bytes-v1",
-  "runtimeHash": "723dff5c57a867db81255e441f547fd7bc24cada35d2803ac02acfe66badb2f4",
+  "runtimeHash": "9c125e87b4b597fe8dabf422728bd3a8330c852cfab44341167d201193e648c2",
   "runtimeFiles": [
     "SKILL.md",
     "prompts/final-reviewer.md",
