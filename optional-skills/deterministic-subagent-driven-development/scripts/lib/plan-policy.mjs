@@ -100,15 +100,21 @@ export function finalReviewerTier() {
 }
 
 /**
- * The human-readable echo for a tier.
+ * The human-readable tier echo.
  *
  * This is display text, not a control channel. `spawn_subsession` selects a
- * model from its typed `tier` parameter; a `/tier-*` line in a rendered prompt
- * has no effect on which model runs. It exists so a human reading a transcript
- * can see the intended tier, and so renderer/formula divergence is detectable.
+ * model from its typed `tier` parameter; a `Model tier: <tier>` line in a
+ * rendered prompt has no effect on which model runs. It exists so a human
+ * reading a transcript can see the intended tier, and so renderer/formula
+ * divergence is detectable.
  */
+export function tierEcho(tier) {
+  return `Model tier: ${TIERS[tierIndex(tier)]}`;
+}
+
+/** @deprecated Use `tierEcho`; retained for older controller instructions. */
 export function tierDirective(tier) {
-  return `/tier-${TIERS[tierIndex(tier)]}`;
+  return tierEcho(tier);
 }
 
 const ROLES = Object.freeze({
@@ -120,10 +126,12 @@ const ROLES = Object.freeze({
 });
 
 /**
- * Resolve one role's tier and its directive.
+ * Resolve one role's tier and its display echo.
  *
- * The round argument is required for the fixer role and rejected for every other
- * role, so a caller cannot silently pass a round that has no effect.
+ * The round argument is required for the fixer role and rejected for every
+ * other role, so a caller cannot silently pass a round that has no effect.
+ * `directive` is a compatibility alias for controllers written before the
+ * display line stopped looking like a slash command.
  */
 export function roleTier({ implementer, role, round }) {
   const definition = ROLES[role];
@@ -139,7 +147,8 @@ export function roleTier({ implementer, role, round }) {
   const tier = definition.needsRound
     ? definition.resolve(implementer, round)
     : definition.resolve(implementer);
-  return { tier, directive: tierDirective(tier) };
+  const echo = tierEcho(tier);
+  return { tier, echo, directive: echo };
 }
 
 class PlanError extends Error {

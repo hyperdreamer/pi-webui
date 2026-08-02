@@ -157,8 +157,53 @@ describe("PiSessionService", () => {
       await service.dispose();
     });
 
+    it("rejects a leading tier label that disagrees with the typed tier", async () => {
+      const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
+      const child = fakeRuntime("child-1", {
+        sessionFile: "/tmp/child-1.jsonl",
+        sessionManager: fakeSessionManager("/workspace-feature"),
+      });
+      const runtimes = [parent.runtime, child.runtime];
+      let index = 0;
+      const modelTierRegistry = {
+        resolve: vi.fn(() => ({
+          tier: "economy" as const,
+          model: testModel(),
+          thinkingLevel: "high" as const,
+        })),
+        validate: vi.fn(() => ({ valid: true } as const)),
+      };
+      const service = new PiSessionService(new CapturingSessionEventHub(), {
+        agentDir: TEST_AGENT_DIR,
+        modelRuntime: testModelRuntime,
+        createAgentRuntime: () => Promise.resolve(runtimes[index++] ?? child.runtime),
+        modelTierRegistry,
+        sessionManager: sessionGateway([]),
+        archiveStore: emptyArchiveStore(),
+        spawnTargets: {
+          resolveSpawnTarget: () =>
+            Promise.resolve({ allowed: true, cwd: "/workspace-feature" }),
+        },
+        heartbeatIntervalMs: 60_000,
+      });
+
+      await service.start("/workspace");
+      await expect(
+        service.spawnSubsession({
+          spawningCwd: "/workspace",
+          parentSessionId: "parent-1",
+          parentSessionFile: "/tmp/parent-1.jsonl",
+          prompt: "Model tier: frontier\n\ndo the slice",
+          cwd: "/workspace-feature",
+          tier: "economy",
+        }),
+      ).rejects.toThrow(/Model tier: frontier.*typed tier economy/u);
+      expect(modelTierRegistry.resolve).not.toHaveBeenCalled();
+      await service.dispose();
+    });
+
     it("keeps prompt text inert when a typed economy tier is supplied", async () => {
-      const prompts = ["do the slice while mentioning /tier-frontier", "do the slice"];
+      const prompts = ["do the slice while mentioning Model tier: frontier", "do the slice"];
       for (const prompt of prompts) {
         const parent = fakeRuntime("parent-1", { sessionFile: "/tmp/parent-1.jsonl" });
         const child = fakeRuntime("child-1", { sessionFile: "/tmp/child-1.jsonl", sessionManager: fakeSessionManager("/workspace-feature") });
@@ -272,7 +317,7 @@ describe("PiSessionService", () => {
         spawningCwd: "/workspace",
         parentSessionId: "parent-1",
         parentSessionFile: "/tmp/parent-1.jsonl",
-        prompt: "/tier-frontier\ndo the slice",
+        prompt: "Model tier: frontier\ndo the slice",
         cwd: "/workspace-feature",
         model: parentModel,
       });

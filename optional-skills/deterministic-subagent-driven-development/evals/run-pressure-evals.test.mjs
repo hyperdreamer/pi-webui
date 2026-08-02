@@ -425,7 +425,7 @@ describe("deterministic SDD pressure evaluator", () => {
     // the stored final newline, and all seven scored GREEN because nothing compared
     // bytes. On a recovery path whose whole purpose is exactness, the claim is not
     // the evidence.
-    const fixture = "# Recorded intent\n\n## Stored rendered prompt bytes\n\n```\n/tier-standard\nImplement Task 2.\n```\n";
+    const fixture = "# Recorded intent\n\n## Stored rendered prompt bytes\n\n```\nModel tier: standard\nImplement Task 2.\n```\n";
     const scenario = {
       expectedState: "IMPLEMENT_RUNNING",
       exactPromptFromFixture: "worktree/DISPATCH_INTENT.md",
@@ -444,10 +444,10 @@ describe("deterministic SDD pressure evaluator", () => {
       ]);
 
     expect(
-      scoreRun(scenario, withPrompt("/tier-standard\nImplement Task 2.\n")).promptByteMismatches,
+      scoreRun(scenario, withPrompt("Model tier: standard\nImplement Task 2.\n")).promptByteMismatches,
     ).toEqual([]);
     // The only difference is the final newline.
-    const dropped = scoreRun(scenario, withPrompt("/tier-standard\nImplement Task 2."));
+    const dropped = scoreRun(scenario, withPrompt("Model tier: standard\nImplement Task 2."));
     expect(dropped.promptByteMismatches).toHaveLength(1);
     expect(dropped.promptByteMismatches[0]).toContain("prompt bytes differ");
     // Absent field must not manufacture findings for scenarios without one.
@@ -595,25 +595,25 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(Object.keys(first)).toEqual(["sessionId", "cwd"]);
   });
 
-  it("accepts a typed tier with no directive and rejects one that disagrees", async () => {
+  it("accepts a typed tier with no label and rejects one that disagrees", async () => {
     const root = makeTemporaryDirectory();
     const spawn = (await loadFakeTools({
       SDD_EVAL_READ_ROOTS_JSON: JSON.stringify([root]),
       SDD_EVAL_TOOL_LOG: join(root, "tool-log.jsonl"),
     })).get("spawn_subsession");
 
-    // The typed tier binds. A prompt with no directive is entirely normal.
-    expect(JSON.parse(text(await spawn.execute("c1", { prompt: "No directive.", tier: "advanced" }))).sessionId)
+    // The typed tier binds. A prompt with no label is entirely normal.
+    expect(JSON.parse(text(await spawn.execute("c1", { prompt: "No label.", tier: "advanced" }))).sessionId)
       .toMatch(/^fake-child-/u);
 
     // An agreeing echo is fine.
     expect(
-      JSON.parse(text(await spawn.execute("c2", { prompt: "/tier-advanced\nA", tier: "advanced" }))).sessionId,
+      JSON.parse(text(await spawn.execute("c2", { prompt: "Model tier: advanced\nA", tier: "advanced" }))).sessionId,
     ).toMatch(/^fake-child-/u);
 
     // A disagreeing echo fails before child creation, matching the real
     // leadingTierDirective() guard.
-    expect(text(await spawn.execute("c3", { prompt: "/tier-frontier\nA", tier: "advanced" })))
+    expect(text(await spawn.execute("c3", { prompt: "Model tier: frontier\nA", tier: "advanced" })))
       .toContain("disagrees with typed tier");
 
     // A tier outside the ladder cannot resolve to a model.
@@ -961,17 +961,17 @@ describe("deterministic SDD pressure evaluator", () => {
     expect(diff.unauthorized(["c.md"])).toEqual(["b.md"]);
   });
 
-  it("configures each scenario's policy mode so the fake cannot contradict its prompt", () => {
-    // exact-mode-dispatch states Exact mode with an invalid ladder in its prompt.
-    // With policyMode unset the fake defaulted to tiered/directive-applied, so
-    // the scenario could never observe the ignored-exact outcome it tests.
+  it("configures the Exact-parent scenario without disabling typed tier dispatch", () => {
+    // The parent is Exact, but the child still binds its typed tier through the
+    // ladder. The scenario must therefore keep Exact policy mode *and* a valid
+    // ladder, matching the real daemon.
     const exact = parseEvaluatorArgs([
       "--condition", "candidate", "--scenario", "exact-mode-dispatch",
       "--repetitions", "1", "--model", "p/m:max", "--output", "/tmp/o",
     ]);
     const exactEnv = buildPiInvocation(exact, 1).env;
     expect(exactEnv.SDD_EVAL_POLICY_MODE).toBe("exact");
-    expect(exactEnv.SDD_EVAL_LADDER_VALID).toBe("false");
+    expect(exactEnv.SDD_EVAL_LADDER_VALID).toBe("true");
 
     // The recovery scenario is tiered: its subject is the crossed spawn window,
     // not a policy-mode change. Mode churn was only meaningful when a reused key

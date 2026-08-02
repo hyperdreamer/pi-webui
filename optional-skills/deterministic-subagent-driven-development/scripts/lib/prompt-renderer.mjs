@@ -7,7 +7,7 @@
  * template evaluation.
  *
  * There is deliberately no general-purpose templating here. A template engine
- * would let a context value introduce a directive, a heading, or another
+ * would let a context value introduce a tier label, a heading, or another
  * placeholder, and the prompt is the one artifact a child treats as instructions.
  * Role contracts are static files copied verbatim; context is emitted as a
  * validated, escaped key/value list.
@@ -242,7 +242,7 @@ const validateContext = (role, context) => {
  *
  * Byte layout, fixed by contract because dispatch stores and reissues these bytes:
  *
- *   /tier-<tier>\n
+ *   Model tier: <tier>\n
  *   \n
  *   <role contract, trailing whitespace trimmed>\n
  *   \n
@@ -263,7 +263,7 @@ export function renderPrompt({ tier, role, context, skillRoot }) {
   const template = readFileSync(join(skillRoot, "prompts", definition.template), "utf8");
 
   const rendered = [
-    `/tier-${tier}`,
+    `Model tier: ${tier}`,
     "",
     template.trimEnd(),
     "",

@@ -7,7 +7,7 @@
     "version": "1.11.0-beta.6"
   },
   "runtimeHashAlgorithm": "sha256-path-nul-bytes-v1",
-  "runtimeHash": "05db023b4259bfe1755c59a97e971f03de4deed34e8979b12fbcc0b31de5854a",
+  "runtimeHash": "7e9c66f015eda1705ceafb3e7d827dbd57c33a4fea15d0cc2b09c66efdfdedb8",
   "runtimeFiles": [
     "SKILL.md",
     "prompts/final-reviewer.md",

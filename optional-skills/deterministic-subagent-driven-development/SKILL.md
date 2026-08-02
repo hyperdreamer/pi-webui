@@ -5,10 +5,9 @@ description: Use when executing a written implementation plan whose tasks declar
 
 # Deterministic Subagent-Driven Development
 
-**Related workflows:** `using-git-worktrees` before allocating a worktree;
-`test-driven-development`, `requesting-code-review`, and
-`finishing-a-development-branch` as child prompts at their boundaries. Child
-prompts are self-contained; never assume a child loaded a parent skill.
+**Related workflows:** use `using-git-worktrees` before allocation. Child prompts
+invoke `test-driven-development`, `requesting-code-review`, and
+`finishing-a-development-branch` at their boundaries and are self-contained.
 
 ## Capability and Validation Gates
 
@@ -19,24 +18,23 @@ forbidden.
 **Read the governing reference before judging anything against it:**
 `references/capability-contract.md` before gates 2–4, `references/plan-contract.md`
 before gate 6, `references/state-machine.md` before reporting any state token. They
-hold the exact field names, tokens, and thresholds; this file only points at them.
+hold the exact field names, tokens, and thresholds.
 
 1. **Plan and worktree.** Confirm both are specified and accessible without
    mutating either.
 
 2. **Policy contract.** Read `references/capability-contract.md`, then confirm
-   `get_model_policy` returns a version-1 result matching it: active policy, current runtime
-   tuple, next-request tuple, ladder status, and tracked-dispatch capability.
-   Reject unknown versions.
+   `get_model_policy` returns version 1 with active policy, current/next-request
+   tuples, ladder status, and tracked-dispatch capability. Reject other versions.
 
 3. **Spawn capability.** Confirm the policy result's `trackedDispatch.tierField`
    is `true`. The runtime provides **no** dispatch key and **no** deduplication.
-   Never expect idempotency evidence; its absence is not a capability failure.
+   Missing idempotency evidence is not a capability failure.
 
 4. **Ladder completeness.** All six mappings must resolve in **both** modes:
-   children dispatch by tier whatever the parent's mode, and reviewer/fixer tiers
-   derive by formula, so any unresolvable rung can fail a later round. Exact mode
-   reports `currentTier` as `null` and keeps the runtime tuple.
+   children dispatch by tier regardless of parent mode; reviewer/fixer tiers
+   derive by formula. Exact mode reports `currentTier` as `null` and keeps the
+   runtime tuple.
 
 5. **Capability blocked.** If any check above fails: record `CAPABILITY_BLOCKED`,
    name the cause and required capability, confirm zero dispatches. **Stop.**
@@ -167,7 +165,8 @@ own instructions. Then stop: a mismatch is never diagnosed by spawning another
 child.
 
 **Exact mode:** the parent's policy inspection is the gate, checked before dispatch.
-Tier directives are visibly ignored in the child; that is expected.
+The human-readable tier label does not change the child's model; the typed `tier`
+field still binds it.
 
 ## Bounded Context, Review, and Completion
 

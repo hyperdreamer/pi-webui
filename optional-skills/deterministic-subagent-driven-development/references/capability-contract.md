@@ -19,8 +19,8 @@ and never returns credentials or endpoints.
 It advertises no tier slash commands. An earlier draft of this file listed
 `/tier-economy`...`/tier-frontier` plus `/tier-up` and `/tier-down`. No such
 command is registered in the runtime: tier selection is the typed `tier` field on
-`spawn_subsession` and nothing else. Advertising them would promise a channel that
-does not exist.
+`spawn_subsession` and nothing else. The rendered `Model tier: <tier>` line is a
+human-readable consistency label, not a command.
 
 ```ts
 type ModelTier = "economy" | "fast" | "standard" | "advanced" | "capable" | "frontier";
@@ -102,14 +102,14 @@ without creating a child and without substituting a neighbouring tier. An omitte
 `tier` inherits the parent's model.
 
 Prompt text never selects a model. The runtime does not scan prompt bytes for
-slash directives, so a `/tier-*` line is a human-readable echo with zero control
-effect. A test fake that recovers a tier by splitting the prompt is exercising a
-channel the runtime does not implement, and cannot detect a child that ignored
-the directive.
+model-selection commands, so a `Model tier: <tier>` line is a human-readable echo
+with zero control effect. A test fake that recovers a tier from this label is
+exercising a channel the runtime does not implement, and cannot detect a child
+that ignored the typed field.
 
-The one exception is a guard, not a mechanism: a leading `/tier-*` line that
-*disagrees* with the typed `tier` is rejected before child creation, so a stale
-echoed directive cannot silently imply a tier that was not requested.
+The one exception is a guard, not a mechanism: a leading label that *disagrees*
+with the typed `tier` is rejected before child creation, so a stale rendered
+prompt cannot silently imply a tier that was not requested.
 
 ### No dispatch idempotency
 
@@ -129,7 +129,7 @@ rely on is therefore **detectable** non-idempotency, not prevented duplication:
 ### Fail-closed conditions
 
 Missing required fields, unknown tier values, a tier absent from the configured
-ladder, an unavailable model, and a leading directive disagreeing with the typed
+ladder, an unavailable model, and a leading tier label disagreeing with the typed
 tier all fail before a child is created.
 
 ## Recovery-input properties

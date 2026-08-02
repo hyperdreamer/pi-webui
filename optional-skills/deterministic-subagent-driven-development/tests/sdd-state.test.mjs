@@ -29,6 +29,7 @@ import {
   roleTier,
   TERMINAL_PHASES,
   tierDirective,
+  tierEcho,
   tierLabel,
   TIERS,
   TRANSITIONS,
@@ -315,17 +316,32 @@ describe("deterministic SDD tier formulas", () => {
   });
 
   describe("roleTier", () => {
-    it("resolves each role and emits the matching directive", () => {
-      expect(roleTier({ implementer: "advanced", role: "implementer" }))
-        .toEqual({ tier: "advanced", directive: "/tier-advanced" });
-      expect(roleTier({ implementer: "advanced", role: "task-reviewer" }))
-        .toEqual({ tier: "capable", directive: "/tier-capable" });
-      expect(roleTier({ implementer: "advanced", role: "re-reviewer" }))
-        .toEqual({ tier: "capable", directive: "/tier-capable" });
-      expect(roleTier({ implementer: "advanced", role: "final" }))
-        .toEqual({ tier: "frontier", directive: "/tier-frontier" });
-      expect(roleTier({ implementer: "advanced", role: "fixer", round: 4 }))
-        .toEqual({ tier: "capable", directive: "/tier-capable" });
+    it("resolves each role and emits the matching tier echo", () => {
+      expect(roleTier({ implementer: "advanced", role: "implementer" })).toEqual({
+        tier: "advanced",
+        echo: "Model tier: advanced",
+        directive: "Model tier: advanced",
+      });
+      expect(roleTier({ implementer: "advanced", role: "task-reviewer" })).toEqual({
+        tier: "capable",
+        echo: "Model tier: capable",
+        directive: "Model tier: capable",
+      });
+      expect(roleTier({ implementer: "advanced", role: "re-reviewer" })).toEqual({
+        tier: "capable",
+        echo: "Model tier: capable",
+        directive: "Model tier: capable",
+      });
+      expect(roleTier({ implementer: "advanced", role: "final" })).toEqual({
+        tier: "frontier",
+        echo: "Model tier: frontier",
+        directive: "Model tier: frontier",
+      });
+      expect(roleTier({ implementer: "advanced", role: "fixer", round: 4 })).toEqual({
+        tier: "capable",
+        echo: "Model tier: capable",
+        directive: "Model tier: capable",
+      });
     });
 
     it("requires a round for the fixer role and rejects it elsewhere", () => {
@@ -398,17 +414,21 @@ describe("sdd-state CLI", () => {
 
   it("resolves every role through role-tier", () => {
     const expectations = [
-      [["--implementer", "advanced", "--role", "implementer"], "advanced", "/tier-advanced"],
-      [["--implementer", "advanced", "--role", "task-reviewer"], "capable", "/tier-capable"],
-      [["--implementer", "advanced", "--role", "re-reviewer"], "capable", "/tier-capable"],
-      [["--implementer", "advanced", "--role", "final"], "frontier", "/tier-frontier"],
-      [["--implementer", "advanced", "--role", "fixer", "--round", "4"], "capable", "/tier-capable"],
-      [["--implementer", "economy", "--role", "task-reviewer"], "standard", "/tier-standard"],
+      [["--implementer", "advanced", "--role", "implementer"], "advanced"],
+      [["--implementer", "advanced", "--role", "task-reviewer"], "capable"],
+      [["--implementer", "advanced", "--role", "re-reviewer"], "capable"],
+      [["--implementer", "advanced", "--role", "final"], "frontier"],
+      [["--implementer", "advanced", "--role", "fixer", "--round", "4"], "capable"],
+      [["--implementer", "economy", "--role", "task-reviewer"], "standard"],
     ];
-    for (const [args, tier, directive] of expectations) {
+    for (const [args, tier] of expectations) {
       const result = runCli(["role-tier", ...args]);
       expect(result.status, `${args.join(" ")} -> ${result.stderr}`).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ tier, directive });
+      expect(JSON.parse(result.stdout)).toEqual({
+        tier,
+        echo: `Model tier: ${tier}`,
+        directive: `Model tier: ${tier}`,
+      });
     }
   });
 
@@ -489,8 +509,9 @@ describe("tier identifiers match the dispatch boundary", () => {
     expect(() => tierLabel("Frontier")).toThrow(/unknown tier/iu);
   });
 
-  it("emits a lowercase directive echo", () => {
-    expect(tierDirective("capable")).toBe("/tier-capable");
+  it("emits a lowercase tier echo with a compatibility alias", () => {
+    expect(tierEcho("capable")).toBe("Model tier: capable");
+    expect(tierDirective("capable")).toBe("Model tier: capable");
   });
 });
 
@@ -873,22 +894,22 @@ describe("task dispatch intent", () => {
     expect(() => intended({ renderedPrompt: "" })).toThrow(/renderedPrompt/u);
   });
 
-  it("accepts a rendered prompt with no leading tier directive", () => {
-    expect(intended({ renderedPrompt: "No directive at all.\n" }).dispatch.renderedPrompt).toBe(
-      "No directive at all.\n",
+  it("accepts a rendered prompt with no leading tier label", () => {
+    expect(intended({ renderedPrompt: "No label at all.\n" }).dispatch.renderedPrompt).toBe(
+      "No label at all.\n",
     );
   });
 
-  it("accepts a leading directive echo that agrees with the typed tier", () => {
+  it("accepts a leading tier label that agrees with the typed tier", () => {
     expect(
-      intended({ renderedPrompt: "/tier-economy\n\nImplement task 1.\n" }).dispatch.tier,
+      intended({ renderedPrompt: "Model tier: economy\n\nImplement task 1.\n" }).dispatch.tier,
     ).toBe("economy");
   });
 
-  it("reports a leading directive echo that disagrees with the typed tier", () => {
-    expect(() => intended({ renderedPrompt: "/tier-frontier\n\nImplement task 1.\n" })).toThrow(
-      /divergence/u,
-    );
+  it("reports a leading tier label that disagrees with the typed tier", () => {
+    expect(() =>
+      intended({ renderedPrompt: "Model tier: frontier\n\nImplement task 1.\n" }),
+    ).toThrow(/divergence/u);
   });
 
   it("rejects a tier differing from the role formula", () => {

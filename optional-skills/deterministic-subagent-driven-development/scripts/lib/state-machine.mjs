@@ -494,13 +494,14 @@ const buildIntent = (state, event, intentPhase) => {
     fail(`renderedPrompt exceeds ${String(MAX_PROMPT_BYTES)} bytes (384 KiB)`);
   }
 
-  // A leading `/tier-*` line is a human-readable echo with no control effect.
-  // Its absence is fine; a disagreement with the typed tier means the renderer
-  // and the contract have diverged and must not be papered over.
-  const echo = /^\/tier-([a-z]+)[ \t]*(?:\r?\n|$)/u.exec(event.renderedPrompt);
+  // A leading `Model tier: <tier>` line is a human-readable echo with no
+  // control effect. Its absence is fine; a disagreement with the typed tier
+  // means the renderer and the contract have diverged and must not be papered
+  // over.
+  const echo = /^Model tier: ([a-z]+)[ \t]*(?:\r?\n|$)/u.exec(event.renderedPrompt);
   if (echo !== null && echo[1] !== event.tier) {
     fail(
-      `renderer/formula divergence: prompt echoes /tier-${echo[1]} while the typed tier is ${event.tier}`,
+      `renderer/formula divergence: prompt says Model tier: ${echo[1]} while the typed tier is ${event.tier}`,
     );
   }
 
