@@ -48,10 +48,10 @@ upgrade the Pi package set together and require a clean full audit instead.
 | Field | Value |
 | --- | --- |
 | Status | Active, narrowly scoped upstream-only/non-bundled exception |
-| Last validated | 2026-07-26 |
+| Last validated | 2026-08-03 |
 | Expires | 2026-08-25 |
-| Upstream package path | `@earendil-works/pi-coding-agent@0.82.1` → published `npm-shrinkwrap.json` |
-| PI WEBUI compatibility range | `>=0.82.1 <0.83` |
+| Upstream package path | `@earendil-works/pi-coding-agent@0.83.0` → published `npm-shrinkwrap.json` |
+| PI WEBUI compatibility range | `>=0.83.0 <0.84` |
 | Bundling evidence | The package `files` allowlist excludes this register and all `node_modules`; verify with `npm pack --dry-run --ignore-scripts --json` at each release. |
 | Production-audit requirement | `npm audit --omit=dev --json` must remain clean. |
 
@@ -61,10 +61,9 @@ The current root development installation contains these upstream-locked paths:
   [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg)
   (unbounded expansion denial of service).
 
-At the last validation, the newest published Pi Coding Agent release (`0.82.1`)
-resolved the former nested `protobufjs` advisory but still shrinkwrapped
-vulnerable `brace-expansion@5.0.7`; upstream `main` had the same unresolved
-high-severity path. npm overrides do not penetrate that published shrinkwrap.
+At the last validation, the newest published Pi Coding Agent release (`0.83.0`)
+still shrinkwrapped vulnerable `brace-expansion@5.0.7`; npm audit reported no
+production vulnerabilities. npm overrides do not penetrate that published shrinkwrap.
 Therefore, do not force a local replacement: wait for a compatible upstream release that
 resolves every advisory, then upgrade the Pi package set together and rerun:
 
