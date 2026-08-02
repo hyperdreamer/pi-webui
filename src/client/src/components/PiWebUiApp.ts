@@ -416,7 +416,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
-    if (this.compactRailOpen || this.activeActivityRailId !== undefined || this.settingsSection !== undefined || this.state.treeDialog !== undefined) return;
+    if (this.compactRailOpen || this.activeActivityRailId !== undefined || this.settingsSection !== undefined || this.state.treeDialog !== undefined || this.state.actionPaletteOpen) return;
     if (this.keyboard.handle(event, this.getDefaultActions(), { shortcuts: this.shortcutConfig })) {
       event.preventDefault();
       event.stopPropagation();

@@ -14,6 +14,7 @@ beforeEach(() => {
 const { PiWebUiApp } = await import("./PiWebUiApp");
 const { ActionPalette } = await import("./ActionPalette");
 type PiWebUiAppElement = InstanceType<typeof PiWebUiApp>;
+type GlobalKeyDownHandler = (this: PiWebUiAppElement, event: Event) => void;
 let mountedApp: PiWebUiAppElement | undefined;
 
 afterEach(async () => {
@@ -24,6 +25,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   if (typeof window.matchMedia !== "function") Reflect.deleteProperty(window, "matchMedia");
+  // Opening the settings dialog pushes ?settings=... onto the shared jsdom URL, and
+  // PiWebUiApp seeds `settingsSection` from that query on construction. Without this
+  // reset the next app in this file starts with settings open, which silently changes
+  // what the global-shortcut guard does.
+  window.history.replaceState({}, "", "/");
 });
 
 describe("PiWebUiApp action palette persistence", () => {
@@ -92,6 +98,31 @@ describe("PiWebUiApp action palette persistence", () => {
     expect(actionPalette(app)).toBeNull();
     expect(app.renderRoot.querySelector("settings-dialog")).not.toBeNull();
   });
+
+  it("keeps global shortcuts out of an open palette", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: true });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+    const handleShortcut = replaceKeyboardHandler(app);
+
+    dispatchGlobalKeyDown(app);
+
+    expect(handleShortcut).not.toHaveBeenCalled();
+    expect(paletteOpen(app)).toBe(true);
+  });
+
+  it("resumes global shortcuts once the palette closes", async () => {
+    const app = new PiWebUiApp();
+    setAppState(app, { ...initialAppState(), actionPaletteOpen: false });
+    mountWithoutAppSideEffects(app);
+    await app.updateComplete;
+    const handleShortcut = replaceKeyboardHandler(app);
+
+    dispatchGlobalKeyDown(app);
+
+    expect(handleShortcut).toHaveBeenCalled();
+  });
 });
 
 async function openPaletteWith(actions: AppAction[]): Promise<{ app: PiWebUiAppElement; ran: string[] }> {
@@ -150,4 +181,25 @@ function clickPaletteRow(app: PiWebUiAppElement, title: string): void {
   const row = rows.find((candidate) => candidate.textContent.includes(title));
   if (row === undefined) throw new Error(`Expected a palette row titled ${title}`);
   row.click();
+}
+
+/** Replaces the shortcut dispatcher so the guard can be observed without running actions. */
+function replaceKeyboardHandler(app: PiWebUiAppElement) {
+  const keyboard: unknown = Reflect.get(app, "keyboard");
+  if (typeof keyboard !== "object" || keyboard === null || typeof Reflect.get(keyboard, "handle") !== "function") {
+    throw new Error("PiWebUiApp keyboard dispatcher is unavailable");
+  }
+  const handle = vi.fn(() => false);
+  if (!Reflect.set(keyboard, "handle", handle)) throw new Error("Could not replace PiWebUiApp keyboard dispatcher");
+  return handle;
+}
+
+function dispatchGlobalKeyDown(app: PiWebUiAppElement): void {
+  const handler: unknown = Reflect.get(app, "onKeyDown");
+  if (!isGlobalKeyDownHandler(handler)) throw new Error("PiWebUiApp global keydown handler is unavailable");
+  handler.call(app, new Event("keydown"));
+}
+
+function isGlobalKeyDownHandler(value: unknown): value is GlobalKeyDownHandler {
+  return typeof value === "function";
 }
