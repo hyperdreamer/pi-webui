@@ -235,6 +235,16 @@ In **Settings → Model tiers**, you edit one complete six-rung ladder: `economy
 - **Missing or malformed ladder:** If `modelTiers` is missing or malformed, Exact-mode model selection remains fully usable, but tiered model routing becomes unavailable.
 - **Machine federation:** Model tier settings are saved for the selected machine. Editing remote machine settings requires a remote daemon advertising the additive `settings.modelTiers` capability.
 
+Sessions can also use a per-session model policy from the composer:
+
+- **Exact (default):** New root sessions start in Exact mode. It pins the selected provider, model, and thinking level, and keeps the existing provider/model/thinking controls.
+- **Tiered:** Use the first composer control, **Mode**, to select Tiered, then choose one of the six ladder tiers. The Tier selector is disabled while Mode is Exact. Tiered remembers both the selected tier and the Exact model/thinking selection, so switching modes does not discard either choice. It shows the resolved model and thinking level instead of editable Exact controls. Saving the policy or creating a root session applies the selected tier's model and thinking-level tuple atomically.
+- **Validation and recovery:** Tiered requires a complete, valid six-tier ladder on the selected machine. If a configured model becomes unavailable, authentication no longer permits it, or its thinking level is unsupported, PI WEBUI shows the reason and never silently substitutes a model, tier, or thinking level. If a saved policy cannot be restored, prompts remain blocked until you save an explicit repair; PI WEBUI does not silently reuse an older choice.
+- **When changes are available:** You can change a policy only while its session is idle and writable. During active work and for archived sessions, the current policy and any block reason remain visible but the controls are disabled. Once the session is idle and writable, a blocked policy remains repairable through an explicit update.
+- **Availability and compatibility:** Model-policy controls require the `sessions.modelPolicy` capability on both the web process and the session daemon for the selected machine. When that capability is unavailable, PI WEBUI keeps the existing model and thinking controls and hides the additive policy control.
+- **Starting and persistence:** The selected policy is carried into root-session creation from both the first-prompt and **New Session** paths, persists with that session, and remains selected after a failed creation so a retry uses the same choice.
+- **Scope and installation:** This release does not add `/tier-*` commands, and editing the tier ladder later does not automatically remap an existing Tiered session. After installing this release, restart `pi-webui-sessiond.service` manually once; ordinary UI/API autoreload does not load session-daemon changes.
+
 ### Session daemon tools
 
 `spawnSessions` controls whether agents receive the `spawn_session` tool. It defaults to `true`; set it to `false` if you do not want an agent to start independent PI WEBUI sessions.
