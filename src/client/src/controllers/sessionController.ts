@@ -226,12 +226,17 @@ export class SessionController {
     modelPolicy?: SessionModelPolicyUpdate,
     onStarted?: (started: boolean) => void,
   ): Promise<void> {
-    const startingSession = this.startSession(modelPolicy);
+    const startingSession = this.startSession(modelPolicy).then(
+      (started) => ({ rejected: false as const, started }),
+      (error: unknown) => ({ rejected: true as const, started: false, error }),
+    );
     try {
       await this.send(text, streamingBehavior, attachments, delivery);
     } finally {
-      onStarted?.(await startingSession);
+      onStarted?.((await startingSession).started);
     }
+    const startOutcome = await startingSession;
+    if (startOutcome.rejected) throw startOutcome.error;
   }
 
   preferredSession(cwd: string, sessions: SessionInfo[], targetSessionId: string | undefined): SessionInfo | undefined {

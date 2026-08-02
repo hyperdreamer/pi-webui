@@ -1781,7 +1781,8 @@ export class PiWebUiApp extends LitElement {
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
-    // every starter edit and relink replaces the policy object.
+    // every starter edit and value-changing relink replaces the policy object;
+    // a value-equivalent relink intentionally preserves it.
     const workspaceId = this.state.selectedWorkspace?.id;
     const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();

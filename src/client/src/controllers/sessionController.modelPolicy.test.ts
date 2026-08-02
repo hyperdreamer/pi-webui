@@ -51,7 +51,11 @@ interface Harness {
   setSelection: (patch: Partial<AppState>) => void;
 }
 
-function harness(api: typeof defaultApi, initial: Partial<AppState> = {}): Harness {
+function harness(
+  api: typeof defaultApi,
+  initial: Partial<AppState> = {},
+  updateUrl: () => void = () => undefined,
+): Harness {
   let state: AppState = {
     ...initialAppState(),
     selectedMachine: machine("remote"),
@@ -63,7 +67,7 @@ function harness(api: typeof defaultApi, initial: Partial<AppState> = {}): Harne
   const controller = new SessionController(
     () => state,
     (patch) => { state = { ...state, ...patch }; },
-    () => undefined,
+    updateUrl,
     undefined,
     { api, socket: new FakeSocket() },
   );
@@ -526,6 +530,62 @@ describe("SessionController model policy state", () => {
     await expect(startAndSend).rejects.toBe(queueError);
     expect(lifecycle).toEqual(["started:true", "rejected"]);
     expect(state().selectedSession?.id).toBe(selectedSession.id);
+  });
+
+  it("reports false and preserves a rejected START when the initial send succeeds", async () => {
+    const startError = new Error("URL update failed");
+    const backendStart = vi.fn(() => Promise.resolve(selectedSession));
+    const { controller } = harness(
+      selectionApi({ startSession: backendStart }),
+      { selectedSession: undefined, sessions: [] },
+      () => { throw startError; },
+    );
+
+    const startOutcomes: boolean[] = [];
+    const rejection = await controller.startSessionWithPrompt(
+      "Plan the migration",
+      undefined,
+      undefined,
+      "inline",
+      tieredUpdate,
+      (started) => { startOutcomes.push(started); },
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(startOutcomes).toEqual([false]);
+    expect(rejection).toBe(startError);
+    expect(backendStart).not.toHaveBeenCalled();
+  });
+
+  it("reports false without replacing an initial send rejection when START also rejects", async () => {
+    const startError = new Error("URL update failed");
+    const queueError = new Error("queue failed");
+    const backendStart = vi.fn(() => Promise.resolve(selectedSession));
+    const { controller } = harness(
+      selectionApi({ startSession: backendStart }),
+      { selectedSession: undefined, sessions: [] },
+      () => { throw startError; },
+    );
+    vi.spyOn(controller, "send").mockRejectedValue(queueError);
+
+    const startOutcomes: boolean[] = [];
+    const rejection = await controller.startSessionWithPrompt(
+      "Plan the migration",
+      undefined,
+      undefined,
+      "inline",
+      tieredUpdate,
+      (started) => { startOutcomes.push(started); },
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(rejection).toBe(queueError);
+    expect(startOutcomes).toEqual([false]);
+    expect(backendStart).not.toHaveBeenCalled();
   });
 
   it("reports false when starter session creation fails", async () => {
