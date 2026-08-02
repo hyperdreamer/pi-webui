@@ -48,6 +48,7 @@ function exactResponse(sessionId: string, selection: ExactModelSelection = exact
 interface Harness {
   controller: SessionController;
   state: () => AppState;
+  statePatches: Partial<AppState>[];
   setSelection: (patch: Partial<AppState>) => void;
 }
 
@@ -64,14 +65,18 @@ function harness(
     sessions: [selectedSession, otherSession],
     ...initial,
   };
+  const statePatches: Partial<AppState>[] = [];
   const controller = new SessionController(
     () => state,
-    (patch) => { state = { ...state, ...patch }; },
+    (patch) => {
+      statePatches.push(patch);
+      state = { ...state, ...patch };
+    },
     updateUrl,
     undefined,
     { api, socket: new FakeSocket() },
   );
-  return { controller, state: () => state, setSelection: (patch) => { state = { ...state, ...patch }; } };
+  return { controller, state: () => state, statePatches, setSelection: (patch) => { state = { ...state, ...patch }; } };
 }
 
 function selectionApi(overrides: Partial<typeof defaultApi> = {}): typeof defaultApi {
@@ -121,6 +126,34 @@ describe("SessionController model policy state", () => {
     expect(state().modelPolicy).toBeUndefined();
     expect(state().isLoadingModelPolicy).toBe(false);
     expect(state().error).toBe("");
+  });
+
+  it("does not publish policy-load cleanup after disposal", async () => {
+    const request = deferred<SessionModelPolicyResponse>();
+    const { controller, statePatches } = harness({ ...defaultApi, modelPolicy: () => request.promise });
+
+    const loading = controller.loadModelPolicy();
+    controller.dispose();
+    statePatches.length = 0;
+
+    request.resolve(tieredResponse(selectedSession.id));
+    await loading;
+
+    expect(statePatches).toEqual([]);
+  });
+
+  it("does not publish policy-save cleanup after disposal", async () => {
+    const request = deferred<SessionModelPolicyResponse>();
+    const { controller, statePatches } = harness({ ...defaultApi, setModelPolicy: () => request.promise });
+
+    const saving = controller.saveModelPolicy(tieredUpdate);
+    controller.dispose();
+    statePatches.length = 0;
+
+    request.resolve(tieredResponse(selectedSession.id));
+    await saving;
+
+    expect(statePatches).toEqual([]);
   });
 
   it("saves a policy, keeps the displayed response until confirmation, and applies the returned status", async () => {
@@ -376,6 +409,92 @@ describe("SessionController model policy state", () => {
     expect(state().modelPolicyError).toBe("Error: policy write rejected");
     expect(state().isSavingModelPolicy).toBe(false);
     expect(state().isLoadingModelPolicy).toBe(false);
+  });
+
+  it("invalidates and re-reads a response superseded during a failed save", async () => {
+    const loaded = exactResponse(selectedSession.id);
+    const blockedStatus = policyStatus(selectedSession.id, {
+      mode: "exact",
+      resolved: switchedExact,
+      blockedReason: "MODEL_POLICY_BLOCKED: transition failed",
+    });
+    const refreshed: SessionModelPolicyResponse = { ...loaded, session: blockedStatus };
+    const save = deferred<SessionModelPolicyResponse>();
+    const reread = deferred<SessionModelPolicyResponse>();
+    let readCount = 0;
+    const modelPolicy = vi.fn(() => {
+      readCount += 1;
+      return readCount === 1 ? Promise.resolve(loaded) : reread.promise;
+    });
+    const { controller, state } = harness({
+      ...defaultApi,
+      modelPolicy,
+      setModelPolicy: () => save.promise,
+    });
+
+    await controller.loadModelPolicy();
+    const saving = controller.saveModelPolicy(tieredUpdate);
+    controller.applySessionStatus(blockedStatus);
+
+    expect(state().modelPolicy).toBe(loaded);
+    expect(state().status).toEqual(blockedStatus);
+    expect(modelPolicy).toHaveBeenCalledTimes(1);
+
+    save.reject(new Error("policy transition failed"));
+    await saving;
+
+    expect(state().modelPolicy).toBeUndefined();
+    expect(modelPolicy).toHaveBeenCalledTimes(2);
+
+    reread.resolve(refreshed);
+    await vi.waitFor(() => { expect(state().modelPolicy).toBe(refreshed); });
+    expect(modelPolicy).toHaveBeenCalledTimes(2);
+  });
+
+  it("replaces a read issued during a failed save after a status supersedes the held response", async () => {
+    const loaded = exactResponse(selectedSession.id);
+    const blockedStatus = policyStatus(selectedSession.id, {
+      mode: "exact",
+      resolved: switchedExact,
+      blockedReason: "MODEL_POLICY_BLOCKED: transition failed",
+    });
+    const refreshed: SessionModelPolicyResponse = { ...loaded, session: blockedStatus };
+    const save = deferred<SessionModelPolicyResponse>();
+    const preSettlementRead = deferred<SessionModelPolicyResponse>();
+    const replacementRead = deferred<SessionModelPolicyResponse>();
+    let readCount = 0;
+    const modelPolicy = vi.fn(() => {
+      readCount += 1;
+      if (readCount === 1) return Promise.resolve(loaded);
+      return readCount === 2 ? preSettlementRead.promise : replacementRead.promise;
+    });
+    const { controller, state } = harness({
+      ...defaultApi,
+      modelPolicy,
+      setModelPolicy: () => save.promise,
+    });
+
+    await controller.loadModelPolicy();
+    const saving = controller.saveModelPolicy(tieredUpdate);
+    const loading = controller.loadModelPolicy();
+    controller.applySessionStatus(blockedStatus);
+
+    expect(state().modelPolicy).toBe(loaded);
+    expect(modelPolicy).toHaveBeenCalledTimes(2);
+
+    save.reject(new Error("policy transition failed"));
+    await saving;
+
+    expect(state().modelPolicy).toBeUndefined();
+    expect(modelPolicy).toHaveBeenCalledTimes(3);
+
+    preSettlementRead.resolve(loaded);
+    await loading;
+    expect(state().modelPolicy).toBeUndefined();
+
+    replacementRead.resolve(refreshed);
+    await vi.waitFor(() => { expect(state().modelPolicy).toBe(refreshed); });
+    expect(modelPolicy).toHaveBeenCalledTimes(3);
   });
 
   it("clears its progress flag when the selection is replaced by an equivalent session copy", async () => {

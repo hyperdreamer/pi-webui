@@ -974,7 +974,7 @@ export class SessionController {
     } catch (error) {
       if (this.canWriteModelPolicyReadResult(session.id, machineId, selectionSeq, loadSeq, settledSaveSeq)) this.setState({ modelPolicyError: String(error) });
     } finally {
-      if (this.modelPolicyLoadSeq === loadSeq) this.setState({ isLoadingModelPolicy: false });
+      if (!this.disposed && this.modelPolicyLoadSeq === loadSeq) this.setState({ isLoadingModelPolicy: false });
     }
   }
 
@@ -1004,8 +1004,15 @@ export class SessionController {
       // Only a save that still owns the current selection may outrank reads; a
       // save abandoned by a selection change must not suppress the new
       // selection's reads.
-      if (this.isCurrentSessionSelection(session.id, machineId, selectionSeq) && saveSeq > this.modelPolicySettledSaveSeq) this.modelPolicySettledSaveSeq = saveSeq;
-      if (this.modelPolicySaveSeq === saveSeq) this.setState({ isSavingModelPolicy: false });
+      const isCurrentSelection = this.isCurrentSessionSelection(session.id, machineId, selectionSeq);
+      if (isCurrentSelection && saveSeq > this.modelPolicySettledSaveSeq) this.modelPolicySettledSaveSeq = saveSeq;
+      if (!this.disposed && this.modelPolicySaveSeq === saveSeq) this.setState({ isSavingModelPolicy: false });
+      // A status received while the save was pending may have been deliberately
+      // held back. Once this save leaves the in-flight set, compare that current
+      // status with the last confirmed response before the stale branch can be
+      // used for another update.
+      const currentStatus = isCurrentSelection ? this.getState().status : undefined;
+      if (currentStatus !== undefined) this.invalidateSupersededModelPolicy(currentStatus);
     }
   }
 
@@ -1075,10 +1082,11 @@ export class SessionController {
     // Nothing to compare against when the confirmed response carried no policy
     // status (an older daemon), so no status can be read as superseding it.
     if (this.modelPolicyConfirmedStatus === undefined) return;
-    // A save in flight owns the displayed response until it confirms, and a read
-    // in flight is already fetching a fresh one; both adopt their own status
-    // through the confirmed path.
-    if (this.modelPolicySavesInFlight.size > 0 || state.isLoadingModelPolicy) return;
+    // A save in flight owns the displayed response until it settles and then
+    // rechecks the latest status. An ordinary read clears the held response when
+    // it starts; if one is still held here, a concurrent read began during the
+    // save and cannot publish after that save settled, so a replacement is needed.
+    if (this.modelPolicySavesInFlight.size > 0) return;
     if (modelPolicyStatusesAgree(status.modelPolicy, this.modelPolicyConfirmedStatus)) return;
     this.setState({ modelPolicy: undefined });
     void this.loadModelPolicy();
