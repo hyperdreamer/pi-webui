@@ -130,6 +130,32 @@ describe("installOptionalSkills", () => {
     expect(report.dryRun).toBe(false);
   });
 
+  it("does not install development-only directories", () => {
+    // A repository checkout carries evals/ and tests/. The tarball excludes them,
+    // but installing from a clone would otherwise copy them into the skill dir.
+    const withDev = createFakeIo({
+      "/pkg/optional-skills/deterministic-writing-plans/SKILL.md":
+        "name: deterministic-writing-plans",
+      "/pkg/optional-skills/deterministic-writing-plans/tests/a.test.mjs":
+        "test",
+      "/pkg/optional-skills/deterministic-writing-plans/evals/b.json": "{}",
+      "/pkg/optional-skills/deterministic-writing-plans/references/keep.md":
+        "keep",
+    });
+    installOptionalSkills(withDev.io, baseRequest());
+
+    expect(withDev.tree.has("/home/skills/writing-plans/SKILL.md")).toBe(true);
+    expect(
+      withDev.tree.has("/home/skills/writing-plans/references/keep.md")
+    ).toBe(true);
+    expect(
+      withDev.tree.has("/home/skills/writing-plans/tests/a.test.mjs")
+    ).toBe(false);
+    expect(withDev.tree.has("/home/skills/writing-plans/evals/b.json")).toBe(
+      false
+    );
+  });
+
   it("fails loudly when the build ships no optional skills", () => {
     const empty = createFakeIo({});
     expect(() => installOptionalSkills(empty.io, baseRequest())).toThrow(

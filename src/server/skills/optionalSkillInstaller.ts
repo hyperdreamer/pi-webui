@@ -34,6 +34,19 @@ export const INHERITED_SCRIPTS = Object.freeze([
   "review-package",
 ]);
 
+/**
+ * Directories that exist only to develop the skills, never to run them.
+ *
+ * The published tarball already excludes these, but installing from a repository
+ * checkout would otherwise copy them into the user's skill directory, where they
+ * are dead weight and misleading.
+ */
+const DEVELOPMENT_DIRECTORIES = Object.freeze(["evals/", "tests/"]);
+
+function isDevelopmentOnly(relativePath: string): boolean {
+  return DEVELOPMENT_DIRECTORIES.some((dir) => relativePath.startsWith(dir));
+}
+
 export interface InstallerIo {
   readonly exists: (path: string) => boolean;
   readonly listFiles: (dir: string) => readonly string[];
@@ -124,6 +137,7 @@ export function installOptionalSkills(
     if (dryRun) continue;
 
     for (const relativePath of io.listFiles(sourceDir)) {
+      if (isDevelopmentOnly(relativePath)) continue;
       const from = joinPath(sourceDir, relativePath);
       const to = joinPath(targetDir, relativePath);
       const parent = to.slice(0, to.lastIndexOf("/"));
