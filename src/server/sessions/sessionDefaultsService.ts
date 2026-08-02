@@ -2,6 +2,10 @@ import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-work
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionModel } from "../../shared/apiTypes.js";
 import { KNOWN_THINKING_LEVELS, isKnownThinkingLevel, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+import type {
+  StarterModelPolicyPreferenceInspection,
+  StarterModelPolicyPreferenceStore,
+} from "./starterModelPolicyPreferenceStore.js";
 
 type DefaultModel = Model<Api>;
 
@@ -22,6 +26,7 @@ export interface SessionDefaultsModelRuntime {
 export interface SessionDefaultsServiceDependencies {
   agentDir: string;
   modelRuntime: SessionDefaultsModelRuntime;
+  starterModelPolicyPreferenceStore: Pick<StarterModelPolicyPreferenceStore, "inspect" | "replace">;
   createSettingsManager?: (cwd: string, agentDir: string) => SessionDefaultsSettings;
   thinkingLevelsForModel?: (model: DefaultModel | undefined) => readonly ThinkingLevel[];
 }
@@ -38,11 +43,20 @@ export class SessionDefaultsService {
 
   async read(cwd: string): Promise<SessionDefaultsResponse> {
     const settings = this.createSettingsManager(cwd, this.deps.agentDir);
-    const models = await this.availableModels();
-    return this.response(settings, models);
+    const [models, preferenceInspection] = await Promise.all([
+      this.availableModels(),
+      this.inspectStarterPreference(cwd),
+    ]);
+    return this.response(settings, models, preferenceInspection);
   }
 
   async update(cwd: string, update: SessionDefaultsUpdate): Promise<SessionDefaultsResponse> {
+    const preference = update.starterModelPolicyPreference;
+    if (preference !== undefined) {
+      await this.deps.starterModelPolicyPreferenceStore.replace(cwd, preference);
+      return await this.read(cwd);
+    }
+
     const settings = this.createSettingsManager(cwd, this.deps.agentDir);
     const models = await this.availableModels();
     let model = configuredDefaultModel(settings, models);
@@ -72,7 +86,8 @@ export class SessionDefaultsService {
     }
 
     if (changed) await settings.flush();
-    return responseFor(models, model, thinkingLevel, thinkingLevels);
+    const preferenceInspection = await this.inspectStarterPreference(cwd);
+    return responseFor(models, model, thinkingLevel, thinkingLevels, preferenceInspection);
   }
 
   private async availableModels(): Promise<DefaultModel[]> {
@@ -80,11 +95,23 @@ export class SessionDefaultsService {
     return [...this.deps.modelRuntime.getAvailableSnapshot()];
   }
 
-  private response(settings: SessionDefaultsSettings, models: readonly DefaultModel[]): SessionDefaultsResponse {
+  private async inspectStarterPreference(cwd: string): Promise<StarterModelPolicyPreferenceInspection> {
+    try {
+      return await this.deps.starterModelPolicyPreferenceStore.inspect(cwd);
+    } catch (error) {
+      return { kind: "invalid", reason: errorMessage(error) };
+    }
+  }
+
+  private response(
+    settings: SessionDefaultsSettings,
+    models: readonly DefaultModel[],
+    preferenceInspection: StarterModelPolicyPreferenceInspection,
+  ): SessionDefaultsResponse {
     const model = configuredDefaultModel(settings, models);
     const thinkingLevels = this.thinkingLevelsForModel(model);
     const thinkingLevel = effectiveThinkingLevel(settings.getDefaultThinkingLevel() ?? "off", thinkingLevels);
-    return responseFor(models, model, thinkingLevel, thinkingLevels);
+    return responseFor(models, model, thinkingLevel, thinkingLevels, preferenceInspection);
   }
 }
 
@@ -108,13 +135,30 @@ function responseFor(
   model: DefaultModel | undefined,
   thinkingLevel: ThinkingLevel,
   thinkingLevels: readonly ThinkingLevel[],
+  preferenceInspection: StarterModelPolicyPreferenceInspection,
 ): SessionDefaultsResponse {
   return {
     ...(model === undefined ? {} : { model: modelToClientModel(model) }),
     thinkingLevel,
     models: models.map(modelToClientModel),
     thinkingLevels: [...thinkingLevels],
+    ...preferenceFields(preferenceInspection),
   };
+}
+
+function preferenceFields(
+  inspection: StarterModelPolicyPreferenceInspection,
+): Pick<
+  SessionDefaultsResponse,
+  "starterModelPolicyPreference" | "starterModelPolicyPreferenceError"
+> {
+  if (inspection.kind === "valid") {
+    return { starterModelPolicyPreference: { ...inspection.preference } };
+  }
+  if (inspection.kind === "invalid") {
+    return { starterModelPolicyPreferenceError: inspection.reason };
+  }
+  return {};
 }
 
 function modelToClientModel(model: DefaultModel): SessionModel {
@@ -125,4 +169,8 @@ function modelToClientModel(model: DefaultModel): SessionModel {
     contextWindow: model.contextWindow,
     reasoning: model.reasoning,
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

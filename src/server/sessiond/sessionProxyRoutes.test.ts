@@ -35,11 +35,27 @@ describe("machine-scoped session proxy routes", () => {
       url: "/api/machines/local/session-defaults",
       payload: { cwd: "/repo", thinkingLevel: "high" },
     });
+    const preferenceUpdate = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/session-defaults",
+      payload: {
+        cwd: "/repo",
+        starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+      },
+    });
 
-    expect([read.statusCode, update.statusCode]).toEqual([200, 200]);
+    expect([read.statusCode, update.statusCode, preferenceUpdate.statusCode]).toEqual([200, 200, 200]);
     expect(daemon.requests).toEqual([
       { method: "GET", path: "/session-defaults?cwd=%2Frepo", body: undefined },
       { method: "PUT", path: "/session-defaults", body: { cwd: "/repo", thinkingLevel: "high" } },
+      {
+        method: "PUT",
+        path: "/session-defaults",
+        body: {
+          cwd: "/repo",
+          starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+        },
+      },
     ]);
   });
 
