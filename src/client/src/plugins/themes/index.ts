@@ -114,6 +114,52 @@ const piWebUiLightTokens = {
   "--pi-terminal-selection": "#8d7b64",
 } satisfies ThemeTokens;
 
+// Tuned for a color e-ink panel. Starts from piWebUiLightTokens and changes only
+// what that hardware needs, so it inherits the light theme's contrast work
+// instead of re-deriving a palette:
+//   - pure-white page chrome, including the overlay backgrounds, since a cream
+//     tint reads as a dirty smudge on a reflective panel;
+//   - saturated fills chosen from the panel's own rendered color chart for the
+//     surfaces that must be told apart at a glance.
+const einkColorPaperTokens = {
+  "--pi-bg": "#ffffff",
+  "--pi-surface": "#ffff87",
+  "--pi-surface-hover": "#f0e6d6",
+  "--pi-terminal-bg": "#15131b",
+  "--pi-terminal-text": "#fff9ee",
+  "--pi-border": "#c9bca8",
+  "--pi-border-muted": "#d8cdbc",
+  "--pi-text": "#15131b",
+  "--pi-text-secondary": "#15131b",
+  "--pi-text-bright": "#15131b",
+  "--pi-muted": "#5f586a",
+  "--pi-dim": "#766f7e",
+  "--pi-accent": "#6430d8",
+  "--pi-accent-border": "#6430d8",
+  // Chart cell 40. Black body text sits at 10.7:1 on it.
+  "--pi-selection-bg": "#00d700",
+  "--pi-success": "#008c82",
+  "--pi-success-border": "#008c82",
+  "--pi-success-bg": "#e1f4ef",
+  "--pi-success-surface": "#d7f0ec",
+  "--pi-success-ring": "#008c8255",
+  "--pi-warning": "#b05f00",
+  "--pi-warning-border": "#b05f00",
+  "--pi-warning-surface": "#fff2d2",
+  "--pi-danger": "#b51d49",
+  "--pi-purple": "#6430d8",
+  "--pi-purple-border": "#6430d8",
+  "--pi-purple-surface": "#eadff8",
+  "--pi-overlay": "#15131b66",
+  "--pi-shadow-soft": "#15131b22",
+  "--pi-shadow": "#15131b33",
+  "--pi-shadow-strong": "#15131b44",
+  "--pi-bg-overlay-soft": "#ffffffdd",
+  "--pi-bg-overlay": "#ffffffe6",
+  "--pi-success-bg-overlay": "#e1f4efee",
+  "--pi-terminal-selection": "#8d7b64",
+} satisfies ThemeTokens;
+
 export const themePackPlugin: PiWebUiPlugin = {
   apiVersion: 1,
   name: "PI WEBUI Themes",
@@ -143,6 +189,14 @@ export const themePackPlugin: PiWebUiPlugin = {
           order: 30,
           colorScheme: "dark",
           tokens: classicTokens,
+        },
+        {
+          id: "eink-color-paper",
+          name: "E-Ink Color Paper",
+          description: "PI WEBUI Light baseline with targeted color e-ink adjustments.",
+          order: 40,
+          colorScheme: "light",
+          tokens: einkColorPaperTokens,
         },
       ],
       themePairs: [
