@@ -81,6 +81,19 @@ export function sessionModelPolicyUpdateFromDraft(
   return { mode: "tiered", tier };
 }
 
+/**
+ * Whether this draft forms a complete, applicable tuple. Delegates to
+ * `sessionModelPolicyUpdateFromDraft` so completion can never disagree with what
+ * would actually be submitted.
+ */
+export function isDraftReadyToApply(
+  draft: SessionModelPolicyDraft,
+  catalog: ModelTierSettingsResponse | undefined,
+): boolean {
+  if (catalog === undefined) return false;
+  return sessionModelPolicyUpdateFromDraft(draft, catalog) !== undefined;
+}
+
 function isValidExactSelection(
   exact: ExactModelSelection,
   models: readonly ModelTierModelOption[],

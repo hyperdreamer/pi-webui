@@ -6,6 +6,7 @@ import type {
   ModelTierSettingsResponse,
 } from "../../../shared/apiTypes";
 import {
+  isDraftReadyToApply,
   modelPolicyDraftFromPolicy,
   selectDraftExact,
   selectDraftTier,
@@ -295,5 +296,63 @@ describe("session model policy drafts", () => {
 
     expect(draft).toEqual(draftBefore);
     expect(catalog).toEqual(catalogBefore);
+  });
+});
+
+describe("isDraftReadyToApply", () => {
+  it("is false when the catalog has not loaded", () => {
+    const draft = modelPolicyDraftFromPolicy({
+      mode: "exact",
+      exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" },
+    });
+
+    expect(isDraftReadyToApply(draft, undefined)).toBe(false);
+  });
+
+  it("is false for an exact draft whose thinking level was cleared by a model change", () => {
+    const catalog = validCatalog();
+    const draft = modelPolicyDraftFromPolicy({
+      mode: "exact",
+      exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" },
+    });
+
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("is false for a tiered draft with no tier chosen", () => {
+    const catalog = validCatalog();
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    };
+
+    expect(isDraftReadyToApply(draft, catalog)).toBe(false);
+  });
+
+  it("agrees with sessionModelPolicyUpdateFromDraft on every input", () => {
+    const catalog = validCatalog();
+    const drafts: SessionModelPolicyDraft[] = [
+      {
+        mode: "exact",
+        exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" },
+      },
+      {
+        mode: "exact",
+        exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" },
+      },
+      { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
+      {
+        mode: "tiered",
+        exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+        tier: "standard",
+      },
+      { mode: "tiered", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
+    ];
+
+    for (const draft of drafts) {
+      expect(isDraftReadyToApply(draft, catalog)).toBe(
+        sessionModelPolicyUpdateFromDraft(draft, catalog) !== undefined,
+      );
+    }
   });
 });
