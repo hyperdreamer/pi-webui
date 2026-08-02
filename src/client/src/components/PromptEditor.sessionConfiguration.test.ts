@@ -178,6 +178,32 @@ describe("PromptEditor session controls", () => {
     expect(policyControl.editable).toBe(true);
   });
 
+  it("blocks only submission while a starter policy needs repair", () => {
+    const editor = new PromptEditor();
+    const onSend = vi.fn();
+    editor.showSessionConfiguration = true;
+    editor.sessionConfiguration = {
+      model: { provider: "openai", id: "gpt-default" },
+      thinkingLevel: "high",
+    };
+    editor.modelPolicyStatus = tieredPolicyStatus;
+    editor.sendDisabled = true;
+    editor.onSend = onSend;
+    editor.replaceText("keep this starter draft");
+
+    const actions = renderPromptEditorActions(editor);
+    expect(requiredButton(actions, ".send-button").disabled).toBe(true);
+    expect(renderedPolicyControl(renderCompactStatusElement(editor)).editable).toBe(true);
+
+    invokeSend(editor);
+    expect(onSend).not.toHaveBeenCalled();
+
+    editor.sendDisabled = false;
+    invokeSend(editor);
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledWith("keep this starter draft", undefined, undefined, undefined);
+  });
+
   it("keeps policy mutation disabled while the composer or active session is busy", () => {
     const scenarios: {
       name: string;
@@ -318,6 +344,19 @@ describe("PromptEditor session controls", () => {
 
 type RenderCompactStatus = (this: PromptEditor) => TemplateResult | null;
 type ShouldUpdate = (this: PromptEditor, changed: PropertyValues<PromptEditor>) => boolean;
+type SendPrompt = (this: PromptEditor, streamingBehavior?: "steer" | "followUp") => void;
+
+// The DOM assertion covers the button state; invoking the shared submission
+// method directly covers the keyboard path without constructing CodeMirror.
+function invokeSend(editor: PromptEditor, streamingBehavior?: "steer" | "followUp"): void {
+  const method: unknown = Reflect.get(editor, "send");
+  if (!isSendPrompt(method)) throw new Error("PromptEditor.send is not callable");
+  method.call(editor, streamingBehavior);
+}
+
+function isSendPrompt(value: unknown): value is SendPrompt {
+  return typeof value === "function";
+}
 type RenderedPolicyControl = HTMLElement & {
   status?: ClientSessionModelPolicyStatus;
   catalog?: ModelTierSettingsResponse;

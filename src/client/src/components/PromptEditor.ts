@@ -34,6 +34,7 @@ type PendingAttachment = CapturedAttachment & { id: string };
 @customElement("prompt-editor")
 export class PromptEditor extends LitElement {
   @property({ type: Boolean }) disabled = false;
+  @property({ type: Boolean }) sendDisabled = false;
   @property() sessionId?: string;
   @property() cwd?: string;
   @property() machineId = "local";
@@ -139,6 +140,7 @@ export class PromptEditor extends LitElement {
     const shellMode = shellInputMode !== undefined;
     const queuesInput = this.canSteer || this.isCompacting;
     const busy = this.disabled || this.sending;
+    const sendBusy = busy || this.sendDisabled;
     // Manual compaction aborts current work. Keep it beside Queue, but do not
     // permit it while the session exposes a stop action.
     const compactDisabled = busy || this.canSteer || this.isCompacting || this.canStop;
@@ -156,8 +158,8 @@ export class PromptEditor extends LitElement {
         <div class="actions">
           ${this.renderCompactStatus()}
           ${this.onCompact === undefined ? null : html`<button class="compact-button" ?disabled=${compactDisabled} title="Compact context" aria-label="Compact context" @click=${() => this.onCompact?.()}>${renderCompactIcon()}<span>Compact</span></button>`}
-          <button class="icon-button send-button" ?disabled=${busy} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} aria-label=${queuesInput ? "Queue message" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? renderQueueIcon() : renderSendIcon()}</button>
-          ${this.canSteer && !this.isCompacting ? html`<button class="icon-button steer-button" ?disabled=${busy} title="Steer the current response before the next model call" aria-label="Steer current response" @click=${() => { this.send("steer"); }}>${renderSteerIcon()}</button>` : null}
+          <button class="icon-button send-button" ?disabled=${sendBusy} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} aria-label=${queuesInput ? "Queue message" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? renderQueueIcon() : renderSendIcon()}</button>
+          ${this.canSteer && !this.isCompacting ? html`<button class="icon-button steer-button" ?disabled=${sendBusy} title="Steer the current response before the next model call" aria-label="Steer current response" @click=${() => { this.send("steer"); }}>${renderSteerIcon()}</button>` : null}
           <button class="icon-button stop-button" ?disabled=${this.disabled || !this.canStop} title=${this.canStop ? "Stop current work and clear queued messages" : "Nothing running"} aria-label="Stop current work" @click=${() => this.onStop?.()}>${renderStopIcon()}</button>
         </div>
       </footer>
@@ -531,7 +533,7 @@ export class PromptEditor extends LitElement {
   }
 
   private send(streamingBehavior?: "steer" | "followUp") {
-    if (this.disabled || this.sending) return;
+    if (this.disabled || this.sending || this.sendDisabled) return;
     const text = this.draft.trim();
     const pending = this.attachments;
     if (text === "" && pending.length === 0) return;

@@ -130,14 +130,15 @@ export class SessionModelPolicyControl extends LitElement {
 
   /**
    * The compact row has little space, so it shows only the most urgent problem:
-   * a live runtime/entry block, or (for a Tiered session, whose active policy it
-   * breaks) an invalid ladder.
+   * a live runtime/entry block, an invalid Tiered ladder, or a non-blocking
+   * persistence warning, in that order.
    */
   private compactDiagnostic(policyStatus: ClientSessionModelPolicyStatus): string | undefined {
     const blockedReason = this.blockedReason();
     if (blockedReason !== undefined) return blockedReason;
     if (policyStatus.mode === "tiered" && !policyStatus.ladderValid) return LADDER_INVALID_MESSAGE;
-    return undefined;
+    const error = this.error.trim();
+    return error === "" ? undefined : error;
   }
 
   private effectiveStatus(): ClientSessionModelPolicyStatus | undefined {
