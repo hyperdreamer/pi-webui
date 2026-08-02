@@ -301,19 +301,22 @@ describe("session model policy drafts", () => {
 
 describe("isDraftReadyToApply", () => {
   it("is false when the catalog has not loaded", () => {
+    // Valid against validCatalog(), so this isolates catalog absence rather than
+    // also failing on an invalid selection.
     const draft = modelPolicyDraftFromPolicy({
       mode: "exact",
-      exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" },
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
     });
 
     expect(isDraftReadyToApply(draft, undefined)).toBe(false);
+    expect(isDraftReadyToApply(draft, validCatalog())).toBe(true);
   });
 
   it("is false for an exact draft whose thinking level was cleared by a model change", () => {
     const catalog = validCatalog();
     const draft = modelPolicyDraftFromPolicy({
       mode: "exact",
-      exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" },
+      exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" },
     });
 
     expect(isDraftReadyToApply(draft, catalog)).toBe(false);
@@ -332,13 +335,30 @@ describe("isDraftReadyToApply", () => {
   it("agrees with sessionModelPolicyUpdateFromDraft on every input", () => {
     const catalog = validCatalog();
     const drafts: SessionModelPolicyDraft[] = [
+      // Ready. Without this row the matrix proves nothing about Exact mode.
       {
         mode: "exact",
-        exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "medium" },
+        exact: { model: { ...defaultModelOption.model }, thinkingLevel: "medium" },
       },
+      // Not ready: level cleared by a model change.
       {
         mode: "exact",
-        exact: { model: { provider: "anthropic", id: "sonnet" }, thinkingLevel: "" },
+        exact: { model: { ...defaultModelOption.model }, thinkingLevel: "" },
+      },
+      // Not ready: model absent from the catalog.
+      {
+        mode: "exact",
+        exact: { model: { provider: "openai", id: "not-in-catalog" }, thinkingLevel: "medium" },
+      },
+      // Ready: a level the repair model does support.
+      {
+        mode: "exact",
+        exact: { model: { ...repairModelOption.model }, thinkingLevel: "low" },
+      },
+      // Not ready: a level the repair model does not support.
+      {
+        mode: "exact",
+        exact: { model: { ...repairModelOption.model }, thinkingLevel: "high" },
       },
       { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } },
       {
