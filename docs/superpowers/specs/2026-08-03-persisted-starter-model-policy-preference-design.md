@@ -84,7 +84,7 @@ The version-one file shape is:
 }
 ```
 
-The parser is strict about the root shape, version, workspace values, modes, tiers, and unknown fields. A missing file is an empty store. Writes are serialized in process and replace the file through a temporary file plus atomic rename. On POSIX systems, temporary and final files use mode `0600`. A failed write removes its temporary file and leaves the previous durable file unchanged.
+The parser is strict about the root shape, version, workspace values, modes, tiers, and unknown fields. A missing file is an empty store. An in-process operation queue serializes each complete read-modify-write transaction. Each transaction then replaces the file through a temporary file plus atomic rename; the rename protects file integrity but does not provide serialization. On POSIX systems, temporary and final files use mode `0600`. A failed write removes its temporary file and leaves the previous durable file unchanged.
 
 A malformed or unsupported file is not automatically overwritten because doing so could discard other workspace preferences. Inspection reports an actionable invalid-state reason. An explicit preference write fails until the managed file is repaired or removed; this failure does not prevent the current in-memory selection from starting a session.
 
@@ -190,7 +190,7 @@ The client keeps preference persistence separate from active-session policy writ
 
 A write already issued for an old scope may complete and persist that old scope's valid selection. Its completion is ignored by the current UI.
 
-Between independent browser tabs, the last valid write admitted to the daemon's serialized queue wins.
+Between independent browser tabs, the last successfully committed replacement in the daemon's serialized queue determines the durable state. This is daemon queue order, not a guarantee about browser click order, and the in-process queue does not coordinate multiple daemon processes that share one data directory.
 
 ## Capability and federation
 
