@@ -838,6 +838,59 @@ describe("PiSessionService model policy mutation safety", () => {
     expect(reopened.calls.prompt).toEqual([]);
   });
 
+  it("repairs a reopened blocked session through an explicit policy application", async () => {
+    // The block deliberately survives reopen (see the test above): a fresh runtime
+    // proves nothing about the tuple that became ambiguous. What must stay true is
+    // that the block is *repairable* after reopen rather than terminal, so a
+    // reopened session is never permanently unable to prompt.
+    const harness = createModelPolicyHarness({
+      branch: [exactEntry()],
+      append: "throwsOnce",
+      failSetModelOnCall: 2,
+    });
+    await harness.service.status(ref());
+
+    await expect(harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" }))
+      .rejects.toThrow("model policy persistence failed");
+    expect((await harness.service.status(ref())).modelPolicy?.blockedReason).toMatch(/^MODEL_POLICY_BLOCKED: /u);
+
+    const reopened = fakeRuntime(TEST_SESSION_ID, {
+      model: runtimeModel(DEFAULT_SELECTION.model.provider, DEFAULT_SELECTION.model.id),
+      thinkingLevel: "medium",
+      sessionManager: harness.manager,
+      scopedModels: [
+        { model: runtimeModel(DEFAULT_SELECTION.model.provider, DEFAULT_SELECTION.model.id) },
+        { model: runtimeModel(ADVANCED_SELECTION.model.provider, ADVANCED_SELECTION.model.id) },
+      ],
+      // The default stub's setters are inert; the repair needs a runtime that
+      // actually adopts the requested pair so the application can be confirmed.
+      setModel: (model: NonNullable<PiAgentSession["model"]>) => {
+        reopened.session.model = model;
+        return Promise.resolve();
+      },
+      setThinkingLevel: (level: PiAgentSession["thinkingLevel"]) => {
+        reopened.session.thinkingLevel = level;
+      },
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- pi's level set, narrowed for the stub session.
+      getAvailableThinkingLevels: () => [...runtimeThinkingLevels(reopened.session.model)] as PiAgentSession["thinkingLevel"][],
+    });
+    harness.useNextRuntime(reopened.runtime);
+    await harness.service.reload(ref());
+    expect((await harness.service.status(ref())).modelPolicy?.blockedReason).toMatch(/^MODEL_POLICY_BLOCKED: /u);
+
+    // blockedReason never disables mutation, so an explicit application still runs
+    // and clears the block once a tuple is confirmed again.
+    const repaired = await harness.service.setModelPolicy(ref(), { mode: "exact", exact: ADVANCED_SELECTION });
+
+    expect(repaired.session.modelPolicy).toEqual({
+      mode: "exact",
+      resolved: ADVANCED_SELECTION,
+      ladderValid: true,
+    });
+    await harness.service.prompt(ref(), "allowed after repair");
+    await vi.waitFor(() => { expect(reopened.calls.prompt).toHaveLength(1); });
+  });
+
   it("keeps an unproven runtime block across a runtime rebind", async () => {
     const harness = createModelPolicyHarness({
       branch: [exactEntry()],
@@ -894,6 +947,45 @@ describe("PiSessionService model policy mutation safety", () => {
       .toBeLessThan(harness.calls.indexOf("prompt"));
     expect(harness.fake.session.model?.id).toBe("gpt-advanced");
     expect(harness.fake.session.thinkingLevel).toBe("high");
+  });
+
+  it("never publishes an intermediate resolved pair for a status emitted mid-transition", async () => {
+    // setModel has landed the incoming model but setThinkingLevel has not run, so
+    // the live runtime tuple is the pair (incoming model, outgoing thinking level)
+    // that was never requested and never persisted. An unrelated runtime event
+    // publishing a status inside that window must not report it as `resolved`.
+    const harness = createModelPolicyHarness({ branch: [exactEntry()], holdSetModelOnCall: 1 });
+    await harness.service.status(ref());
+
+    const applied = harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" });
+    await vi.waitFor(() => { expect(harness.calls).toContain("setModel:openai/gpt-advanced"); });
+    expect(harness.fake.session.model?.id).toBe("gpt-advanced");
+    expect(harness.fake.session.thinkingLevel).toBe("medium");
+
+    harness.hub.sessionEvents.length = 0;
+    harness.hub.globalEvents.length = 0;
+    harness.fake.emit({ type: "message_update" });
+
+    const midTransition = harness.hub.sessionEvents
+      .filter(({ event }) => event.type === "status.update")
+      .map(({ event }) => (event.type === "status.update" ? event.status.modelPolicy : undefined));
+    expect(midTransition.length).toBeGreaterThan(0);
+    for (const policy of midTransition) {
+      // The last confirmed tuple, not the half-applied one.
+      expect(policy?.resolved).toEqual(DEFAULT_SELECTION);
+      expect(policy?.mode).toBe("exact");
+    }
+
+    harness.releaseSetModel();
+    await applied;
+
+    // Once the transition settles, `resolved` reports the newly confirmed pair.
+    expect((await harness.service.status(ref())).modelPolicy).toEqual({
+      mode: "tiered",
+      tier: "advanced",
+      resolved: ADVANCED_SELECTION,
+      ladderValid: true,
+    });
   });
 
   it("holds a delayed queue drain during a policy mutation and refuses the prompt when it blocks", async () => {

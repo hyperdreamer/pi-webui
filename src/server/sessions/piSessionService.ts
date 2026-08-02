@@ -744,6 +744,19 @@ export class PiSessionService implements SessionRouteService {
    * persistence not yet confirmed), so no prompt may reach Pi.
    */
   private readonly modelPolicyMutationCounts = new Map<string, number>();
+  /**
+   * Tuple last *confirmed* by the policy runtime adapter, captured when the
+   * outermost policy mutation opens and dropped when it closes.
+   *
+   * A status may be published from inside the transition window (the runtime
+   * subscription and the heartbeat both reach `publishStatus`), where the live
+   * runtime tuple is mid-apply: the model is set but the thinking level is not,
+   * so reading it would report a pair that was never requested and never
+   * persisted. `ClientSessionModelPolicyStatus.resolved` promises the last
+   * confirmed tuple, so the window reports this instead of live state. Keyed by
+   * session id to match the mutation counter it is scoped by.
+   */
+  private readonly modelPolicyConfirmedSelections = new Map<string, ExactModelSelection>();
   private readonly heartbeat: NodeJS.Timeout;
   private readonly commandService: SessionCommandService<PiAgentSession>;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
@@ -1024,6 +1037,7 @@ export class PiSessionService implements SessionRouteService {
     this.compactionPromptQueues.clear();
     this.modelPolicyRuntimeBlocks.clear();
     this.modelPolicyMutationCounts.clear();
+    this.modelPolicyConfirmedSelections.clear();
     this.authLossWarnings.clear();
     this.subsessionParents.clear();
     this.subsessionChildren.clear();
@@ -3487,12 +3501,35 @@ export class PiSessionService implements SessionRouteService {
    * retained during that window once the tuple is settled again.
    */
   private async runSessionModelPolicyMutation<T>(session: PiAgentSession, action: string, operation: () => Promise<T>): Promise<T> {
+    // Captured before the first setter runs, so this is the confirmed tuple the
+    // window reports. Only the outermost mutation records it: a nested mutation
+    // opens on an already-transient tuple, which would not be confirmed.
+    if (!this.isModelPolicyMutationActive(session)) this.recordConfirmedExactSelection(session);
     this.modelPolicyMutationCounts.set(session.sessionId, (this.modelPolicyMutationCounts.get(session.sessionId) ?? 0) + 1);
     try {
       return await this.runSessionEntryMutation(session, action, operation);
     } finally {
       decrementMapCount(this.modelPolicyMutationCounts, session.sessionId);
-      if (!this.isModelPolicyMutationActive(session)) this.scheduleCompactionQueueDrain(session.sessionId);
+      if (!this.isModelPolicyMutationActive(session)) {
+        // The tuple is settled again (applied, restored, or blocked), so live
+        // runtime state is authoritative once more.
+        this.modelPolicyConfirmedSelections.delete(session.sessionId);
+        this.scheduleCompactionQueueDrain(session.sessionId);
+      }
+    }
+  }
+
+  /**
+   * Remember the pre-transition tuple for the status projection. A session whose
+   * runtime has no resolved model has no confirmed tuple to report; that case is
+   * left to the existing `exactSelectionFromSession` failure rather than
+   * substituting anything.
+   */
+  private recordConfirmedExactSelection(session: PiAgentSession): void {
+    try {
+      this.modelPolicyConfirmedSelections.set(session.sessionId, this.exactSelectionFromSession(session));
+    } catch {
+      this.modelPolicyConfirmedSelections.delete(session.sessionId);
     }
   }
 
@@ -3694,7 +3731,13 @@ export class PiSessionService implements SessionRouteService {
     if (inspection === undefined) throw new Error("Session model policy inspection is unavailable");
     const ladderValidation = this.modelPolicyLadderValidations.get(session);
     if (ladderValidation === undefined) throw new Error("Session model tier validation is unavailable");
-    const resolved = this.exactSelectionFromSession(session);
+    // Inside a transition the live tuple is half-applied, so report the tuple
+    // this session last confirmed. `mode` already comes from the unchanged
+    // entry, keeping the published pair internally consistent.
+    const confirmed = this.isModelPolicyMutationActive(session)
+      ? this.modelPolicyConfirmedSelections.get(session.sessionId)
+      : undefined;
+    const resolved = confirmed ?? this.exactSelectionFromSession(session);
     const blockedReason = this.modelPolicyBlockedReason(session);
 
     if (inspection.kind === "invalid") {
