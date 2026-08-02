@@ -55,6 +55,28 @@ describe("PI WEBUI capabilities", () => {
       .toEqual([PI_WEBUI_CAPABILITIES.sessionsModelPolicy]);
   });
 
+  it("requires web and session daemon support for starter model policy defaults", () => {
+    const defaults = PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults;
+    expect(defaults).toBe("sessions.modelPolicyDefaults");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(defaults);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(defaults);
+    expect(parseKnownPiWebUiCapabilities([defaults, "future.capability"]))
+      .toEqual([defaults]);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [defaults] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(defaults);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [] },
+      sessiond: { available: true, capabilities: [defaults] },
+    })).not.toContain(defaults);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [defaults] },
+      sessiond: { available: true, capabilities: [defaults] },
+    })).toContain(defaults);
+  });
+
   it("requires web and session daemon support for authoritative session persistence", () => {
     expect(WEB_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);
     expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(PI_WEBUI_CAPABILITIES.sessionsPersistedState);

@@ -1,6 +1,6 @@
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionMessageForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SystemInfoResponse, SystemMetricsResponse, SystemNetworkMetrics } from "../../../shared/apiTypes";
-import type { SessionDefaultsResponse } from "../../../shared/apiTypes";
+import type { SessionDefaultsResponse, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
@@ -291,6 +291,17 @@ function parseSessionModelPolicy(value: unknown): SessionModelPolicy {
     exact: parseExactModelSelection(record["exact"]),
     ...optionalField("tier", tier),
   };
+}
+
+function parseStarterModelPolicyPreference(value: unknown): StarterModelPolicyPreference {
+  const record = requirePlainRecord(value, "starter model policy preference");
+  assertOnlyFields(record, ["mode", "tier"], "starter model policy preference");
+  const mode = parseSessionModelPolicyMode(record["mode"]);
+  const tier = parseOptionalSessionModelPolicyTier(record, "starter model policy preference");
+  if (mode === "tiered" && tier === undefined) {
+    throw new Error("Tiered starter model policy preference requires a tier");
+  }
+  return { mode, ...optionalField("tier", tier) };
 }
 
 function parseClientSessionModelPolicyStatus(value: unknown): ClientSessionModelPolicyStatus {
@@ -745,11 +756,20 @@ export function parseModelSelectionResponse(value: unknown): ModelSelectionRespo
 
 export function parseSessionDefaultsResponse(value: unknown): SessionDefaultsResponse {
   const record = requireRecord(value);
+  const preference = record["starterModelPolicyPreference"] === undefined
+    ? undefined
+    : parseStarterModelPolicyPreference(record["starterModelPolicyPreference"]);
+  const preferenceError = optionalString(record, "starterModelPolicyPreferenceError");
+  if (preference !== undefined && preferenceError !== undefined) {
+    throw new Error("Session defaults cannot contain both a starter preference and preference error");
+  }
   return {
     ...(record["model"] === undefined ? {} : { model: parseSessionModel(record["model"]) }),
     thinkingLevel: requireString(record, "thinkingLevel"),
     models: arrayOf(parseSessionModel)(record["models"]),
     thinkingLevels: arrayOfString(record["thinkingLevels"], "thinkingLevels"),
+    ...optionalField("starterModelPolicyPreference", preference),
+    ...optionalField("starterModelPolicyPreferenceError", preferenceError),
   };
 }
 
