@@ -582,6 +582,8 @@ export interface SessionInfo extends SessionRef {
   archivedAt?: string;
   /** True when the user has pinned this session so it sorts first in lists. */
   pinned?: boolean;
+  /** Normalized durable position inside this session's sibling and pin group. */
+  manualOrder?: number;
 }
 
 export interface ArchiveSessionsResponse {

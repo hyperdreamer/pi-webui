@@ -482,6 +482,31 @@ describe("API parsers", () => {
       firstMessage: "",
     });
     expect(() => parseSessionInfo({ id: "s1", path: "", cwd: "/repo", persisted: "yes", created: "now", modified: "now", messageCount: 0, firstMessage: "" })).toThrow("Expected optional boolean field: persisted");
+
+    expect(parseSessionInfo({
+      id: "s1",
+      path: "/sessions/s1.jsonl",
+      cwd: "/repo",
+      persisted: true,
+      created: "2026-01-01T00:00:00.000Z",
+      modified: "2026-01-01T00:01:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      manualOrder: 3,
+    })).toMatchObject({ id: "s1", manualOrder: 3 });
+
+    for (const manualOrder of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => parseSessionInfo({
+        id: "s1",
+        path: "/sessions/s1.jsonl",
+        cwd: "/repo",
+        created: "now",
+        modified: "now",
+        messageCount: 0,
+        firstMessage: "",
+        manualOrder,
+      })).toThrow("Expected non-negative safe integer field: manualOrder");
+    }
   });
 
   it("parses a complete session model policy response", () => {
