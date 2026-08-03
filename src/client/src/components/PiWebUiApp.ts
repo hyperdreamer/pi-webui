@@ -6,6 +6,7 @@ import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
 import { isDraftReadyToApply, relinkStarterExactBranch, sameExactSelection, seedModelPolicyDraft, seedStarterModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, starterExactSelection, starterModelPolicyPreferenceFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
+import { starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -353,11 +354,13 @@ export class PiWebUiApp extends LitElement {
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
   @state() private starterModelPolicyPreferenceReadError = "";
-  // A direct start refused by a blocked starter policy must report the refusal
-  // without leaving the start screen. `state.error` cannot carry it:
-  // `shouldShowSessionStartScreen()` requires an empty `state.error`, so
-  // publishing there would unmount the very controls that repair the block.
-  @state() private starterModelPolicyStartBlocked = false;
+  // A starter failure or refusal must report itself without leaving the start
+  // screen, and without going silent when a session is selected in the same
+  // workspace. `state.error` can do neither: `shouldShowSessionStartScreen()`
+  // requires an empty `state.error`, so publishing there unmounts the very
+  // controls that repair the condition. This field is held outside `AppState` so
+  // it structurally cannot reach screen selection.
+  @state() private starterNotice: StarterNotice | undefined;
   private readonly starterModelPolicyPreferenceWriter = new StarterModelPolicyPreferenceWriter({
     save: async (scope, preference) => {
       const response = await sessionsApi.updateSessionDefaults(
@@ -1168,6 +1171,7 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.sessionDefaults(workspace.path, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
+      this.starterNotice = undefined;
       this.starterModelPolicyPreferenceReadError = defaults.starterModelPolicyPreferenceError ?? "";
       const current = this.starterModelPolicy;
       if (current === undefined) {
@@ -1186,6 +1190,11 @@ export class PiWebUiApp extends LitElement {
     } catch (error) {
       if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) {
         console.warn("Failed to load Pi session defaults", error);
+        this.publishStarterNotice(starterFailureNotice(
+          "defaults-failed",
+          `Could not load this workspace's model defaults. ${errorMessage(error)}`,
+          { machineId, workspaceId: workspace.id },
+        ));
       }
     }
   }
@@ -1539,6 +1548,16 @@ export class PiWebUiApp extends LitElement {
     return { machineId: selectedMachineId(this.state), cwd: workspace.path };
   }
 
+  private starterNoticeScope(): StarterNoticeScope | undefined {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return undefined;
+    return { machineId: selectedMachineId(this.state), workspaceId: workspace.id };
+  }
+
+  private publishStarterNotice(notice: StarterNotice): void {
+    this.starterNotice = notice;
+  }
+
   private starterModelPolicyPreferenceSupported(machineId: string): boolean {
     const runtime = this.state.machineRuntimes[machineId];
     return runtime?.ok === true
@@ -1600,7 +1619,7 @@ export class PiWebUiApp extends LitElement {
   private resetStarterModelPolicyForScopeChange(): void {
     this.starterModelPolicy = undefined;
     this.starterModelPolicyPreferenceReadError = "";
-    this.starterModelPolicyStartBlocked = false;
+    this.starterNotice = undefined;
     this.modelTierCatalogError = "";
   }
 
@@ -1979,15 +1998,17 @@ export class PiWebUiApp extends LitElement {
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
     const blockedReason = this.starterModelPolicyInputs()?.status.blockedReason;
     if (blockedReason !== undefined) {
-      if (shouldComplete()) this.starterModelPolicyStartBlocked = true;
+      const scope = this.starterNoticeScope();
+      if (shouldComplete() && scope !== undefined) this.publishStarterNotice(starterPolicyBlockedNotice(scope));
       return;
     }
-    this.starterModelPolicyStartBlocked = false;
+    this.starterNotice = undefined;
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
     // every starter edit and value-changing relink replaces the policy object;
     // a value-equivalent relink intentionally preserves it.
     const workspaceId = this.state.selectedWorkspace?.id;
+    const startMachineId = selectedMachineId(this.state);
     const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
     // `startSession()` remains in flight until the backend session resolves;
@@ -1995,7 +2016,10 @@ export class PiWebUiApp extends LitElement {
     const start = this.sessions.startSession(modelPolicy).then((started) => {
       this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
     }).catch((error: unknown) => {
-      if (shouldComplete()) this.setState({ error: String(error) });
+      const scope = workspaceId === undefined ? undefined : { machineId: startMachineId, workspaceId };
+      if (shouldComplete() && scope !== undefined) {
+        this.publishStarterNotice(starterFailureNotice("start-failed", `Could not start the session. ${errorMessage(error)}`, scope));
+      }
     });
     if (shouldComplete()) await this.focusChatComposer();
     void start;
@@ -2154,6 +2178,26 @@ export class PiWebUiApp extends LitElement {
       && state.error === "";
   }
 
+  /**
+   * The starter notice renders as a sibling of the `state.error` banner rather
+   * than inside `renderSessionStartScreen()`, so it is visible whether or not a
+   * session is selected. A notice confined to the start screen produces no output
+   * at all when `render()` takes the `state.selectedSession` branch, which made
+   * "New session" with an unusable remembered tier completely inert.
+   *
+   * A policy-blocked notice reads its text live, so repairing the ladder or
+   * choosing a valid tier retires it on the next render with no stale string.
+   */
+  private renderStarterNotice() {
+    const text = starterNoticeVisibleText(
+      this.starterNotice,
+      this.starterNoticeScope(),
+      this.starterModelPolicyInputs()?.status.blockedReason,
+    );
+    if (text === undefined) return null;
+    return html`<p class="starter-notice" role="alert">${text}</p>`;
+  }
+
   private renderSessionStartScreen(state: AppState) {
     const workspace = state.selectedWorkspace;
     if (workspace === undefined) return html``;
@@ -2173,7 +2217,6 @@ export class PiWebUiApp extends LitElement {
           <div class="session-start-composer">
             <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${this.starterModelPolicyError()} .sendDisabled=${policy?.status.blockedReason !== undefined} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
-          ${this.starterModelPolicyStartBlocked && policy?.status.blockedReason !== undefined ? html`<p class="session-start-block-notice" role="alert">${policy.status.blockedReason}</p>` : null}
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
       </section>
@@ -3172,6 +3215,7 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.updateSessionDefaults(workspace.path, update, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
+      this.starterNotice = undefined;
       this.starterModelPolicyPreferenceReadError = defaults.starterModelPolicyPreferenceError ?? "";
       const current = this.starterModelPolicy;
       const next = current === undefined
@@ -3183,7 +3227,13 @@ export class PiWebUiApp extends LitElement {
         this.persistStarterModelPolicyPreference(next);
       }
     } catch (error) {
-      if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) this.setState({ error: String(error) });
+      if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) {
+        this.publishStarterNotice(starterFailureNotice(
+          "defaults-failed",
+          `Could not save this workspace's model defaults. ${errorMessage(error)}`,
+          { machineId, workspaceId: workspace.id },
+        ));
+      }
     }
   }
 
@@ -3203,11 +3253,17 @@ export class PiWebUiApp extends LitElement {
   private readonly handleStartSessionPrompt = (text: string, streamingBehavior?: "steer" | "followUp", attachments?: import("../api").PromptAttachment[], delivery?: import("../../../shared/apiTypes").PromptAttachmentDelivery): void => {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
-    if (this.starterModelPolicyBlocksStart()) return;
+    if (this.starterModelPolicyBlocksStart()) {
+      const scope = this.starterNoticeScope();
+      if (scope !== undefined) this.publishStarterNotice(starterPolicyBlockedNotice(scope));
+      return;
+    }
+    this.starterNotice = undefined;
     // Capture the starter state before the controller inserts and selects its
     // pending row. A failed start retains this draft for a retry; a successful
     // stale completion cannot clear a newer draft or another workspace's draft.
     const workspaceId = this.state.selectedWorkspace?.id;
+    const startMachineId = selectedMachineId(this.state);
     const starterModelPolicy = this.starterModelPolicy;
     const modelPolicy = this.starterModelPolicyStartSnapshot();
     void this.sessions.startSessionWithPrompt(
@@ -3220,7 +3276,12 @@ export class PiWebUiApp extends LitElement {
         this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
       },
     ).catch((error: unknown) => {
-      this.setState({ error: String(error) });
+      if (workspaceId === undefined) return;
+      this.publishStarterNotice(starterFailureNotice(
+        "start-failed",
+        `Could not start the session. ${errorMessage(error)}`,
+        { machineId: startMachineId, workspaceId },
+      ));
     });
     void this.focusChatComposer();
   };
@@ -3242,9 +3303,10 @@ export class PiWebUiApp extends LitElement {
 
   private setStarterModelPolicyDraft(draft: SessionModelPolicyDraft): SessionModelPolicyDraft {
     // Any explicit starter edit is a fresh attempt at a valid choice, so it
-    // retires the previous refusal notice. The notice is additionally gated on
-    // the live block, so a repair hides it even without this reset.
-    this.starterModelPolicyStartBlocked = false;
+    // retires the previous refusal notice. A policy-blocked notice is
+    // additionally gated on the live block, so a repair retires it even without
+    // this reset.
+    this.starterNotice = undefined;
     const stored = {
       mode: draft.mode,
       exact: { model: { ...draft.exact.model }, thinkingLevel: draft.exact.thinkingLevel },
@@ -3798,6 +3860,7 @@ export class PiWebUiApp extends LitElement {
           ${this.renderContextBar()}
           ${this.renderMobileMainTabs()}
           ${state.error ? html`<div class="error">${state.error}</div>` : null}
+          ${this.renderStarterNotice()}
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}

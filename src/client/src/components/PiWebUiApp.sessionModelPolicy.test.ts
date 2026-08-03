@@ -22,6 +22,7 @@ import { initialAppState, type AppState } from "../appState";
 import { SessionController } from "../controllers/sessionController";
 import { findTemplateContaining, isTemplateResult, templateStrings, templateText, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
+import type { StarterNotice } from "./starterNotice";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
 afterEach(() => {
@@ -1298,6 +1299,135 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
   });
 });
 
+describe("PiWebUiApp starter notice channel", () => {
+  it("reports a failed direct start without touching screen selection", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionController(app), "startSession").mockRejectedValue(new Error("session daemon offline"));
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    await startSessionAndOpenChat(app);
+    await flush();
+
+    // `shouldShowSessionStartScreen()` requires an empty `state.error`, so a
+    // starter failure published there would unmount the composer the user needs
+    // in order to retry.
+    expect(appState(app).error).toBe("");
+    expect(starterNotice(app)?.kind).toBe("start-failed");
+    expect(templateText(renderApp(app))).toContain("session daemon offline");
+  });
+
+  it("keeps the composer mounted and the draft intact after a failed prompt start", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockRejectedValue(new Error("start request rejected"));
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    const draftBeforeStart = starterModelPolicy(app);
+
+    startSessionPrompt(app, "explore the repo");
+    await flush();
+
+    expect(appState(app).error).toBe("");
+    expect(starterModelPolicy(app)).toBe(draftBeforeStart);
+    // Throws if the start screen stopped rendering its composer.
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".onSend=")).toBeTypeOf("function");
+    expect(templateText(renderApp(app))).toContain("start request rejected");
+  });
+
+  it("reports a failed starter defaults update without unmounting the model controls", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "updateSessionDefaults").mockRejectedValue(new Error("defaults store offline"));
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    await pickStarterModel(app, "openai/gpt-advanced");
+
+    expect(appState(app).error).toBe("");
+    expect(starterNotice(app)?.kind).toBe("defaults-failed");
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".onSelectModel=")).toBeTypeOf("function");
+    expect(templateText(renderApp(app))).toContain("defaults store offline");
+  });
+
+  it("reports a failed starter defaults load instead of failing silently", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockRejectedValue(new Error("defaults unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    expect(appState(app).error).toBe("");
+    expect(starterNotice(app)?.kind).toBe("defaults-failed");
+    // Pi's own defaults would still have started a session, so the composer that
+    // picks a model must stay reachable.
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".onSend=")).toBeTypeOf("function");
+    expect(templateText(renderApp(app))).toContain("defaults unavailable");
+    expect(warn).toHaveBeenCalled();
+  });
+
+  // One markup anchor, kept deliberately narrow: the notice moved out of the
+  // start-screen column into `<main>` and its class was renamed, so the CSS
+  // contract and the alert role would otherwise be able to drift silently.
+  it("renders the notice as an alert with the shared starter-notice class", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionController(app), "startSession").mockRejectedValue(new Error("session daemon offline"));
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    await startSessionAndOpenChat(app);
+    await flush();
+
+    expect(findTemplateContaining(renderApp(app), 'class="starter-notice" role="alert"')).not.toBeUndefined();
+  });
+
+  it("reports a refusal on the composer send path, which used to return in silence", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    startSessionPrompt(app, "start with a broken tier");
+
+    expect(startWithPrompt).not.toHaveBeenCalled();
+    expect(appState(app).error).toBe("");
+    expect(starterNotice(app)?.kind).toBe("policy-blocked");
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+  });
+
+  it("retires a previous notice once a starter defaults load succeeds", async () => {
+    const app = createApp();
+    const defaults = vi.spyOn(sessionsApi, "sessionDefaults")
+      .mockRejectedValueOnce(new Error("defaults unavailable"))
+      .mockResolvedValue(starterDefaults());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    expect(starterNotice(app)?.kind).toBe("defaults-failed");
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    expect(defaults).toHaveBeenCalledTimes(2);
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("defaults unavailable");
+  });
+});
+
 // ── harness ─────────────────────────────────────────────────────────────────
 
 function promptStartFrom(
@@ -1521,6 +1651,22 @@ function starterModelPolicy(app: PiWebUiApp): SessionModelPolicy | undefined {
   if (value === undefined) return undefined;
   if (!isSessionModelPolicy(value)) throw new Error("Starter model policy has an unexpected shape");
   return value;
+}
+
+function starterNotice(app: PiWebUiApp): StarterNotice | undefined {
+  const value: unknown = Reflect.get(app, "starterNotice");
+  if (value === undefined) return undefined;
+  if (!isStarterNotice(value)) throw new Error("Starter notice has an unexpected shape");
+  return value;
+}
+
+function isStarterNotice(value: unknown): value is StarterNotice {
+  if (typeof value !== "object" || value === null) return false;
+  const kind: unknown = Reflect.get(value, "kind");
+  const scope: unknown = Reflect.get(value, "scope");
+  if (kind !== "policy-blocked" && kind !== "start-failed" && kind !== "defaults-failed") return false;
+  if (typeof scope !== "object" || scope === null) return false;
+  return typeof Reflect.get(scope, "machineId") === "string" && typeof Reflect.get(scope, "workspaceId") === "string";
 }
 
 function setStarterModelPolicy(app: PiWebUiApp, policy: SessionModelPolicy): void {
