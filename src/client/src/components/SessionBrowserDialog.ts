@@ -114,7 +114,7 @@ export class SessionBrowserDialog extends LitElement {
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session); }}
       >
         <div class="action-main">
-          <span class="action-name" dir="auto">${this.renderSessionGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>
+          <span class="action-name-line">${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span></span>
           <small>${session.cwd} · ${String(session.messageCount)} messages</small>
           ${renderActionActivityIndicators(indicators)}
         </div>
@@ -210,6 +210,8 @@ export class SessionBrowserDialog extends LitElement {
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }
     .session-browser-row { grid-template-columns: minmax(0, 1fr); }
     .session-browser-row .action-main { border-radius: 8px; padding-right: 56px; }
+    .session-browser-row .action-name-line { min-width: 0; display: flex; align-items: flex-start; }
+    .session-browser-row .action-name-line .action-name { flex: 1 1 auto; min-width: 0; }
     .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0 5px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; vertical-align: text-bottom; cursor: pointer; }
     .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); transform: scale(1.25); }
     .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }

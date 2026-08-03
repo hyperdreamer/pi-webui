@@ -38,6 +38,30 @@ describe("SessionBrowserDialog", () => {
     expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*transform:\s*scale\(1\.25\);/);
   });
 
+  it("keeps the enlarged toggle out of the clamped label so wrapped titles stay legible", () => {
+    const parent = session("parent", { firstMessage: "Coordinate the release" });
+    const child = session("child", { parentSessionPath: parent.path, firstMessage: "Run checks" });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [parent, child];
+
+    const markup = templateText(dialog.render());
+    const lineIndex = markup.indexOf('class="action-name-line"');
+    const toggleIndex = markup.indexOf('class="session-group-toggle"');
+    const labelIndex = markup.indexOf('class="action-name"');
+    const styles = sessionBrowserDialogStyles();
+
+    // The label is line-clamped by `listStyles`, so an inline 24px button inside it
+    // would inflate the clamped line box and slice the second line of wrapped titles.
+    expect(lineIndex).toBeGreaterThanOrEqual(0);
+    expect(toggleIndex).toBeGreaterThan(lineIndex);
+    expect(labelIndex).toBeGreaterThan(toggleIndex);
+    expect(styles).toMatch(/\.session-browser-row \.action-name-line\s*\{[^}]*min-width:\s*0;/);
+    expect(styles).toMatch(/\.session-browser-row \.action-name-line\s*\{[^}]*display:\s*flex;/);
+    expect(styles).toMatch(/\.session-browser-row \.action-name-line\s*\{[^}]*align-items:\s*flex-start;/);
+    expect(styles).toMatch(/\.session-browser-row \.action-name-line \.action-name\s*\{[^}]*flex:\s*1 1 auto;/);
+    expect(styles).toMatch(/\.session-browser-row \.action-name-line \.action-name\s*\{[^}]*min-width:\s*0;/);
+  });
+
   it("browses the selected project's session tree and exposes descendant work", () => {
     const parent = session("parent", { firstMessage: "Coordinate release" });
     const child = session("child", { parentSessionPath: parent.path, firstMessage: "Run checks" });
