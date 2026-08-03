@@ -1555,6 +1555,13 @@ export class PiWebUiApp extends LitElement {
   }
 
   private publishStarterNotice(notice: StarterNotice): void {
+    // Async starter work may settle after selection changes; the single notice
+    // slot belongs exclusively to the currently selected starter scope.
+    const currentScope = this.starterNoticeScope();
+    if (
+      currentScope?.machineId !== notice.scope.machineId
+      || currentScope.workspaceId !== notice.scope.workspaceId
+    ) return;
     this.starterNotice = notice;
   }
 

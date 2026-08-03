@@ -1338,6 +1338,41 @@ describe("PiWebUiApp starter notice channel", () => {
     expect(templateText(renderApp(app))).toContain("start request rejected");
   });
 
+  it("keeps the current workspace notice when an earlier prompt start rejects", async () => {
+    const app = createApp();
+    const pendingStart = deferred<boolean>();
+    vi.spyOn(sessionsApi, "sessionDefaults")
+      .mockResolvedValueOnce(starterDefaults())
+      .mockRejectedValueOnce(new Error("feature defaults unavailable"));
+    vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(pendingStart.promise));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stubComposerFocus(app);
+    stubWorkspaceChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+    setAppState(app, { ...starterState(), workspaces: [mainWorkspace, featureWorkspace] });
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    startSessionPrompt(app, "start in main");
+    const mainState = appState(app);
+    const featureState: AppState = { ...mainState, selectedWorkspace: featureWorkspace };
+    setAppState(app, featureState);
+    handleWorkspaceChange(app, mainState, featureState);
+    await loadStarterSessionDefaults(app, featureWorkspace);
+
+    pendingStart.reject(new Error("main start rejected late"));
+    await flush();
+
+    expect(starterNotice(app)).toEqual({
+      kind: "defaults-failed",
+      message: "Could not load this workspace's model defaults. feature defaults unavailable",
+      scope: { machineId: "local", workspaceId: featureWorkspace.id },
+    });
+    const rendered = templateText(renderApp(app));
+    expect(rendered).toContain("feature defaults unavailable");
+    expect(rendered).not.toContain("main start rejected late");
+  });
+
   it("reports a failed starter defaults update without unmounting the model controls", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
