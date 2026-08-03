@@ -20,6 +20,12 @@ import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
 const MESSAGE_PAGE_SIZE = 100;
 const OVERLOAD_RESYNC_MIN_INTERVAL_MS = 1_000;
 const BULK_FALLBACK_CONCURRENCY = 4;
+/**
+ * Cap on events retained during a single join window. Sized well above a normal
+ * join (a few hundred milliseconds of ordinary streaming) so it only engages
+ * when a session is genuinely flooding faster than the join can settle.
+ */
+const DEFAULT_MAX_JOIN_BUFFERED_EVENTS = 512;
 
 type OverloadResyncScheduler = (run: () => void, delayMs: number) => () => void;
 
@@ -66,6 +72,7 @@ export interface SessionControllerDependencies {
   streamEventBuffer?: StreamEventBuffer;
   now?: () => number;
   scheduleOverloadResync?: OverloadResyncScheduler;
+  maxJoinBufferedEvents?: number;
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
@@ -115,6 +122,48 @@ interface PendingOverloadResync {
 
 type SelectedModelPolicyStateReset = Pick<AppState, "modelPolicy" | "isLoadingModelPolicy" | "isSavingModelPolicy" | "modelPolicyError">;
 
+/**
+ * Holds events that arrive on the per-session socket between join-time socket
+ * connect and the join refresh settling. They cannot be applied on arrival,
+ * because the watermark deciding which of them the seeded snapshot already
+ * reflects is only known once that refresh resolves.
+ *
+ * The retained window is capped. `StreamEventBuffer`'s coalescing and overload
+ * escape hatch do not cover this phase, so an unbounded array let a fast session
+ * accumulate an arbitrarily large burst and then apply it in one synchronous
+ * drain task, blocking the main thread. Past the cap the collector drops what it
+ * holds and reports `overflowed`, leaving the caller to recover the tail from a
+ * snapshot instead of paying for the burst.
+ */
+class JoinEventCollector {
+  private events: SessionUiEvent[] = [];
+  private overflow = false;
+
+  constructor(private readonly maxEvents: number) {}
+
+  /** Whether the cap was hit, meaning the retained window was discarded. */
+  get overflowed(): boolean {
+    return this.overflow;
+  }
+
+  push(event: SessionUiEvent): void {
+    if (this.overflow) return;
+    if (this.events.length >= this.maxEvents) {
+      // Release the retained events immediately; a resync supersedes them.
+      this.events = [];
+      this.overflow = true;
+      return;
+    }
+    this.events.push(event);
+  }
+
+  drain(): SessionUiEvent[] {
+    const drained = this.events;
+    this.events = [];
+    return drained;
+  }
+}
+
 export class SessionController {
   private readonly socket: SessionEventSocket;
   private readonly api: typeof defaultApi;
@@ -133,6 +182,7 @@ export class SessionController {
   private readonly streamEventBuffer: StreamEventBuffer;
   private readonly now: () => number;
   private readonly scheduleOverloadResync: OverloadResyncScheduler;
+  private readonly maxJoinBufferedEvents: number;
   private lastOverloadResyncAt: number | undefined;
   private pendingOverloadResync: PendingOverloadResync | undefined;
   private pendingStatusBySession = new Map<string, SessionStatus>();
@@ -178,6 +228,7 @@ export class SessionController {
     this.streamEventBuffer = deps.streamEventBuffer ?? new StreamEventBuffer();
     this.now = deps.now ?? (() => Date.now());
     this.scheduleOverloadResync = deps.scheduleOverloadResync ?? defaultOverloadResyncScheduler;
+    this.maxJoinBufferedEvents = deps.maxJoinBufferedEvents ?? DEFAULT_MAX_JOIN_BUFFERED_EVENTS;
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
@@ -291,7 +342,7 @@ export class SessionController {
       availableThinkingLevels: [],
       ...this.clearSelectedModelPolicyState(),
     });
-    let buffered: SessionUiEvent[] | undefined;
+    let buffered: JoinEventCollector | undefined;
     try {
       if (session.archived === true) {
         const page = await this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState()));
@@ -302,19 +353,20 @@ export class SessionController {
         if (options?.updateUrl !== false) this.updateUrl();
         return;
       }
-      const socketBuffer: SessionUiEvent[] = [];
-      buffered = socketBuffer;
+      const refreshTarget: SelectedSessionRefreshTarget = { session, machineId, selectionSeq: seq };
+      const joinBuffer = new JoinEventCollector(this.maxJoinBufferedEvents);
+      buffered = joinBuffer;
       this.socket.connect(
         session,
-        (event) => socketBuffer.push(event),
+        (event) => { joinBuffer.push(event); },
         () => { void this.refreshSelectedSession(session.id); },
         machineId,
         () => { void this.notifications?.refreshSelectedSession(session, machineId); },
       );
-      await this.requestSelectedSessionRefresh({ session, machineId, selectionSeq: seq });
-      if (!this.isCurrentRefreshTarget({ session, machineId, selectionSeq: seq })) return;
+      await this.requestSelectedSessionRefresh(refreshTarget);
+      if (!this.isCurrentRefreshTarget(refreshTarget)) return;
       void this.refreshAvailableThinkingLevels();
-      for (const event of socketBuffer) this.applyEvent(event);
+      this.applyJoinBufferedEvents(joinBuffer, refreshTarget);
       this.socket.setHandler((event) => { this.applyEvent(event); });
       this.onSelectedSessionReady?.({ machineId, session });
       if (options?.updateUrl !== false) this.updateUrl();
@@ -331,9 +383,12 @@ export class SessionController {
       }
       // A failed join refresh must not strand the socket on its temporary
       // buffering callback. Apply what arrived and keep live events flowing so
-      // reconnect/trailing refresh can recover authoritatively.
+      // reconnect/trailing refresh can recover authoritatively. An overflowed
+      // window is skipped rather than partially applied; that same
+      // reconnect/trailing path is what restores the dropped events, since the
+      // refresh this would otherwise resync through has just failed.
       if (buffered !== undefined) {
-        for (const event of buffered) this.applyEvent(event);
+        if (!buffered.overflowed) for (const event of buffered.drain()) this.applyEvent(event);
         this.socket.setHandler((event) => { this.applyEvent(event); });
       }
       this.setState({ error: String(error) });
@@ -1650,6 +1705,21 @@ export class SessionController {
     }
   }
 
+  /**
+   * Apply the join window's retained events on top of the seeded snapshot. When
+   * the window overflowed, the retained events are gone, so the transcript is
+   * recovered with a resync instead. That resync goes through the ordinary
+   * throttled path, so a session flooding across repeated switches cannot turn
+   * this recovery into an unbounded refetch loop.
+   */
+  private applyJoinBufferedEvents(joinBuffer: JoinEventCollector, target: SelectedSessionRefreshTarget): void {
+    if (joinBuffer.overflowed) {
+      this.requestOverloadResync(target);
+      return;
+    }
+    for (const event of joinBuffer.drain()) this.applyEvent(event);
+  }
+
   private queueTranscriptEvent(event: Parameters<StreamEventBuffer["enqueue"]>[0]): void {
     this.streamEventBuffer.enqueue(event);
     this.schedulePendingFlush();
@@ -1745,7 +1815,14 @@ export class SessionController {
   }
 
   private clearPendingUpdates(): void {
-    this.lastOverloadResyncAt = undefined;
+    // `lastOverloadResyncAt` is deliberately NOT reset here. It is the only floor
+    // between overload resyncs, and this runs on every selection change, so
+    // resetting it handed each switch a free immediate refetch: alternating
+    // between busy sessions defeated the throttle entirely and froze the tab.
+    // The floor is tab-wide because the refetch cost is the same whichever
+    // session it targets. Dropping a deferred resync at a switch loses nothing,
+    // since the new selection always performs its own authoritative join
+    // refresh through `requestSelectedSessionRefresh()`.
     this.cancelPendingOverloadResync();
     this.streamEventBuffer.clear();
     this.pendingStatusBySession.clear();
