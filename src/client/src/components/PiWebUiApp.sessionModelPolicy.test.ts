@@ -1067,6 +1067,28 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
     );
   });
 
+  it("shows a failed preference write warning above an earlier read diagnostic", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreferenceError: "Preference file could not be read",
+    }));
+    vi.spyOn(sessionsApi, "updateSessionDefaults").mockRejectedValue(new Error("disk full"));
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toBe("Preference file could not be read");
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      const editor = promptEditorTemplate(app);
+      expect(templateValueAfterMarker(editor, ".modelPolicyError="))
+        .toBe("Could not remember this model policy; this session will still use it. Error: disk full");
+      expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+    });
+  });
+
   it("clears an earlier preference warning after a later successful write", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());

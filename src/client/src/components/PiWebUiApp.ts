@@ -2251,15 +2251,14 @@ export class PiWebUiApp extends LitElement {
 
   private starterModelPolicyError(): string {
     if (this.modelTierCatalogError !== "") return this.modelTierCatalogError;
-    if (this.starterModelPolicyPreferenceReadError !== "") {
-      return this.starterModelPolicyPreferenceReadError;
-    }
     const scope = this.starterModelPolicyPreferenceScope();
-    if (scope === undefined) return "";
-    const error = this.starterModelPolicyPreferenceWriter.snapshot(scope).error;
-    return error === undefined
-      ? ""
-      : `Could not remember this model policy; this session will still use it. ${error}`;
+    const writerError = scope === undefined
+      ? undefined
+      : this.starterModelPolicyPreferenceWriter.snapshot(scope).error;
+    if (writerError !== undefined) {
+      return `Could not remember this model policy; this session will still use it. ${writerError}`;
+    }
+    return this.starterModelPolicyPreferenceReadError;
   }
 
   /**
