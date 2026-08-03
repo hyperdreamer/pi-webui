@@ -353,6 +353,11 @@ export class PiWebUiApp extends LitElement {
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
   @state() private starterModelPolicyPreferenceReadError = "";
+  // A direct start refused by a blocked starter policy must report the refusal
+  // without leaving the start screen. `state.error` cannot carry it:
+  // `shouldShowSessionStartScreen()` requires an empty `state.error`, so
+  // publishing there would unmount the very controls that repair the block.
+  @state() private starterModelPolicyStartBlocked = false;
   private readonly starterModelPolicyPreferenceWriter = new StarterModelPolicyPreferenceWriter({
     save: async (scope, preference) => {
       const response = await sessionsApi.updateSessionDefaults(
@@ -1595,6 +1600,7 @@ export class PiWebUiApp extends LitElement {
   private resetStarterModelPolicyForScopeChange(): void {
     this.starterModelPolicy = undefined;
     this.starterModelPolicyPreferenceReadError = "";
+    this.starterModelPolicyStartBlocked = false;
     this.modelTierCatalogError = "";
   }
 
@@ -1973,9 +1979,10 @@ export class PiWebUiApp extends LitElement {
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
     const blockedReason = this.starterModelPolicyInputs()?.status.blockedReason;
     if (blockedReason !== undefined) {
-      if (shouldComplete()) this.setState({ error: blockedReason });
+      if (shouldComplete()) this.starterModelPolicyStartBlocked = true;
       return;
     }
+    this.starterModelPolicyStartBlocked = false;
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
     // every starter edit and value-changing relink replaces the policy object;
@@ -2166,6 +2173,7 @@ export class PiWebUiApp extends LitElement {
           <div class="session-start-composer">
             <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${this.starterModelPolicyError()} .sendDisabled=${policy?.status.blockedReason !== undefined} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
+          ${this.starterModelPolicyStartBlocked && policy?.status.blockedReason !== undefined ? html`<p class="session-start-block-notice" role="alert">${policy.status.blockedReason}</p>` : null}
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
       </section>
@@ -3233,6 +3241,10 @@ export class PiWebUiApp extends LitElement {
   }
 
   private setStarterModelPolicyDraft(draft: SessionModelPolicyDraft): SessionModelPolicyDraft {
+    // Any explicit starter edit is a fresh attempt at a valid choice, so it
+    // retires the previous refusal notice. The notice is additionally gated on
+    // the live block, so a repair hides it even without this reset.
+    this.starterModelPolicyStartBlocked = false;
     const stored = {
       mode: draft.mode,
       exact: { model: { ...draft.exact.model }, thinkingLevel: draft.exact.thinkingLevel },

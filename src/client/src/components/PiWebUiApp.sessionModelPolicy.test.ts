@@ -20,7 +20,7 @@ import type {
 import { modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { SessionController } from "../controllers/sessionController";
-import { findTemplateContaining, isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
+import { findTemplateContaining, isTemplateResult, templateStrings, templateText, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
@@ -997,7 +997,38 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
 
     expect(startWithPrompt).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
-    expect(appState(app).error).toBe("Choose a valid model tier before starting");
+    // The refusal is reported on the start screen itself, not through
+    // `state.error`, which selects which screen renders at all.
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+  });
+
+  it("keeps the start screen and its repair controls mounted after a blocked direct start", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+
+    expect(start).not.toHaveBeenCalled();
+    // `shouldShowSessionStartScreen()` requires an empty `state.error`, so a
+    // block published there would unmount the controls that repair it.
+    expect(appState(app).error).toBe("");
+    // Throws if the start screen no longer renders its composer.
+    const editor = promptEditorTemplate(app);
+    const status = policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus="));
+    expect(status.mode).toBe("tiered");
+    expect(status.tier).toBe("advanced");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(true);
+    expect(templateValueAfterMarker(editor, ".onSelectPolicyTier=")).toBeTypeOf("function");
+    // T6-F-3: the refusal still is not silent.
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
   });
 
   it("switches blocked Tiered intent to complete Exact after catalog loading fails", async () => {

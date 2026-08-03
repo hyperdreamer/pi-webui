@@ -147,7 +147,47 @@ describe("StarterModelPolicyPreferenceWriter", () => {
     expect(save).toHaveBeenCalledTimes(2);
     expect(save.mock.calls[1]?.[1]).toEqual({ mode: "tiered", tier: "fast" });
   });
+
+  it("retains only scopes that still have something to report", async () => {
+    const failing = { machineId: "remote-a", cwd: "/failing" };
+    const inFlight = deferred();
+    const save = vi.fn<StarterModelPolicyPreferenceWriterDependencies["save"]>((scope) => {
+      if (scope.cwd === "/failing") return Promise.reject(new Error("disk full"));
+      if (scope.cwd === "/in-flight") return inFlight.promise;
+      return Promise.resolve();
+    });
+    const writer = new StarterModelPolicyPreferenceWriter({ save });
+
+    // Visiting many settled scopes must not accumulate one entry each: a
+    // settled, error-free scope already reads back as `{ saving: false }`.
+    for (const suffix of ["a", "b", "c", "d", "e"]) {
+      await writer.write({ machineId: "remote-a", cwd: `/settled-${suffix}` }, { mode: "exact" });
+    }
+    await writer.write(failing, { mode: "tiered", tier: "frontier" });
+    const pending = writer.write({ machineId: "remote-a", cwd: "/in-flight" }, { mode: "exact" });
+
+    await vi.waitFor(() => { expect(trackedScopeCount(writer)).toBe(2); });
+    expect(writer.snapshot({ machineId: "remote-a", cwd: "/settled-a" })).toEqual({ saving: false });
+    expect(writer.snapshot(failing)).toEqual({ saving: false, error: "Error: disk full" });
+
+    inFlight.resolve();
+    await pending;
+    await vi.waitFor(() => { expect(trackedScopeCount(writer)).toBe(1); });
+    expect(writer.snapshot(failing)).toEqual({ saving: false, error: "Error: disk full" });
+  });
 });
+
+/**
+ * The retained-scope count is internal by design, and no public seam can
+ * distinguish a pruned scope from a settled one — that indistinguishability is
+ * exactly the property being relied on. Reading the private map is the narrowest
+ * way to pin the retention bound.
+ */
+function trackedScopeCount(writer: StarterModelPolicyPreferenceWriter): number {
+  const states: unknown = Reflect.get(writer, "states");
+  if (!(states instanceof Map)) throw new Error("Preference write states are unavailable");
+  return states.size;
+}
 
 function scopeKey(scope: StarterModelPolicyPreferenceWriteScope): string {
   return JSON.stringify([scope.machineId, scope.cwd]);

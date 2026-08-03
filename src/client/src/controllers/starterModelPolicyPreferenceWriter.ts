@@ -86,13 +86,11 @@ export class StarterModelPolicyPreferenceWriter {
     const completeWorker = resolveWorker;
 
     state.worker = worker;
-    void this.runWorker(state).then(
-      () => { this.finishWorker(state, worker, completeWorker); },
-      (error: unknown) => {
-        state.error = String(error);
-        this.finishWorker(state, worker, completeWorker);
-      },
-    );
+    // `runWorker()` contains every `save` rejection and `publish()` contains every
+    // observer throw, so there is no rejection arm here: an unreachable one would
+    // claim a failure mode that cannot occur, and a real defect must surface as an
+    // unhandled rejection rather than be recorded as a preference write error.
+    void this.runWorker(state).then(() => { this.finishWorker(state, worker, completeWorker); });
   }
 
   private async runWorker(state: PreferenceWriteState): Promise<void> {
@@ -119,8 +117,22 @@ export class StarterModelPolicyPreferenceWriter {
       state.worker = undefined;
       if (state.pending !== undefined) this.startWorker(state);
       this.publish(state);
+      this.pruneIdleState(state);
     }
     resolveWorker();
+  }
+
+  /**
+   * Forget a scope that has nothing left to report. `snapshot()` already answers
+   * `{ saving: false }` for an unknown scope, so a settled, error-free entry is
+   * indistinguishable from absence; dropping it keeps the map proportional to
+   * in-flight and failed writes rather than to every scope visited this page
+   * lifetime.
+   */
+  private pruneIdleState(state: PreferenceWriteState): void {
+    if (state.worker !== undefined || state.pending !== undefined || state.error !== undefined) return;
+    const key = scopeKey(state.scope);
+    if (this.states.get(key) === state) this.states.delete(key);
   }
 
   private publish(state: PreferenceWriteState): void {

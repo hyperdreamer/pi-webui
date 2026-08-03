@@ -146,7 +146,9 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 
 ### Managed data directory
 
-`PI_WEBUI_DATA_DIR` sets the root for PI WEBUI-managed runtime state and defaults to `~/.pi-webui`. Unless a more specific path override is configured, PI WEBUI stores its project and machine registries, locally discovered plugins, default session-daemon socket, and session archives beneath this root.
+`PI_WEBUI_DATA_DIR` sets the root for PI WEBUI-managed runtime state and defaults to `~/.pi-webui`. Unless a more specific path override is configured, PI WEBUI stores its project and machine registries (`projects.json` and `machines.json`), remembered starter model policy preferences (`starter-model-policy-preferences.json`, see [Model tiers](#model-tiers)), locally discovered plugins, default session-daemon socket, and session archives beneath this root.
+
+This managed state is not the user-editable config API. Edit it through PI WEBUI rather than by hand.
 
 This setting does not change the PI WEBUI config file selected by `PI_WEBUI_CONFIG` or Pi-owned state such as the active session files selected by `PI_CODING_AGENT_SESSION_DIR`.
 
