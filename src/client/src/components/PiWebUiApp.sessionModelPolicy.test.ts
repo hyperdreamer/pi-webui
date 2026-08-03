@@ -1463,6 +1463,239 @@ describe("PiWebUiApp starter notice channel", () => {
   });
 });
 
+describe("PiWebUiApp policy-blocked starter notice", () => {
+  it("reports a refused start while a session is selected in the same workspace", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    await startSessionAndOpenChat(app);
+
+    // FRR-1: `render()` now takes the `state.selectedSession` branch, so a notice
+    // confined to the start screen would produce no output anywhere and "New
+    // session" would be completely inert.
+    const session = activeSession();
+    setAppState(app, {
+      ...preferenceCapableStarterState(),
+      sessions: [session],
+      selectedSession: session,
+      status: activeStatus(exactPolicyStatus()),
+    });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(appState(app).error).toBe("");
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+  });
+
+  it("tracks the live blocked reason instead of a string captured at refusal time", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    await startSessionAndOpenChat(app);
+
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+
+    // The same refusal, reported by a catalog that now explains itself. No new
+    // Start attempt happens, so a captured string would still show the old text.
+    setModelTierCatalog(app, {
+      ...invalidTierCatalog("advanced", "Advanced points to a missing model"),
+      configError: "The model tier file could not be parsed",
+    }, "local");
+
+    const text = templateText(renderApp(app));
+    expect(text).toContain("The model tier file could not be parsed");
+    expect(text).not.toContain("Choose a valid model tier before starting");
+  });
+
+  it("retires the notice when an external repair removes the block, with no starter edit", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+    expect(starterNotice(app)?.kind).toBe("policy-blocked");
+
+    // The ladder is repaired outside the composer; the user makes no starter edit.
+    setModelTierCatalog(app, validCatalog(), "local");
+    runWillUpdate(app);
+
+    // Dropped, not merely hidden: the notice must not reappear if the ladder
+    // breaks again without a fresh Start attempt.
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("Choose a valid model tier before starting");
+    expect(policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).blockedReason).toBeUndefined();
+  });
+
+  it("keeps blocking Start with the remembered tier selected while the notice is live", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    await startSessionAndOpenChat(app);
+    await startSessionAndOpenChat(app);
+
+    // The notice never unblocks or substitutes anything; only `blockedReason` gates
+    // Start, and the unavailable remembered tier stays selected.
+    expect(start).not.toHaveBeenCalled();
+    const status = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
+    expect(status.mode).toBe("tiered");
+    expect(status.tier).toBe("advanced");
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".sendDisabled=")).toBe(true);
+  });
+
+  it("does not render a notice raised in another workspace or on another machine", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    stubWorkspaceChangeSideEffects(app);
+    stubMachineChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+    expect(starterNotice(app)?.scope).toEqual({ machineId: "local", workspaceId: mainWorkspace.id });
+
+    const beforeWorkspace = appState(app);
+    const featureState: AppState = {
+      ...beforeWorkspace,
+      workspaces: [mainWorkspace, featureWorkspace],
+      selectedWorkspace: featureWorkspace,
+    };
+    setAppState(app, featureState);
+    handleWorkspaceChange(app, beforeWorkspace, featureState);
+
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("Choose a valid model tier before starting");
+  });
+
+  it("does not render a retained notice after selected scope changes without cleanup", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+
+    const mainScope = { machineId: "local", workspaceId: mainWorkspace.id };
+    expect(starterNotice(app)?.scope).toEqual(mainScope);
+
+    // Bypass the normal scope-change cleanup so rendering is the only gate that
+    // can prevent the retained main-workspace notice from leaking into feature.
+    setAppState(app, {
+      ...appState(app),
+      workspaces: [mainWorkspace, featureWorkspace],
+      selectedWorkspace: featureWorkspace,
+    });
+
+    expect(starterNotice(app)?.scope).toEqual(mainScope);
+    expect(templateText(renderApp(app))).not.toContain("Choose a valid model tier before starting");
+  });
+
+  it("does not render a notice after switching machine", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    stubMachineChangeSideEffects(app);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+
+    const beforeMachine = appState(app);
+    const remoteState: AppState = { ...beforeMachine, selectedMachine: remoteMachine };
+    setAppState(app, remoteState);
+    handleMachineChange(app, beforeMachine, remoteState);
+
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("Choose a valid model tier before starting");
+  });
+
+  it("does not render a start failure that lands after the user moved to another workspace", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    const pendingStart = deferred<undefined>();
+    vi.spyOn(sessionController(app), "startSessionWithPrompt").mockReturnValue(pendingStart.promise);
+    stubComposerFocus(app);
+    stubWorkspaceChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+    setAppState(app, starterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    // The start is still in flight when the user switches workspace, so the
+    // rejection publishes a notice scoped to a workspace that is no longer
+    // selected. Task 2's publication guard rejects it before it enters the slot.
+    startSessionPrompt(app, "explore the repo");
+    const mainState = appState(app);
+    const featureState: AppState = {
+      ...mainState,
+      workspaces: [mainWorkspace, featureWorkspace],
+      selectedWorkspace: featureWorkspace,
+    };
+    setAppState(app, featureState);
+    handleWorkspaceChange(app, mainState, featureState);
+
+    pendingStart.reject(new Error("start request rejected"));
+    await flush();
+
+    expect(appState(app).error).toBe("");
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("start request rejected");
+  });
+
+  it("still suppresses the start screen for a genuine screen-selection error", () => {
+    const app = createApp();
+    setAppState(app, { ...starterState(), error: "Sessions could not be loaded." });
+
+    // `shouldShowSessionStartScreen()` is unchanged: an empty workspace whose
+    // session list failed to load must not claim to be empty.
+    const text = templateText(renderApp(app));
+    expect(text).toContain("Sessions could not be loaded.");
+    expect(text).not.toContain("What would you like to build?");
+  });
+});
+
 // ── harness ─────────────────────────────────────────────────────────────────
 
 function promptStartFrom(
@@ -1635,6 +1868,16 @@ function renderApp(app: PiWebUiApp): TemplateResult {
   const rendered: unknown = Reflect.apply(method, app, []);
   if (!isTemplateResult(rendered)) throw new Error("PiWebUiApp.render did not return a template");
   return rendered;
+}
+
+// Lit's own update cycle is unavailable in this node-only runner, so the notice
+// retirement hook is driven directly. It is a component lifecycle method, not a
+// template internal, so this is a plain reflective call rather than template
+// inspection.
+function runWillUpdate(app: PiWebUiApp): void {
+  const method: unknown = Reflect.get(app, "willUpdate");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.willUpdate is not callable");
+  Reflect.apply(method, app, []);
 }
 
 function promptEditorTemplate(app: PiWebUiApp): TemplateResult {

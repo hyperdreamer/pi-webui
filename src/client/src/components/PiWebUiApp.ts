@@ -6,7 +6,7 @@ import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
 import { isDraftReadyToApply, relinkStarterExactBranch, sameExactSelection, seedModelPolicyDraft, seedStarterModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, starterExactSelection, starterModelPolicyPreferenceFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
-import { starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
+import { shouldRetainStarterNotice, starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -457,6 +457,7 @@ export class PiWebUiApp extends LitElement {
   protected override willUpdate(): void {
     this.toggleAttribute("pwa-display-mode", this.appShell.isPwaDisplayMode);
     this.syncSessionWarningVisibility();
+    this.syncStarterNotice();
   }
 
   protected override updated(): void {
@@ -1563,6 +1564,23 @@ export class PiWebUiApp extends LitElement {
       || currentScope.workspaceId !== notice.scope.workspaceId
     ) return;
     this.starterNotice = notice;
+  }
+
+  /**
+   * Drop a notice the current render would no longer show, rather than leaving it
+   * hidden behind a live gate.
+   *
+   * A `"policy-blocked"` notice then means strictly "the user's last Start attempt
+   * was refused", so a later external repair-and-rebreak cannot make a stale
+   * refusal reappear without a fresh attempt. This runs in `willUpdate()` because
+   * the live `blockedReason` also changes from catalog loads and scope changes the
+   * notice itself never observes.
+   */
+  private syncStarterNotice(): void {
+    const notice = this.starterNotice;
+    if (notice === undefined) return;
+    if (shouldRetainStarterNotice(notice, this.starterNoticeScope(), this.starterModelPolicyInputs()?.status.blockedReason)) return;
+    this.starterNotice = undefined;
   }
 
   private starterModelPolicyPreferenceSupported(machineId: string): boolean {
