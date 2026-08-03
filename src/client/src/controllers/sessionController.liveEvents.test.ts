@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { StreamEventBuffer } from "../streamEventBuffer";
 import { SessionController } from "./sessionController";
-import { defaultApi, EmitSocket, emptyPage, FakeSocket, oldSession, replacementSession, runPendingAnimationFrames, status, workspace, type AppState, type MessagePage, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
+import { defaultApi, deferred, EmitSocket, emptyPage, FakeSocket, oldSession, replacementSession, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type MessagePage, type SessionActivity, type SessionInfo } from "./sessionController.testSupport";
 
 interface ScheduledOverloadResync {
   run: () => void;
@@ -668,5 +668,128 @@ describe("SessionController live events", () => {
     beforeDispose.run();
     await settleRefresh();
     expect(messages).toHaveBeenCalledTimes(afterDispose);
+  });
+
+  it("keeps the overload resync floor across session switches", async () => {
+    const socket = new EmitSocket();
+    const messages = vi.fn<typeof defaultApi.messages>(() => Promise.resolve(emptyPage));
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession, replacementSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages,
+      status: (session) => Promise.resolve(status(sessionLookupId(session))),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    // The clock never advances, so every overload below falls inside a single
+    // throttle window and only one resync may be spent across all of them.
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      {
+        api,
+        socket,
+        now: () => 10_000,
+        streamEventBuffer: new StreamEventBuffer({ maxEventRuns: 1, maxBytes: 262_144 }),
+      },
+    );
+
+    await controller.selectSession(oldSession, { updateUrl: false });
+    overflowStreamBuffer(socket, 1);
+    await settleRefresh();
+    const afterFirstResync = messages.mock.calls.length;
+
+    // Alternating selections used to reset the floor, so each switch granted a
+    // free immediate refetch; only the per-selection join refresh should remain.
+    let joins = 0;
+    for (let round = 0; round < 6; round += 1) {
+      await controller.selectSession(round % 2 === 0 ? replacementSession : oldSession, { updateUrl: false });
+      joins += 1;
+      await settleRefresh();
+      overflowStreamBuffer(socket, 21 + round * 2);
+      await settleRefresh();
+    }
+
+    expect(messages.mock.calls.length).toBe(afterFirstResync + joins);
+  });
+
+  it("drops an overflowing join window and resyncs instead of applying it", async () => {
+    const socket = new EmitSocket();
+    const page = deferred<MessagePage>();
+    const messages = vi.fn<typeof defaultApi.messages>(() => page.promise);
+    let setStateCalls = 0;
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages,
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { setStateCalls += 1; state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket, now: () => 10_000, maxJoinBufferedEvents: 4 },
+    );
+
+    const selecting = controller.selectSession(oldSession, { updateUrl: false });
+    await Promise.resolve();
+
+    // A busy session floods past the cap while the join refresh is still in
+    // flight. Unbuffered events are included because each one forces a
+    // synchronous flush when applied.
+    for (let index = 0; index < 40; index += 1) {
+      const seq = index + 1;
+      if (index % 4 === 0) socket.emit({ type: "tool.start", toolName: "read", toolCallId: `call-${String(index)}`, summary: "s", args: {}, seq });
+      else socket.emit({ type: "assistant.delta", text: "streamed", seq });
+    }
+
+    const setStateBeforeDrain = setStateCalls;
+    page.resolve(emptyPage);
+    await selecting;
+    await settleRefresh();
+
+    // The discarded window must not be applied as a synchronous burst, and the
+    // transcript is recovered by a resync rather than partially applied events.
+    expect(setStateCalls - setStateBeforeDrain).toBeLessThan(10);
+    expect(state.messages).toEqual([]);
+    expect(messages.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("applies a join window that stays within the cap", async () => {
+    const socket = new EmitSocket();
+    const page = deferred<MessagePage>();
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      messages: () => page.promise,
+      status: () => Promise.resolve(status(oldSession.id)),
+      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+      thinkingLevels: () => Promise.resolve({ levels: [] }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket, now: () => 10_000, maxJoinBufferedEvents: 8 },
+    );
+
+    const selecting = controller.selectSession(oldSession, { updateUrl: false });
+    await Promise.resolve();
+
+    socket.emit({ type: "assistant.delta", text: "hello ", seq: 1 });
+    socket.emit({ type: "assistant.delta", text: "world", seq: 2 });
+
+    page.resolve(emptyPage);
+    await selecting;
+    runPendingAnimationFrames();
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "assistant" });
   });
 });
