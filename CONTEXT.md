@@ -33,8 +33,16 @@ A session's active Exact or Tiered mode together with its remembered exact model
 _Avoid_: Model group, model category
 
 **Starter model policy preference**:
-A personal, machine-local, workspace-scoped default mode and remembered tier used to initialize future root-session composers. It does not own the exact model selection and does not become a session model policy until a session is created.
+A personal, machine-local, workspace-scoped full policy used to initialize the next root created through SESSIONS `+`. It owns the active mode, remembered exact model selection, and remembered tier.
 _Avoid_: Global model policy, project policy
+
+**Remembered policy selection**:
+A stored Exact selection or model tier that represents user intent and is validated when its branch is active. Temporary unavailability does not erase or replace it.
+_Avoid_: Available default, fallback model
+
+**Plus-created root session**:
+A top-level session explicitly created through SESSIONS `+` and eligible to replace the starter model policy preference. Prompt-created roots and spawned sessions are not plus-created roots.
+_Avoid_: Browser session, manual session
 
 **Tier directive**:
 A canonical leading `/tier-*` command that selects or moves a tier without changing the session model policy's mode.
