@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import {
   MODEL_TIERS,
+  type LegacyStarterModelPolicyPreference,
   type ModelTier,
   type SessionDefaultsUpdate,
-  type StarterModelPolicyPreference,
 } from "../../shared/apiTypes.js";
 import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
@@ -67,7 +67,7 @@ function parseUpdate(value: unknown): { cwd: string; update: SessionDefaultsUpda
   };
 }
 
-function parseStarterModelPolicyPreference(value: unknown): StarterModelPolicyPreference {
+function parseStarterModelPolicyPreference(value: unknown): LegacyStarterModelPolicyPreference {
   const preference = requireRecord(value);
   requireAllowedFields(
     preference,

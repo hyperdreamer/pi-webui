@@ -1,13 +1,13 @@
 import {
   MODEL_TIERS,
   type ExactModelSelection,
+  type LegacyStarterModelPolicyPreference,
   type ModelTier,
   type ModelTierModelOption,
   type ModelTierSettingsResponse,
   type SessionDefaultsResponse,
   type SessionModelPolicy,
   type SessionModelPolicyUpdate,
-  type StarterModelPolicyPreference,
   type TierModelRef,
 } from "../../../shared/apiTypes";
 
@@ -89,7 +89,7 @@ export function relinkStarterExactBranch(
 
 export function starterModelPolicyPreferenceFromDraft(
   draft: SessionModelPolicyDraft,
-): StarterModelPolicyPreference | undefined {
+): LegacyStarterModelPolicyPreference | undefined {
   if (draft.mode === "tiered" && draft.tier === undefined) return undefined;
   return {
     mode: draft.mode,

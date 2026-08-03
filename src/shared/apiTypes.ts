@@ -20,6 +20,7 @@ export const PI_WEBUI_CAPABILITIES = {
   modelTierSettings: "settings.modelTiers",
   sessionsModelPolicy: "sessions.modelPolicy",
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
+  sessionsModelPolicyStarterSelection: "sessions.modelPolicyStarterSelection",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -102,11 +103,40 @@ export interface ExactModelSelection {
 
 export type SessionModelPolicyMode = "exact" | "tiered";
 
-export interface StarterModelPolicyPreference {
+/** Version-one shape: no `exact` branch, Pi settings own the starter Exact model and thinking defaults. */
+export interface LegacyStarterModelPolicyPreference {
   mode: SessionModelPolicyMode;
   /** Remembered while Exact is active; required while Tiered is active. */
   tier?: ModelTier;
 }
+
+/** Complete remembered starter policy: active mode, remembered Exact tuple, and remembered tier. */
+export interface StarterModelPolicyPreference {
+  mode: SessionModelPolicyMode;
+  /** Remembered while Tiered is active; required while Exact is active. */
+  exact: ExactModelSelection;
+  /** Remembered while Exact is active; required while Tiered is active. */
+  tier?: ModelTier;
+}
+
+export type StarterModelPolicyPreferenceResponse =
+  | StarterModelPolicyPreference
+  | LegacyStarterModelPolicyPreference;
+
+/** SessionCreationSource identifies a top-level root explicitly created by SESSIONS `+`. */
+export type SessionCreationSource = "session-list-plus";
+
+export type SessionStartOptions =
+  | {
+      modelPolicy?: SessionModelPolicyUpdate;
+      creationSource?: never;
+      initialModelPolicy?: never;
+    }
+  | {
+      creationSource: SessionCreationSource;
+      initialModelPolicy: StarterModelPolicyPreference;
+      modelPolicy?: never;
+    };
 
 export interface SessionModelPolicy {
   mode: SessionModelPolicyMode;
@@ -582,6 +612,8 @@ export interface SessionInfo extends SessionRef {
   archivedAt?: string;
   /** True when the user has pinned this session so it sorts first in lists. */
   pinned?: boolean;
+  /** Present only for a top-level root explicitly created by SESSIONS `+`. */
+  creationSource?: SessionCreationSource;
 }
 
 export interface ArchiveSessionsResponse {
@@ -783,7 +815,18 @@ export interface SessionDefaultsResponse {
   thinkingLevel: string;
   models: SessionModel[];
   thinkingLevels: string[];
-  starterModelPolicyPreference?: StarterModelPolicyPreference;
+  starterModelPolicyPreference?: LegacyStarterModelPolicyPreference;
+  starterModelPolicyPreferenceError?: string;
+}
+
+/** Negotiated through `starterModelPolicyContract=2` once `sessions.modelPolicyStarterSelection` is effective. */
+export interface SessionDefaultsV2Response {
+  starterModelPolicyContractVersion: 2;
+  model?: SessionModel;
+  thinkingLevel: string;
+  models: SessionModel[];
+  thinkingLevels: string[];
+  starterModelPolicyPreference?: StarterModelPolicyPreferenceResponse;
   starterModelPolicyPreferenceError?: string;
 }
 
@@ -801,7 +844,7 @@ export type SessionDefaultsUpdate =
   | {
       model?: never;
       thinkingLevel?: never;
-      starterModelPolicyPreference: StarterModelPolicyPreference;
+      starterModelPolicyPreference: LegacyStarterModelPolicyPreference;
     };
 
 /** Editable `models.json` document for the active Pi-compatible profile. */

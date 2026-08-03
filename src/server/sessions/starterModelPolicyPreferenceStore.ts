@@ -5,7 +5,7 @@ import { piWebUiDataDir } from "../../config.js";
 import {
   MODEL_TIERS,
   type ModelTier,
-  type StarterModelPolicyPreference,
+  type LegacyStarterModelPolicyPreference,
 } from "../../shared/apiTypes.js";
 
 const STARTER_MODEL_POLICY_PREFERENCE_VERSION = 1;
@@ -13,12 +13,12 @@ const STARTER_MODEL_POLICY_PREFERENCE_FILE_MODE = 0o600;
 
 interface StarterModelPolicyPreferenceFile {
   version: typeof STARTER_MODEL_POLICY_PREFERENCE_VERSION;
-  workspaces: Record<string, StarterModelPolicyPreference>;
+  workspaces: Record<string, LegacyStarterModelPolicyPreference>;
 }
 
 export type StarterModelPolicyPreferenceInspection =
   | { kind: "absent" }
-  | { kind: "valid"; preference: StarterModelPolicyPreference }
+  | { kind: "valid"; preference: LegacyStarterModelPolicyPreference }
   | { kind: "invalid"; reason: string };
 
 export interface StarterModelPolicyPreferencePersistence {
@@ -86,7 +86,7 @@ export class StarterModelPolicyPreferenceStore {
     }
   }
 
-  async replace(cwd: string, value: StarterModelPolicyPreference): Promise<void> {
+  async replace(cwd: string, value: LegacyStarterModelPolicyPreference): Promise<void> {
     requireNormalizedAbsoluteCwd(cwd);
     const preference = parsePreference(value, "starter preference");
     await this.exclusive(async () => {
@@ -143,13 +143,13 @@ function emptyPreferenceFile(): StarterModelPolicyPreferenceFile {
   };
 }
 
-function emptyWorkspaceRecord(): Record<string, StarterModelPolicyPreference> {
-  const workspaces: Record<string, StarterModelPolicyPreference> = {};
+function emptyWorkspaceRecord(): Record<string, LegacyStarterModelPolicyPreference> {
+  const workspaces: Record<string, LegacyStarterModelPolicyPreference> = {};
   Object.setPrototypeOf(workspaces, null);
   return workspaces;
 }
 
-function parsePreference(value: unknown, field: string): StarterModelPolicyPreference {
+function parsePreference(value: unknown, field: string): LegacyStarterModelPolicyPreference {
   const record = requireRecord(value, `${field} must be an object`);
   requireExactFields(record, ["mode"], ["tier"], field);
   const mode = record["mode"];
@@ -163,7 +163,7 @@ function parsePreference(value: unknown, field: string): StarterModelPolicyPrefe
   return tier === undefined ? { mode } : { mode, tier };
 }
 
-function clonePreference(preference: StarterModelPolicyPreference): StarterModelPolicyPreference {
+function clonePreference(preference: LegacyStarterModelPolicyPreference): LegacyStarterModelPolicyPreference {
   return preference.tier === undefined
     ? { mode: preference.mode }
     : { mode: preference.mode, tier: preference.tier };

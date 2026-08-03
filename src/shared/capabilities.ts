@@ -63,6 +63,7 @@ const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
   [PI_WEBUI_CAPABILITIES.modelTierSettings]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicy]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults]: ["web", "sessiond"],
+  [PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection]: ["web", "sessiond"],
 } as const satisfies Record<PiWebUiCapability, readonly PiWebUiServiceComponent[]>;
 
 export function isPiWebUiCapability(value: unknown): value is PiWebUiCapability {

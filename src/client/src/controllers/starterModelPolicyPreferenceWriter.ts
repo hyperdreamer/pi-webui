@@ -1,4 +1,4 @@
-import type { StarterModelPolicyPreference } from "../../../shared/apiTypes";
+import type { LegacyStarterModelPolicyPreference } from "../../../shared/apiTypes";
 
 export interface StarterModelPolicyPreferenceWriteScope {
   machineId: string;
@@ -13,7 +13,7 @@ export interface StarterModelPolicyPreferenceWriteSnapshot {
 export interface StarterModelPolicyPreferenceWriterDependencies {
   save(
     scope: StarterModelPolicyPreferenceWriteScope,
-    preference: StarterModelPolicyPreference,
+    preference: LegacyStarterModelPolicyPreference,
   ): Promise<unknown>;
   onStateChange?: (
     scope: StarterModelPolicyPreferenceWriteScope,
@@ -22,7 +22,7 @@ export interface StarterModelPolicyPreferenceWriterDependencies {
 }
 
 interface PendingPreferenceWrite {
-  preference: StarterModelPolicyPreference;
+  preference: LegacyStarterModelPolicyPreference;
   completions: (() => void)[];
 }
 
@@ -40,7 +40,7 @@ export class StarterModelPolicyPreferenceWriter {
 
   write(
     scope: StarterModelPolicyPreferenceWriteScope,
-    preference: StarterModelPolicyPreference,
+    preference: LegacyStarterModelPolicyPreference,
   ): Promise<void> {
     const state = this.stateFor(scope);
     let resolveCompletion: (() => void) | undefined;
@@ -155,8 +155,8 @@ function cloneScope(
 }
 
 function clonePreference(
-  preference: StarterModelPolicyPreference,
-): StarterModelPolicyPreference {
+  preference: LegacyStarterModelPolicyPreference,
+): LegacyStarterModelPolicyPreference {
   return {
     mode: preference.mode,
     ...(preference.tier === undefined ? {} : { tier: preference.tier }),
