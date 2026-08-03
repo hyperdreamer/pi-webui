@@ -3,8 +3,8 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionModel } from "../../shared/apiTypes.js";
 import { KNOWN_THINKING_LEVELS, isKnownThinkingLevel, type ThinkingLevel } from "../../shared/thinkingLevels.js";
 import type {
-  StarterModelPolicyPreferenceInspection,
   StarterModelPolicyPreferenceStore,
+  StarterPreferenceInspection,
 } from "./starterModelPolicyPreferenceStore.js";
 
 type DefaultModel = Model<Api>;
@@ -53,7 +53,10 @@ export class SessionDefaultsService {
   async update(cwd: string, update: SessionDefaultsUpdate): Promise<SessionDefaultsResponse> {
     const preference = update.starterModelPolicyPreference;
     if (preference !== undefined) {
-      await this.deps.starterModelPolicyPreferenceStore.replace(cwd, preference);
+      await this.deps.starterModelPolicyPreferenceStore.replace(cwd, {
+        kind: "legacy-v1",
+        preference,
+      });
       return await this.read(cwd);
     }
 
@@ -95,7 +98,7 @@ export class SessionDefaultsService {
     return [...this.deps.modelRuntime.getAvailableSnapshot()];
   }
 
-  private async inspectStarterPreference(cwd: string): Promise<StarterModelPolicyPreferenceInspection> {
+  private async inspectStarterPreference(cwd: string): Promise<StarterPreferenceInspection> {
     try {
       return await this.deps.starterModelPolicyPreferenceStore.inspect(cwd);
     } catch (error) {
@@ -106,7 +109,7 @@ export class SessionDefaultsService {
   private response(
     settings: SessionDefaultsSettings,
     models: readonly DefaultModel[],
-    preferenceInspection: StarterModelPolicyPreferenceInspection,
+    preferenceInspection: StarterPreferenceInspection,
   ): SessionDefaultsResponse {
     const model = configuredDefaultModel(settings, models);
     const thinkingLevels = this.thinkingLevelsForModel(model);
@@ -135,7 +138,7 @@ function responseFor(
   model: DefaultModel | undefined,
   thinkingLevel: ThinkingLevel,
   thinkingLevels: readonly ThinkingLevel[],
-  preferenceInspection: StarterModelPolicyPreferenceInspection,
+  preferenceInspection: StarterPreferenceInspection,
 ): SessionDefaultsResponse {
   return {
     ...(model === undefined ? {} : { model: modelToClientModel(model) }),
@@ -147,13 +150,18 @@ function responseFor(
 }
 
 function preferenceFields(
-  inspection: StarterModelPolicyPreferenceInspection,
+  inspection: StarterPreferenceInspection,
 ): Pick<
   SessionDefaultsResponse,
   "starterModelPolicyPreference" | "starterModelPolicyPreferenceError"
 > {
-  if (inspection.kind === "valid") {
-    return { starterModelPolicyPreference: { ...inspection.preference } };
+  if (inspection.kind === "legacy-v1" || inspection.kind === "full") {
+    const preference = inspection.preference;
+    return {
+      starterModelPolicyPreference: preference.tier === undefined
+        ? { mode: preference.mode }
+        : { mode: preference.mode, tier: preference.tier },
+    };
   }
   if (inspection.kind === "invalid") {
     return { starterModelPolicyPreferenceError: inspection.reason };

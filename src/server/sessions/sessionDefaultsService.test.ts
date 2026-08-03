@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { testModel } from "./piSessionService.testSupport.js";
 import { SessionDefaultsService } from "./sessionDefaultsService.js";
-import type { StarterModelPolicyPreferenceInspection } from "./starterModelPolicyPreferenceStore.js";
+import type { StarterPreferenceInspection } from "./starterModelPolicyPreferenceStore.js";
 
 describe("SessionDefaultsService", () => {
   it("reads the persisted default model and thinking level without a session", async () => {
@@ -25,7 +25,7 @@ describe("SessionDefaultsService", () => {
       model: testModel(),
       thinkingLevel: "high",
       preferenceInspection: {
-        kind: "valid",
+        kind: "legacy-v1",
         preference: { mode: "exact", tier: "advanced" },
       },
     });
@@ -34,6 +34,32 @@ describe("SessionDefaultsService", () => {
       thinkingLevel: "high",
       starterModelPolicyPreference: { mode: "exact", tier: "advanced" },
     });
+  });
+
+  it("down-projects a full starter preference for an unversioned read", async () => {
+    const harness = createHarness({
+      model: testModel(),
+      thinkingLevel: "high",
+      preferenceInspection: {
+        kind: "full",
+        preference: {
+          mode: "tiered",
+          exact: {
+            model: { provider: "acme", id: "reasoner" },
+            thinkingLevel: "high",
+          },
+          tier: "frontier",
+        },
+      },
+    });
+
+    const defaults = await harness.service.read("/workspace");
+
+    expect(defaults.starterModelPolicyPreference).toEqual({
+      mode: "tiered",
+      tier: "frontier",
+    });
+    expect(defaults.starterModelPolicyPreference).not.toHaveProperty("exact");
   });
 
   it("keeps Exact defaults available when preference inspection fails", async () => {
@@ -74,7 +100,7 @@ describe("SessionDefaultsService", () => {
       model,
       thinkingLevel: "high",
       preferenceInspection: {
-        kind: "valid",
+        kind: "legacy-v1",
         preference: { mode: "tiered", tier: "capable" },
       },
     });
@@ -91,7 +117,7 @@ describe("SessionDefaultsService", () => {
   it("writes only the preference store for a preference update", async () => {
     const harness = createHarness({ model: testModel(), thinkingLevel: "high" });
     harness.preferenceStore.inspect.mockResolvedValue({
-      kind: "valid",
+      kind: "legacy-v1",
       preference: { mode: "tiered", tier: "frontier" },
     });
 
@@ -101,10 +127,10 @@ describe("SessionDefaultsService", () => {
       starterModelPolicyPreference: { mode: "tiered", tier: "frontier" },
     });
 
-    expect(harness.preferenceStore.replace).toHaveBeenCalledWith(
-      "/workspace",
-      { mode: "tiered", tier: "frontier" },
-    );
+    expect(harness.preferenceStore.replace).toHaveBeenCalledWith("/workspace", {
+      kind: "legacy-v1",
+      preference: { mode: "tiered", tier: "frontier" },
+    });
     expect(harness.settings.setDefaultModelAndProvider).not.toHaveBeenCalled();
     expect(harness.settings.setDefaultThinkingLevel).not.toHaveBeenCalled();
     expect(harness.settings.flush).not.toHaveBeenCalled();
@@ -152,7 +178,7 @@ function createHarness(input: {
   model: ReturnType<typeof testModel>;
   models?: readonly ReturnType<typeof testModel>[];
   thinkingLevel: "off" | "low" | "high";
-  preferenceInspection?: StarterModelPolicyPreferenceInspection;
+  preferenceInspection?: StarterPreferenceInspection;
   inspectError?: Error;
   replaceError?: Error;
 }) {
@@ -177,7 +203,7 @@ function createHarness(input: {
     getAvailableSnapshot: () => input.models ?? [input.model],
   };
   const preferenceStore = {
-    inspect: vi.fn((): Promise<StarterModelPolicyPreferenceInspection> => input.inspectError === undefined
+    inspect: vi.fn((): Promise<StarterPreferenceInspection> => input.inspectError === undefined
       ? Promise.resolve(input.preferenceInspection ?? { kind: "absent" })
       : Promise.reject(input.inspectError)),
     replace: vi.fn((): Promise<void> => input.replaceError === undefined
