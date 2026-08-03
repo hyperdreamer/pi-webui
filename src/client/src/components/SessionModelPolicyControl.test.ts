@@ -170,6 +170,18 @@ describe("SessionModelPolicyControl closed trigger", () => {
       .not.toContain("preference write failed");
   });
 
+  it("keeps Tiered ladder invalidity ahead of a non-blocking policy error", async () => {
+    const control = await mountControl((element) => {
+      element.status = { ...tieredStatus(), ladderValid: false };
+      element.error = "preference write failed";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .toContain("Model tier ladder is invalid");
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .not.toContain("preference write failed");
+  });
+
   it("treats a blank policy error as no diagnostic", async () => {
     const control = await mountControl((element) => {
       element.status = exactStatus();

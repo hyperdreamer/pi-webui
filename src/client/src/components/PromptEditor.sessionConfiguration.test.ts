@@ -187,12 +187,14 @@ describe("PromptEditor session controls", () => {
       thinkingLevel: "high",
     };
     editor.modelPolicyStatus = tieredPolicyStatus;
+    editor.canSteer = true;
     editor.sendDisabled = true;
     editor.onSend = onSend;
     editor.replaceText("keep this starter draft");
 
     const actions = renderPromptEditorActions(editor);
     expect(requiredButton(actions, ".send-button").disabled).toBe(true);
+    expect(requiredButton(actions, ".steer-button").disabled).toBe(true);
     expect(renderedPolicyControl(renderCompactStatusElement(editor)).editable).toBe(true);
 
     invokeSend(editor);
