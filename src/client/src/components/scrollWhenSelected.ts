@@ -15,7 +15,9 @@ class ScrollWhenSelectedDirective extends Directive {
     if (selected && (!this.wasSelected || key !== this.previousKey)) {
       const element = "element" in part ? part.element : undefined;
       requestAnimationFrame(() => {
-        if (element instanceof HTMLElement) element.scrollIntoView({ block: "nearest" });
+        if (element instanceof HTMLElement && typeof element.scrollIntoView === "function") {
+          element.scrollIntoView({ block: "nearest" });
+        }
       });
     }
     this.wasSelected = selected;
