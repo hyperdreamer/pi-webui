@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.0-beta.7
+
+### Patch Changes
+
+- 9141cf3: Add a `get_model_policy` tool for sessions that can dispatch tracked subsessions. It is zero-parameter and read-only: it reports the session's policy mode, the model tuple in force, what the next request resolves to, tier ladder validity, and the tracked-dispatch contract, without mutating policy or returning credentials. A dispatching agent can now confirm that tier dispatch is trustworthy before spawning children, instead of discovering an unresolvable rung partway through a run. It is registered only alongside the subsession tools, since verifying tier binding is meaningless where nothing can dispatch.
+- 8494cef: Render deterministic SDD prompts with a clear `Model tier: <tier>` label instead of command-like `/tier-*` text. Model selection still uses only `spawn_subsession`'s typed `tier` field, while both the controller and session daemon continue rejecting a label that disagrees with that field.
+- 65cf68d: Remember each workspace's last selected Exact or Tiered starter mode and tier on its target machine.
+- e780f75: Fix browser tab freezes when switching rapidly between busy sessions. The recovery-refetch rate limit is no longer reset by a session change, and a session flooding events while a switch is still loading no longer applies that backlog in one blocking update.
+
 ## 1.11.0-beta.6
 
 ### Patch Changes
