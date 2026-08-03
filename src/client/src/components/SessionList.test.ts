@@ -197,6 +197,17 @@ describe("linked session group disclosure", () => {
     ]);
   });
 
+  it("gives disclosure buttons a larger hit target and pinned-star hover feedback", () => {
+    const styles = sessionListStyles();
+
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*width:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*min-width:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*height:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*background:\s*var\(--pi-surface\);/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*box-shadow:\s*0 0 0 1px var\(--pi-border\);/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*transform:\s*scale\(1\.25\);/);
+  });
+
   it("returns locally expanded families to their default folded state after a workspace change", () => {
     const parent = session("parent");
     const child = session("child", { parentSessionPath: parent.path });

@@ -699,8 +699,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     .session-family-frame > .action-row { margin: 4px 0; }
     .session-family-frame > .action-row:first-child { margin-top: 0; }
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }
-    .session-group-toggle { flex: 0 0 auto; display: grid; place-items: center; width: 18px; min-width: 18px; height: 18px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; }
-    .session-group-toggle:hover { background: var(--pi-surface-hover); color: var(--pi-text); }
+    .session-group-toggle { flex: 0 0 auto; display: grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; }
+    .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); transform: scale(1.25); }
     .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
     .external-session .action-main { border-radius: 8px; }
     .action-row.external-session .action-name { color: var(--pi-accent); }

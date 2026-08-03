@@ -210,8 +210,8 @@ export class SessionBrowserDialog extends LitElement {
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }
     .session-browser-row { grid-template-columns: minmax(0, 1fr); }
     .session-browser-row .action-main { border-radius: 8px; padding-right: 56px; }
-    .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 18px; min-width: 18px; height: 18px; margin: 0 5px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; vertical-align: text-bottom; cursor: pointer; }
-    .session-group-toggle:hover { background: var(--pi-surface-hover); color: var(--pi-text); }
+    .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0 5px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; vertical-align: text-bottom; cursor: pointer; }
+    .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); transform: scale(1.25); }
     .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
     .empty-state { margin: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
 

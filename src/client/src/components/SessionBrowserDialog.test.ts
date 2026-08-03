@@ -27,6 +27,17 @@ const status = (sessionId: string, patch: Partial<SessionStatus> = {}): SessionS
 });
 
 describe("SessionBrowserDialog", () => {
+  it("gives disclosure buttons a larger hit target and pinned-star hover feedback", () => {
+    const styles = sessionBrowserDialogStyles();
+
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*width:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*min-width:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*height:\s*24px;/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*background:\s*var\(--pi-surface\);/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*box-shadow:\s*0 0 0 1px var\(--pi-border\);/);
+    expect(styles).toMatch(/\.session-group-toggle:hover\s*\{[^}]*transform:\s*scale\(1\.25\);/);
+  });
+
   it("browses the selected project's session tree and exposes descendant work", () => {
     const parent = session("parent", { firstMessage: "Coordinate release" });
     const child = session("child", { parentSessionPath: parent.path, firstMessage: "Run checks" });
@@ -154,3 +165,9 @@ describe("SessionBrowserDialog", () => {
     expect(renderedText).toContain("Child");
   });
 });
+
+function sessionBrowserDialogStyles(): string {
+  const styles = SessionBrowserDialog.styles;
+  const styleResults = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
+}
