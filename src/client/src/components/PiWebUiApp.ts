@@ -354,11 +354,18 @@ export class PiWebUiApp extends LitElement {
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
   @state() private starterModelPolicyPreferenceReadError = "";
   private readonly starterModelPolicyPreferenceWriter = new StarterModelPolicyPreferenceWriter({
-    save: (scope, preference) => sessionsApi.updateSessionDefaults(
-      scope.cwd,
-      { starterModelPolicyPreference: preference },
-      scope.machineId,
-    ),
+    save: async (scope, preference) => {
+      const response = await sessionsApi.updateSessionDefaults(
+        scope.cwd,
+        { starterModelPolicyPreference: preference },
+        scope.machineId,
+      );
+      const currentScope = this.starterModelPolicyPreferenceScope();
+      if (currentScope?.machineId === scope.machineId && currentScope.cwd === scope.cwd) {
+        this.starterModelPolicyPreferenceReadError = "";
+      }
+      return response;
+    },
     onStateChange: () => { this.requestUpdate(); },
   });
   // Per-machine tier catalog owned by this component, shared by the starter and
@@ -1964,7 +1971,11 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
-    if (this.starterModelPolicyBlocksStart()) return;
+    const blockedReason = this.starterModelPolicyInputs()?.status.blockedReason;
+    if (blockedReason !== undefined) {
+      if (shouldComplete()) this.setState({ error: blockedReason });
+      return;
+    }
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
     // every starter edit and value-changing relink replaces the policy object;
@@ -2193,7 +2204,8 @@ export class PiWebUiApp extends LitElement {
       : undefined;
     const linkedExact = starterExactSelection(defaults);
     const exactBlocked = policy.mode === "exact"
-      && (linkedExact === undefined || !sameExactSelection(policy.exact, linkedExact));
+      && linkedExact !== undefined
+      && !sameExactSelection(policy.exact, linkedExact);
     const tieredBlocked = policy.mode === "tiered" && selectedTierEntry === undefined;
     const status: ClientSessionModelPolicyStatus = {
       mode: policy.mode,
@@ -2265,7 +2277,7 @@ export class PiWebUiApp extends LitElement {
       return policy.tier === undefined ? undefined : { mode: "tiered", tier: policy.tier };
     }
     const linked = starterExactSelection(defaults);
-    if (linked !== undefined && sameExactSelection(linked, policy.exact)) return undefined;
+    if (linked === undefined || sameExactSelection(linked, policy.exact)) return undefined;
     return { mode: "exact", exact: { model: { ...policy.exact.model }, thinkingLevel: policy.exact.thinkingLevel } };
   }
 

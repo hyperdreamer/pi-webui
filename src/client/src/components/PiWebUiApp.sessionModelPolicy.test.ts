@@ -119,6 +119,14 @@ function starterDefaults(overrides: Partial<SessionDefaultsResponse> = {}): Sess
   };
 }
 
+function starterDefaultsWithoutResolvedModel(): SessionDefaultsResponse {
+  return {
+    thinkingLevel: "medium",
+    models: [],
+    thinkingLevels: ["off", "low", "medium", "high"],
+  };
+}
+
 function activeSession(): SessionInfo {
   return {
     id: "session-a",
@@ -989,6 +997,7 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
 
     expect(startWithPrompt).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+    expect(appState(app).error).toBe("Choose a valid model tier before starting");
   });
 
   it("switches blocked Tiered intent to complete Exact after catalog loading fails", async () => {
@@ -1141,15 +1150,87 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
     expect(startWithPrompt).toHaveBeenCalledOnce();
   });
 
-  it("projects incomplete Exact defaults as blocked and guards both direct start paths", async () => {
+  it("clears a stale preference read diagnostic after a successful preference write", async () => {
     const app = createApp();
-    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({ thinkingLevel: "" }));
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreferenceError: "Preference file could not be read",
+    }));
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toBe("Preference file could not be read");
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "tiered", tier: "advanced" } },
+        "local",
+      );
+      expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError=")).toBe("");
+    });
+  });
+
+  it("keeps /login reachable when Pi has no resolved Exact model", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaultsWithoutResolvedModel());
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    const editor = promptEditorTemplate(app);
+    expect(policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus=")).blockedReason).toBeUndefined();
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+
+    startSessionPrompt(app, "/login");
+
+    expect(appState(app).authDialog).toEqual({ step: "method" });
+    expect(startWithPrompt).not.toHaveBeenCalled();
+  });
+
+  it("starts through daemon defaults when Pi has no resolved Exact model", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaultsWithoutResolvedModel());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    startSessionPrompt(app, "use daemon defaults");
+    expect(startWithPrompt).toHaveBeenCalledWith(
+      "use daemon defaults",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Function),
+    );
+
+    await startSessionAndOpenChat(app);
+    expect(start).toHaveBeenCalledWith(undefined);
+  });
+
+  it("blocks an incomplete user Exact draft when Pi defaults are complete", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
     const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
     const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
       .mockImplementation(promptStartFrom(Promise.resolve(false)));
     setAppState(app, starterState());
 
     await loadStarterSessionDefaults(app, mainWorkspace);
+    setStarterModelPolicy(app, {
+      mode: "exact",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
 
     const editor = promptEditorTemplate(app);
     expect(policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus=")).blockedReason)
