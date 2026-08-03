@@ -101,4 +101,3 @@ describe("toSafeMarkdownHtml", () => {
 function parseCallsFor(parse: { mock: { calls: unknown[][] } }, text: string): number {
   return parse.mock.calls.filter((call) => call[0] === text).length;
 }
-
