@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0-beta.9
+
+### Patch Changes
+
+- 84ce66a: Make session-family expand and collapse controls easier to click in both session views.
+- e9558a9: Fix the new-session screen closing when a starter action fails. A refused or failed start, and a failed load or save of a workspace's model defaults, now report themselves without unmounting the composer and model controls needed to retry, and a refused start's reason is visible whether or not a session is selected in that workspace.
+
 ## 1.11.0-beta.8
 
 ### Patch Changes
