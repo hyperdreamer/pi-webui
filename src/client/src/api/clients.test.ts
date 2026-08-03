@@ -413,16 +413,33 @@ describe("session API compatibility", () => {
       models: [{ provider: "openai", id: "gpt-default" }],
       thinkingLevels: ["off", "low", "high"],
     };
-    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response)]);
+    const responseWithPreference = {
+      ...response,
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse(response),
+      jsonResponse(response),
+      jsonResponse(responseWithPreference),
+    ]);
 
     await expect(sessionsApi.sessionDefaults("/repo with spaces", "remote /?")).resolves.toEqual(response);
     await expect(sessionsApi.updateSessionDefaults("/repo with spaces", { thinkingLevel: "low" }, "remote /?")).resolves.toEqual(response);
+    await expect(sessionsApi.updateSessionDefaults(
+      "/repo with spaces",
+      { starterModelPolicyPreference: { mode: "tiered", tier: "advanced" } },
+      "remote /?",
+    )).resolves.toEqual(responseWithPreference);
 
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/session-defaults?cwd=%2Frepo%20with%20spaces");
     expect(fetchCall(fetchMock, 0)[1]?.method ?? "GET").toBe("GET");
     expect(fetchCall(fetchMock, 1)[0]).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/session-defaults");
     expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
     expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({ cwd: "/repo with spaces", thinkingLevel: "low" });
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 2)[1]))).toEqual({
+      cwd: "/repo with spaces",
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    });
   });
 
   it("posts session cleanup preview and execute requests through the selected machine", async () => {

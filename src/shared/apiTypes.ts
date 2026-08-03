@@ -19,6 +19,7 @@ export const PI_WEBUI_CAPABILITIES = {
   agentProfileConfig: "settings.agentProfile",
   modelTierSettings: "settings.modelTiers",
   sessionsModelPolicy: "sessions.modelPolicy",
+  sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -100,6 +101,12 @@ export interface ExactModelSelection {
 }
 
 export type SessionModelPolicyMode = "exact" | "tiered";
+
+export interface StarterModelPolicyPreference {
+  mode: SessionModelPolicyMode;
+  /** Remembered while Exact is active; required while Tiered is active. */
+  tier?: ModelTier;
+}
 
 export interface SessionModelPolicy {
   mode: SessionModelPolicyMode;
@@ -776,12 +783,26 @@ export interface SessionDefaultsResponse {
   thinkingLevel: string;
   models: SessionModel[];
   thinkingLevels: string[];
+  starterModelPolicyPreference?: StarterModelPolicyPreference;
+  starterModelPolicyPreferenceError?: string;
 }
 
-export interface SessionDefaultsUpdate {
-  model?: { provider: string; modelId: string };
-  thinkingLevel?: string;
-}
+export type SessionDefaultsUpdate =
+  | {
+      model: { provider: string; modelId: string };
+      thinkingLevel?: string;
+      starterModelPolicyPreference?: never;
+    }
+  | {
+      model?: { provider: string; modelId: string };
+      thinkingLevel: string;
+      starterModelPolicyPreference?: never;
+    }
+  | {
+      model?: never;
+      thinkingLevel?: never;
+      starterModelPolicyPreference: StarterModelPolicyPreference;
+    };
 
 /** Editable `models.json` document for the active Pi-compatible profile. */
 export interface ModelsConfigDocument {

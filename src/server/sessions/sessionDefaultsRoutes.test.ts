@@ -48,6 +48,23 @@ describe("session defaults routes", () => {
     expect(update).toHaveBeenCalledWith("/repo one", { model: { provider: "openai", modelId: "gpt-next" } });
   });
 
+  it.each([
+    ["Exact", { mode: "exact", tier: "fast" }],
+    ["Tiered", { mode: "tiered", tier: "advanced" }],
+  ] as const)("updates a complete %s starter preference", async (_label, preference) => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/session-defaults",
+      payload: { cwd: "/repo one", starterModelPolicyPreference: preference },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(defaults);
+    expect(update).toHaveBeenCalledWith("/repo one", {
+      starterModelPolicyPreference: preference,
+    });
+  });
+
   it("rejects incomplete model choices before invoking the service", async () => {
     const response = await app.inject({
       method: "PUT",
@@ -69,6 +86,24 @@ describe("session defaults routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain("thinkingLevel");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an incomplete Tiered preference", { cwd: "/repo", starterModelPolicyPreference: { mode: "tiered" } }],
+    ["an unknown preference mode", { cwd: "/repo", starterModelPolicyPreference: { mode: "automatic", tier: "standard" } }],
+    ["an unknown preference tier", { cwd: "/repo", starterModelPolicyPreference: { mode: "exact", tier: "unknown" } }],
+    ["an unknown preference field", { cwd: "/repo", starterModelPolicyPreference: { mode: "exact", future: true } }],
+    ["a mixed Exact and preference update", { cwd: "/repo", thinkingLevel: "low", starterModelPolicyPreference: { mode: "exact" } }],
+    ["an unknown top-level field", { cwd: "/repo", unknown: true }],
+  ])("rejects %s before invoking the service", async (_label, payload) => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/session-defaults",
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
     expect(update).not.toHaveBeenCalled();
   });
 });

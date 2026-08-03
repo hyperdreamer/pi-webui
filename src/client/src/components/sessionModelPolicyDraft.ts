@@ -4,8 +4,10 @@ import {
   type ModelTier,
   type ModelTierModelOption,
   type ModelTierSettingsResponse,
+  type SessionDefaultsResponse,
   type SessionModelPolicy,
   type SessionModelPolicyUpdate,
+  type StarterModelPolicyPreference,
   type TierModelRef,
 } from "../../../shared/apiTypes";
 
@@ -49,6 +51,59 @@ function baseDraft(input: DraftSeedInput): SessionModelPolicyDraft {
   const live = input.liveResolved;
   if (live !== undefined) return { mode: "exact", exact: cloneExactSelection(live) };
   return { mode: "exact", exact: { model: { provider: "", id: "" }, thinkingLevel: "" } };
+}
+
+export function starterExactSelection(
+  defaults: SessionDefaultsResponse,
+): ExactModelSelection | undefined {
+  const provider = defaults.model?.provider;
+  const id = defaults.model?.id;
+  if (provider === undefined || provider === "" || id === undefined || id === "") return undefined;
+  if (defaults.thinkingLevel === "") return undefined;
+  return { model: { provider, id }, thinkingLevel: defaults.thinkingLevel };
+}
+
+export function seedStarterModelPolicyDraft(
+  defaults: SessionDefaultsResponse,
+): SessionModelPolicyDraft {
+  const exact = starterExactSelection(defaults) ?? {
+    model: { provider: "", id: "" },
+    thinkingLevel: "",
+  };
+  const preference = defaults.starterModelPolicyPreference;
+  return {
+    mode: preference?.mode ?? "exact",
+    exact: cloneExactSelection(exact),
+    ...(preference?.tier === undefined ? {} : { tier: preference.tier }),
+  };
+}
+
+export function relinkStarterExactBranch(
+  draft: SessionModelPolicyDraft,
+  defaults: SessionDefaultsResponse,
+): SessionModelPolicyDraft {
+  const exact = starterExactSelection(defaults);
+  if (exact === undefined || draft.mode === "tiered" || sameExactSelection(draft.exact, exact)) return draft;
+  return { ...draft, exact: cloneExactSelection(exact) };
+}
+
+export function starterModelPolicyPreferenceFromDraft(
+  draft: SessionModelPolicyDraft,
+): StarterModelPolicyPreference | undefined {
+  if (draft.mode === "tiered" && draft.tier === undefined) return undefined;
+  return {
+    mode: draft.mode,
+    ...(draft.tier === undefined ? {} : { tier: draft.tier }),
+  };
+}
+
+export function sameExactSelection(
+  left: ExactModelSelection,
+  right: ExactModelSelection,
+): boolean {
+  return left.model.provider === right.model.provider
+    && left.model.id === right.model.id
+    && left.thinkingLevel === right.thinkingLevel;
 }
 
 export function selectDraftTier(draft: SessionModelPolicyDraft, tier: ModelTier): SessionModelPolicyDraft {

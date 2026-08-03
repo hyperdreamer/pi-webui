@@ -148,6 +148,49 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(diagnostic?.getAttribute("title")).toContain("runtime rejected the persisted policy");
   });
 
+  it("shows a non-blocking policy error when no stronger diagnostic exists", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.error = "Could not remember this model policy";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .toContain("Could not remember this model policy");
+  });
+
+  it("keeps a runtime block ahead of a non-blocking policy error", async () => {
+    const control = await mountControl((element) => {
+      element.status = { ...exactStatus(), blockedReason: "repair the live policy" };
+      element.error = "preference write failed";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .toContain("repair the live policy");
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .not.toContain("preference write failed");
+  });
+
+  it("keeps Tiered ladder invalidity ahead of a non-blocking policy error", async () => {
+    const control = await mountControl((element) => {
+      element.status = { ...tieredStatus(), ladderValid: false };
+      element.error = "preference write failed";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .toContain("Model tier ladder is invalid");
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .not.toContain("preference write failed");
+  });
+
+  it("treats a blank policy error as no diagnostic", async () => {
+    const control = await mountControl((element) => {
+      element.status = exactStatus();
+      element.error = "   ";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")).toBeNull();
+  });
+
   it("treats a blank blockedReason as no block rather than an empty chip", async () => {
     const control = await mountControl((element) => {
       element.status = { ...exactStatus(), blockedReason: "   " };

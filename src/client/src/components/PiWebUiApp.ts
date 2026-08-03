@@ -4,8 +4,8 @@ import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, 
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate } from "../api";
-import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicy, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
-import { isDraftReadyToApply, seedModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
+import { isDraftReadyToApply, relinkStarterExactBranch, sameExactSelection, seedModelPolicyDraft, seedStarterModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, starterExactSelection, starterModelPolicyPreferenceFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
 import { initialAppState, type AppState } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
@@ -30,6 +30,7 @@ import { SessionStorageTerminalSelectionMemory } from "../controllers/terminalSe
 import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
+import { StarterModelPolicyPreferenceWriter, type StarterModelPolicyPreferenceWriteScope } from "../controllers/starterModelPolicyPreferenceWriter";
 import { machineSessionKey } from "../machineKeys";
 import { sessionCleanupRequestKey, sessionCleanupUnavailableMessage } from "../sessionCleanupUi";
 import { selectedNotificationView } from "../sessionNotifications";
@@ -351,19 +352,39 @@ export class PiWebUiApp extends LitElement {
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | undefined;
+  @state() private starterModelPolicyPreferenceReadError = "";
+  // A direct start refused by a blocked starter policy must report the refusal
+  // without leaving the start screen. `state.error` cannot carry it:
+  // `shouldShowSessionStartScreen()` requires an empty `state.error`, so
+  // publishing there would unmount the very controls that repair the block.
+  @state() private starterModelPolicyStartBlocked = false;
+  private readonly starterModelPolicyPreferenceWriter = new StarterModelPolicyPreferenceWriter({
+    save: async (scope, preference) => {
+      const response = await sessionsApi.updateSessionDefaults(
+        scope.cwd,
+        { starterModelPolicyPreference: preference },
+        scope.machineId,
+      );
+      const currentScope = this.starterModelPolicyPreferenceScope();
+      if (currentScope?.machineId === scope.machineId && currentScope.cwd === scope.cwd) {
+        this.starterModelPolicyPreferenceReadError = "";
+      }
+      return response;
+    },
+    onStateChange: () => { this.requestUpdate(); },
+  });
   // Per-machine tier catalog owned by this component, shared by the starter and
-  // active policy controls. Loaded on demand (never eagerly) because it is only
-  // needed once a user opens a policy dialog, and re-fetched per machine.
+  // active policy controls. It is normally loaded when policy controls need it;
+  // restored Tiered intent preloads it so Start stays blocked until validation.
   @state() private modelTierCatalog: ModelTierSettingsResponse | undefined;
   @state() private modelTierCatalogLoading = false;
   @state() private modelTierCatalogError = "";
   /**
-   * The starter composer's local policy draft. There is no session yet, so no
-   * server owns this: it is initialized from the confirmed Pi defaults, kept
-   * independent of them once the user chooses Tiered, and carried into
-   * `POST /sessions`. Cleared on every workspace/machine change.
+   * The starter composer's temporary policy draft. Its Exact branch comes from
+   * Pi defaults; mode and remembered tier are restored and persisted separately
+   * by the scoped preference writer.
    */
-  @state() private starterModelPolicy: SessionModelPolicy | undefined;
+  @state() private starterModelPolicy: SessionModelPolicyDraft | undefined;
   /** Pending active-session edits; the server response remains authoritative. */
   @state() private activeModelPolicyDraft: SessionModelPolicyDraft | undefined;
   private activeModelPolicyDraftScope: string | undefined;
@@ -1147,30 +1168,26 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.sessionDefaults(workspace.path, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
-      this.linkStarterExactBranch(defaults);
+      this.starterModelPolicyPreferenceReadError = defaults.starterModelPolicyPreferenceError ?? "";
+      const current = this.starterModelPolicy;
+      if (current === undefined) {
+        const draft = seedStarterModelPolicyDraft(defaults);
+        this.starterModelPolicy = draft;
+        if (
+          draft.mode === "tiered"
+          && this.selectedMachineModelTierCatalog() === undefined
+          && !this.modelTierCatalogLoading
+        ) {
+          void this.loadModelTierCatalog(machineId);
+        }
+      } else {
+        this.starterModelPolicy = relinkStarterExactBranch(current, defaults);
+      }
     } catch (error) {
       if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) {
         console.warn("Failed to load Pi session defaults", error);
       }
     }
-  }
-
-  /**
-   * Keep the starter's remembered Exact branch pointed at whatever model/thinking
-   * pair Pi actually resolved. While the user is Tiered the remembered Exact
-   * tuple is theirs to keep, so a confirmed default must not overwrite it; the
-   * two branches stay independent exactly as they do for a live session.
-   */
-  private linkStarterExactBranch(defaults: SessionDefaultsResponse): void {
-    const exact = starterExactSelection(defaults);
-    if (exact === undefined) return;
-    const current = this.starterModelPolicy;
-    if (current === undefined) {
-      this.starterModelPolicy = { mode: "exact", exact };
-      return;
-    }
-    if (current.mode === "tiered" || sameExactSelection(current.exact, exact)) return;
-    this.starterModelPolicy = { ...current, exact };
   }
 
   private syncSessionUnreadMachines(): void {
@@ -1516,6 +1533,32 @@ export class PiWebUiApp extends LitElement {
     return sessionModelPolicySupportedForState(this.state, machineId);
   }
 
+  private starterModelPolicyPreferenceScope(): StarterModelPolicyPreferenceWriteScope | undefined {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return undefined;
+    return { machineId: selectedMachineId(this.state), cwd: workspace.path };
+  }
+
+  private starterModelPolicyPreferenceSupported(machineId: string): boolean {
+    const runtime = this.state.machineRuntimes[machineId];
+    return runtime?.ok === true
+      && supportsPiWebUiCapability(
+        runtime,
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+      );
+  }
+
+  private persistStarterModelPolicyPreference(draft: SessionModelPolicyDraft): void {
+    const scope = this.starterModelPolicyPreferenceScope();
+    const preference = starterModelPolicyPreferenceFromDraft(draft);
+    if (
+      scope === undefined
+      || preference === undefined
+      || !this.starterModelPolicyPreferenceSupported(scope.machineId)
+    ) return;
+    void this.starterModelPolicyPreferenceWriter.write(scope, preference);
+  }
+
   /**
    * Fetch the selected machine's tier catalog for whichever policy control is
    * open. Two independent guards protect the single shared field: the response
@@ -1556,6 +1599,8 @@ export class PiWebUiApp extends LitElement {
    */
   private resetStarterModelPolicyForScopeChange(): void {
     this.starterModelPolicy = undefined;
+    this.starterModelPolicyPreferenceReadError = "";
+    this.starterModelPolicyStartBlocked = false;
     this.modelTierCatalogError = "";
   }
 
@@ -1932,6 +1977,12 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
+    const blockedReason = this.starterModelPolicyInputs()?.status.blockedReason;
+    if (blockedReason !== undefined) {
+      if (shouldComplete()) this.starterModelPolicyStartBlocked = true;
+      return;
+    }
+    this.starterModelPolicyStartBlocked = false;
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
     // every starter edit and value-changing relink replaces the policy object;
@@ -2120,8 +2171,9 @@ export class PiWebUiApp extends LitElement {
           <h1 id="session-start-heading">What would you like to build?</h1>
           <p class="session-start-copy">Start a conversation in <strong>${workspace.label}</strong>. Ask Pi to explore the codebase, plan a change, or help you make it.</p>
           <div class="session-start-composer">
-            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${policy === undefined ? "" : this.modelTierCatalogError} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
+            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${defaults} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${false} .modelPolicyError=${this.starterModelPolicyError()} .sendDisabled=${policy?.status.blockedReason !== undefined} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
+          ${this.starterModelPolicyStartBlocked && policy?.status.blockedReason !== undefined ? html`<p class="session-start-block-notice" role="alert">${policy.status.blockedReason}</p>` : null}
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
       </section>
@@ -2152,21 +2204,32 @@ export class PiWebUiApp extends LitElement {
     const defaults = this.starterSessionDefaults;
     const policy = this.starterModelPolicy;
     if (defaults === undefined || policy === undefined || !this.sessionModelPolicySupported()) return undefined;
-    if (starterExactSelection(defaults) === undefined) return undefined;
     const catalog = this.selectedMachineModelTierCatalog();
     const selectedTier = policy.tier;
     const selectedTierRow = selectedTier === undefined ? undefined : catalog?.rows[selectedTier];
     const selectedTierEntry = policy.mode === "tiered" && selectedTier !== undefined && selectedTierRow?.valid === true
       ? catalog?.ladder?.[selectedTier]
       : undefined;
+    const linkedExact = starterExactSelection(defaults);
+    const exactBlocked = policy.mode === "exact"
+      && linkedExact !== undefined
+      && !sameExactSelection(policy.exact, linkedExact);
+    const tieredBlocked = policy.mode === "tiered" && selectedTierEntry === undefined;
     const status: ClientSessionModelPolicyStatus = {
       mode: policy.mode,
       ...(selectedTier === undefined ? {} : { tier: selectedTier }),
       resolved: selectedTierEntry ?? policy.exact,
       ladderValid: catalog === undefined || catalog.valid,
-      ...(policy.mode === "tiered" && selectedTierEntry === undefined
-        ? { blockedReason: catalog?.configError ?? "Choose a valid model tier before starting" }
-        : {}),
+      ...(tieredBlocked
+        ? {
+            blockedReason: catalog?.configError
+              ?? (this.modelTierCatalogError === ""
+                ? "Choose a valid model tier before starting"
+                : this.modelTierCatalogError),
+          }
+        : exactBlocked
+          ? { blockedReason: "Choose a model and thinking level before starting" }
+          : {}),
     };
     return {
       status,
@@ -2190,6 +2253,22 @@ export class PiWebUiApp extends LitElement {
     };
   }
 
+  private starterModelPolicyBlocksStart(): boolean {
+    return this.starterModelPolicyInputs()?.status.blockedReason !== undefined;
+  }
+
+  private starterModelPolicyError(): string {
+    if (this.modelTierCatalogError !== "") return this.modelTierCatalogError;
+    const scope = this.starterModelPolicyPreferenceScope();
+    const writerError = scope === undefined
+      ? undefined
+      : this.starterModelPolicyPreferenceWriter.snapshot(scope).error;
+    if (writerError !== undefined) {
+      return `Could not remember this model policy; this session will still use it. ${writerError}`;
+    }
+    return this.starterModelPolicyPreferenceReadError;
+  }
+
   /**
    * The typed policy snapshot to carry into `POST /sessions`, or undefined when
    * the starter never diverged from the defaults the daemon will apply anyway.
@@ -2205,14 +2284,14 @@ export class PiWebUiApp extends LitElement {
       return policy.tier === undefined ? undefined : { mode: "tiered", tier: policy.tier };
     }
     const linked = starterExactSelection(defaults);
-    if (linked !== undefined && sameExactSelection(linked, policy.exact)) return undefined;
+    if (linked === undefined || sameExactSelection(linked, policy.exact)) return undefined;
     return { mode: "exact", exact: { model: { ...policy.exact.model }, thinkingLevel: policy.exact.thinkingLevel } };
   }
 
   private clearStarterModelPolicyAfterSuccessfulStart(
     started: boolean,
     workspaceId: string | undefined,
-    starterModelPolicy: SessionModelPolicy | undefined,
+    starterModelPolicy: SessionModelPolicyDraft | undefined,
   ): void {
     if (!started || this.state.selectedWorkspace?.id !== workspaceId || this.starterModelPolicy !== starterModelPolicy) return;
     this.starterModelPolicy = undefined;
@@ -3093,7 +3172,16 @@ export class PiWebUiApp extends LitElement {
       const defaults = await sessionsApi.updateSessionDefaults(workspace.path, update, machineId);
       if (selectedMachineId(this.state) !== machineId || this.state.selectedWorkspace?.id !== workspace.id) return;
       this.starterSessionDefaults = defaults;
-      this.linkStarterExactBranch(defaults);
+      this.starterModelPolicyPreferenceReadError = defaults.starterModelPolicyPreferenceError ?? "";
+      const current = this.starterModelPolicy;
+      const next = current === undefined
+        ? seedStarterModelPolicyDraft(defaults)
+        : relinkStarterExactBranch(current, defaults);
+      this.starterModelPolicy = next;
+      const exact = starterExactSelection(defaults);
+      if (next.mode === "exact" && exact !== undefined && sameExactSelection(next.exact, exact)) {
+        this.persistStarterModelPolicyPreference(next);
+      }
     } catch (error) {
       if (selectedMachineId(this.state) === machineId && this.state.selectedWorkspace?.id === workspace.id) this.setState({ error: String(error) });
     }
@@ -3115,6 +3203,7 @@ export class PiWebUiApp extends LitElement {
   private readonly handleStartSessionPrompt = (text: string, streamingBehavior?: "steer" | "followUp", attachments?: import("../api").PromptAttachment[], delivery?: import("../../../shared/apiTypes").PromptAttachmentDelivery): void => {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
+    if (this.starterModelPolicyBlocksStart()) return;
     // Capture the starter state before the controller inserts and selects its
     // pending row. A failed start retains this draft for a retry; a successful
     // stale completion cannot clear a newer draft or another workspace's draft.
@@ -3151,46 +3240,61 @@ export class PiWebUiApp extends LitElement {
     return this.selectedMachineModelTierCatalog();
   }
 
-  private setStarterModelPolicyDraft(draft: SessionModelPolicyDraft): void {
-    this.starterModelPolicy = {
+  private setStarterModelPolicyDraft(draft: SessionModelPolicyDraft): SessionModelPolicyDraft {
+    // Any explicit starter edit is a fresh attempt at a valid choice, so it
+    // retires the previous refusal notice. The notice is additionally gated on
+    // the live block, so a repair hides it even without this reset.
+    this.starterModelPolicyStartBlocked = false;
+    const stored = {
       mode: draft.mode,
       exact: { model: { ...draft.exact.model }, thinkingLevel: draft.exact.thinkingLevel },
       ...(draft.tier === undefined ? {} : { tier: draft.tier }),
     };
+    this.starterModelPolicy = stored;
+    return stored;
   }
 
   private readonly handleSelectStarterPolicyMode = async (mode: "exact" | "tiered"): Promise<void> => {
     const current = this.starterModelPolicy;
-    const catalog = await this.ensureStarterModelPolicyCatalog();
-    if (current === undefined || current !== this.starterModelPolicy || catalog === undefined) return;
-    const draft = seedModelPolicyDraft({ policy: current, catalog });
-    if (draft.mode === mode) return;
+    if (current === undefined || current.mode === mode) return;
 
     if (mode === "exact") {
-      const next = selectDraftExact(draft);
-      if (!isDraftReadyToApply(next, catalog)) return;
+      const next = selectDraftExact(current);
       this.setStarterModelPolicyDraft(next);
+      const defaults = this.starterSessionDefaults;
+      const exact = defaults === undefined ? undefined : starterExactSelection(defaults);
+      if (exact !== undefined && sameExactSelection(next.exact, exact)) {
+        this.persistStarterModelPolicyPreference(next);
+      }
       return;
     }
 
-    if (draft.tier === undefined) {
-      // A mode choice is not a tier choice. Show the tier control without
-      // inventing a default; nothing enters the start snapshot until a tier is explicit.
-      this.setStarterModelPolicyDraft({ ...draft, mode: "tiered" });
+    const next: SessionModelPolicyDraft = current.tier === undefined
+      ? { ...current, mode: "tiered" }
+      : selectDraftTier(current, current.tier);
+    const applied = this.setStarterModelPolicyDraft(next);
+    if (next.tier === undefined) {
+      if (this.selectedMachineModelTierCatalog() === undefined && !this.modelTierCatalogLoading) {
+        void this.loadModelTierCatalog(selectedMachineId(this.state));
+      }
       return;
     }
-    const next = selectDraftTier(draft, draft.tier);
-    if (!isDraftReadyToApply(next, catalog)) return;
-    this.setStarterModelPolicyDraft(next);
+
+    const catalog = await this.ensureStarterModelPolicyCatalog();
+    if (this.starterModelPolicy !== applied || catalog === undefined) return;
+    if (sessionModelPolicyUpdateFromDraft(applied, catalog) !== undefined) {
+      this.persistStarterModelPolicyPreference(applied);
+    }
   };
 
   private readonly handleSelectStarterPolicyTier = async (tier: ModelTier): Promise<void> => {
     const current = this.starterModelPolicy;
     const catalog = await this.ensureStarterModelPolicyCatalog();
     if (current === undefined || current !== this.starterModelPolicy || catalog === undefined) return;
-    const next = selectDraftTier(seedModelPolicyDraft({ policy: current, catalog }), tier);
+    const next = selectDraftTier(current, tier);
     if (sessionModelPolicyUpdateFromDraft(next, catalog) === undefined) return;
     this.setStarterModelPolicyDraft(next);
+    this.persistStarterModelPolicyPreference(next);
   };
 
   private readonly handleSelectStarterPolicyThinking = async (level: string): Promise<void> => {
@@ -3860,26 +3964,6 @@ function remoteRouteRestoreRetryDelay(attempt: number): number {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * The Exact selection a starter draft links to, or undefined when Pi has not
- * resolved a complete model/thinking pair yet. An incomplete pair must not be
- * padded with placeholders: the policy contract forbids substitution, and the
- * draft module would reject it as unsavable anyway.
- */
-function starterExactSelection(defaults: SessionDefaultsResponse): ExactModelSelection | undefined {
-  const provider = defaults.model?.provider;
-  const id = defaults.model?.id;
-  if (provider === undefined || provider === "" || id === undefined || id === "") return undefined;
-  if (defaults.thinkingLevel === "") return undefined;
-  return { model: { provider, id }, thinkingLevel: defaults.thinkingLevel };
-}
-
-function sameExactSelection(left: ExactModelSelection, right: ExactModelSelection): boolean {
-  return left.model.provider === right.model.provider
-    && left.model.id === right.model.id
-    && left.thinkingLevel === right.thinkingLevel;
 }
 
 /**

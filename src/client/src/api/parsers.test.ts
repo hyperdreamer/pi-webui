@@ -407,17 +407,55 @@ describe("API parsers", () => {
   });
 
   it("parses starter session defaults with model-specific thinking levels", () => {
+    const baseDefaults = {
+      model: { provider: "openai", id: "gpt-default", reasoning: true },
+      thinkingLevel: "high",
+      models: [{ provider: "openai", id: "gpt-default", reasoning: true }],
+      thinkingLevels: ["off", "low", "high"],
+    };
+
     expect(parseSessionDefaultsResponse({
-      model: { provider: "openai", id: "gpt-default", reasoning: true },
-      thinkingLevel: "high",
-      models: [{ provider: "openai", id: "gpt-default", reasoning: true }],
-      thinkingLevels: ["off", "low", "high"],
-    })).toEqual({
-      model: { provider: "openai", id: "gpt-default", reasoning: true },
-      thinkingLevel: "high",
-      models: [{ provider: "openai", id: "gpt-default", reasoning: true }],
-      thinkingLevels: ["off", "low", "high"],
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "exact", tier: "advanced" },
+    })).toMatchObject({
+      starterModelPolicyPreference: { mode: "exact", tier: "advanced" },
     });
+    expect(parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "tiered", tier: "frontier" },
+    })).toMatchObject({
+      starterModelPolicyPreference: { mode: "tiered", tier: "frontier" },
+    });
+    expect(parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreferenceError: "preference file is malformed",
+    })).toMatchObject({
+      starterModelPolicyPreferenceError: "preference file is malformed",
+    });
+    expect(parseSessionDefaultsResponse(baseDefaults)).toEqual(baseDefaults);
+
+    expect(() => parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "tiered" },
+    })).toThrow("requires a tier");
+    expect(() => parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "automatic", tier: "standard" },
+    })).toThrow("mode");
+    expect(() => parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "exact", tier: "unknown" },
+    })).toThrow("tier");
+    expect(() => parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "exact", future: true },
+    })).toThrow("field");
+    expect(() => parseSessionDefaultsResponse({
+      ...baseDefaults,
+      starterModelPolicyPreference: { mode: "exact" },
+      starterModelPolicyPreferenceError: "conflict",
+    })).toThrow("both");
+
     expect(() => parseSessionDefaultsResponse({ thinkingLevel: "off", models: [], thinkingLevels: ["off", 1] })).toThrow("Expected string array field: thinkingLevels");
   });
 

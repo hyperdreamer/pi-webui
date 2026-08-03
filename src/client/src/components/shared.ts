@@ -194,6 +194,7 @@ export const appStyles = css`
   .session-start-composer { border: 1px solid var(--pi-border); border-radius: 18px; background: color-mix(in srgb, var(--pi-surface) 88%, var(--pi-bg)); box-shadow: 0 18px 50px var(--pi-shadow); }
   .session-start-composer prompt-editor { display: block; border-radius: inherit; }
   .session-start-hint { margin: -4px 0 0; color: var(--pi-dim); font-size: 13px; line-height: 1.45; }
+  .session-start-block-notice { margin: -4px 0 0; color: var(--pi-danger); font-size: 13px; line-height: 1.45; }
   @media (max-width: 640px) {
     .session-start-screen { place-items: start center; padding: 36px 16px; }
     .session-start-content { gap: 14px; }

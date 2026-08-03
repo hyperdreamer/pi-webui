@@ -4,15 +4,20 @@ import type {
   ModelTierLadder,
   ModelTierModelOption,
   ModelTierSettingsResponse,
+  SessionDefaultsResponse,
   SessionModelPolicy,
 } from "../../../shared/apiTypes";
 import {
   isDraftReadyToApply,
   modelPolicyDraftFromPolicy,
+  relinkStarterExactBranch,
+  sameExactSelection,
   seedModelPolicyDraft,
+  seedStarterModelPolicyDraft,
   selectDraftExact,
   selectDraftTier,
   sessionModelPolicyUpdateFromDraft,
+  starterModelPolicyPreferenceFromDraft,
   type SessionModelPolicyDraft,
   updateDraftExactModel,
   updateDraftExactThinking,
@@ -73,6 +78,151 @@ function validCatalog(): ModelTierSettingsResponse {
 function exactDraft(exact: ExactModelSelection): SessionModelPolicyDraft {
   return { mode: "exact", exact };
 }
+
+function starterDefaults(
+  overrides: Partial<SessionDefaultsResponse> = {},
+): SessionDefaultsResponse {
+  return {
+    model: { provider: "openai", id: "gpt-default" },
+    thinkingLevel: "medium",
+    models: [{ provider: "openai", id: "gpt-default" }],
+    thinkingLevels: ["low", "medium", "high"],
+    ...overrides,
+  };
+}
+
+describe("starter model policy drafts", () => {
+  it("seeds the complete machine Exact defaults when no preference is stored", () => {
+    const defaults = starterDefaults();
+    const before = structuredClone(defaults);
+
+    const draft = seedStarterModelPolicyDraft(defaults);
+
+    expect(draft).toEqual({
+      mode: "exact",
+      exact: {
+        model: { provider: "openai", id: "gpt-default" },
+        thinkingLevel: "medium",
+      },
+    });
+    expect(draft.exact.model).not.toBe(defaults.model);
+    expect(defaults).toEqual(before);
+  });
+
+  it("restores Exact mode with its optional remembered tier", () => {
+    expect(seedStarterModelPolicyDraft(starterDefaults({
+      starterModelPolicyPreference: { mode: "exact", tier: "fast" },
+    }))).toMatchObject({ mode: "exact", tier: "fast" });
+  });
+
+  it("restores a complete Tiered preference without replacing its tier", () => {
+    expect(seedStarterModelPolicyDraft(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }))).toMatchObject({ mode: "tiered", tier: "advanced" });
+  });
+
+  it("seeds an empty Exact branch when the machine defaults are incomplete", () => {
+    const incompleteDefaults = starterDefaults({ thinkingLevel: "" });
+    delete incompleteDefaults.model;
+
+    expect(seedStarterModelPolicyDraft(incompleteDefaults)).toEqual({
+      mode: "exact",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+  });
+
+  it("relinks only an Exact draft to changed defaults while preserving its tier", () => {
+    const draft: SessionModelPolicyDraft = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-old" }, thinkingLevel: "low" },
+      tier: "fast",
+    };
+    const defaults = starterDefaults({
+      model: { provider: "anthropic", id: "claude-new" },
+      thinkingLevel: "high",
+    });
+    const draftBefore = structuredClone(draft);
+    const defaultsBefore = structuredClone(defaults);
+
+    const relinked = relinkStarterExactBranch(draft, defaults);
+
+    expect(relinked).toEqual({
+      mode: "exact",
+      exact: { model: { provider: "anthropic", id: "claude-new" }, thinkingLevel: "high" },
+      tier: "fast",
+    });
+    expect(relinked).not.toBe(draft);
+    expect(relinked.exact.model).not.toBe(defaults.model);
+    expect(draft).toEqual(draftBefore);
+    expect(defaults).toEqual(defaultsBefore);
+  });
+
+  it("returns the same Exact draft for a value-equivalent relink", () => {
+    const draft: SessionModelPolicyDraft = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+      tier: "capable",
+    };
+
+    expect(relinkStarterExactBranch(draft, starterDefaults())).toBe(draft);
+  });
+
+  it("does not overwrite the remembered Exact branch while Tiered", () => {
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: { model: { provider: "openai", id: "remembered" }, thinkingLevel: "low" },
+      tier: "advanced",
+    };
+    const before = structuredClone(draft);
+
+    expect(relinkStarterExactBranch(draft, starterDefaults())).toBe(draft);
+    expect(draft).toEqual(before);
+  });
+
+  it("derives only complete persisted preferences without mutating drafts", () => {
+    const exact: SessionModelPolicyDraft = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    };
+    const exactWithTier: SessionModelPolicyDraft = { ...exact, tier: "fast" };
+    const tiered: SessionModelPolicyDraft = { ...exact, mode: "tiered", tier: "frontier" };
+    const incompleteTiered: SessionModelPolicyDraft = { ...exact, mode: "tiered" };
+    const before = structuredClone({ exact, exactWithTier, tiered, incompleteTiered });
+
+    expect(starterModelPolicyPreferenceFromDraft(exact)).toEqual({ mode: "exact" });
+    expect(starterModelPolicyPreferenceFromDraft(exactWithTier)).toEqual({
+      mode: "exact",
+      tier: "fast",
+    });
+    expect(starterModelPolicyPreferenceFromDraft(tiered)).toEqual({
+      mode: "tiered",
+      tier: "frontier",
+    });
+    expect(starterModelPolicyPreferenceFromDraft(incompleteTiered)).toBeUndefined();
+    expect({ exact, exactWithTier, tiered, incompleteTiered }).toEqual(before);
+  });
+
+  it("compares Exact selections by provider, model id, and thinking level", () => {
+    const exact: ExactModelSelection = {
+      model: { provider: "openai", id: "gpt-default" },
+      thinkingLevel: "medium",
+    };
+
+    expect(sameExactSelection(exact, structuredClone(exact))).toBe(true);
+    expect(sameExactSelection(exact, {
+      model: { provider: "anthropic", id: "gpt-default" },
+      thinkingLevel: "medium",
+    })).toBe(false);
+    expect(sameExactSelection(exact, {
+      model: { provider: "openai", id: "gpt-other" },
+      thinkingLevel: "medium",
+    })).toBe(false);
+    expect(sameExactSelection(exact, {
+      model: { provider: "openai", id: "gpt-default" },
+      thinkingLevel: "high",
+    })).toBe(false);
+  });
+});
 
 describe("session model policy drafts", () => {
   it("switches between Exact and Tiered while preserving both remembered branches", () => {

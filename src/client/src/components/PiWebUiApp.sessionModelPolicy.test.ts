@@ -20,7 +20,7 @@ import type {
 import { modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { SessionController } from "../controllers/sessionController";
-import { findTemplateContaining, isTemplateResult, templateStrings, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
+import { findTemplateContaining, isTemplateResult, templateStrings, templateText, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
@@ -100,6 +100,15 @@ function validCatalog(): ModelTierSettingsResponse {
   };
 }
 
+function invalidTierCatalog(tier: ModelTier, reason: string): ModelTierSettingsResponse {
+  const catalog = validCatalog();
+  return {
+    ...catalog,
+    rows: { ...catalog.rows, [tier]: { valid: false, reason } },
+    valid: false,
+  };
+}
+
 function starterDefaults(overrides: Partial<SessionDefaultsResponse> = {}): SessionDefaultsResponse {
   return {
     model: { provider: "openai", id: "gpt-default", name: "Default" },
@@ -107,6 +116,14 @@ function starterDefaults(overrides: Partial<SessionDefaultsResponse> = {}): Sess
     models: [{ provider: "openai", id: "gpt-default" }, { provider: "openai", id: "gpt-advanced" }],
     thinkingLevels: ["low", "medium", "high"],
     ...overrides,
+  };
+}
+
+function starterDefaultsWithoutResolvedModel(): SessionDefaultsResponse {
+  return {
+    thinkingLevel: "medium",
+    models: [],
+    thinkingLevels: ["off", "low", "medium", "high"],
   };
 }
 
@@ -159,9 +176,12 @@ function exactPolicyResponse(): SessionModelPolicyResponse {
   };
 }
 
-function machineRuntime(capabilities: MachineRuntime["capabilities"]): MachineRuntime {
+function machineRuntime(
+  capabilities: MachineRuntime["capabilities"],
+  machineId = remoteMachine.id,
+): MachineRuntime {
   return {
-    machineId: remoteMachine.id,
+    machineId,
     ok: true,
     checkedAt: "2026-07-31T00:00:00.000Z",
     ...(capabilities === undefined ? {} : { capabilities }),
@@ -178,6 +198,18 @@ function starterState(): AppState {
     sessions: [],
     isLoadingSessions: false,
     error: "",
+  };
+}
+
+function preferenceCapableStarterState(): AppState {
+  return {
+    ...starterState(),
+    machineRuntimes: {
+      local: machineRuntime([
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+      ], "local"),
+    },
   };
 }
 
@@ -388,6 +420,19 @@ describe("PiWebUiApp policy-aware pick handlers", () => {
       mode: "exact",
       exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
     });
+  });
+
+  it("never writes starter preferences for active-session mode or tier changes", async () => {
+    const timers = manualTimers();
+    const app = policyCapableActiveApp(timers);
+    const updateDefaults = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionController(app), "saveModelPolicy").mockResolvedValue();
+
+    await selectPolicyTier(app, "advanced");
+    await selectPolicyMode(app, "exact");
+    await timers.runAll();
+
+    expect(updateDefaults).not.toHaveBeenCalled();
   });
 
   it("ignores an exact model picker completion that arrives after switching to Tiered", async () => {
@@ -633,6 +678,195 @@ describe("PiWebUiApp starter composer policy", () => {
     expect(starterModelPolicy(app)).toEqual(tiered);
   });
 
+  it("restores an Exact preference and retains its inactive tier", async () => {
+    const app = createApp();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "exact", tier: "fast" },
+    }));
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "exact",
+      tier: "fast",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+    expect(settings).not.toHaveBeenCalled();
+  });
+
+  it("restores Tiered intent, preloads its catalog, and blocks Send while validation is pending", async () => {
+    const app = createApp();
+    const pendingCatalog = deferred<ModelTierSettingsResponse>();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockReturnValue(pendingCatalog.promise);
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    expect(settings).toHaveBeenCalledWith("local");
+    expect(starterModelPolicy(app)?.mode).toBe("tiered");
+    expect(starterModelPolicy(app)?.tier).toBe("advanced");
+    let editor = promptEditorTemplate(app);
+    expect(policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus=")).tier).toBe("advanced");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(true);
+
+    pendingCatalog.resolve(validCatalog());
+    await flush();
+
+    editor = promptEditorTemplate(app);
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+  });
+
+  it("keeps in-memory starter selection for a peer without preference support and sends no preference write", async () => {
+    const app = createApp();
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    setAppState(app, {
+      ...starterState(),
+      machineRuntimes: {
+        local: machineRuntime([PI_WEBUI_CAPABILITIES.sessionsModelPolicy], "local"),
+      },
+    });
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyTier(app, "frontier");
+    await flush();
+
+    expect(starterModelPolicy(app)?.mode).toBe("tiered");
+    expect(starterModelPolicy(app)?.tier).toBe("frontier");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("persists valid Tiered and Exact choices immediately for a capable selected machine", async () => {
+    const app = createApp();
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyTier(app, "frontier");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "tiered", tier: "frontier" } },
+        "local",
+      );
+    });
+
+    await selectPolicyMode(app, "exact");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "exact", tier: "frontier" } },
+        "local",
+      );
+    });
+  });
+
+  it("persists a switch back to a remembered valid Tiered choice", async () => {
+    const app = createApp();
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "exact", tier: "frontier" },
+    }));
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyMode(app, "tiered");
+
+    expect(starterModelPolicy(app)?.mode).toBe("tiered");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "tiered", tier: "frontier" } },
+        "local",
+      );
+    });
+  });
+
+  it("does not persist a first Tiered mode choice until a valid tier is selected", async () => {
+    const app = createApp();
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyMode(app, "tiered");
+    await flush();
+
+    expect(starterModelPolicy(app)?.mode).toBe("tiered");
+    expect(starterModelPolicy(app)?.tier).toBeUndefined();
+    expect(update).not.toHaveBeenCalled();
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "tiered", tier: "advanced" } },
+        "local",
+      );
+    });
+  });
+
+  it("keeps an invalid remembered tier as a blocked draft without replacing a durable Exact preference", async () => {
+    const app = createApp();
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "exact", tier: "advanced" },
+    }));
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, invalidTierCatalog("advanced", "Advanced has no configured model"), "local");
+
+    await selectPolicyMode(app, "tiered");
+    await flush();
+
+    expect(starterModelPolicy(app)?.mode).toBe("tiered");
+    expect(starterModelPolicy(app)?.tier).toBe("advanced");
+    expect(policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).blockedReason)
+      .toBe("Choose a valid model tier before starting");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("relinks only the Exact branch after confirmed Pi defaults and persists the retained tier", async () => {
+    const app = createApp();
+    const initial = starterDefaults({
+      starterModelPolicyPreference: { mode: "exact", tier: "frontier" },
+    });
+    const confirmed = starterDefaults({
+      model: { provider: "openai", id: "gpt-advanced" },
+      thinkingLevel: "high",
+      starterModelPolicyPreference: { mode: "exact", tier: "frontier" },
+    });
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(initial);
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(confirmed);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    await pickStarterModel(app, "openai/gpt-advanced");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "exact", tier: "frontier" } },
+        "local",
+      );
+    });
+
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "exact",
+      tier: "frontier",
+      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+    });
+  });
+
   it("wires starter mode, tier, and thinking choices to the local policy/default paths", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
@@ -730,6 +964,338 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     expect(start).toHaveBeenCalledWith("explore the repo", undefined, undefined, undefined, undefined, expect.any(Function));
   });
 
+});
+
+describe("PiWebUiApp starter policy blocking and diagnostics", () => {
+  it("keeps an invalid restored tier visible and blocks both direct start paths", async () => {
+    const app = createApp();
+    const catalog = invalidTierCatalog("advanced", "Advanced points to a missing model");
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalog);
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    const editor = promptEditorTemplate(app);
+    const status = policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus="));
+    const boundCatalog = templateValueAfterMarker(editor, ".modelTierCatalog=");
+    expect(status.mode).toBe("tiered");
+    expect(status.tier).toBe("advanced");
+    expect(status.blockedReason).toBe("Choose a valid model tier before starting");
+    expect(boundCatalog).toEqual(catalog);
+    expect(catalog.rows.advanced.reason).toBe("Advanced points to a missing model");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(true);
+
+    startSessionPrompt(app, "do not start");
+    await startSessionAndOpenChat(app);
+
+    expect(startWithPrompt).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    // The refusal is reported on the start screen itself, not through
+    // `state.error`, which selects which screen renders at all.
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+  });
+
+  it("keeps the start screen and its repair controls mounted after a blocked direct start", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await startSessionAndOpenChat(app);
+
+    expect(start).not.toHaveBeenCalled();
+    // `shouldShowSessionStartScreen()` requires an empty `state.error`, so a
+    // block published there would unmount the controls that repair it.
+    expect(appState(app).error).toBe("");
+    // Throws if the start screen no longer renders its composer.
+    const editor = promptEditorTemplate(app);
+    const status = policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus="));
+    expect(status.mode).toBe("tiered");
+    expect(status.tier).toBe("advanced");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(true);
+    expect(templateValueAfterMarker(editor, ".onSelectPolicyTier=")).toBeTypeOf("function");
+    // T6-F-3: the refusal still is not silent.
+    expect(templateText(renderApp(app))).toContain("Choose a valid model tier before starting");
+  });
+
+  it("switches blocked Tiered intent to complete Exact after catalog loading fails", async () => {
+    const app = createApp();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    await selectPolicyMode(app, "exact");
+
+    expect(settings).toHaveBeenCalledOnce();
+    expect(starterModelPolicy(app)?.mode).toBe("exact");
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".sendDisabled=")).toBe(false);
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "exact", tier: "advanced" } },
+        "local",
+      );
+    });
+
+    startSessionPrompt(app, "start exact");
+    expect(startWithPrompt).toHaveBeenCalledWith(
+      "start exact",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Function),
+    );
+  });
+
+  it("warns after a rejected preference write but starts with the valid in-memory Tiered policy", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "updateSessionDefaults").mockRejectedValue(new Error("preference store offline"));
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyTier(app, "frontier");
+    await vi.waitFor(() => {
+      expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+        .toContain("Could not remember this model policy; this session will still use it.");
+    });
+
+    startSessionPrompt(app, "use frontier now");
+
+    expect(startWithPrompt).toHaveBeenCalledWith(
+      "use frontier now",
+      undefined,
+      undefined,
+      undefined,
+      { mode: "tiered", tier: "frontier" },
+      expect.any(Function),
+    );
+  });
+
+  it("shows a failed preference write warning above an earlier read diagnostic", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreferenceError: "Preference file could not be read",
+    }));
+    vi.spyOn(sessionsApi, "updateSessionDefaults").mockRejectedValue(new Error("disk full"));
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toBe("Preference file could not be read");
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      const editor = promptEditorTemplate(app);
+      expect(templateValueAfterMarker(editor, ".modelPolicyError="))
+        .toBe("Could not remember this model policy; this session will still use it. Error: disk full");
+      expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+    });
+  });
+
+  it("clears an earlier preference warning after a later successful write", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "updateSessionDefaults")
+      .mockRejectedValueOnce(new Error("first write failed"))
+      .mockResolvedValue(starterDefaults());
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+        .toContain("first write failed");
+    });
+
+    await selectPolicyTier(app, "frontier");
+    await vi.waitFor(() => {
+      expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError=")).toBe("");
+    });
+  });
+
+  it("keeps preference write warnings scoped across workspace changes", async () => {
+    const app = createApp();
+    const pendingWrite = deferred<SessionDefaultsResponse>();
+    void pendingWrite.promise.catch(() => undefined);
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(sessionsApi, "updateSessionDefaults").mockReturnValue(pendingWrite.promise);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+    stubWorkspaceChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+
+    await selectPolicyTier(app, "advanced");
+
+    const mainState = appState(app);
+    const featureState: AppState = {
+      ...mainState,
+      workspaces: [mainWorkspace, featureWorkspace],
+      selectedWorkspace: featureWorkspace,
+    };
+    setAppState(app, featureState);
+    handleWorkspaceChange(app, mainState, featureState);
+    await loadStarterSessionDefaults(app, featureWorkspace);
+
+    pendingWrite.reject(new Error("main workspace write failed"));
+    await flush();
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError=")).toBe("");
+
+    const beforeReturn = appState(app);
+    const returnedState: AppState = { ...beforeReturn, selectedWorkspace: mainWorkspace };
+    setAppState(app, returnedState);
+    handleWorkspaceChange(app, beforeReturn, returnedState);
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toContain("main workspace write failed");
+  });
+
+  it("shows preference read diagnostics without blocking complete Exact defaults", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreferenceError: "Preference file has an unsupported version",
+    }));
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, preferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    const editor = promptEditorTemplate(app);
+    expect(starterModelPolicy(app)?.mode).toBe("exact");
+    expect(templateValueAfterMarker(editor, ".modelPolicyError="))
+      .toBe("Preference file has an unsupported version");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+
+    startSessionPrompt(app, "start with exact defaults");
+    expect(startWithPrompt).toHaveBeenCalledOnce();
+  });
+
+  it("clears a stale preference read diagnostic after a successful preference write", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreferenceError: "Preference file could not be read",
+    }));
+    const update = vi.spyOn(sessionsApi, "updateSessionDefaults").mockResolvedValue(starterDefaults());
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toBe("Preference file could not be read");
+
+    await selectPolicyTier(app, "advanced");
+    await vi.waitFor(() => {
+      expect(update).toHaveBeenCalledWith(
+        mainWorkspace.path,
+        { starterModelPolicyPreference: { mode: "tiered", tier: "advanced" } },
+        "local",
+      );
+      expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError=")).toBe("");
+    });
+  });
+
+  it("keeps /login reachable when Pi has no resolved Exact model", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaultsWithoutResolvedModel());
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    const editor = promptEditorTemplate(app);
+    expect(policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus=")).blockedReason).toBeUndefined();
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+
+    startSessionPrompt(app, "/login");
+
+    expect(appState(app).authDialog).toEqual({ step: "method" });
+    expect(startWithPrompt).not.toHaveBeenCalled();
+  });
+
+  it("starts through daemon defaults when Pi has no resolved Exact model", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaultsWithoutResolvedModel());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    startSessionPrompt(app, "use daemon defaults");
+    expect(startWithPrompt).toHaveBeenCalledWith(
+      "use daemon defaults",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      expect.any(Function),
+    );
+
+    await startSessionAndOpenChat(app);
+    expect(start).toHaveBeenCalledWith(undefined);
+  });
+
+  it("blocks an incomplete user Exact draft when Pi defaults are complete", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    setAppState(app, starterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    setStarterModelPolicy(app, {
+      mode: "exact",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+
+    const editor = promptEditorTemplate(app);
+    expect(policyStatus(templateValueAfterMarker(editor, ".modelPolicyStatus=")).blockedReason)
+      .toBe("Choose a model and thinking level before starting");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(true);
+
+    startSessionPrompt(app, "blocked exact");
+    await startSessionAndOpenChat(app);
+
+    expect(startWithPrompt).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
 });
 
 // ── harness ─────────────────────────────────────────────────────────────────
@@ -946,6 +1512,10 @@ function startSessionPrompt(app: PiWebUiApp, text: string): void {
   Reflect.apply(handler, app, [text]);
 }
 
+function startSessionAndOpenChat(app: PiWebUiApp): Promise<void> {
+  return callAsyncAppMethod(app, "startSessionAndOpenChat", []);
+}
+
 function starterModelPolicy(app: PiWebUiApp): SessionModelPolicy | undefined {
   const value: unknown = Reflect.get(app, "starterModelPolicy");
   if (value === undefined) return undefined;
@@ -1057,14 +1627,26 @@ function isPromise(value: unknown): value is Promise<void> {
   return value instanceof Promise;
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
   let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
   return {
     promise,
     resolve(value) {
       if (resolvePromise === undefined) throw new Error("Deferred promise is unavailable");
       resolvePromise(value);
+    },
+    reject(error) {
+      if (rejectPromise === undefined) throw new Error("Deferred rejection is unavailable");
+      rejectPromise(error);
     },
   };
 }

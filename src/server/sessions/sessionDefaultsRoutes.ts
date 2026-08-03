@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { SessionDefaultsUpdate } from "../../shared/apiTypes.js";
+import {
+  MODEL_TIERS,
+  type ModelTier,
+  type SessionDefaultsUpdate,
+  type StarterModelPolicyPreference,
+} from "../../shared/apiTypes.js";
 import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionDefaultsService } from "./sessionDefaultsService.js";
@@ -30,7 +35,26 @@ export function registerSessionDefaultsRoutes(app: FastifyInstance, service: Ses
 
 function parseUpdate(value: unknown): { cwd: string; update: SessionDefaultsUpdate } {
   const body = requireRecord(value);
+  requireAllowedFields(
+    body,
+    ["cwd", "model", "thinkingLevel", "starterModelPolicyPreference"],
+    "session defaults update",
+  );
   const cwd = normalizeRequestCwd(requireString(body["cwd"], "cwd"));
+  if (body["starterModelPolicyPreference"] !== undefined) {
+    if (body["model"] !== undefined || body["thinkingLevel"] !== undefined) {
+      throw new Error("A starter model policy preference update cannot include model or thinkingLevel");
+    }
+    return {
+      cwd,
+      update: {
+        starterModelPolicyPreference: parseStarterModelPolicyPreference(
+          body["starterModelPolicyPreference"],
+        ),
+      },
+    };
+  }
+
   const model = body["model"] === undefined ? undefined : parseModel(body["model"]);
   const thinkingLevel = body["thinkingLevel"] === undefined ? undefined : requireThinkingLevel(body["thinkingLevel"]);
   if (model === undefined && thinkingLevel === undefined) throw new Error("A default model or thinking level is required");
@@ -41,6 +65,31 @@ function parseUpdate(value: unknown): { cwd: string; update: SessionDefaultsUpda
       ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
     },
   };
+}
+
+function parseStarterModelPolicyPreference(value: unknown): StarterModelPolicyPreference {
+  const preference = requireRecord(value);
+  requireAllowedFields(
+    preference,
+    ["mode", "tier"],
+    "starterModelPolicyPreference",
+  );
+  const mode = preference["mode"];
+  if (mode !== "exact" && mode !== "tiered") {
+    throw new Error("starterModelPolicyPreference mode must be exact or tiered");
+  }
+  const tier = preference["tier"];
+  if (tier !== undefined && !isModelTier(tier)) {
+    throw new Error(`starterModelPolicyPreference tier must be one of: ${MODEL_TIERS.join(", ")}`);
+  }
+  if (mode === "tiered" && tier === undefined) {
+    throw new Error("starterModelPolicyPreference tier is required in Tiered mode");
+  }
+  return tier === undefined ? { mode } : { mode, tier };
+}
+
+function isModelTier(value: unknown): value is ModelTier {
+  return typeof value === "string" && MODEL_TIERS.some((tier) => tier === value);
 }
 
 function parseModel(value: unknown): NonNullable<SessionDefaultsUpdate["model"]> {
@@ -54,6 +103,18 @@ function parseModel(value: unknown): NonNullable<SessionDefaultsUpdate["model"]>
 function requireThinkingLevel(value: unknown): string {
   if (typeof value !== "string" || !isKnownThinkingLevel(value)) throw new Error("Invalid thinkingLevel");
   return value;
+}
+
+function requireAllowedFields(
+  record: Record<string, unknown>,
+  allowedFields: readonly string[],
+  field: string,
+): void {
+  const allowed = new Set(allowedFields);
+  const unknownField = Object.keys(record).find((key) => !allowed.has(key));
+  if (unknownField !== undefined) {
+    throw new Error(`${field} has unknown field ${JSON.stringify(unknownField)}`);
+  }
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {

@@ -17,6 +17,7 @@ import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGatewa
 import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
 import { SessionDefaultsService } from "./sessions/sessionDefaultsService.js";
 import { registerSessionDefaultsRoutes } from "./sessions/sessionDefaultsRoutes.js";
+import { StarterModelPolicyPreferenceStore } from "./sessions/starterModelPolicyPreferenceStore.js";
 import { createModelTierSettingsService } from "./sessions/modelTierSettingsService.js";
 import { registerModelTierSettingsRoutes } from "./sessions/modelTierSettingsRoutes.js";
 import { SessionNotificationStore } from "./sessions/sessionNotificationStore.js";
@@ -85,7 +86,11 @@ await runSessionDaemonStartup({
       }),
     });
     auth.subscribe((change) => { sessions.applyAuthChange(change); });
-    const defaults = new SessionDefaultsService({ agentDir: activeAgentProfile.dir, modelRuntime: auth.runtime });
+    const defaults = new SessionDefaultsService({
+      agentDir: activeAgentProfile.dir,
+      modelRuntime: auth.runtime,
+      starterModelPolicyPreferenceStore: new StarterModelPolicyPreferenceStore(),
+    });
     const modelTiers = createModelTierSettingsService({
       loadConfig: () => {
         const loaded = loadPiWebUiConfig({ env: daemonEnvironment });
