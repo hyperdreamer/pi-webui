@@ -10,7 +10,7 @@ import type {
   StarterModelPolicyPreference,
   StarterModelPolicyPreferenceResponse,
 } from "../../shared/apiTypes.js";
-import { KNOWN_THINKING_LEVELS, isKnownThinkingLevel, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+import { KNOWN_THINKING_LEVELS, isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
 import type {
   StarterModelPolicyPreferenceStore,
   StarterPreferenceInspection,
@@ -23,7 +23,7 @@ interface SessionDefaultsSettings {
   getDefaultModel(): string | undefined;
   getDefaultThinkingLevel(): string | undefined;
   setDefaultModelAndProvider(provider: string, modelId: string): void;
-  setDefaultThinkingLevel(level: ThinkingLevel): void;
+  setDefaultThinkingLevel(level: string): void;
   flush(): Promise<void>;
 }
 
@@ -37,7 +37,7 @@ export interface SessionDefaultsServiceDependencies {
   modelRuntime: SessionDefaultsModelRuntime;
   starterModelPolicyPreferenceStore: Pick<StarterModelPolicyPreferenceStore, "inspect" | "replace">;
   createSettingsManager?: (cwd: string, agentDir: string) => SessionDefaultsSettings;
-  thinkingLevelsForModel?: (model: DefaultModel | undefined) => readonly ThinkingLevel[];
+  thinkingLevelsForModel?: (model: DefaultModel | undefined) => readonly string[];
 }
 
 /** Persists Pi's default model and thinking preferences without opening a chat session. */
@@ -149,7 +149,7 @@ export class SessionDefaultsService {
   }
 }
 
-function defaultThinkingLevelsForModel(model: DefaultModel | undefined): readonly ThinkingLevel[] {
+function defaultThinkingLevelsForModel(model: DefaultModel | undefined): readonly string[] {
   return model === undefined ? KNOWN_THINKING_LEVELS : getSupportedThinkingLevels(model);
 }
 
@@ -160,15 +160,15 @@ function configuredDefaultModel(settings: SessionDefaultsSettings, models: reado
   return models.find((model) => model.provider === provider && model.id === modelId);
 }
 
-function effectiveThinkingLevel(configured: string, levels: readonly ThinkingLevel[]): ThinkingLevel {
-  return isKnownThinkingLevel(configured) && levels.includes(configured) ? configured : (levels[0] ?? "off");
+function effectiveThinkingLevel(configured: string, levels: readonly string[]): string {
+  return levels.includes(configured) ? configured : (levels[0] ?? "off");
 }
 
 function responseV2For(
   models: readonly DefaultModel[],
   model: DefaultModel | undefined,
-  thinkingLevel: ThinkingLevel,
-  thinkingLevels: readonly ThinkingLevel[],
+  thinkingLevel: string,
+  thinkingLevels: readonly string[],
   configuredExact: ExactModelSelection | undefined,
   preferenceInspection: StarterPreferenceInspection,
 ): SessionDefaultsV2Response {
@@ -248,8 +248,8 @@ function cloneExactModelSelection(selection: ExactModelSelection): ExactModelSel
 function responseFor(
   models: readonly DefaultModel[],
   model: DefaultModel | undefined,
-  thinkingLevel: ThinkingLevel,
-  thinkingLevels: readonly ThinkingLevel[],
+  thinkingLevel: string,
+  thinkingLevels: readonly string[],
   preferenceInspection: StarterPreferenceInspection,
 ): SessionDefaultsResponse {
   return {

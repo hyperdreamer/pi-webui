@@ -20,6 +20,43 @@ describe("SessionDefaultsService", () => {
     expect(harness.settings.flush).not.toHaveBeenCalled();
   });
 
+  it("preserves a live runtime-added thinking level on unversioned reads", async () => {
+    const model = testModel();
+    const harness = createHarness({
+      model,
+      thinkingLevel: "runtime-added",
+      availableThinkingLevels: ["off", "runtime-added"],
+    });
+
+    await expect(harness.service.read("/workspace")).resolves.toMatchObject({
+      thinkingLevel: "runtime-added",
+      thinkingLevels: ["off", "runtime-added"],
+    });
+  });
+
+  it("preserves a live runtime-added thinking level when updating the default model", async () => {
+    const model = testModel();
+    const alternate = { ...model, id: "alternate-model" };
+    const harness = createHarness({
+      model,
+      models: [model, alternate],
+      thinkingLevel: "runtime-added",
+      availableThinkingLevels: ["off", "runtime-added"],
+    });
+
+    const defaults = await harness.service.update("/workspace", {
+      model: { provider: alternate.provider, modelId: alternate.id },
+    });
+
+    expect(harness.settings.setDefaultModelAndProvider).toHaveBeenCalledWith(alternate.provider, alternate.id);
+    expect(harness.settings.setDefaultThinkingLevel).not.toHaveBeenCalled();
+    expect(defaults).toMatchObject({
+      model: { provider: alternate.provider, id: alternate.id },
+      thinkingLevel: "runtime-added",
+      thinkingLevels: ["off", "runtime-added"],
+    });
+  });
+
   it("combines Pi defaults with a valid starter preference", async () => {
     const harness = createHarness({
       model: testModel(),
@@ -298,7 +335,8 @@ describe("SessionDefaultsService", () => {
 function createHarness(input: {
   model: ReturnType<typeof testModel>;
   models?: readonly ReturnType<typeof testModel>[];
-  thinkingLevel: "off" | "low" | "high";
+  thinkingLevel: string;
+  availableThinkingLevels?: readonly string[];
   configuredProvider?: string | undefined;
   configuredModelId?: string | undefined;
   configuredThinkingLevel?: string | undefined;
@@ -317,7 +355,7 @@ function createHarness(input: {
       provider = nextProvider;
       modelId = nextModelId;
     }),
-    setDefaultThinkingLevel: vi.fn((nextLevel: "off" | "low" | "high") => {
+    setDefaultThinkingLevel: vi.fn((nextLevel: string) => {
       thinkingLevel = nextLevel;
     }),
     flush: vi.fn(() => Promise.resolve()),
@@ -339,7 +377,8 @@ function createHarness(input: {
     modelRuntime,
     starterModelPolicyPreferenceStore: preferenceStore,
     createSettingsManager: () => settings,
-    thinkingLevelsForModel: (model) => model?.id === "alternate-model" || model === undefined ? ["off"] : ["off", "low", "high"],
+    thinkingLevelsForModel: (model) => input.availableThinkingLevels
+      ?? (model?.id === "alternate-model" || model === undefined ? ["off"] : ["off", "low", "high"]),
   });
   return { service, settings, modelRuntime, preferenceStore };
 }
