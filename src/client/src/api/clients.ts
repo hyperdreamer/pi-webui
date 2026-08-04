@@ -1,6 +1,7 @@
 import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
+import type { SessionReorderRequest } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate } from "../../../shared/apiTypes";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
 import type { UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
@@ -63,6 +64,7 @@ import {
   parseSessionInfo,
   parseSessionMessageForkResult,
   parseSessionModelPolicyResponse,
+  parseSessionReorderResponse,
   parseSessionNotificationInboxSnapshot,
   parseSessionStatus,
   parseSessionSystemPrompt,
@@ -302,6 +304,10 @@ export const workspacesApi = {
 
 export const sessionsApi = {
   sessions: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo)),
+  reorder: (session: SessionRef, input: SessionReorderRequest, machineId = "local") => request(sessionPath(session, "reorder", machineId), parseSessionReorderResponse, {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
   unreadCatalog: (machineId = "local") => request(`${machinePrefix(machineId)}/sessions/unread`, parseSessionUnreadCatalogSnapshot, { cache: "no-store" }),
   acknowledgeUnread: (session: SessionRef, catalogId: string, throughCompletionOrder: number, machineId = "local") => {
     const body: SessionUnreadAcknowledgeRequest = { cwd: session.cwd, catalogId, throughCompletionOrder };

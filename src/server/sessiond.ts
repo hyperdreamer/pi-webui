@@ -15,6 +15,7 @@ import { registerSkillsConfigRoutes } from "./skills/skillsConfigRoutes.js";
 import { PiSessionService } from "./sessions/piSessionService.js";
 import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGateway.js";
 import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
+import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
 import { SessionDefaultsService } from "./sessions/sessionDefaultsService.js";
 import { registerSessionDefaultsRoutes } from "./sessions/sessionDefaultsRoutes.js";
 import { StarterModelPolicyPreferenceStore } from "./sessions/starterModelPolicyPreferenceStore.js";
@@ -47,7 +48,11 @@ const activeAgentProfile = createActiveAgentProfileDescriptor({
   dir: config.agent.dir,
   sessionDirEnvKeys: agentSessionDirEnvKeys(config.agent.command),
 });
-const app = Fastify({ logger: true, bodyLimit: maxUploadBytes(daemonEnvironment, config) });
+const app = Fastify({
+  logger: true,
+  ...sessionRouteFastifyOptions,
+  bodyLimit: maxUploadBytes(daemonEnvironment, config),
+});
 await app.register(fastifyWebsocket);
 
 await runSessionDaemonStartup({

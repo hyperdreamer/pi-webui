@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PiSessionService, type PiAgentSession } from "./piSessionService.js";
+import { SessionMetadataStore } from "./sessionMetadataStore.js";
 import {
   CapturingSessionEventHub,
   emptyArchiveStore,
@@ -375,6 +376,14 @@ describe("PiSessionService daemon-owned unread state", () => {
     const runtimes = [parent.runtime, child.runtime];
     let runtimeIndex = 0;
     const createAgentRuntime: RuntimeCreator = () => Promise.resolve(runtimes[runtimeIndex++] ?? child.runtime);
+    const metadataPath = join(root, "session-metadata.json");
+    const metadataStore = new SessionMetadataStore(metadataPath);
+    await writeFile(metadataPath, JSON.stringify({
+      [childFile]: {
+        pinned: true,
+        order: { position: 1, scope: { kind: "children", parentSessionPath: parentFile }, pinned: true },
+      },
+    }), "utf8");
     const service = new PiSessionService(hub, {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
@@ -384,6 +393,7 @@ describe("PiSessionService daemon-owned unread state", () => {
       spawnTargets: { resolveSpawnTarget: () => Promise.resolve({ allowed: true, cwd: "/workspace-feature" }) },
       heartbeatIntervalMs: 60_000,
       unreadStore,
+      metadataStore,
     });
 
     try {
@@ -406,6 +416,7 @@ describe("PiSessionService daemon-owned unread state", () => {
         sessionId: "child-1",
         cwd: "/workspace-feature",
       }));
+      expect(await metadataStore.get(childFile)).toEqual({ pinned: true });
     } finally {
       await service.dispose();
     }

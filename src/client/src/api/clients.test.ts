@@ -482,6 +482,26 @@ describe("session API compatibility", () => {
     expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({ archiveIdleDays: 7, projectCwds: ["/repo"] });
   });
 
+  it("posts a complete reorder through the selected machine", async () => {
+    const response = { orderedSessions: [{ id: "s /?", cwd: "/repo", manualOrder: 0 }] };
+    const fetchMock = stubJsonFetch(response);
+    const input = {
+      cwd: "/repo",
+      scope: { kind: "root" as const, cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: "s /?", cwd: "/repo" }],
+    };
+
+    await expect(sessionsApi.reorder({ id: "s /?", cwd: "/repo" }, input, "remote /?"))
+      .resolves.toEqual(response);
+
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/sessions/s%20%2F%3F/reorder");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(requestBody(init))).toEqual(input);
+  });
+
   it("posts bulk session mutation requests through the selected machine", async () => {
     const archived = { archived: true, archivedSessionIds: ["s 1"], failures: [{ sessionId: "s 2", error: "busy" }], generatedAt: "now" };
     const deleted = { deleted: true, deletedSessionIds: ["s 1"], failures: [], generatedAt: "later" };

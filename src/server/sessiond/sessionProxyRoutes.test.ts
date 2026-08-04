@@ -108,6 +108,32 @@ describe("machine-scoped session proxy routes", () => {
     expect(daemon.requests).toEqual([{ method: "POST", path: "/sessions/session-1/queue/clear", body: { cwd: "/repo" } }]);
   });
 
+  it("forwards session reorder bodies unchanged through the session daemon", async () => {
+    const body = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [
+        { id: "s-2", cwd: "/repo" },
+        { id: "s-1", cwd: "/repo" },
+      ],
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/machines/local/sessions/s-1/reorder",
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(daemon.requests).toEqual([{
+      method: "POST",
+      path: "/sessions/s-1/reorder",
+      body,
+    }]);
+  });
+
   it("forwards unread snapshots and acknowledgement cutoffs unchanged", async () => {
     const catalog = await app.inject({ method: "GET", url: "/api/machines/local/sessions/unread" });
     const acknowledge = await app.inject({

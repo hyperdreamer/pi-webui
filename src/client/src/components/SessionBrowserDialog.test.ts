@@ -188,6 +188,19 @@ describe("SessionBrowserDialog", () => {
     // Child should still be visible when expanded
     expect(renderedText).toContain("Child");
   });
+
+  it("keeps the expanded browser read-only while preserving manual session order", () => {
+    const later = session("later", { firstMessage: "Later session", manualOrder: 1 });
+    const first = session("first", { firstMessage: "First session", manualOrder: 0 });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [later, first];
+    dialog.selected = first;
+
+    const rendered = templateText(dialog.render());
+    expect(rendered.indexOf("First session")).toBeLessThan(rendered.indexOf("Later session"));
+    expect(rendered).not.toContain("session-reorder-grip");
+    expect("onReorder" in dialog).toBe(false);
+  });
 });
 
 function sessionBrowserDialogStyles(): string {

@@ -23,6 +23,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("federated route contract", () => {
@@ -87,6 +88,8 @@ describe("federated route contract", () => {
   });
 
   it("covers machine-scoped client HTTP calls with remote proxy routes", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
     const fetchMock = vi.fn<FetchLike>(() => Promise.resolve(jsonResponse({})));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -134,6 +137,13 @@ describe("federated route contract", () => {
       ignoreParseFailure(sessionsApi.unreadCatalog(machineId)),
       ignoreParseFailure(sessionsApi.acknowledgeUnread(session, "catalog-a", 7, machineId)),
       ignoreParseFailure(sessionsApi.startSession("/repo", machineId)),
+      ignoreParseFailure(sessionsApi.reorder(session, {
+        cwd: workspace.path,
+        scope: { kind: "root" as const, cwd: workspace.path },
+        pinned: false,
+        catalogCwds: [workspace.path],
+        orderedSessions: [session],
+      }, machineId)),
       ignoreParseFailure(sessionsApi.cleanupPreview({ archiveIdleDays: 14 }, machineId)),
       ignoreParseFailure(sessionsApi.cleanup({ archiveIdleDays: 14, deleteArchivedDays: 30, projectCwds: ["/repo"] }, machineId)),
       ignoreParseFailure(sessionsApi.archiveMany([session], machineId)),
@@ -185,12 +195,20 @@ describe("federated route contract", () => {
       ignoreParseFailure(terminalsApi.cancelCommandRun("run 1", machineId)),
     ]);
 
+    expect(fetchMock.mock.calls.map(([url]) => toUrl(url).pathname)).toContain(
+      `/nested/pi-webui/api/machines/${encodeURIComponent(machineId)}/sessions/${encodeURIComponent(session.id)}/reorder`,
+    );
+
     const observedRoutes = uniqueHttpRoutes([
       ...fetchMock.mock.calls.map((call) => fetchCallToRoute(call, machineId)),
       routeFromMachineUrl("GET", workspaceImagePreviewUrl("p 1", "w 1", "diagram.svg", { machineId, modifiedAt: "2026-05-25T00:00:00.000Z" }), machineId),
     ]);
     const unmatched = observedRoutes.filter((route) => !matchesHttpRoute(route, FEDERATED_HTTP_ROUTES));
 
+    expect(observedRoutes).toContainEqual({
+      method: "POST",
+      path: `/sessions/${encodeURIComponent(session.id)}/reorder`,
+    });
     expect(unmatched).toEqual([]);
   });
 

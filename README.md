@@ -11,7 +11,7 @@ Run agents where your code, tools, credentials, and build caches live. Supervise
 
 ![PI WEBUI](docs/assets/pi-webui-banner.png)
 
-![PI WEBUI desktop screenshot](docs/assets/pi-webui-desktop.png)
+![PI WEBUI desktop collage showing workspace projects, live session activity, system information, and memory](docs/assets/pi-webui-desktop.png)
 
 ## Why PI WEBUI?
 

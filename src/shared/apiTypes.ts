@@ -21,6 +21,7 @@ export const PI_WEBUI_CAPABILITIES = {
   utilityModelSettings: "settings.utilityModels",
   sessionsModelPolicy: "sessions.modelPolicy",
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
+  sessionsReorder: "sessions.reorder",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -474,6 +475,32 @@ export interface SessionRef {
   cwd: string;
 }
 
+/** Identifies the sibling group a persisted manual order position belongs to. */
+export type SessionReorderScope =
+  | { kind: "root"; cwd: string }
+  | { kind: "children"; parentSessionPath: string };
+
+export const SESSION_REORDER_LIMIT = 1_000;
+export const SESSION_REORDER_SESSION_ID_MAX_LENGTH = 512;
+export const SESSION_REORDER_CWD_MAX_LENGTH = 32 * 1024;
+export const SESSION_REORDER_PARENT_PATH_MAX_LENGTH = 32 * 1024;
+
+export interface SessionReorderRequest {
+  cwd: string;
+  scope: SessionReorderScope;
+  pinned: boolean;
+  catalogCwds: string[];
+  orderedSessions: SessionRef[];
+}
+
+export interface SessionOrderEntry extends SessionRef {
+  manualOrder: number;
+}
+
+export interface SessionReorderResponse {
+  orderedSessions: SessionOrderEntry[];
+}
+
 export const SESSION_UNREAD_LIMIT = 1_000;
 export const SESSION_UNREAD_SESSION_ID_MAX_LENGTH = 512;
 export const SESSION_UNREAD_CWD_MAX_LENGTH = 32 * 1024;
@@ -616,6 +643,8 @@ export interface SessionInfo extends SessionRef {
   archivedAt?: string;
   /** True when the user has pinned this session so it sorts first in lists. */
   pinned?: boolean;
+  /** Normalized durable position inside this session's sibling and pin group. */
+  manualOrder?: number;
 }
 
 export interface ArchiveSessionsResponse {
