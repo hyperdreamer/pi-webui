@@ -33,6 +33,8 @@ interface ModelPolicyHarnessOptions {
   existing?: boolean;
   append?: "available" | "missing" | "throws" | "throwsOnce";
   failCreationSourceAppend?: boolean;
+  silentlyDropModelPolicyAppend?: boolean;
+  silentlyDropCreationSourceAppend?: boolean;
   model?: PiAgentSession["model"];
   thinkingLevel?: PiAgentSession["thinkingLevel"];
   ladderValidation?: LadderValidation;
@@ -102,6 +104,12 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       appendFailures += 1;
       throw new Error("model policy persistence failed");
     }
+    const silentlyDropped =
+      (customType === SESSION_MODEL_POLICY_CUSTOM_TYPE &&
+        options.silentlyDropModelPolicyAppend === true) ||
+      (customType === SESSION_CREATION_SOURCE_CUSTOM_TYPE &&
+        options.silentlyDropCreationSourceAppend === true);
+    if (silentlyDropped) return "entry-not-persisted";
     branch.push({ type: "custom", customType, data });
     return `entry-${String(branch.length)}`;
   });
@@ -402,6 +410,23 @@ describe("PiSessionService model policy lifecycle", () => {
       type: "session.created",
       session: { creationSource: "session-list-plus" },
     });
+    const statusEvent = harness.hub.globalEvents.find(
+      (event) => event.type === "status.update"
+    );
+    expect(statusEvent).toMatchObject({
+      type: "status.update",
+      status: {
+        modelPolicy: {
+          mode: "tiered",
+          tier: "advanced",
+          resolved: {
+            model: { provider: "openai", id: "gpt-advanced" },
+            thinkingLevel: "high",
+          },
+          ladderValid: true,
+        },
+      },
+    });
   });
 
   it("initializes a plus Exact root without resolving its unavailable inactive tier", async () => {
@@ -599,6 +624,29 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
   });
 
+  it("cleans up an unseen plus root when a policy append is not durable", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      silentlyDropModelPolicyAppend: true,
+    });
+
+    await expect(harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
+    })).rejects.toThrow("Cannot verify the complete initial session model policy");
+
+    expect(harness.calls).toEqual([
+      "setModel:openai/gpt-default",
+      "setThinkingLevel:medium",
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`,
+    ]);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
   it("cleans up an unseen plus root when source persistence fails", async () => {
     const harness = createModelPolicyHarness({ existing: false, failCreationSourceAppend: true });
 
@@ -608,6 +656,30 @@ describe("PiSessionService model policy lifecycle", () => {
         initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
       })
     ).rejects.toThrow("creation source persistence failed");
+
+    expect(harness.calls).toEqual([
+      "setModel:openai/gpt-default",
+      "setThinkingLevel:medium",
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`,
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`,
+    ]);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("cleans up an unseen plus root when a source append is not durable", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      silentlyDropCreationSourceAppend: true,
+    });
+
+    await expect(harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
+    })).rejects.toThrow("Cannot verify the session creation source");
 
     expect(harness.calls).toEqual([
       "setModel:openai/gpt-default",
