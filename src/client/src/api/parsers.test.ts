@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -457,6 +457,124 @@ describe("API parsers", () => {
     })).toThrow("both");
 
     expect(() => parseSessionDefaultsResponse({ thinkingLevel: "off", models: [], thinkingLevels: ["off", 1] })).toThrow("Expected string array field: thinkingLevels");
+  });
+
+  it("parses strict version-two starter session defaults with full and legacy preferences", () => {
+    const v2Defaults = {
+      starterModelPolicyContractVersion: 2,
+      model: { provider: "acme", id: "available" },
+      thinkingLevel: "high",
+      models: [{ provider: "acme", id: "available" }],
+      thinkingLevels: ["off", "high"],
+      starterModelPolicyPreference: {
+        mode: "tiered",
+        exact: {
+          model: { provider: "retired", id: "remembered" },
+          thinkingLevel: "retired-level",
+        },
+        tier: "standard",
+      },
+    };
+    const legacyExactDefaults = {
+      ...v2Defaults,
+      starterModelPolicyPreference: { mode: "exact", tier: "frontier" },
+    };
+
+    expect(parseSessionDefaultsV2Response(v2Defaults)).toEqual(v2Defaults);
+    expect(parseSessionDefaultsV2Response(legacyExactDefaults)).toEqual(legacyExactDefaults);
+  });
+
+  it("rejects malformed version-two starter session defaults", () => {
+    const v2Defaults = {
+      starterModelPolicyContractVersion: 2,
+      model: { provider: "acme", id: "available" },
+      thinkingLevel: "high",
+      models: [{ provider: "acme", id: "available" }],
+      thinkingLevels: ["off", "high"],
+      starterModelPolicyPreference: {
+        mode: "tiered",
+        exact: {
+          model: { provider: "retired", id: "remembered" },
+          thinkingLevel: "retired-level",
+        },
+        tier: "standard",
+      },
+    };
+
+    const missingVersion: Record<string, unknown> = { ...v2Defaults };
+    delete missingVersion["starterModelPolicyContractVersion"];
+    expect(() => parseSessionDefaultsV2Response(missingVersion)).toThrow("contract version");
+    expect(() => parseSessionDefaultsV2Response({ ...v2Defaults, starterModelPolicyContractVersion: 1 })).toThrow("contract version");
+    expect(() => parseSessionDefaultsV2Response({ ...v2Defaults, starterModelPolicyContractVersion: 3 })).toThrow("contract version");
+    expect(() => parseSessionDefaultsV2Response({ ...v2Defaults, starterModelPolicyContractVersion: "2" })).toThrow("contract version");
+    expect(() => parseSessionDefaultsV2Response({ ...v2Defaults, unexpected: true })).toThrow("field");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: { ...v2Defaults.starterModelPolicyPreference, unexpected: true },
+    })).toThrow("field");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        ...v2Defaults.starterModelPolicyPreference,
+        exact: { ...v2Defaults.starterModelPolicyPreference.exact, unexpected: true },
+      },
+    })).toThrow("field");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        ...v2Defaults.starterModelPolicyPreference,
+        exact: {
+          ...v2Defaults.starterModelPolicyPreference.exact,
+          model: { ...v2Defaults.starterModelPolicyPreference.exact.model, unexpected: true },
+        },
+      },
+    })).toThrow("field");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        ...v2Defaults.starterModelPolicyPreference,
+        exact: {
+          ...v2Defaults.starterModelPolicyPreference.exact,
+          model: { ...v2Defaults.starterModelPolicyPreference.exact.model, provider: " " },
+        },
+      },
+    })).toThrow("non-blank");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        ...v2Defaults.starterModelPolicyPreference,
+        exact: {
+          ...v2Defaults.starterModelPolicyPreference.exact,
+          model: { ...v2Defaults.starterModelPolicyPreference.exact.model, id: " " },
+        },
+      },
+    })).toThrow("non-blank");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        ...v2Defaults.starterModelPolicyPreference,
+        exact: { ...v2Defaults.starterModelPolicyPreference.exact, thinkingLevel: " " },
+      },
+    })).toThrow("non-blank");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: {
+        mode: "tiered",
+        exact: v2Defaults.starterModelPolicyPreference.exact,
+      },
+    })).toThrow("requires a tier");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: { ...v2Defaults.starterModelPolicyPreference, tier: "unknown" },
+    })).toThrow("tier");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreference: { mode: "exact", tier: "unknown" },
+    })).toThrow("tier");
+    expect(() => parseSessionDefaultsV2Response({
+      ...v2Defaults,
+      starterModelPolicyPreferenceError: "conflict",
+    })).toThrow("both");
   });
 
   it("parses session info including optional persistence signals", () => {
