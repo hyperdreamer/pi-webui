@@ -41,6 +41,12 @@ interface SessionPointerDrag {
   insertionIndex?: number;
 }
 
+interface SessionReorderPeer {
+  rect: SessionReorderPeerRect;
+  beforeSessionPath: string;
+  afterSessionPath: string;
+}
+
 @customElement("session-list")
 export class SessionList extends LitElement implements KeyboardNavigableSection {
   @property({ attribute: false }) sessions: SessionInfo[] = [];
@@ -225,7 +231,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
             ${currentRowGroups.map((rows) => {
               const root = rows[0];
               const rootPath = root?.session.path;
-              const familySubject = reorderMarkers && rootPath !== undefined && root?.hasChildren === true && rows.length > 1;
+              const familySubject = reorderMarkers
+                && rootPath !== undefined
+                && root?.session.archived !== true
+                && root?.hasChildren === true
+                && rows.length > 1;
               const renderedRows = rows.map((row) => this.renderSession(
                 row,
                 descendantCounts.get(row.session.id) ?? 0,
@@ -466,6 +476,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const workspace = row.external ? this.workspaces.find((candidate) => candidate.path === session.cwd) : undefined;
     const externalWorkspaceLabel = workspace === undefined ? undefined : workspace.branch ?? workspace.label;
     const currentReorderRow = scope === "current" && reorderMarkers;
+    const reorderSubject = currentReorderRow && session.archived !== true;
     const canDrag = this.canDragSessionReorder(row, scope, reorderGroup, reorderMarkers);
     return html`
       <div
@@ -474,7 +485,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
         tabindex="0"
         title=${session.path}
         data-session-row-path=${currentReorderRow ? session.path : nothing}
-        data-session-reorder-path=${currentReorderRow && !usesFamilySubject ? session.path : nothing}
+        data-session-reorder-path=${reorderSubject && !usesFamilySubject ? session.path : nothing}
         @dblclick=${(event: MouseEvent) => { this.startSessionRename(event, session, scope, row.external); }}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.activateSessionRow(session, scope, row.external); }); }}
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session, scope, row.external); }}
@@ -678,15 +689,19 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private updateSessionReorderCandidate(drag: SessionPointerDrag): number | undefined {
-    const peerRects = this.sessionReorderPeerRects(drag);
-    if (peerRects.length !== drag.group.length - 1) {
+    const peers = this.sessionReorderPeers(drag);
+    if (peers.length !== drag.group.length - 1) {
       delete drag.insertionIndex;
       this.clearSessionReorderMarkers();
       return undefined;
     }
+    const peerRects = peers.map((peer) => peer.rect);
     const insertionIndex = sessionReorderInsertionIndex(drag.clientY, peerRects);
-    const boundary = insertionIndex === peerRects.length ? peerRects.at(-1) : peerRects[insertionIndex];
-    const element = boundary === undefined ? undefined : this.sessionReorderSubject(boundary.sessionPath);
+    const boundary = insertionIndex === peers.length ? peers.at(-1) : peers[insertionIndex];
+    const markerPath = boundary === undefined
+      ? undefined
+      : insertionIndex === peers.length ? boundary.afterSessionPath : boundary.beforeSessionPath;
+    const element = markerPath === undefined ? undefined : this.sessionReorderSubject(markerPath);
     if (element === undefined) {
       delete drag.insertionIndex;
       this.clearSessionReorderMarkers();
@@ -698,33 +713,41 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     return insertionIndex;
   }
 
-  private sessionReorderPeerRects(drag: SessionPointerDrag): SessionReorderPeerRect[] {
+  private sessionReorderPeers(drag: SessionPointerDrag): SessionReorderPeer[] {
     return drag.group.flatMap((session) => {
       if (sameSessionIdentity(session, drag.selected)) return [];
-      const peerRect = this.sessionReorderPeerRect(session, drag.rows);
-      return peerRect === undefined ? [] : [peerRect];
+      const peer = this.sessionReorderPeer(session, drag.rows);
+      return peer === undefined ? [] : [peer];
     });
   }
 
-  private sessionReorderPeerRect(session: SessionInfo, rows: readonly SessionRow[]): SessionReorderPeerRect | undefined {
+  private sessionReorderPeer(session: SessionInfo, rows: readonly SessionRow[]): SessionReorderPeer | undefined {
     if (session.parentSessionPath === undefined) {
       const subject = this.sessionReorderSubject(session.path);
       if (subject === undefined) return undefined;
       const rect = subject.getBoundingClientRect();
-      return { sessionPath: session.path, top: rect.top, bottom: rect.bottom };
+      return {
+        rect: { sessionPath: session.path, top: rect.top, bottom: rect.bottom },
+        beforeSessionPath: session.path,
+        afterSessionPath: session.path,
+      };
     }
     const subtreePaths = sessionReorderSubtreePaths(rows, session.path);
     const first = this.sessionReorderRow(session.path);
     const lastPath = subtreePaths.at(-1);
     const last = lastPath === undefined ? undefined : this.sessionReorderRow(lastPath);
-    if (first === undefined || last === undefined) return undefined;
+    if (first === undefined || lastPath === undefined || last === undefined) return undefined;
     const firstRect = first.getBoundingClientRect();
     const lastRect = last.getBoundingClientRect();
-    return { sessionPath: session.path, top: firstRect.top, bottom: lastRect.bottom };
+    return {
+      rect: { sessionPath: session.path, top: firstRect.top, bottom: lastRect.bottom },
+      beforeSessionPath: session.path,
+      afterSessionPath: lastPath,
+    };
   }
 
   private sessionReorderRoot(): ParentNode | undefined {
-    return this.isConnected ? this.renderRoot : undefined;
+    return this.renderRoot;
   }
 
   private sessionReorderSubject(sessionPath: string): HTMLElement | undefined {

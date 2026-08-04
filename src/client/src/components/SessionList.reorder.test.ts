@@ -134,6 +134,17 @@ function setRect(element: Element, left: number, top: number, right: number, bot
   });
 }
 
+function setScrollAwareRect(element: Element, body: HTMLElement, contentTop: number, height: number): void {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => {
+      const top = contentTop - body.scrollTop;
+      const bottom = top + height;
+      return { x: 0, y: top, left: 0, top, right: 340, bottom, width: 340, height, toJSON: () => ({}) };
+    },
+  });
+}
+
 function sessionListStyles(): string {
   const styles = SessionList.styles;
   const styleResults = Array.isArray(styles) ? styles : [styles];
@@ -155,6 +166,23 @@ async function pointerFixture() {
   setRect(selectedSubject, 0, 0, 340, 40);
   setRect(peerSubject, 0, 60, 340, 100);
   return { body, grip, list, peer, peerSubject, selected, selectedSubject, submitted };
+}
+
+function expectReorderEffectsCleared(input: { selectedSubject: HTMLElement; peerSubject: HTMLElement }): void {
+  expect(input.selectedSubject.classList.contains("session-reorder-dragging")).toBe(false);
+  expect(input.selectedSubject.classList.contains("session-drop-before")).toBe(false);
+  expect(input.selectedSubject.classList.contains("session-drop-after")).toBe(false);
+  expect(input.peerSubject.classList.contains("session-drop-before")).toBe(false);
+  expect(input.peerSubject.classList.contains("session-drop-after")).toBe(false);
+  expect(frames.size).toBe(0);
+}
+
+function beginEdgeReorder(input: Awaited<ReturnType<typeof pointerFixture>>, pointerId: number, clientY = 1): void {
+  input.grip.dispatchEvent(pointer("pointerdown", { pointerId, clientX: 10, clientY: 20 }));
+  document.dispatchEvent(pointer("pointermove", { pointerId, clientX: 10, clientY }));
+  expect(input.selectedSubject.classList.contains("session-reorder-dragging")).toBe(true);
+  expect(input.peerSubject.classList.contains("session-drop-before") || input.peerSubject.classList.contains("session-drop-after")).toBe(true);
+  expect(frames.size).toBe(1);
 }
 
 describe("SessionList reorder interaction", () => {
@@ -238,6 +266,35 @@ describe("SessionList reorder interaction", () => {
     });
   });
 
+  it("places a child peer's after marker on its deepest rendered descendant", async () => {
+    const parent = sessionFixture("parent");
+    const selected = sessionFixture("selected", "/repo", { parentSessionPath: parent.path });
+    const peer = sessionFixture("peer", "/repo", { parentSessionPath: parent.path });
+    const grandchild = sessionFixture("grandchild", "/repo", { parentSessionPath: peer.path });
+    const list = await mountList({ sessions: [parent, selected, peer, grandchild], selected });
+    Reflect.set(list, "expandedSessionPaths", new Set([peer.path]));
+    await list.updateComplete;
+
+    const body = list.renderRoot.querySelector<HTMLElement>(".list-body");
+    const grip = gripFor(list, selected.path);
+    if (body === null || grip === null) throw new Error("Missing reorder DOM");
+    const selectedSubject = elementByData(list.renderRoot, "data-session-reorder-path", selected.path);
+    const peerSubject = elementByData(list.renderRoot, "data-session-reorder-path", peer.path);
+    const grandchildRow = elementByData(list.renderRoot, "data-session-row-path", grandchild.path);
+    setRect(body, 0, 0, 340, 200);
+    setRect(selectedSubject, 0, 0, 340, 40);
+    setRect(peerSubject, 0, 60, 340, 100);
+    setRect(grandchildRow, 0, 100, 340, 140);
+
+    grip.dispatchEvent(pointer("pointerdown", { pointerId: 3, clientX: 10, clientY: 20 }));
+    document.dispatchEvent(pointer("pointermove", { pointerId: 3, clientX: 10, clientY: 150 }));
+
+    expect(peerSubject.classList.contains("session-drop-after")).toBe(false);
+    expect(grandchildRow.classList.contains("session-drop-after")).toBe(true);
+
+    document.dispatchEvent(pointer("pointercancel", { pointerId: 3, clientX: 10, clientY: 150 }));
+  });
+
   it("renders a non-focusable grip only for an eligible selected local session", async () => {
     const selected = sessionFixture("selected");
     const peer = sessionFixture("peer");
@@ -248,10 +305,6 @@ describe("SessionList reorder interaction", () => {
     expect(grip?.tagName).toBe("SPAN");
     expect(grip?.getAttribute("role")).toBeNull();
     expect(grip?.getAttribute("tabindex")).toBeNull();
-
-    grip?.dispatchEvent(pointer("pointerdown", { pointerId: 3, pointerType: "pen", clientX: 10, clientY: 10 }));
-    grip?.dispatchEvent(pointer("pointerdown", { pointerId: 4, isPrimary: false, clientX: 10, clientY: 10 }));
-    expect(setPointerCapture).not.toHaveBeenCalled();
 
     list.selected = peer;
     await list.updateComplete;
@@ -315,71 +368,175 @@ describe("SessionList reorder interaction", () => {
     expect(gripFor(orphanList, orphan.path)).toBeNull();
   });
 
+  it("rejects pen, non-primary, and right-button drags through pointerup", async () => {
+    const rejectedGestures = [
+      { pointerType: "pen", button: 0, isPrimary: true },
+      { pointerType: "touch", button: 0, isPrimary: false },
+      { pointerType: "mouse", button: 0, isPrimary: false },
+      { pointerType: "mouse", button: 2, isPrimary: true },
+    ] as const;
+
+    for (const [index, gesture] of rejectedGestures.entries()) {
+      const fixture = await pointerFixture();
+      const selected = vi.fn();
+      fixture.list.onSelect = selected;
+      setPointerCapture.mockClear();
+      releasePointerCapture.mockClear();
+      const pointerId = 20 + index;
+      const input = { pointerId, clientX: 10, clientY: 20, ...gesture };
+      fixture.grip.dispatchEvent(pointer("pointerdown", input));
+      document.dispatchEvent(pointer("pointermove", { ...input, clientY: 90 }));
+      document.dispatchEvent(pointer("pointerup", { ...input, clientY: 90 }));
+
+      expect(setPointerCapture).not.toHaveBeenCalled();
+      expect(releasePointerCapture).not.toHaveBeenCalled();
+      expect(fixture.submitted).not.toHaveBeenCalled();
+      expect(selected).not.toHaveBeenCalled();
+      expect(fixture.list.selected).toBe(fixture.selected);
+      expectReorderEffectsCleared(fixture);
+    }
+  });
+
   it("cleans up every pointer outcome that cannot submit a changed reorder", async () => {
     const belowThreshold = await pointerFixture();
-    belowThreshold.grip.dispatchEvent(pointer("pointerdown", { pointerId: 10, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 10, clientX: 15, clientY: 10 }));
-    document.dispatchEvent(pointer("pointerup", { pointerId: 10, clientX: 15, clientY: 10 }));
+    belowThreshold.grip.dispatchEvent(pointer("pointerdown", { pointerId: 30, clientX: 10, clientY: 20 }));
+    document.dispatchEvent(pointer("pointermove", { pointerId: 30, clientX: 15, clientY: 20 }));
+    document.dispatchEvent(pointer("pointerup", { pointerId: 30, clientX: 15, clientY: 20 }));
     expect(belowThreshold.submitted).not.toHaveBeenCalled();
+    expectReorderEffectsCleared(belowThreshold);
 
     const sameSlot = await pointerFixture();
-    sameSlot.grip.dispatchEvent(pointer("pointerdown", { pointerId: 11, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 11, clientX: 17, clientY: 10 }));
-    document.dispatchEvent(pointer("pointerup", { pointerId: 11, clientX: 17, clientY: 10 }));
+    beginEdgeReorder(sameSlot, 31);
+    document.dispatchEvent(pointer("pointerup", { pointerId: 31, clientX: 10, clientY: 1 }));
     expect(sameSlot.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(11);
+    expect(releasePointerCapture).toHaveBeenCalledWith(31);
+    expectReorderEffectsCleared(sameSlot);
 
     const cancelled = await pointerFixture();
-    cancelled.grip.dispatchEvent(pointer("pointerdown", { pointerId: 12, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 12, clientX: 10, clientY: 90 }));
-    document.dispatchEvent(pointer("pointercancel", { pointerId: 12, clientX: 10, clientY: 90 }));
+    beginEdgeReorder(cancelled, 32);
+    document.dispatchEvent(pointer("pointercancel", { pointerId: 32, clientX: 10, clientY: 1 }));
     expect(cancelled.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(12);
+    expect(releasePointerCapture).toHaveBeenCalledWith(32);
+    expectReorderEffectsCleared(cancelled);
 
     const escaped = await pointerFixture();
-    escaped.grip.dispatchEvent(pointer("pointerdown", { pointerId: 13, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 13, clientX: 10, clientY: 90 }));
+    beginEdgeReorder(escaped, 33);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(escaped.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(13);
+    expect(releasePointerCapture).toHaveBeenCalledWith(33);
+    expectReorderEffectsCleared(escaped);
 
     const changed = await pointerFixture();
-    changed.grip.dispatchEvent(pointer("pointerdown", { pointerId: 14, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 14, clientX: 10, clientY: 90 }));
+    beginEdgeReorder(changed, 34);
     changed.list.selected = changed.peer;
     await changed.list.updateComplete;
     expect(changed.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(14);
+    expect(releasePointerCapture).toHaveBeenCalledWith(34);
+    expectReorderEffectsCleared(changed);
 
     const outside = await pointerFixture();
-    outside.grip.dispatchEvent(pointer("pointerdown", { pointerId: 15, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 15, clientX: 10, clientY: 90 }));
-    document.dispatchEvent(pointer("pointerup", { pointerId: 15, clientX: 10, clientY: 220 }));
+    beginEdgeReorder(outside, 35);
+    document.dispatchEvent(pointer("pointerup", { pointerId: 35, clientX: 10, clientY: 220 }));
     expect(outside.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(15);
+    expect(releasePointerCapture).toHaveBeenCalledWith(35);
+    expectReorderEffectsCleared(outside);
+
+    const missingCallback = await pointerFixture();
+    Reflect.set(missingCallback.list, "onReorder", undefined);
+    expect(Reflect.get(missingCallback.list, "onReorder")).toBeUndefined();
+    beginEdgeReorder(missingCallback, 36, 190);
+    document.dispatchEvent(pointer("pointerup", { pointerId: 36, clientX: 10, clientY: 190 }));
+    expect(missingCallback.submitted).not.toHaveBeenCalled();
+    expect(releasePointerCapture).toHaveBeenCalledWith(36);
+    expectReorderEffectsCleared(missingCallback);
 
     const disconnected = await pointerFixture();
-    disconnected.grip.dispatchEvent(pointer("pointerdown", { pointerId: 16, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 16, clientX: 10, clientY: 90 }));
+    beginEdgeReorder(disconnected, 37);
     disconnected.list.remove();
     expect(disconnected.submitted).not.toHaveBeenCalled();
-    expect(releasePointerCapture).toHaveBeenCalledWith(16);
+    expect(releasePointerCapture).toHaveBeenCalledWith(37);
+    expectReorderEffectsCleared(disconnected);
   });
 
-  it("scrolls at the edge with one bounded animation frame and cancels it", async () => {
+  it("removes one document listener set and resets detached drag effects before reattachment", async () => {
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    const removeEventListener = vi.spyOn(document, "removeEventListener");
+    const fixture = await pointerFixture();
+    beginEdgeReorder(fixture, 40);
+    fixture.list.remove();
+
+    expectReorderEffectsCleared(fixture);
+    for (const type of ["pointermove", "pointerup", "pointercancel", "keydown"]) {
+      const added = addEventListener.mock.calls.find((call) => call[0] === type);
+      if (added === undefined) throw new Error(`Missing ${type} listener`);
+      expect(removeEventListener).toHaveBeenCalledWith(type, added[1]);
+    }
+
+    document.body.append(fixture.list);
+    await fixture.list.updateComplete;
+    const body = fixture.list.renderRoot.querySelector<HTMLElement>(".list-body");
+    const grip = gripFor(fixture.list, fixture.selected.path);
+    if (body === null || grip === null) throw new Error("Missing reattached reorder DOM");
+    const selectedSubject = elementByData(fixture.list.renderRoot, "data-session-reorder-path", fixture.selected.path);
+    const peerSubject = elementByData(fixture.list.renderRoot, "data-session-reorder-path", fixture.peer.path);
+    setRect(body, 0, 0, 340, 200);
+    setRect(selectedSubject, 0, 0, 340, 40);
+    setRect(peerSubject, 0, 60, 340, 100);
+    grip.dispatchEvent(pointer("pointerdown", { pointerId: 41, clientX: 10, clientY: 20 }));
+    document.dispatchEvent(pointer("pointermove", { pointerId: 41, clientX: 10, clientY: 90 }));
+    document.dispatchEvent(pointer("pointerup", { pointerId: 41, clientX: 10, clientY: 90 }));
+
+    await vi.waitFor(() => { expect(fixture.submitted).toHaveBeenCalledTimes(1); });
+  });
+
+  it("omits archived family subjects while retaining active linked child drop peers", async () => {
+    const archivedParent = sessionFixture("archived-parent", "/repo", { archived: true });
+    const selected = sessionFixture("selected", "/repo", { parentSessionPath: archivedParent.path });
+    const externalPeer = sessionFixture("external-peer", "/feature", { parentSessionPath: archivedParent.path });
+    const list = await mountList({
+      sessions: [archivedParent, selected],
+      projectSessions: [archivedParent, selected, externalPeer],
+      selected,
+      workspaces: [workspace("/repo", "main"), workspace("/feature", "feature")],
+    });
+
+    const archivedSubjects = [...list.renderRoot.querySelectorAll<HTMLElement>("[data-session-reorder-path]")]
+      .filter((element) => element.getAttribute("data-session-reorder-path") === archivedParent.path);
+    expect(gripFor(list, archivedParent.path)).toBeNull();
+    expect(archivedSubjects).toEqual([]);
+    expect(gripFor(list, selected.path)).not.toBeNull();
+    expect(elementByData(list.renderRoot, "data-session-reorder-path", externalPeer.path)).toBeInstanceOf(HTMLElement);
+  });
+
+  it("recomputes a coalesced edge-scroll marker and stops at a clamped boundary", async () => {
     const { body, grip, peerSubject } = await pointerFixture();
-    body.scrollTop = 20;
-    grip.dispatchEvent(pointer("pointerdown", { pointerId: 17, clientX: 10, clientY: 10 }));
-    document.dispatchEvent(pointer("pointermove", { pointerId: 17, clientX: 10, clientY: 1 }));
+    let minimumScrollTop = 0;
+    let scrollTop = 20;
+    Object.defineProperty(body, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.max(minimumScrollTop, value); },
+    });
+    setScrollAwareRect(peerSubject, body, 20, 12);
+
+    grip.dispatchEvent(pointer("pointerdown", { pointerId: 50, clientX: 10, clientY: 20 }));
+    document.dispatchEvent(pointer("pointermove", { pointerId: 50, clientX: 10, clientY: 8 }));
+    expect(peerSubject.classList.contains("session-drop-after")).toBe(true);
+    document.dispatchEvent(pointer("pointermove", { pointerId: 50, clientX: 10, clientY: 8 }));
+    document.dispatchEvent(pointer("pointermove", { pointerId: 50, clientX: 10, clientY: 8 }));
     expect(frames.size).toBe(1);
 
-    const previousScrollTop = body.scrollTop;
     runNextFrame();
-    expect(Math.abs(body.scrollTop - previousScrollTop)).toBeLessThanOrEqual(12);
+    expect(body.scrollTop).toBe(11);
     expect(peerSubject.classList.contains("session-drop-before")).toBe(true);
+    expect(peerSubject.classList.contains("session-drop-after")).toBe(false);
+    expect(frames.size).toBe(1);
 
-    document.dispatchEvent(pointer("pointercancel", { pointerId: 17, clientX: 10, clientY: 1 }));
+    minimumScrollTop = body.scrollTop;
+    runNextFrame();
+    expect(body.scrollTop).toBe(11);
     expect(frames.size).toBe(0);
+    document.dispatchEvent(pointer("pointercancel", { pointerId: 50, clientX: 10, clientY: 8 }));
   });
 
   it("keeps grip and insertion geometry stable in component styles", () => {
