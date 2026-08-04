@@ -39,6 +39,7 @@ import { SessionReorderDomainError } from "./sessionReorder.js";
 import { PiSessionService, type PiSessionManagerGateway } from "./piSessionService.js";
 import { testModelRuntime } from "./piSessionService.testSupport.js";
 import { SessionNotificationStore } from "./sessionNotificationStore.js";
+import { sessionRouteFastifyOptions } from "./sessionRouteFastifyOptions.js";
 import type { SessionRouteLookup, SessionRouteRef, SessionRouteService } from "./sessionService.js";
 import { registerSessionRoutes } from "./sessionRoutes.js";
 import type { NormalizedSessionCleanupRequest } from "./sessionCleanup.js";
@@ -907,13 +908,54 @@ describe("session routes", () => {
     }
   });
 
+  it("admits a maximum-length reorder session ID and sends an oversized ID to typed validation", async () => {
+    const routeApp = Fastify({ logger: false, ...sessionRouteFastifyOptions });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const maximumId = "x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH);
+    const reorderBody = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: maximumId, cwd: "/repo" }],
+    };
+
+    try {
+      const accepted = await routeApp.inject({
+        method: "POST",
+        url: `/sessions/${maximumId}/reorder`,
+        payload: reorderBody,
+      });
+      const rejected = await routeApp.inject({
+        method: "POST",
+        url: `/sessions/${"x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH + 1)}/reorder`,
+        payload: reorderBody,
+      });
+
+      expect(accepted.statusCode).toBe(200);
+      expect(routeService.reorderCalls).toEqual([{
+        ref: { id: maximumId, cwd: resolve("/repo") },
+        request: {
+          cwd: resolve("/repo"),
+          scope: { kind: "root", cwd: resolve("/repo") },
+          pinned: false,
+          catalogCwds: [resolve("/repo")],
+          orderedSessions: [{ id: maximumId, cwd: resolve("/repo") }],
+        },
+      }]);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.body).toContain("sessionId field is too long");
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("rejects malformed reorder requests before calling the service", async () => {
-    const routeApp = Fastify({
-      logger: false,
-      routerOptions: {
-        maxParamLength: SESSION_REORDER_SESSION_ID_MAX_LENGTH + 1,
-      },
-    });
+    const routeApp = Fastify({ logger: false, ...sessionRouteFastifyOptions });
     await routeApp.register(fastifyWebsocket);
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService();

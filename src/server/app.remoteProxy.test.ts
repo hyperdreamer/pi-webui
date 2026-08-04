@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { RemoteMachineRequestError, type MachineClient } from "./machines/machineClient.js";
+import { SESSION_REORDER_SESSION_ID_MAX_LENGTH } from "../shared/apiTypes.js";
 import { PI_PACKAGE_MUTATION_PROXY_TIMEOUT_MS, PI_PACKAGE_PLUGINS_OPERATION_PROXY_TIMEOUT_MS, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS } from "../shared/federatedRoutes.js";
 import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.testSupport.js";
 
@@ -263,6 +264,42 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).toHaveBeenCalledWith(
       "POST",
       "/api/sessions/s-1/reorder",
+      body,
+    );
+  });
+
+  it("proxies a maximum-length remote reorder session ID through the app router", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/machines",
+      payload: { name: "Remote", baseUrl: "https://remote.example.test/" },
+    });
+    const remote = addResponse.json<{ id: string }>();
+    const request = vi.fn<MachineClient["request"]>((method, path, body) => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ method, path, body })]),
+    }));
+    appTestContext.remoteClient = fakeRemoteClient({ request });
+    const sessionId = "x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH);
+    const body = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: sessionId, cwd: "/repo" }],
+    };
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${remote.id}/sessions/${sessionId}/reorder`,
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(request).toHaveBeenCalledWith(
+      "POST",
+      `/api/sessions/${sessionId}/reorder`,
       body,
     );
   });

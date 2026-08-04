@@ -43,6 +43,14 @@ function deferred<T = void>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
+function operationBarrier(): OperationBarrier {
+  return {
+    entryCount: 0,
+    started: deferred(),
+    release: deferred(),
+  };
+}
+
 interface TestArchiveStore {
   list(): Promise<ArchivedSessionRecord[]>;
   get(sessionId: string): Promise<ArchivedSessionRecord | undefined>;
@@ -50,6 +58,12 @@ interface TestArchiveStore {
   archiveMany(inputs: readonly ArchiveSessionInput[]): Promise<ArchivedSessionRecord[]>;
   restore(sessionId: string): Promise<void>;
   isArchived(sessionId: string): Promise<boolean>;
+}
+
+interface OperationBarrier {
+  entryCount: number;
+  started: Deferred<void>;
+  release: Deferred<void>;
 }
 
 interface ServiceHarness {
@@ -60,6 +74,8 @@ interface ServiceHarness {
   archiveRecords: ArchivedSessionRecord[];
   archiveStore: TestArchiveStore;
   archiveCalls: { archive: number; archiveMany: number; restore: number; list: number };
+  clearParentBarrier: OperationBarrier | undefined;
+  closeActiveCalls: { count: number };
   gatewayCalls: { list: number; listAll: number };
   first: PiSessionListEntry;
   second: PiSessionListEntry;
@@ -71,6 +87,8 @@ interface HarnessOptions {
   records?: (root: string) => PiSessionListEntry[];
   archivedRecords?: ArchivedSessionRecord[];
   activeSessionId?: string;
+  archiveManyBarrier?: OperationBarrier;
+  clearParentBarrier?: OperationBarrier;
 }
 
 class BlockingMetadataStore extends SessionMetadataStore {
@@ -282,6 +300,9 @@ describe("PiSessionService durable session ordering", () => {
 
   for (const mutation of queuedMutations()) {
     it(`does not let ${mutation.name} enter its critical body while reorder holds the ordering queue`, async () => {
+      const clearParentBarrier = mutation.needsClearParentBarrier === true
+        ? operationBarrier()
+        : undefined;
       const harness = await createHarness({
         metadataStore: (path) => new BlockingMetadataStore(path),
         ...(mutation.needsArchivedRecord === true ? {
@@ -292,7 +313,10 @@ describe("PiSessionService durable session ordering", () => {
             originalPath: join("/sessions", "archived.jsonl"),
           }],
         } : {}),
+        ...(clearParentBarrier === undefined ? {} : { clearParentBarrier }),
       });
+      if (mutation.needsArchivedRecord !== true)
+        await activateFirstSession(harness);
       const metadataStore = blockingMetadataStore(harness);
       const reorder = harness.service.reorder(
         { id: harness.first.id, cwd: harness.first.cwd },
@@ -301,15 +325,61 @@ describe("PiSessionService durable session ordering", () => {
       await metadataStore.replaceStarted.promise;
 
       const operation = mutation.run(harness);
-      await Promise.resolve();
-      expect(mutation.criticalCalls(harness)).toBe(0);
-
-      metadataStore.releaseReplace();
-      await reorder;
-      await operation;
+      let reorderError: unknown;
+      let operationError: unknown;
+      try {
+        await flushImmediatePromiseWork();
+        expect(mutation.criticalCalls(harness)).toBe(0);
+      } finally {
+        metadataStore.releaseReplace();
+        clearParentBarrier?.release.resolve();
+        await reorder.catch((error: unknown) => { reorderError = error; });
+        await operation.catch((error: unknown) => { operationError = error; });
+      }
+      expect(reorderError).toBeUndefined();
+      expect(operationError).toBeUndefined();
       expect(mutation.criticalCalls(harness)).toBeGreaterThan(0);
     });
   }
+
+  it("keeps cleanup close and archive phases behind the ordering queue", async () => {
+    const archiveManyBarrier = operationBarrier();
+    const harness = await createHarness({
+      metadataStore: (path) => new BlockingMetadataStore(path),
+      archiveManyBarrier,
+    });
+    await activateFirstSession(harness);
+    const metadataStore = blockingMetadataStore(harness);
+    const reorder = harness.service.reorder(
+      { id: harness.first.id, cwd: harness.first.cwd },
+      rootRequest(harness, [harness.second, harness.first]),
+    );
+    await metadataStore.replaceStarted.promise;
+
+    const cleanup = harness.service.cleanup({
+      thresholds: { archiveIdleDays: 1 },
+      projectCwds: ["/repo"],
+    });
+    let reorderError: unknown;
+    let cleanupError: unknown;
+    try {
+      await flushImmediatePromiseWork();
+      expect({
+        closeActiveCalls: harness.closeActiveCalls.count,
+        archiveManyCalls: harness.archiveCalls.archiveMany,
+      }).toEqual({ closeActiveCalls: 0, archiveManyCalls: 0 });
+    } finally {
+      metadataStore.releaseReplace();
+      await reorder.catch((error: unknown) => { reorderError = error; });
+      await archiveManyBarrier.started.promise;
+      archiveManyBarrier.release.resolve();
+      await cleanup.catch((error: unknown) => { cleanupError = error; });
+    }
+    expect(reorderError).toBeUndefined();
+    expect(cleanupError).toBeUndefined();
+    expect(harness.closeActiveCalls.count).toBeGreaterThan(0);
+    expect(harness.archiveCalls.archiveMany).toBeGreaterThan(0);
+  });
 
   it("leaves cleanup preview outside the ordering mutation queue", async () => {
     const harness = await createHarness({
@@ -337,6 +407,7 @@ describe("PiSessionService durable session ordering", () => {
 function queuedMutations(): {
   name: string;
   needsArchivedRecord?: boolean;
+  needsClearParentBarrier?: boolean;
   criticalCalls(harness: ServiceHarness): number;
   run(harness: ServiceHarness): Promise<unknown>;
 }[] {
@@ -353,7 +424,8 @@ function queuedMutations(): {
   },
   {
     name: "detach-parent",
-    criticalCalls: (harness) => harnessClearOrderCalls(harness),
+    needsClearParentBarrier: true,
+    criticalCalls: (harness) => harness.clearParentBarrier?.entryCount ?? 0,
     run: async (harness) => { await harness.service.detachParent({ id: harness.first.id, cwd: harness.first.cwd }); },
   },
   {
@@ -376,16 +448,6 @@ function queuedMutations(): {
     needsArchivedRecord: true,
     criticalCalls: (harness) => harness.archiveCalls.restore,
     run: async (harness) => { await harness.service.restore({ id: "archived", cwd: "/repo" }); },
-  },
-  {
-    name: "cleanup",
-    criticalCalls: (harness) => harness.archiveCalls.archiveMany,
-    run: async (harness) => {
-      await harness.service.cleanup({
-        thresholds: { archiveIdleDays: 1 },
-        projectCwds: ["/repo"],
-      });
-    },
   },
   ];
 }
@@ -416,6 +478,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<ServiceHarne
   }
   const archiveRecords = [...(options.archivedRecords ?? [])];
   const archiveCalls = { archive: 0, archiveMany: 0, restore: 0, list: 0 };
+  const clearParentBarrier = options.clearParentBarrier;
+  const closeActiveCalls = { count: 0 };
   const archiveStore: TestArchiveStore = {
     list: () => {
       archiveCalls.list += 1;
@@ -432,8 +496,13 @@ async function createHarness(options: HarnessOptions = {}): Promise<ServiceHarne
       else archiveRecords[existing] = record;
       return Promise.resolve(record);
     },
-    archiveMany: (inputs) => {
+    archiveMany: async (inputs) => {
       archiveCalls.archiveMany += 1;
+      if (options.archiveManyBarrier !== undefined) {
+        options.archiveManyBarrier.entryCount += 1;
+        options.archiveManyBarrier.started.resolve();
+        await options.archiveManyBarrier.release.promise;
+      }
       return Promise.all(inputs.map((input) => archiveStore.archive(input)));
     },
     restore: (sessionId) => {
@@ -454,6 +523,10 @@ async function createHarness(options: HarnessOptions = {}): Promise<ServiceHarne
   const runtime = fakeRuntime(active.id, {
     sessionManager,
     sessionFile: active.path,
+    abort: () => {
+      closeActiveCalls.count += 1;
+      return Promise.resolve();
+    },
   });
   const gatewayCalls = { list: 0, listAll: 0 };
   const gateway: PiSessionManagerGateway = {
@@ -475,6 +548,13 @@ async function createHarness(options: HarnessOptions = {}): Promise<ServiceHarne
     sessionManager: gateway,
     archiveStore,
     metadataStore,
+    ...(clearParentBarrier === undefined ? {} : {
+      clearParentSession: async () => {
+        clearParentBarrier.entryCount += 1;
+        clearParentBarrier.started.resolve();
+        await clearParentBarrier.release.promise;
+      },
+    }),
     heartbeatIntervalMs: 60_000,
   });
   const harness: ServiceHarness = {
@@ -485,6 +565,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<ServiceHarne
     archiveRecords,
     archiveStore,
     archiveCalls,
+    clearParentBarrier,
+    closeActiveCalls,
     gatewayCalls,
     first,
     second,
@@ -550,8 +632,13 @@ function harnessUnpinCalls(harness: ServiceHarness): number {
   return blockingMetadataStore(harness).mutationCalls.unpin;
 }
 
-function harnessClearOrderCalls(harness: ServiceHarness): number {
-  return blockingMetadataStore(harness).mutationCalls.clearOrder;
+async function activateFirstSession(harness: ServiceHarness): Promise<void> {
+  await harness.service.status({ id: harness.first.id, cwd: harness.first.cwd });
+}
+
+/** The harness resolves dependencies immediately, so the next check phase drains their promise continuations. */
+async function flushImmediatePromiseWork(): Promise<void> {
+  await new Promise<void>((resolve) => { setImmediate(resolve); });
 }
 
 async function settlesWithin<T>(promise: Promise<T>): Promise<T> {

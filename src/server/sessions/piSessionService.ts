@@ -1024,6 +1024,7 @@ export interface PiSessionServiceDependencies {
   unreadPublicationRetryDelayMs?: number;
   /** Durable session metadata store for pinned state and future metadata. */
   metadataStore?: SessionMetadataStore;
+  clearParentSession?: (sessionFile: string) => Promise<void>;
 }
 
 export class PiSessionService implements SessionRouteService {
@@ -1136,6 +1137,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly subsessionNotifyArmed = new Map<string, boolean>();
   private readonly archiveStore: SessionArchiveRepository;
   private readonly metadataStore: SessionMetadataStore;
+  private readonly clearParentSessionFile: (sessionFile: string) => Promise<void>;
   private readonly agentDir: string;
   private readonly sessionManager: PiSessionManagerGateway;
   private readonly createRuntime: PiWebUiCreateAgentSessionRuntimeFactory;
@@ -1183,6 +1185,7 @@ export class PiSessionService implements SessionRouteService {
   ) {
     this.archiveStore = deps.archiveStore ?? new SessionArchiveStore();
     this.metadataStore = deps.metadataStore ?? new SessionMetadataStore();
+    this.clearParentSessionFile = deps.clearParentSession ?? clearParentSession;
     this.agentDir = deps.agentDir;
     this.sessionManager = deps.sessionManager;
     this.modelRuntime = deps.modelRuntime;
@@ -3552,7 +3555,7 @@ export class PiSessionService implements SessionRouteService {
       const sessionFile = session.sessionFile;
       if (sessionFile === undefined || sessionFile === "")
         throw new Error("Session is not persisted");
-      await clearParentSession(sessionFile);
+      await this.clearParentSessionFile(sessionFile);
       clearParentSessionHeader(session.sessionManager);
       await this.metadataStore.clearOrder(sessionFile);
       this.unregisterSubsession(session.sessionId);
