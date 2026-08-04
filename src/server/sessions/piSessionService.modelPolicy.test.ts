@@ -32,6 +32,7 @@ interface ModelPolicyHarnessOptions {
   branch?: readonly unknown[];
   existing?: boolean;
   append?: "available" | "missing" | "throws" | "throwsOnce";
+  failCreationSourceAppend?: boolean;
   model?: PiAgentSession["model"];
   thinkingLevel?: PiAgentSession["thinkingLevel"];
   ladderValidation?: LadderValidation;
@@ -59,6 +60,7 @@ interface ModelPolicyHarnessOptions {
    * that starts during async target resolution, before any setter runs.
    */
   onModelRuntimeRefresh?: () => void;
+  spawnTargetCwd?: string;
 }
 
 const DEFAULT_SCOPED_MODELS = [
@@ -92,6 +94,9 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   const appendCustomEntry = vi.fn((customType: string, data?: unknown) => {
     operations.push(`appendCustomEntry:${customType}`);
     calls.push(`appendCustomEntry:${customType}`);
+    if (customType === SESSION_CREATION_SOURCE_CUSTOM_TYPE && options.failCreationSourceAppend === true) {
+      throw new Error("creation source persistence failed");
+    }
     const failsOnce = options.append === "throwsOnce" && appendFailures === 0;
     if (options.append === "throws" || failsOnce) {
       appendFailures += 1;
@@ -229,6 +234,11 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       list: vi.fn(() => Promise.resolve(existing ? [sessionRecord(TEST_SESSION_ID, TEST_CWD)] : [])),
       open: vi.fn(() => manager),
     },
+    ...(options.spawnTargetCwd === undefined ? {} : {
+      spawnTargets: {
+        resolveSpawnTarget: () => Promise.resolve({ allowed: true as const, cwd: options.spawnTargetCwd ?? TEST_CWD }),
+      },
+    }),
     heartbeatIntervalMs: 60_000,
   });
   services.push(service);
@@ -334,22 +344,55 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(createdIndex).toBeGreaterThan(appendIndex);
   });
 
-  it("persists a plus-session creation source before publishing session.created", async () => {
+  it("initializes a plus Tiered root as model, thinking, full policy, then source before announcing it", async () => {
     const harness = createModelPolicyHarness({ existing: false });
+    const initialModelPolicy = {
+      mode: "tiered",
+      exact: {
+        model: { provider: "retired", id: "remembered" },
+        thinkingLevel: "retired-level",
+      },
+      tier: "advanced",
+    } as const;
 
     const created = await harness.service.start(TEST_CWD, {
       creationSource: "session-list-plus",
+      initialModelPolicy,
     });
 
+    expect(harness.resolve).toHaveBeenCalledOnce();
+    expect(harness.resolve).toHaveBeenCalledWith("advanced");
+    expect(harness.calls).toEqual([
+      "setModel:openai/gpt-advanced",
+      "setThinkingLevel:high",
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`,
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`,
+    ]);
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(
+      SESSION_MODEL_POLICY_CUSTOM_TYPE,
+      {
+        version: 1,
+        mode: "tiered",
+        exact: initialModelPolicy.exact,
+        tier: "advanced",
+      }
+    );
     expect(harness.appendCustomEntry).toHaveBeenCalledWith(
       SESSION_CREATION_SOURCE_CUSTOM_TYPE,
       { version: 1, source: "session-list-plus" }
+    );
+    const policyAppendIndex = harness.operations.indexOf(
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`
     );
     const sourceAppendIndex = harness.operations.indexOf(
       `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
     );
     const createdIndex = harness.operations.indexOf("global:session.created");
-    expect(sourceAppendIndex).toBeGreaterThanOrEqual(0);
+    expect(harness.operations.indexOf("setModel:openai/gpt-advanced")).toBeLessThan(
+      harness.operations.indexOf("setThinkingLevel:high")
+    );
+    expect(harness.operations.indexOf("setThinkingLevel:high")).toBeLessThan(policyAppendIndex);
+    expect(policyAppendIndex).toBeLessThan(sourceAppendIndex);
     expect(createdIndex).toBeGreaterThan(sourceAppendIndex);
     expect(created).toMatchObject({ creationSource: "session-list-plus" });
     const createdEvent = harness.hub.globalEvents.find(
@@ -361,6 +404,42 @@ describe("PiSessionService model policy lifecycle", () => {
     });
   });
 
+  it("initializes a plus Exact root without resolving its unavailable inactive tier", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      tierTarget: {
+        model: { provider: "retired", id: "unavailable-tier-target" },
+        thinkingLevel: "high",
+      },
+    });
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: DEFAULT_SELECTION,
+        tier: "frontier",
+      },
+    });
+
+    expect(harness.resolve).not.toHaveBeenCalled();
+    expect(harness.calls).toEqual([
+      "setModel:openai/gpt-default",
+      "setThinkingLevel:medium",
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`,
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`,
+    ]);
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(
+      SESSION_MODEL_POLICY_CUSTOM_TYPE,
+      {
+        version: 1,
+        mode: "exact",
+        exact: DEFAULT_SELECTION,
+        tier: "frontier",
+      }
+    );
+  });
+
   it("does not append a creation source for an ordinary new root", async () => {
     const harness = createModelPolicyHarness({ existing: false });
 
@@ -370,6 +449,31 @@ describe("PiSessionService model policy lifecycle", () => {
       `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
     );
     expect(created).not.toHaveProperty("creationSource");
+  });
+
+  it("does not append a plus creation source for spawn-session or tracked-subsession roots", async () => {
+    const spawned = createModelPolicyHarness({ existing: false, spawnTargetCwd: "/workspace-feature" });
+    const tracked = createModelPolicyHarness({ existing: false, spawnTargetCwd: "/workspace-feature" });
+
+    await spawned.service.spawnSession({
+      spawningCwd: TEST_CWD,
+      prompt: "continue",
+      cwd: "/workspace-feature",
+    });
+    await tracked.service.spawnSubsession({
+      spawningCwd: TEST_CWD,
+      parentSessionId: "parent-session",
+      parentSessionFile: undefined,
+      prompt: "continue tracked",
+      cwd: "/workspace-feature",
+    });
+
+    expect(spawned.operations).not.toContain(
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
+    );
+    expect(tracked.operations).not.toContain(
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
+    );
   });
 
   it("serves streaming status from the lifecycle cache without rescanning policy or ladder state", async () => {
@@ -428,23 +532,94 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.validate).toHaveBeenCalledTimes(2);
   });
 
-  it("cleans up a plus-session root when source persistence is unavailable", async () => {
-    const harness = createModelPolicyHarness({ existing: false, append: "missing" });
+  it("cleans up an unseen plus root when its active Exact selection is unavailable", async () => {
+    const harness = createModelPolicyHarness({ existing: false });
+
+    await expect(harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: {
+          model: { provider: "retired", id: "unavailable" },
+          thinkingLevel: "medium",
+        },
+        tier: "standard",
+      },
+    })).rejects.toThrow(/Model not found: retired\/unavailable/u);
+
+    expect(harness.calls).toEqual([]);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("cleans up an unseen plus root when its active Tiered selection cannot resolve", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      tierTarget: {
+        model: { provider: "retired", id: "unavailable-tier-target" },
+        thinkingLevel: "high",
+      },
+    });
+
+    await expect(harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "tiered",
+        exact: DEFAULT_SELECTION,
+        tier: "advanced",
+      },
+    })).rejects.toThrow(/tier advanced names unavailable model/u);
+
+    expect(harness.resolve).toHaveBeenCalledOnce();
+    expect(harness.calls).toEqual([]);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("cleans up an unseen plus root when full policy persistence fails", async () => {
+    const harness = createModelPolicyHarness({ existing: false, append: "throws" });
+
+    await expect(harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
+    })).rejects.toThrow("model policy persistence failed");
+
+    expect(harness.calls).toContain(`appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`);
+    expect(harness.calls).not.toContain(`appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("cleans up an unseen plus root when source persistence fails", async () => {
+    const harness = createModelPolicyHarness({ existing: false, failCreationSourceAppend: true });
 
     await expect(
       harness.service.start(TEST_CWD, {
         creationSource: "session-list-plus",
+        initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
       })
-    ).rejects.toThrow(/persist.*creation source/iu);
+    ).rejects.toThrow("creation source persistence failed");
 
+    expect(harness.calls).toEqual([
+      "setModel:openai/gpt-default",
+      "setThinkingLevel:medium",
+      `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`,
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`,
+    ]);
     expect(harness.service.activeCount()).toBe(0);
     expect(harness.fake.calls.abort).toBe(1);
     expect(harness.fake.calls.dispose).toBe(1);
-    expect(harness.hub.globalEvents).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "session.created" }),
-      ])
-    );
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
   });
 
   it("cleans up a new root when default policy persistence is unavailable", async () => {

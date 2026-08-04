@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { ModelTierLadder, PiWebUiConfigValues, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
+import type { ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
 import { configApi, filesApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
@@ -381,6 +381,46 @@ describe("session API compatibility", () => {
       cwd: "/work tree",
       modelPolicy: { mode: "tiered", tier: "advanced" },
     });
+  });
+
+  it("starts plus sessions through encoded application-relative local and remote paths with an exact body", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const session = {
+      id: "s-1",
+      path: "/sessions/s-1.jsonl",
+      cwd: "/work tree",
+      created: "2026-08-01T00:00:00.000Z",
+      modified: "2026-08-01T00:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      creationSource: "session-list-plus",
+    };
+    const initialModelPolicy: StarterModelPolicyPreference = {
+      mode: "tiered",
+      exact: {
+        model: { provider: "retired/provider", id: "remembered model" },
+        thinkingLevel: "retired-level",
+      },
+      tier: "standard",
+    };
+    const fetchMock = stubSequenceFetch([jsonResponse(session), jsonResponse(session)]);
+
+    await expect(sessionsApi.startPlusSession("/work tree", initialModelPolicy)).resolves.toEqual(session);
+    await expect(sessionsApi.startPlusSession("/work tree", initialModelPolicy, "remote /?")).resolves.toEqual(session);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/local/sessions",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/sessions",
+    ]);
+    for (let index = 0; index < 2; index += 1) {
+      expect(fetchCall(fetchMock, index)[1]?.method).toBe("POST");
+      expect(JSON.parse(requestBody(fetchCall(fetchMock, index)[1]))).toEqual({
+        cwd: "/work tree",
+        creationSource: "session-list-plus",
+        initialModelPolicy,
+      });
+    }
   });
 
   it("reads and acknowledges daemon-owned unread state through encoded machine routes", async () => {

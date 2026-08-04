@@ -11,6 +11,8 @@ import {
   type SessionBulkMutationRef,
   type SessionCleanupRequest,
   type SessionModelPolicyUpdate,
+  type SessionStartOptions,
+  type StarterModelPolicyPreference,
   type SessionTreeNavigateRequest,
   type SessionTreeSummaryChoice,
   type SessionUnreadAcknowledgeRequest,
@@ -66,8 +68,8 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     try {
       const body = sessionStartRequestFromUnknown(request.body);
       const cwd = normalizeRequestCwd(body.cwd);
-      if (body.modelPolicy === undefined) return await sessions.start(cwd);
-      return await sessions.start(cwd, { modelPolicy: body.modelPolicy });
+      if (body.options === undefined) return await sessions.start(cwd);
+      return await sessions.start(cwd, body.options);
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }
@@ -547,12 +549,47 @@ function notificationRef(id: string, cwd: string): { id: string; cwd: string } {
   };
 }
 
-function sessionStartRequestFromUnknown(value: unknown): { cwd: string; modelPolicy?: SessionModelPolicyUpdate } {
+function sessionStartRequestFromUnknown(value: unknown): { cwd: string; options?: SessionStartOptions } {
   const record = requirePlainRecord(value, "request body");
+  const hasCreationSource = Object.hasOwn(record, "creationSource");
+  const hasInitialModelPolicy = Object.hasOwn(record, "initialModelPolicy");
+  if (hasCreationSource || hasInitialModelPolicy) {
+    requireExactFields(record, ["cwd", "creationSource", "initialModelPolicy"], "session start");
+    const cwd = requireString(record, "cwd");
+    if (!hasCreationSource) throw new Error("creationSource field is required");
+    if (!hasInitialModelPolicy) throw new Error("initialModelPolicy field is required");
+    if (record["creationSource"] !== "session-list-plus") {
+      throw new Error("unknown session creation source");
+    }
+    return {
+      cwd,
+      options: {
+        creationSource: "session-list-plus",
+        initialModelPolicy: starterModelPolicyPreferenceFromUnknown(record["initialModelPolicy"]),
+      },
+    };
+  }
+
   requireExactFields(record, ["cwd", "modelPolicy"], "session start");
   const cwd = requireString(record, "cwd");
   if (!Object.hasOwn(record, "modelPolicy")) return { cwd };
-  return { cwd, modelPolicy: sessionModelPolicyUpdateFromUnknown(record["modelPolicy"]) };
+  return { cwd, options: { modelPolicy: sessionModelPolicyUpdateFromUnknown(record["modelPolicy"]) } };
+}
+
+function starterModelPolicyPreferenceFromUnknown(value: unknown): StarterModelPolicyPreference {
+  const record = requirePlainRecord(value, "initial model policy");
+  requireExactFields(record, ["mode", "exact", "tier"], "initial model policy");
+  const mode = record["mode"];
+  if (mode !== "exact" && mode !== "tiered") {
+    throw new Error("initial model policy mode must be exact or tiered");
+  }
+  if (!Object.hasOwn(record, "exact")) throw new Error("exact field is required");
+  const exact = exactModelSelectionFromUnknown(record["exact"]);
+  if (!Object.hasOwn(record, "tier")) {
+    if (mode === "tiered") throw new Error("tier field is required");
+    return { mode, exact };
+  }
+  return { mode, exact, tier: tierFromUnknown(record["tier"]) };
 }
 
 function modelPolicyMutationBodyFromUnknown(value: unknown): Record<string, unknown> {

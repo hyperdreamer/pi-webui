@@ -52,6 +52,26 @@ export function serializeSessionModelPolicy(policy: SessionModelPolicy): Record<
   };
 }
 
+export function planSessionModelPolicyInitialization(
+  policy: SessionModelPolicy,
+  resolveTier: (tier: ModelTier) => ExactModelSelection,
+): SessionModelPolicyPlan {
+  const cloned = cloneSessionModelPolicy(policy);
+  if (cloned.mode === "exact") {
+    return {
+      policy: cloned,
+      target: cloneExactModelSelection(cloned.exact),
+    };
+  }
+  if (cloned.tier === undefined) {
+    throw new Error("tiered policy is missing a canonical tier");
+  }
+  return {
+    policy: cloned,
+    target: cloneExactModelSelection(resolveTier(cloned.tier)),
+  };
+}
+
 export function planSessionModelPolicyUpdate(
   current: SessionModelPolicy,
   update: SessionModelPolicyUpdate,
@@ -142,6 +162,14 @@ function isCanonicalModelTier(value: unknown): value is ModelTier {
 
 function exactPolicy(exact: ExactModelSelection): SessionModelPolicy {
   return { mode: "exact", exact: cloneExactModelSelection(exact) };
+}
+
+function cloneSessionModelPolicy(policy: SessionModelPolicy): SessionModelPolicy {
+  return {
+    mode: policy.mode,
+    exact: cloneExactModelSelection(policy.exact),
+    ...(policy.tier === undefined ? {} : { tier: policy.tier }),
+  };
 }
 
 function cloneExactModelSelection(selection: ExactModelSelection): ExactModelSelection {

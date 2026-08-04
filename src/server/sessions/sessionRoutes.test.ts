@@ -7,6 +7,7 @@ import {
   SESSION_UNREAD_CATALOG_ID_MAX_LENGTH,
   type SessionModelPolicyResponse,
   type SessionModelPolicyUpdate,
+  type SessionStartOptions,
 } from "../../shared/apiTypes.js";
 import type {
   MessagePage,
@@ -57,23 +58,45 @@ afterEach(async () => {
 });
 
 describe("session routes", () => {
-  it("forwards an optional model policy on start while preserving the legacy call shape", async () => {
+  it("forwards strict legacy and plus session-start shapes", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
     const eventHub = new SessionEventHub();
     const routeService = new CapturingRouteSessionService();
     registerSessionRoutes(routeApp, routeService, eventHub);
     const policy = { mode: "tiered", tier: "advanced" } as const;
+    const initialModelPolicy = {
+      mode: "exact",
+      exact: {
+        model: { provider: "openai", id: "gpt-exact" },
+        thinkingLevel: "high",
+      },
+      tier: "standard",
+    } as const;
 
     try {
       const legacy = await routeApp.inject({ method: "POST", url: "/sessions", payload: { cwd: "/legacy" } });
       const withPolicy = await routeApp.inject({ method: "POST", url: "/sessions", payload: { cwd: "/work", modelPolicy: policy } });
+      const plus = await routeApp.inject({
+        method: "POST",
+        url: "/sessions",
+        payload: {
+          cwd: "/plus",
+          creationSource: "session-list-plus",
+          initialModelPolicy,
+        },
+      });
 
       expect(legacy.statusCode).toBe(200);
       expect(withPolicy.statusCode).toBe(200);
+      expect(plus.statusCode).toBe(200);
       expect(routeService.startCalls).toEqual([
         { cwd: resolve("/legacy") },
         { cwd: resolve("/work"), options: { modelPolicy: policy } },
+        {
+          cwd: resolve("/plus"),
+          options: { creationSource: "session-list-plus", initialModelPolicy },
+        },
       ]);
     } finally {
       await routeService.dispose();
@@ -126,9 +149,22 @@ describe("session routes", () => {
       exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "high" },
     } as const;
     const oversized = "x".repeat(513);
+    const initialExact = {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "org/gpt" }, thinkingLevel: "high" },
+      tier: "standard",
+    } as const;
     const malformed: { method: "POST" | "PUT"; url: string; payload: Record<string, unknown>; error: string }[] = [
       { method: "POST", url: "/sessions", payload: { modelPolicy: { mode: "tiered", tier: "advanced" } }, error: "cwd field must be a string" },
       { method: "POST", url: "/sessions", payload: { cwd: "/work", unexpected: true }, error: "session start field contains unsupported property" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "unknown", initialModelPolicy: initialExact }, error: "unknown session creation source" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus" }, error: "initialModelPolicy field is required" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", initialModelPolicy: initialExact }, error: "creationSource field is required" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus", initialModelPolicy: initialExact, modelPolicy: { mode: "tiered", tier: "advanced" } }, error: "session start field contains unsupported property" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus", initialModelPolicy: { ...initialExact, exact: { ...initialExact.exact, model: { ...initialExact.exact.model, provider: "   " } } } }, error: "provider field must be a non-blank string" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus", initialModelPolicy: { ...initialExact, exact: { ...initialExact.exact, model: { ...initialExact.exact.model, id: "" } } } }, error: "model id field must be a non-blank string" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus", initialModelPolicy: { ...initialExact, exact: { ...initialExact.exact, thinkingLevel: " " } } }, error: "thinkingLevel field must be a non-blank string" },
+      { method: "POST", url: "/sessions", payload: { cwd: "/work", creationSource: "session-list-plus", initialModelPolicy: { mode: "tiered", exact: initialExact.exact } }, error: "tier field is required" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { policy: exact }, error: "cwd field must be a string" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "", policy: exact }, error: "cwd is required" },
       { method: "PUT", url: "/sessions/s-1/model-policy", payload: { cwd: "   ", policy: exact }, error: "cwd must be an absolute path" },
@@ -946,7 +982,7 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly historyExportCalls: SessionRouteLookup[] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
-  readonly startCalls: { cwd: string; options?: { modelPolicy?: SessionModelPolicyUpdate } }[] = [];
+  readonly startCalls: { cwd: string; options?: SessionStartOptions }[] = [];
   readonly modelPolicyCalls: SessionRouteLookup[] = [];
   readonly setModelPolicyCalls: { lookup: SessionRouteLookup; update: SessionModelPolicyUpdate }[] = [];
   setModelPolicyError: Error | undefined;
@@ -1023,7 +1059,7 @@ class CapturingRouteSessionService implements SessionRouteService {
 
   list(): never { throw unusedRouteMethod("list"); }
 
-  start(cwd: string, options?: { modelPolicy?: SessionModelPolicyUpdate }): Promise<SessionInfo> {
+  start(cwd: string, options?: SessionStartOptions): Promise<SessionInfo> {
     this.startCalls.push(options === undefined ? { cwd } : { cwd, options });
     return Promise.resolve(pinnedSessionInfo({ id: "started", cwd }));
   }

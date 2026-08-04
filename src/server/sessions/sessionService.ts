@@ -9,6 +9,7 @@ import type {
   SessionNotificationInboxSnapshot,
   SessionModelPolicyResponse,
   SessionModelPolicyUpdate,
+  SessionStartOptions,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
 } from "../../shared/apiTypes.js";
@@ -44,7 +45,7 @@ export type SessionRouteLookup = string | SessionRouteRef;
  */
 export interface SessionRouteService {
   list(cwd: string): Promise<ClientSession[]>;
-  start(cwd: string, options?: { modelPolicy?: SessionModelPolicyUpdate }): Promise<ClientSession>;
+  start(cwd: string, options?: SessionStartOptions): Promise<ClientSession>;
   exportHistory(ref: SessionRouteLookup): Promise<string>;
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;

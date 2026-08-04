@@ -1,7 +1,7 @@
 import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
-import type { SessionModelPolicyUpdate } from "../../../shared/apiTypes";
+import type { SessionModelPolicyUpdate, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
 import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
@@ -301,6 +301,10 @@ export const sessionsApi = {
   dismissNotification: (session: SessionLookup, daemonInstanceId: string, notificationId: string, machineId = "local") => request(sessionPath(session, "notifications/dismiss", machineId), parseSessionNotificationInboxSnapshot, { method: "POST", body: sessionBody(session, { daemonInstanceId, notificationId }) }),
   dismissAllNotifications: (session: SessionLookup, daemonInstanceId: string, through: SessionNotificationDismissThrough, machineId = "local") => request(sessionPath(session, "notifications/dismiss-all", machineId), parseSessionNotificationInboxSnapshot, { method: "POST", body: sessionBody(session, { daemonInstanceId, throughOrder: through.order, throughOverflowWatermark: through.overflowWatermark }) }),
   startSession: (cwd: string, machineId = "local", modelPolicy?: SessionModelPolicyUpdate) => request(`${machinePrefix(machineId)}/sessions`, parseSessionInfo, { method: "POST", body: JSON.stringify({ cwd, ...(modelPolicy === undefined ? {} : { modelPolicy }) }) }),
+  startPlusSession: (cwd: string, initialModelPolicy: StarterModelPolicyPreference, machineId = "local") => request(`${machinePrefix(machineId)}/sessions`, parseSessionInfo, {
+    method: "POST",
+    body: JSON.stringify({ cwd, creationSource: "session-list-plus", initialModelPolicy }),
+  }),
   sessionDefaults: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/session-defaults?cwd=${encodeURIComponent(cwd)}`, parseSessionDefaultsResponse),
   sessionDefaultsV2: (cwd: string, machineId = "local") => {
     const params = new URLSearchParams({

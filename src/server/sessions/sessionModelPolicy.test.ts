@@ -3,6 +3,7 @@ import type { ExactModelSelection, SessionModelPolicy } from "../../shared/apiTy
 import {
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
   inspectSessionModelPolicy,
+  planSessionModelPolicyInitialization,
   planSessionModelPolicyUpdate,
   serializeSessionModelPolicy,
 } from "./sessionModelPolicy.js";
@@ -105,6 +106,65 @@ describe("session model policy domain", () => {
       policy.exact.model.id = "gpt-mutated-after-serialization";
       policy.exact.thinkingLevel = "high";
       expect(serialized["exact"]).toEqual({ model: { provider: "openai", id: "gpt-original" }, thinkingLevel: "medium" });
+    });
+  });
+
+  describe("planSessionModelPolicyInitialization", () => {
+    it("clones a complete Exact policy without resolving its inactive tier", () => {
+      const policy: SessionModelPolicy = {
+        mode: "exact",
+        exact: {
+          model: { provider: "openai", id: "gpt-exact" },
+          thinkingLevel: "high",
+        },
+        tier: "frontier",
+      };
+
+      const plan = planSessionModelPolicyInitialization(policy, () => {
+        throw new Error("inactive tier must not be resolved");
+      });
+
+      expect(plan).toEqual({ policy, target: policy.exact });
+      expect(plan.policy).not.toBe(policy);
+      expect(plan.policy.exact).not.toBe(policy.exact);
+      expect(plan.policy.exact.model).not.toBe(policy.exact.model);
+      expect(plan.target).not.toBe(policy.exact);
+      expect(plan.target.model).not.toBe(policy.exact.model);
+    });
+
+    it("retains an unavailable inactive Exact tuple and resolves only the active canonical tier", () => {
+      const standardSelection: ExactModelSelection = {
+        model: { provider: "openai", id: "gpt-standard" },
+        thinkingLevel: "medium",
+      };
+      const resolveCalls: string[] = [];
+
+      const plan = planSessionModelPolicyInitialization({
+        mode: "tiered",
+        exact: {
+          model: { provider: "retired", id: "remembered" },
+          thinkingLevel: "retired-level",
+        },
+        tier: "standard",
+      }, (tier) => {
+        resolveCalls.push(tier);
+        return standardSelection;
+      });
+
+      expect(plan).toEqual({
+        policy: {
+          mode: "tiered",
+          exact: {
+            model: { provider: "retired", id: "remembered" },
+            thinkingLevel: "retired-level",
+          },
+          tier: "standard",
+        },
+        target: standardSelection,
+      });
+      expect(resolveCalls).toEqual(["standard"]);
+      expect(plan.target).not.toBe(standardSelection);
+      expect(plan.target.model).not.toBe(standardSelection.model);
     });
   });
 

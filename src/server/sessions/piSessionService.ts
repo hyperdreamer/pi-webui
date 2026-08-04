@@ -96,6 +96,7 @@ import type {
   SessionModelPolicyResponse,
   SessionModelPolicy,
   SessionModelPolicyUpdate,
+  SessionStartOptions,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
@@ -166,6 +167,7 @@ import {
 } from "./modelTierRegistry.js";
 import {
   inspectSessionModelPolicy,
+  planSessionModelPolicyInitialization,
   planSessionModelPolicyUpdate,
   serializeSessionModelPolicy,
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
@@ -338,15 +340,19 @@ interface StartSessionOptions {
   initialThinkingLevel?: ClientThinkingLevel;
 }
 
+type SessionModelPolicyInitializer =
+  | { kind: "runtime-default" }
+  | { kind: "legacy-update"; update: SessionModelPolicyUpdate }
+  | { kind: "complete-policy"; policy: SessionModelPolicy };
+
 interface InternalStartSessionOptions extends StartSessionOptions {
   creationProvenance?: SessionCreationProvenance;
   creationSource?: SessionCreationSource;
   /**
-   * Browser-root policy initializer. `true` records the new runtime's own exact
-   * tuple; an update applies that transition before the root is announced.
-   * Tool-created sessions omit it and stay outside policy initialization.
+   * Browser-root policy initializer. The tag keeps a complete Exact policy
+   * distinct from a legacy Exact update. Tool-created sessions omit it.
    */
-  initializeModelPolicy?: true | SessionModelPolicyUpdate;
+  initializeModelPolicy?: SessionModelPolicyInitializer;
 }
 
 function requirePromptText(value: unknown): string {
@@ -1586,17 +1592,34 @@ export class PiSessionService implements SessionRouteService {
 
   async start(
     cwd: string,
-    options?: {
-      modelPolicy?: SessionModelPolicyUpdate;
-      creationSource?: SessionCreationSource;
-    }
+    options?: SessionStartOptions
   ): Promise<ClientSession> {
+    const creationSource = options?.creationSource;
+    const initialModelPolicy = options?.initialModelPolicy;
+    if (creationSource !== undefined || initialModelPolicy !== undefined) {
+      if (creationSource === undefined)
+        throw new Error(
+          "A complete initial model policy requires a session creation source"
+        );
+      if (initialModelPolicy === undefined)
+        throw new Error(
+          "A session creation source requires a complete initial model policy"
+        );
+      return this.startSession(cwd, {
+        creationSource,
+        initializeModelPolicy: {
+          kind: "complete-policy",
+          policy: initialModelPolicy,
+        },
+      });
+    }
+
     const modelPolicy = options?.modelPolicy;
     return this.startSession(cwd, {
-      initializeModelPolicy: modelPolicy ?? true,
-      ...(options?.creationSource === undefined
-        ? {}
-        : { creationSource: options.creationSource }),
+      initializeModelPolicy:
+        modelPolicy === undefined
+          ? { kind: "runtime-default" }
+          : { kind: "legacy-update", update: modelPolicy },
     });
   }
 
@@ -4205,16 +4228,16 @@ export class PiSessionService implements SessionRouteService {
         }
       });
       this.active.set(runtime.session.sessionId, active);
-      if (options.creationSource !== undefined) {
-        this.appendSessionCreationSource(
-          runtime.session,
-          options.creationSource
-        );
-      }
       if (options.initializeModelPolicy !== undefined) {
         await this.initializeSessionModelPolicy(
           runtime.session,
           options.initializeModelPolicy
+        );
+      }
+      if (options.creationSource !== undefined) {
+        this.appendSessionCreationSource(
+          runtime.session,
+          options.creationSource
         );
       }
       if (
@@ -5226,29 +5249,58 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
-  /**
-   * Root-session policy initialization. `true` records the runtime's own tuple;
-   * an update applies the requested transition. Both complete before the caller
-   * of `start()` sees the session, so no prompt can precede the policy.
-   */
+  /** Root-session policy initialization, completed before the root is visible. */
   private async initializeSessionModelPolicy(
     session: PiAgentSession,
-    initializer: true | SessionModelPolicyUpdate
+    initializer: SessionModelPolicyInitializer
   ): Promise<void> {
     const current: SessionModelPolicy = {
       mode: "exact",
       exact: this.exactSelectionFromSession(session),
     };
-    if (initializer === true) {
+    if (initializer.kind === "runtime-default") {
       this.appendSessionModelPolicy(session, current);
       this.inspectAndCacheSessionModelPolicy(session);
       return;
     }
-    // Root creation reports failure through its own abort/dispose cleanup rather
-    // than publishing a failed transition for a session no client has seen.
-    await this.applySessionModelPolicy(session, current, initializer, {
-      action: "initialize the session model policy",
-    });
+    if (initializer.kind === "legacy-update") {
+      // Root creation reports failure through its own abort/dispose cleanup
+      // rather than publishing a transition for a session no client has seen.
+      await this.applySessionModelPolicy(session, current, initializer.update, {
+        action: "initialize the session model policy",
+      });
+      return;
+    }
+
+    const plan = planSessionModelPolicyInitialization(
+      initializer.policy,
+      (tier) => {
+        const resolved = this.modelTierRegistry.resolve(tier);
+        return {
+          model: { provider: resolved.model.provider, id: resolved.model.id },
+          thinkingLevel: resolved.thinkingLevel,
+        };
+      }
+    );
+    // Only the active target is checked against the current runtime catalog.
+    // The inactive branch remains remembered even when it is unavailable.
+    const target = await this.resolveAvailableExactSelection(
+      session,
+      plan.target
+    );
+    this.assertModelPolicyMutationIdle(
+      session,
+      "initialize the session model policy"
+    );
+    await this.runSessionModelPolicyMutation(
+      session,
+      "initialize the session model policy",
+      async () => {
+        await this.applyExactSelection(session, target);
+        this.appendSessionModelPolicy(session, plan.policy);
+        this.verifyPersistedSessionModelPolicy(session, plan.policy);
+      }
+    );
   }
 
   /**
@@ -5608,6 +5660,21 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
+  private verifyPersistedSessionModelPolicy(
+    session: PiAgentSession,
+    expected: SessionModelPolicy
+  ): void {
+    const inspection = this.inspectAndCacheSessionModelPolicy(session);
+    if (
+      inspection.kind !== "persisted" ||
+      !sameSessionModelPolicy(inspection.policy, expected)
+    ) {
+      throw new Error(
+        "Cannot verify the complete initial session model policy"
+      );
+    }
+  }
+
   private appendSessionCreationSource(
     session: PiAgentSession,
     source: SessionCreationSource
@@ -5621,6 +5688,12 @@ export class PiSessionService implements SessionRouteService {
       SESSION_CREATION_SOURCE_CUSTOM_TYPE,
       serializeSessionCreationSource(source)
     );
+    const inspection = inspectSessionCreationSource(
+      this.policyEntries(session)
+    );
+    if (inspection.kind !== "valid") {
+      throw new Error("Cannot verify the session creation source");
+    }
   }
 
   private modelPolicyStatusFromSession(
@@ -6016,6 +6089,19 @@ function validSessionCreationSource(
     manager.getEntries?.() ?? manager.getBranch()
   );
   return inspection.kind === "valid" ? inspection.source : undefined;
+}
+
+function sameSessionModelPolicy(
+  left: SessionModelPolicy,
+  right: SessionModelPolicy
+): boolean {
+  return (
+    left.mode === right.mode &&
+    left.tier === right.tier &&
+    left.exact.model.provider === right.exact.model.provider &&
+    left.exact.model.id === right.exact.model.id &&
+    left.exact.thinkingLevel === right.exact.thinkingLevel
+  );
 }
 
 function addSessionName(names: Set<string>, name: string | undefined): void {
