@@ -224,6 +224,7 @@ describe("SessionList reorder interaction", () => {
     expect(releasePointerCapture).toHaveBeenCalledWith(1);
     await list.updateComplete;
     expect(gripFor(list, parent.path)).toBeNull();
+    expect(list.renderRoot.querySelector(".session-reorder-slot")).toBeNull();
     settleSubmission();
     await vi.waitFor(() => {
       expect(gripFor(list, parent.path)).not.toBeNull();
@@ -295,7 +296,7 @@ describe("SessionList reorder interaction", () => {
     document.dispatchEvent(pointer("pointercancel", { pointerId: 3, clientX: 10, clientY: 150 }));
   });
 
-  it("renders a non-focusable grip only for an eligible selected local session", async () => {
+  it("renders a non-focusable grip inside only the eligible selected local session", async () => {
     const selected = sessionFixture("selected");
     const peer = sessionFixture("peer");
     const list = await mountList({ sessions: [selected, peer], selected });
@@ -305,10 +306,15 @@ describe("SessionList reorder interaction", () => {
     expect(grip?.tagName).toBe("SPAN");
     expect(grip?.getAttribute("role")).toBeNull();
     expect(grip?.getAttribute("tabindex")).toBeNull();
+    expect(grip?.closest(".action-main")).not.toBeNull();
+    expect(grip?.closest(".session-row-controls")).toBeNull();
+    expect(list.renderRoot.querySelector(".session-reorder-slot")).toBeNull();
 
     list.selected = peer;
     await list.updateComplete;
     expect(gripFor(list, selected.path)).toBeNull();
+    expect(gripFor(list, peer.path)?.closest(".action-main")).not.toBeNull();
+    expect(list.renderRoot.querySelector(".session-reorder-slot")).toBeNull();
 
     const archived = sessionFixture("archived", "/repo", { archived: true });
     const archivedList = await mountList({ sessions: [archived, peer], selected: archived });
@@ -542,11 +548,13 @@ describe("SessionList reorder interaction", () => {
   it("keeps grip and insertion geometry stable in component styles", () => {
     const styles = sessionListStyles();
 
-    expect(styles).toMatch(/\.session-reorder-slot\s*\{[^}]*width:\s*24px;/);
+    expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*position:\s*absolute;/);
+    expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*right:\s*0;/);
+    expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*top:\s*50%;/);
+    expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*transform:\s*translateY\(-50%\);/);
     expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*width:\s*24px;/);
     expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*height:\s*24px;/);
     expect(styles).toMatch(/\.session-reorder-grip\s*\{[^}]*touch-action:\s*none;/);
     expect(styles).toMatch(/\.session-drop-before::before,\s*\.session-drop-after::after\s*\{[^}]*height:\s*2px;/);
-    expect(styles).toMatch(/\.action-row\.selected \.session-reorder-slot\s*\{[^}]*background:\s*var\(--pi-selection-bg\);/);
   });
 });
