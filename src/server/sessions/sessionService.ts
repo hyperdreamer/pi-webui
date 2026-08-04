@@ -10,6 +10,7 @@ import type {
   SessionModelPolicyResponse,
   SessionModelPolicyUpdate,
   SessionStartOptions,
+  StarterModelPolicyPreference,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
 } from "../../shared/apiTypes.js";
@@ -50,6 +51,7 @@ export interface SessionRouteService {
   messages(ref: SessionRouteLookup, page?: { before?: number; limit?: number }): Promise<unknown[] | ClientMessagePage>;
   status(ref: SessionRouteLookup): Promise<ClientSessionStatus>;
   modelPolicy(ref: SessionRouteLookup): Promise<SessionModelPolicyResponse>;
+  rememberCurrentModelPolicy(ref: SessionRouteLookup): Promise<StarterModelPolicyPreference>;
   setModelPolicy(ref: SessionRouteLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse>;
   systemPrompt(ref: SessionRouteLookup): Promise<ClientSessionSystemPrompt>;
   streamSnapshot(ref: SessionRouteLookup): Promise<SessionStreamSnapshot>;

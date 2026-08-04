@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExactModelSelection, ModelTier } from "../../shared/apiTypes.js";
+import type {
+  ExactModelSelection,
+  ModelTier,
+  StarterModelPolicyPreference,
+} from "../../shared/apiTypes.js";
 import { PiSessionService, type PiAgentSession, type PiSessionRuntime } from "./piSessionService.js";
 import { SESSION_CREATION_SOURCE_CUSTOM_TYPE } from "./sessionCreationSource.js";
 import { SESSION_MODEL_POLICY_CUSTOM_TYPE } from "./sessionModelPolicy.js";
+import type { StarterPreferenceWrite } from "./starterModelPolicyPreferenceStore.js";
 import { runtimeThinkingLevels, type LadderValidation } from "./modelTierRegistry.js";
 import {
   CapturingSessionEventHub,
@@ -63,6 +68,9 @@ interface ModelPolicyHarnessOptions {
    */
   onModelRuntimeRefresh?: () => void;
   spawnTargetCwd?: string;
+  preferenceStore?: {
+    replace(cwd: string, write: StarterPreferenceWrite): Promise<void>;
+  };
 }
 
 const DEFAULT_SCOPED_MODELS = [
@@ -84,6 +92,10 @@ function runtimeModel(provider: string, id: string, reasoning = true): NonNullab
 
 function policyEntry(data: unknown): unknown {
   return { type: "custom", customType: SESSION_MODEL_POLICY_CUSTOM_TYPE, data };
+}
+
+function creationSourceEntry(data: unknown = { version: 1, source: "session-list-plus" }): unknown {
+  return { type: "custom", customType: SESSION_CREATION_SOURCE_CUSTOM_TYPE, data };
 }
 
 function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
@@ -225,6 +237,9 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       return Promise.resolve(runtime);
     },
     modelTierRegistry,
+    ...(options.preferenceStore === undefined
+      ? {}
+      : { starterModelPolicyPreferenceStore: options.preferenceStore }),
     ...(options.archived !== true ? {} : {
       archiveStore: {
         ...emptyArchiveStore(),
@@ -722,6 +737,37 @@ describe("PiSessionService model policy mutation", () => {
     mode: "exact",
     exact: selection,
     ...(tier === undefined ? {} : { tier }),
+  });
+
+  it("leaves the confirmed runtime and policy unchanged when remembering the policy fails", async () => {
+    const preferenceStore = {
+      replace: vi.fn(() => Promise.reject(new Error("preference store unavailable"))),
+    };
+    const harness = createModelPolicyHarness({
+      branch: [creationSourceEntry(), exactEntry(DEFAULT_SELECTION, "advanced")],
+      preferenceStore,
+    });
+    const before = await harness.service.modelPolicy(ref());
+    if (before.policy === undefined) throw new Error("expected a confirmed model policy");
+    const branchReadsBeforeRemember = harness.getBranch.mock.calls.length;
+    harness.calls.length = 0;
+
+    await expect(harness.service.rememberCurrentModelPolicy(ref()))
+      .rejects.toThrow("preference store unavailable");
+
+    expect(harness.getBranch).toHaveBeenCalledTimes(branchReadsBeforeRemember + 1);
+    const after = await harness.service.modelPolicy(ref());
+    expect(after).toEqual(before);
+    expect(after.policy).toEqual({
+      mode: "exact",
+      exact: DEFAULT_SELECTION,
+      tier: "advanced",
+    } satisfies StarterModelPolicyPreference);
+    expect(harness.calls).toEqual([]);
+    expect(preferenceStore.replace).toHaveBeenCalledWith(TEST_CWD, {
+      kind: "full",
+      preference: before.policy,
+    });
   });
 
   it("applies a Tiered policy as model, then thinking, then persistence", async () => {

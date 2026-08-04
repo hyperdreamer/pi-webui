@@ -26,10 +26,11 @@ afterEach(() => {
 });
 
 describe("federated route contract", () => {
-  it("allowlists active-session model policy inspection and mutation routes", () => {
+  it("allowlists active-session model policy inspection, mutation, and remember routes", () => {
     expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("/model-policy"))).toEqual([
       { method: "GET", path: "/sessions/:sessionId/model-policy" },
       { method: "PUT", path: "/sessions/:sessionId/model-policy" },
+      { method: "POST", path: "/sessions/:sessionId/model-policy/remember" },
     ]);
   });
 
@@ -140,6 +141,7 @@ describe("federated route contract", () => {
       ignoreParseFailure(sessionsApi.deleteArchivedMany([session], machineId)),
       ignoreParseFailure(sessionsApi.messages(session, { limit: 20, before: 10 }, machineId)),
       ignoreParseFailure(sessionsApi.status(session, machineId)),
+      ignoreParseFailure(sessionsApi.rememberCurrentModelPolicy(session, machineId)),
       ignoreParseFailure(sessionsApi.systemPrompt(session, machineId)),
       ignoreParseFailure(sessionsApi.streamSnapshot(session, machineId)),
       ignoreParseFailure(sessionsApi.clearQueue(session, machineId)),

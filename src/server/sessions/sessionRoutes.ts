@@ -21,12 +21,18 @@ import { projectBrowserMessageResponse } from "../browserMessageProjection.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
+import { RememberCurrentModelPolicyConflictError } from "./rememberCurrentModelPolicy.js";
 import { normalizeSessionCleanupRequest } from "./sessionCleanup.js";
 
 type SessionLookup = SessionRouteLookup;
 
 interface SessionQuery {
   cwd?: string;
+}
+
+interface RememberModelPolicyQuery {
+  cwd?: unknown;
+  [key: string]: unknown;
 }
 
 interface MessageQuery extends SessionQuery {
@@ -260,6 +266,24 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
       );
     } catch (error) {
       return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post<{ Params: { sessionId: string }; Querystring: RememberModelPolicyQuery; Body: unknown }>(`${prefix}/sessions/:sessionId/model-policy/remember`, async (request, reply) => {
+    let lookup: SessionLookup;
+    try {
+      lookup = rememberModelPolicyLookup(
+        request.params.sessionId,
+        request.query,
+        request.body,
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+    try {
+      return await sessions.rememberCurrentModelPolicy(lookup);
+    } catch (error) {
+      return reply.code(rememberModelPolicyErrorStatus(error)).send({ error: errorMessage(error) });
     }
   });
 
@@ -658,6 +682,22 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function rememberModelPolicyLookup(
+  id: string,
+  query: RememberModelPolicyQuery,
+  body: unknown,
+): SessionLookup {
+  if (body !== undefined) throw new Error("request body must be empty");
+  if (!isRecord(query)) throw new Error("query must be an object");
+  const record = query;
+  requireExactFields(record, ["cwd"], "model policy remember query");
+  const cwd = record.cwd;
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new Error("cwd query parameter must be a string");
+  }
+  return sessionLookupFromCwd(id, cwd);
+}
+
 function sessionLookupFromQuery(id: string, query: SessionQuery): SessionLookup {
   return sessionLookupFromCwd(id, query.cwd);
 }
@@ -779,6 +819,12 @@ function errorMessage(error: unknown): string {
 
 function mutationErrorStatus(error: unknown): 400 | 404 {
   return isSessionNotFoundError(error) ? 404 : 400;
+}
+
+function rememberModelPolicyErrorStatus(error: unknown): 404 | 409 | 500 {
+  if (isSessionNotFoundError(error)) return 404;
+  if (error instanceof RememberCurrentModelPolicyConflictError) return 409;
+  return 500;
 }
 
 function notificationErrorStatus(error: unknown): 400 | 404 {

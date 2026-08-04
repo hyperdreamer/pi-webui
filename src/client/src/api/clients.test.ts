@@ -357,6 +357,42 @@ describe("session API compatibility", () => {
     });
   });
 
+  it("remembers confirmed policy through encoded local and remote paths with no caller policy payload", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const preference: StarterModelPolicyPreference = {
+      mode: "tiered",
+      exact: {
+        model: { provider: "openai", id: "gpt-confirmed" },
+        thinkingLevel: "high",
+      },
+      tier: "advanced",
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse(preference),
+      jsonResponse(preference),
+      jsonResponse({ mode: "exact" }),
+      jsonResponse({ ...preference, future: true }),
+    ]);
+    const session = { id: "s/1", cwd: "/work tree" };
+
+    await expect(sessionsApi.rememberCurrentModelPolicy(session)).resolves.toEqual(preference);
+    await expect(sessionsApi.rememberCurrentModelPolicy(session, "remote/one")).resolves.toEqual(preference);
+    await expect(sessionsApi.rememberCurrentModelPolicy(session)).rejects.toThrow(/exact/u);
+    await expect(sessionsApi.rememberCurrentModelPolicy(session)).rejects.toThrow(/future|invalid/u);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/local/sessions/s%2F1/model-policy/remember?cwd=%2Fwork+tree",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%2Fone/sessions/s%2F1/model-policy/remember?cwd=%2Fwork+tree",
+      "https://pi.example.test/nested/pi-webui/api/machines/local/sessions/s%2F1/model-policy/remember?cwd=%2Fwork+tree",
+      "https://pi.example.test/nested/pi-webui/api/machines/local/sessions/s%2F1/model-policy/remember?cwd=%2Fwork+tree",
+    ]);
+    for (let index = 0; index < 4; index += 1) {
+      expect(fetchCall(fetchMock, index)[1]?.method).toBe("POST");
+      expect(fetchCall(fetchMock, index)[1]?.body).toBeUndefined();
+    }
+  });
+
   it("preserves the legacy start body when policy is omitted and adds only modelPolicy when provided", async () => {
     const session = {
       id: "s-1",

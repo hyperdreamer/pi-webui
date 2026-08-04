@@ -8,6 +8,7 @@ import {
   type SessionModelPolicyResponse,
   type SessionModelPolicyUpdate,
   type SessionStartOptions,
+  type StarterModelPolicyPreference,
 } from "../../shared/apiTypes.js";
 import type {
   MessagePage,
@@ -35,6 +36,7 @@ import { testModelRuntime } from "./piSessionService.testSupport.js";
 import { SessionNotificationStore } from "./sessionNotificationStore.js";
 import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
 import { registerSessionRoutes } from "./sessionRoutes.js";
+import { RememberCurrentModelPolicyConflictError } from "./rememberCurrentModelPolicy.js";
 import type { NormalizedSessionCleanupRequest } from "./sessionCleanup.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-webui-test-agent";
@@ -132,6 +134,96 @@ describe("session routes", () => {
         lookup: { id: "s-1", cwd: resolve("/work") },
         update: exactPolicy,
       }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("remembers the current model policy from a normalized cwd query without a request body", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const response = await routeApp.inject({
+        method: "POST",
+        url: "/sessions/s-1/model-policy/remember?cwd=%2Fwork%2F.%2F",
+      });
+      const idOnlyResponse = await routeApp.inject({
+        method: "POST",
+        url: "/sessions/s-2/model-policy/remember",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(idOnlyResponse.statusCode).toBe(200);
+      expect(response.json()).toEqual(routeService.rememberedPreference);
+      expect(routeService.rememberCurrentModelPolicyCalls).toEqual([
+        { id: "s-1", cwd: resolve("/work") },
+        "s-2",
+      ]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("rejects remember-policy bodies and malformed queries before calling the service", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const responses = await Promise.all([
+        routeApp.inject({
+          method: "POST",
+          url: "/sessions/s-1/model-policy/remember?cwd=%2Fwork",
+          payload: { policy: { mode: "tiered", tier: "advanced" } },
+        }),
+        routeApp.inject({
+          method: "POST",
+          url: "/sessions/s-1/model-policy/remember?cwd=relative",
+        }),
+        routeApp.inject({
+          method: "POST",
+          url: "/sessions/s-1/model-policy/remember?cwd=%2Fwork&policy=tiered",
+        }),
+      ]);
+
+      expect(responses.map((response) => response.statusCode)).toEqual([400, 400, 400]);
+      expect(routeService.rememberCurrentModelPolicyCalls).toEqual([]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("maps remember-policy service failures to 404, 409, and 500", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+
+    try {
+      const cases = [
+        [new Error("Session not found"), 404],
+        [new RememberCurrentModelPolicyConflictError("confirmed policy is not eligible"), 409],
+        [new Error("preference store unavailable"), 500],
+      ] as const;
+      for (const [error, statusCode] of cases) {
+        routeService.rememberCurrentModelPolicyError = error;
+        const response = await routeApp.inject({
+          method: "POST",
+          url: "/sessions/s-1/model-policy/remember?cwd=%2Fwork",
+        });
+        expect(response.statusCode).toBe(statusCode);
+        expect(response.json()).toEqual({ error: error.message });
+      }
     } finally {
       await routeService.dispose();
       await routeApp.close();
@@ -985,7 +1077,17 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly startCalls: { cwd: string; options?: SessionStartOptions }[] = [];
   readonly modelPolicyCalls: SessionRouteLookup[] = [];
   readonly setModelPolicyCalls: { lookup: SessionRouteLookup; update: SessionModelPolicyUpdate }[] = [];
+  readonly rememberCurrentModelPolicyCalls: SessionRouteLookup[] = [];
+  readonly rememberedPreference: StarterModelPolicyPreference = {
+    mode: "tiered",
+    exact: {
+      model: { provider: "openai", id: "org/gpt" },
+      thinkingLevel: "high",
+    },
+    tier: "advanced",
+  };
   setModelPolicyError: Error | undefined;
+  rememberCurrentModelPolicyError: Error | undefined;
 
 
   cleanupPreview(request: NormalizedSessionCleanupRequest): Promise<SessionCleanupPreviewResponse> {
@@ -1067,6 +1169,14 @@ class CapturingRouteSessionService implements SessionRouteService {
   modelPolicy(lookup: SessionRouteLookup): Promise<SessionModelPolicyResponse> {
     this.modelPolicyCalls.push(lookup);
     return Promise.resolve(modelPolicyResponse(sessionIdFromLookup(lookup)));
+  }
+
+  rememberCurrentModelPolicy(lookup: SessionRouteLookup): Promise<StarterModelPolicyPreference> {
+    this.rememberCurrentModelPolicyCalls.push(lookup);
+    if (this.rememberCurrentModelPolicyError !== undefined) {
+      return Promise.reject(this.rememberCurrentModelPolicyError);
+    }
+    return Promise.resolve(this.rememberedPreference);
   }
 
   setModelPolicy(lookup: SessionRouteLookup, update: SessionModelPolicyUpdate): Promise<SessionModelPolicyResponse> {

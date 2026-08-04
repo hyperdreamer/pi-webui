@@ -70,6 +70,7 @@ await runSessionDaemonStartup({
     const spawnTargets = config.spawnSessions
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
       : undefined;
+    const starterModelPolicyPreferenceStore = new StarterModelPolicyPreferenceStore();
     const sessions = new PiSessionService(eventHub, {
       modelRuntime: auth.runtime,
       agentDir: activeAgentProfile.dir,
@@ -79,6 +80,7 @@ await runSessionDaemonStartup({
       subsessionsEnabled: spawnTargets !== undefined && config.subsessions,
       notificationStore,
       unreadStore,
+      starterModelPolicyPreferenceStore,
       sessionManager: createPiSessionManagerGateway({
         agentDir: activeAgentProfile.dir,
         env: daemonEnvironment,
@@ -89,7 +91,7 @@ await runSessionDaemonStartup({
     const defaults = new SessionDefaultsService({
       agentDir: activeAgentProfile.dir,
       modelRuntime: auth.runtime,
-      starterModelPolicyPreferenceStore: new StarterModelPolicyPreferenceStore(),
+      starterModelPolicyPreferenceStore,
     });
     const modelTiers = createModelTierSettingsService({
       loadConfig: () => {

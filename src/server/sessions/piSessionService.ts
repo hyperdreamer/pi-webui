@@ -97,6 +97,7 @@ import type {
   SessionModelPolicy,
   SessionModelPolicyUpdate,
   SessionStartOptions,
+  StarterModelPolicyPreference,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
@@ -178,6 +179,11 @@ import {
   serializeSessionCreationSource,
   SESSION_CREATION_SOURCE_CUSTOM_TYPE,
 } from "./sessionCreationSource.js";
+import {
+  RememberCurrentModelPolicyCommand,
+  type ConfirmedPolicySnapshot,
+} from "./rememberCurrentModelPolicy.js";
+import { StarterModelPolicyPreferenceStore } from "./starterModelPolicyPreferenceStore.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -1031,6 +1037,8 @@ export interface PiSessionServiceDependencies {
   unreadPublicationRetryDelayMs?: number;
   /** Durable session metadata store for pinned state and future metadata. */
   metadataStore?: SessionMetadataStore;
+  /** Workspace starter-policy persistence shared with session defaults in production. */
+  starterModelPolicyPreferenceStore?: Pick<StarterModelPolicyPreferenceStore, "replace">;
 }
 
 export class PiSessionService implements SessionRouteService {
@@ -1100,6 +1108,7 @@ export class PiSessionService implements SessionRouteService {
   >();
   private readonly heartbeat: NodeJS.Timeout;
   private readonly commandService: SessionCommandService<PiAgentSession>;
+  private readonly rememberCurrentModelPolicyCommand: RememberCurrentModelPolicyCommand;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
   private readonly treeNavigations = new WeakSet<PiAgentSession>();
   /** Counts async operations that may append an entry before they settle. */
@@ -1254,6 +1263,12 @@ export class PiSessionService implements SessionRouteService {
         supportedThinkingLevels: runtimeThinkingLevels,
       });
     this.workspaceActivity = deps.workspaceActivity;
+    this.rememberCurrentModelPolicyCommand = new RememberCurrentModelPolicyCommand({
+      loadSnapshot: (session) => this.confirmedPolicySnapshot(session),
+      preferenceStore:
+        deps.starterModelPolicyPreferenceStore ??
+        new StarterModelPolicyPreferenceStore(),
+    });
     this.heartbeat = setInterval(() => {
       this.publishHeartbeats();
     }, deps.heartbeatIntervalMs ?? 2000);
@@ -2370,6 +2385,12 @@ export class PiSessionService implements SessionRouteService {
       ...(inspection.kind === "invalid" ? {} : { policy: inspection.policy }),
       session: this.statusFromSession(session),
     };
+  }
+
+  async rememberCurrentModelPolicy(
+    ref: PiSessionLookup
+  ): Promise<StarterModelPolicyPreference> {
+    return this.rememberCurrentModelPolicyCommand.remember(ref);
   }
 
   /**
@@ -5221,6 +5242,23 @@ export class PiSessionService implements SessionRouteService {
       session.sessionManager.getEntries?.() ??
       session.sessionManager.getBranch()
     );
+  }
+
+  private confirmedPolicySnapshot(
+    ref: PiSessionLookup
+  ): Promise<ConfirmedPolicySnapshot> {
+    return this.getOrOpen(ref).then((session) => {
+      const entries = this.policyEntries(session);
+      return {
+        cwd: canonicalizeStoredCwd(session.sessionManager.getCwd()),
+        creationSource: inspectSessionCreationSource(entries),
+        modelPolicy: inspectSessionModelPolicy(
+          entries,
+          this.exactSelectionFromSession(session)
+        ),
+        transitionInFlight: this.isModelPolicyMutationActive(session),
+      };
+    });
   }
 
   private inspectAndCacheSessionModelPolicy(

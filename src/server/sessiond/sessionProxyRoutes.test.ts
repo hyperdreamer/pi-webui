@@ -85,6 +85,35 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("forwards policy remember requests with cwd query context and no body", async () => {
+    const preference = {
+      mode: "tiered",
+      exact: {
+        model: { provider: "openai", id: "gpt-confirmed" },
+        thinkingLevel: "high",
+      },
+      tier: "advanced",
+    };
+    daemon.respondWith({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(preference),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/machines/local/sessions/session-1/model-policy/remember?cwd=%2Frepo%20one",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(preference);
+    expect(daemon.requests).toEqual([{
+      method: "POST",
+      path: "/sessions/session-1/model-policy/remember?cwd=%2Frepo%20one",
+      body: undefined,
+    }]);
+  });
+
   it("forwards queue-clear mutations and their status through the session daemon", async () => {
     const status = { sessionId: "session-1", pendingMessageCount: 0, queuedMessages: [] };
     daemon.respondWith({ statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(status) });
