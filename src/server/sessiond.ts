@@ -85,6 +85,7 @@ await runSessionDaemonStartup({
     const utilityModelResolver = createUtilityModelResolver({
       loadConfig: loadUtilityModelConfig,
       modelRuntime: auth.runtime,
+      thinkingLevelsForModel: runtimeThinkingLevels,
       logger: app.log,
     });
     const spawnTargets = config.spawnSessions

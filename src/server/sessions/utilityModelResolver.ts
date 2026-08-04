@@ -1,7 +1,9 @@
 import type {
+  UtilityModelBinding,
   UtilityModelSettings,
   UtilityModelSlot,
 } from "../../shared/apiTypes.js";
+import type { ThinkingLevel } from "../../shared/thinkingLevels.js";
 
 export type UtilityModelTask = "lightweight" | "context";
 
@@ -10,10 +12,22 @@ export interface UtilityModelIdentity {
   id: string;
 }
 
+export interface UtilityModelAttempt<TModel extends UtilityModelIdentity> {
+  model: TModel;
+  thinkingLevel: ThinkingLevel;
+}
+
+export interface ResolvedUtilityModel<TModel extends UtilityModelIdentity>
+  extends UtilityModelAttempt<TModel> {
+  slot: UtilityModelSlot;
+}
+
 export interface UtilityModelResolver<
   TModel extends UtilityModelIdentity,
 > {
-  configuredCandidates: (task: UtilityModelTask) => Promise<readonly TModel[]>;
+  configuredCandidates(
+    task: UtilityModelTask,
+  ): Promise<readonly ResolvedUtilityModel<TModel>[]>;
 }
 
 export interface UtilityModelResolverConfig {
@@ -37,6 +51,7 @@ export interface UtilityModelResolverDependencies<
 > {
   loadConfig(): UtilityModelResolverConfig;
   modelRuntime: UtilityModelResolverRuntime<TModel>;
+  thinkingLevelsForModel(model: TModel | undefined): readonly string[];
   logger?: UtilityModelResolverLogger;
 }
 
@@ -63,7 +78,7 @@ export function createUtilityModelResolver<
         }
 
         const available = deps.modelRuntime.getAvailableSnapshot();
-        const candidates: TModel[] = [];
+        const candidates: ResolvedUtilityModel<TModel>[] = [];
         const seen = new Set<string>();
         for (const slot of taskSlots[task]) {
           const reference = config.utilityModels[slot];
@@ -73,10 +88,16 @@ export function createUtilityModelResolver<
               model.provider === reference.provider && model.id === reference.id,
           );
           if (candidate === undefined) continue;
-          const key = modelKey(candidate);
+          const thinkingLevel = effectiveThinkingLevel(
+            reference,
+            deps.thinkingLevelsForModel(candidate),
+          );
+          if (thinkingLevel === undefined) continue;
+          const resolved = { model: candidate, thinkingLevel, slot };
+          const key = attemptKey(resolved);
           if (seen.has(key)) continue;
           seen.add(key);
-          candidates.push(candidate);
+          candidates.push(resolved);
         }
         return candidates;
       } catch (error) {
@@ -97,37 +118,55 @@ export async function runWithUtilityModelFallback<
 >(
   resolver: UtilityModelResolver<TModel>,
   task: UtilityModelTask,
-  activeModel: TModel | undefined,
-  run: (model: TModel) => Promise<TResult | undefined> | TResult | undefined,
-  onFailure?: (model: TModel, error: unknown) => void,
+  activeAttempt: UtilityModelAttempt<TModel> | undefined,
+  run: (
+    attempt: UtilityModelAttempt<TModel>,
+  ) => Promise<TResult | undefined> | TResult | undefined,
+  onFailure?: (attempt: UtilityModelAttempt<TModel>, error: unknown) => void,
 ): Promise<TResult | undefined> {
   const configured = await resolver.configuredCandidates(task);
-  const candidates: TModel[] = [];
+  const candidates: UtilityModelAttempt<TModel>[] = [];
   const seen = new Set<string>();
 
-  for (const model of [
+  for (const attempt of [
     ...configured,
-    ...(activeModel === undefined ? [] : [activeModel]),
+    ...(activeAttempt === undefined ? [] : [activeAttempt]),
   ]) {
-    const key = modelKey(model);
+    const key = attemptKey(attempt);
     if (seen.has(key)) continue;
     seen.add(key);
-    candidates.push(model);
+    candidates.push(attempt);
   }
 
-  for (const model of candidates) {
+  for (const attempt of candidates) {
     try {
-      const result = await run(model);
+      const result = await run(attempt);
       if (result !== undefined) return result;
     } catch (error) {
-      onFailure?.(model, error);
+      onFailure?.(attempt, error);
     }
   }
   return undefined;
 }
 
-function modelKey(model: UtilityModelIdentity): string {
-  return JSON.stringify([model.provider, model.id]);
+function effectiveThinkingLevel(
+  binding: UtilityModelBinding,
+  supported: readonly string[],
+): ThinkingLevel | undefined {
+  if (binding.thinkingLevel !== undefined) {
+    return supported.includes(binding.thinkingLevel)
+      ? binding.thinkingLevel
+      : undefined;
+  }
+  return supported.includes("minimal") ? "minimal" : "off";
+}
+
+function attemptKey(attempt: UtilityModelAttempt<UtilityModelIdentity>): string {
+  return JSON.stringify([
+    attempt.model.provider,
+    attempt.model.id,
+    attempt.thinkingLevel,
+  ]);
 }
 
 function logNoThrow(

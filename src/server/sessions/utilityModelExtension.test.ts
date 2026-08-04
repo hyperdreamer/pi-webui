@@ -12,6 +12,7 @@ import {
   DefaultResourceLoader,
   type BranchSummaryResult,
   type CompactionResult,
+  type GenerateBranchSummaryOptions,
   type SessionBeforeCompactEvent,
   type SessionBeforeTreeEvent,
   type compact as PiCompact,
@@ -24,11 +25,18 @@ import {
   type UtilityModelExtensionRuntimeRefs,
   type UtilityModelHandlerContext,
 } from "./utilityModelExtension.js";
-import type { UtilityModelResolver } from "./utilityModelResolver.js";
+import type {
+  ResolvedUtilityModel,
+  UtilityModelResolver,
+} from "./utilityModelResolver.js";
 
 const lightweightModel = fakeModel("acme", "small", true);
 const contextModel = fakeModel("acme", "large", true);
 const activeModel = fakeModel("session", "active", true);
+const lightweightLow = resolvedCandidate(lightweightModel, "lightweight", "low");
+const lightweightOff = resolvedCandidate(lightweightModel, "lightweight", "off");
+const contextMax = resolvedCandidate(contextModel, "context", "max");
+const contextLow = resolvedCandidate(contextModel, "lightweight", "low");
 const usage = fakeUsage();
 const compactionResult: CompactionResult = {
   summary: "compacted",
@@ -52,7 +60,7 @@ describe("utility model branch summary handler", () => {
       modifiedFiles: ["src/changed.ts"],
       usage,
     }));
-    const resolver = resolverFor({ lightweight: [lightweightModel] });
+    const resolver = resolverFor({ lightweight: [lightweightLow] });
     const getAuth = vi.fn((): Promise<AuthResult> => Promise.resolve({
       auth: {
         apiKey: "secret",
@@ -68,7 +76,6 @@ describe("utility model branch summary handler", () => {
       refs,
       generateBranchSummary,
       compact: successfulCompact(),
-      runtimeThinkingLevels: () => ["off", "minimal"],
     });
 
     await expect(
@@ -114,12 +121,40 @@ describe("utility model branch summary handler", () => {
     ).toBe(streamResult);
     expect(streamFunction).toHaveBeenCalledWith(lightweightModel, streamContext, {
       maxTokens: 128,
-      reasoning: "minimal",
+      reasoning: "low",
     });
   });
 
+  it("keeps the original stream function for an off branch-summary attempt", async () => {
+    const streamFunction = vi.fn<StreamFn>(() => createAssistantMessageEventStream());
+    let receivedOptions: GenerateBranchSummaryOptions | undefined;
+    const generateBranchSummary: GenerateBranchSummaryFn = (_entries, options: GenerateBranchSummaryOptions) => {
+      receivedOptions = options;
+      return Promise.resolve({ summary: "summary" });
+    };
+    const handlers = createUtilityModelHandlers({
+      resolver: resolverFor({ lightweight: [lightweightOff] }),
+      modelRuntime: { getAuth: () => Promise.resolve({ auth: { apiKey: "test-key" } }) },
+      refs: runtimeRefs(
+        streamFunction,
+        { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+        1_024,
+      ),
+      generateBranchSummary,
+      compact: successfulCompact(),
+    });
+
+    const result = await handlers.sessionBeforeTree(
+      treeEvent(),
+      contextWithModel(activeModel),
+    );
+
+    expect(result?.summary?.summary).toBe("summary");
+    expect(receivedOptions?.streamFn).toBe(streamFunction);
+  });
+
   it("short-circuits when a summary was not requested or there are no entries", async () => {
-    const resolver = resolverFor({ lightweight: [lightweightModel] });
+    const resolver = resolverFor({ lightweight: [lightweightLow] });
     const generateBranchSummary = vi.fn<GenerateBranchSummaryFn>();
     const handlers = createHandlers({ resolver, generateBranchSummary });
 
@@ -142,7 +177,7 @@ describe("utility model branch summary handler", () => {
 
   it("returns undefined when no utility model is configured or runtime refs are missing", async () => {
     const noCandidates = resolverFor({ lightweight: [] });
-    const missingRefs = resolverFor({ lightweight: [lightweightModel] });
+    const missingRefs = resolverFor({ lightweight: [lightweightLow] });
     const generateBranchSummary = vi.fn<GenerateBranchSummaryFn>();
     const withoutCandidates = createHandlers({
       resolver: noCandidates,
@@ -182,17 +217,19 @@ describe("utility model branch summary handler", () => {
 });
 
 describe("utility model compaction handler", () => {
-  it("tries context then lightweight and passes Pi compaction inputs", async () => {
+  it("retries same-model context and lightweight descriptors with their exact levels", async () => {
     const controller = new AbortController();
     const retry = { enabled: true, maxRetries: 2, baseDelayMs: 10 };
     const streamResult = createAssistantMessageEventStream();
     const streamFunction = vi.fn<StreamFn>(() => streamResult);
-    const compact = vi.fn<CompactFn>((_preparation, model) => (
-      model.id === "large"
+    let compactionAttempts = 0;
+    const compact = vi.fn<CompactFn>(() => {
+      compactionAttempts += 1;
+      return compactionAttempts === 1
         ? Promise.reject(new Error("context failed"))
-        : Promise.resolve(compactionResult)
-    ));
-    const resolver = resolverFor({ context: [contextModel, lightweightModel] });
+        : Promise.resolve(compactionResult);
+    });
+    const resolver = resolverFor({ context: [contextMax, contextLow] });
     const getAuth = vi.fn((model: Model<Api>): Promise<AuthResult> => Promise.resolve({
       auth: {
         apiKey: `${model.id}-key`,
@@ -206,7 +243,6 @@ describe("utility model compaction handler", () => {
       refs: runtimeRefs(streamFunction, retry, 4_096),
       generateBranchSummary: successfulBranchSummary(),
       compact,
-      runtimeThinkingLevels: (model) => model.id === "large" ? ["off", "minimal"] : ["off"],
     });
     const event = compactEvent({
       signal: controller.signal,
@@ -221,7 +257,7 @@ describe("utility model compaction handler", () => {
     expect(compact).toHaveBeenCalledTimes(2);
     expect(compact.mock.calls.map((call) => call[1])).toEqual([
       contextModel,
-      lightweightModel,
+      contextModel,
     ]);
     expect(compact.mock.calls[0]).toEqual([
       event.preparation,
@@ -230,38 +266,46 @@ describe("utility model compaction handler", () => {
       { "x-model": "large" },
       "Retain decisions",
       controller.signal,
-      "minimal",
+      "max",
       expect.any(Function),
       { ACME_MODEL: "large" },
       retry,
     ]);
     expect(compact.mock.calls[1]).toEqual([
       event.preparation,
-      lightweightModel,
-      "small-key",
-      { "x-model": "small" },
+      contextModel,
+      "large-key",
+      { "x-model": "large" },
       "Retain decisions",
       controller.signal,
-      "off",
-      streamFunction,
-      { ACME_MODEL: "small" },
+      "low",
+      expect.any(Function),
+      { ACME_MODEL: "large" },
       retry,
     ]);
 
-    const wrappedStream = compact.mock.calls[0]?.[7];
+    const contextStream = compact.mock.calls[0]?.[7];
+    const lightweightStream = compact.mock.calls[1]?.[7];
     const streamContext: Context = { messages: [] };
     expect(
-      await wrappedStream?.(contextModel, streamContext, { maxTokens: 64 }),
+      await contextStream?.(contextModel, streamContext, { maxTokens: 64 }),
     ).toBe(streamResult);
-    expect(streamFunction).toHaveBeenCalledWith(contextModel, streamContext, {
+    expect(
+      await lightweightStream?.(contextModel, streamContext, { maxTokens: 64 }),
+    ).toBe(streamResult);
+    expect(streamFunction).toHaveBeenNthCalledWith(1, contextModel, streamContext, {
       maxTokens: 64,
-      reasoning: "minimal",
+      reasoning: "max",
+    });
+    expect(streamFunction).toHaveBeenNthCalledWith(2, contextModel, streamContext, {
+      maxTokens: 64,
+      reasoning: "low",
     });
   });
 
   it("advances past an unauthenticated context candidate", async () => {
     const compact = vi.fn<CompactFn>(() => Promise.resolve(compactionResult));
-    const resolver = resolverFor({ context: [contextModel, lightweightModel] });
+    const resolver = resolverFor({ context: [contextMax, lightweightLow] });
     const getAuth = vi.fn((model: Model<Api>): Promise<AuthResult | undefined> => Promise.resolve(
       model.id === "large"
         ? undefined
@@ -283,7 +327,7 @@ describe("utility model compaction handler", () => {
       Promise.reject(new Error(`${model.id} failed`))
     ));
     const handlers = createHandlers({
-      resolver: resolverFor({ context: [contextModel, lightweightModel] }),
+      resolver: resolverFor({ context: [contextMax, lightweightLow] }),
       compact,
     });
 
@@ -293,6 +337,41 @@ describe("utility model compaction handler", () => {
     expect(compact).toHaveBeenCalledTimes(2);
   });
 
+  it("logs the failed descriptor identity without auth material", async () => {
+    const failure = new Error("provider failed");
+    const logger = { info: vi.fn() };
+    const handlers = createUtilityModelHandlers({
+      resolver: resolverFor({ context: [contextMax] }),
+      modelRuntime: {
+        getAuth: () => Promise.resolve({ auth: { apiKey: "secret-key" } }),
+      },
+      refs: runtimeRefs(
+        vi.fn<StreamFn>(() => createAssistantMessageEventStream()),
+        { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+        1_024,
+      ),
+      generateBranchSummary: successfulBranchSummary(),
+      compact: vi.fn<CompactFn>(() => Promise.reject(failure)),
+      logger,
+    });
+
+    await expect(
+      handlers.sessionBeforeCompact(compactEvent(), contextWithModel(activeModel)),
+    ).resolves.toBeUndefined();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      {
+        err: failure,
+        task: "context",
+        provider: "acme",
+        modelId: "large",
+        slot: "context",
+        thinkingLevel: "max",
+      },
+      "utility model candidate failed",
+    );
+  });
+
   it("stops candidate iteration and cancels when aborted", async () => {
     const controller = new AbortController();
     const compact = vi.fn<CompactFn>(() => {
@@ -300,7 +379,7 @@ describe("utility model compaction handler", () => {
       return Promise.reject(new Error("aborted"));
     });
     const handlers = createHandlers({
-      resolver: resolverFor({ context: [contextModel, lightweightModel] }),
+      resolver: resolverFor({ context: [contextMax, lightweightLow] }),
       compact,
     });
 
@@ -367,7 +446,7 @@ function createHandlers(options: HandlerOptions = {}) {
 function handlerDependencies(options: HandlerOptions = {}) {
   const streamFunction = vi.fn<StreamFn>(() => createAssistantMessageEventStream());
   return {
-    resolver: options.resolver ?? resolverFor({ lightweight: [lightweightModel] }),
+    resolver: options.resolver ?? resolverFor({ lightweight: [lightweightLow] }),
     modelRuntime: {
       getAuth: options.getAuth ?? (() => Promise.resolve({ auth: { apiKey: "test-key" } })),
     },
@@ -378,16 +457,26 @@ function handlerDependencies(options: HandlerOptions = {}) {
     ),
     generateBranchSummary: options.generateBranchSummary ?? successfulBranchSummary(),
     compact: options.compact ?? successfulCompact(),
-    runtimeThinkingLevels: () => ["off"],
   };
 }
 
 function resolverFor(
-  candidates: Partial<Record<"lightweight" | "context", readonly Model<Api>[]>>,
-): UtilityModelResolver<Model<Api>> {
-  return {
-    configuredCandidates: vi.fn((task: "lightweight" | "context") => Promise.resolve(candidates[task] ?? [])),
-  };
+  candidates: Partial<
+    Record<"lightweight" | "context", readonly ResolvedUtilityModel<Model<Api>>[]>
+  >,
+) {
+  const configuredCandidates = vi.fn((task: "lightweight" | "context") =>
+    Promise.resolve(candidates[task] ?? []),
+  );
+  return { configuredCandidates };
+}
+
+function resolvedCandidate(
+  model: Model<Api>,
+  slot: ResolvedUtilityModel<Model<Api>>["slot"],
+  thinkingLevel: ResolvedUtilityModel<Model<Api>>["thinkingLevel"],
+): ResolvedUtilityModel<Model<Api>> {
+  return { model, slot, thinkingLevel };
 }
 
 function runtimeRefs(

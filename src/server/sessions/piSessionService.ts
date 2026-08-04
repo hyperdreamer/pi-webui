@@ -1244,6 +1244,7 @@ export class PiSessionService implements SessionRouteService {
           };
         },
         modelRuntime: this.modelRuntime,
+        thinkingLevelsForModel: runtimeThinkingLevels,
         logger: this.logger,
       });
     this.now = deps.now ?? (() => new Date());
@@ -4854,18 +4855,20 @@ export class PiSessionService implements SessionRouteService {
     void runWithUtilityModelFallback(
       this.utilityModelResolver,
       "lightweight",
-      model,
-      (candidate) =>
+      { model, thinkingLevel: "minimal" },
+      (attempt) =>
         generateShortSessionName(
           session.agent.streamFunction,
-          candidate,
-          firstMessage
+          attempt.model,
+          firstMessage,
+          attempt.thinkingLevel,
         ),
-      (candidate, error) => {
+      (attempt, error) => {
         this.logger.info(
           {
-            provider: candidate.provider,
-            modelId: candidate.id,
+            provider: attempt.model.provider,
+            modelId: attempt.model.id,
+            thinkingLevel: attempt.thinkingLevel,
             error: error instanceof Error ? error.message : String(error),
           },
           "utility title model failed"

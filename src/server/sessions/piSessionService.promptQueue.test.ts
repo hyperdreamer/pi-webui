@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultRuntimeFactory, PiSessionService } from "./piSessionService.js";
 import { CapturingSessionEventHub, createTestModelRuntime, fakeAgentSessionServices, fakeRuntime, runtimeCreator, seedCredential, sessionGateway, sessionRecord, sessionRef, TEST_MODEL_ID, TEST_MODEL_PROVIDER, testModel, testModelRuntime, type RuntimeCreator } from "./piSessionService.testSupport.js";
+import type { ResolvedUtilityModel } from "./utilityModelResolver.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-webui-test-agent";
 
@@ -85,17 +86,27 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
-  it("uses the configured lightweight model for the first-prompt title without changing the active model", async () => {
+  it("uses the configured lightweight high level without changing active title state", async () => {
     const activeModel = testModel();
     const lightweightModel = { ...activeModel, id: "utility-lightweight" };
     const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Fix login bug"));
     const hub = new CapturingSessionEventHub();
-    const fake = fakeRuntime("name-session", { model: activeModel, agent: { streamFunction: streamFn } });
+    const setModel = vi.fn(() => Promise.resolve());
+    const setThinkingLevel = vi.fn();
+    const fake = fakeRuntime("name-session", {
+      model: activeModel,
+      thinkingLevel: "high",
+      setModel,
+      setThinkingLevel,
+      agent: { streamFunction: streamFn },
+    });
     const service = new PiSessionService(hub, {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
       utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([lightweightModel]),
+        configuredCandidates: vi.fn().mockResolvedValue([
+          utilityCandidate(lightweightModel, "high"),
+        ]),
       },
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("name-session")]),
@@ -106,7 +117,11 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Fix login bug"); });
 
     expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel]);
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "high" });
     expect(fake.session.model).toBe(activeModel);
+    expect(fake.session.thinkingLevel).toBe("high");
+    expect(setModel).not.toHaveBeenCalled();
+    expect(setThinkingLevel).not.toHaveBeenCalled();
     expect(hub.sessionEvents.some(({ event }) => event.type === "session.name" && event.name === "Fix login bug")).toBe(true);
     await service.dispose();
   });
@@ -122,7 +137,9 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
       utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([lightweightModel]),
+        configuredCandidates: vi.fn().mockResolvedValue([
+          utilityCandidate(lightweightModel, "high"),
+        ]),
       },
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("fallback-name-session")]),
@@ -133,7 +150,77 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Active model title"); });
 
     expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
+    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([
+      "high",
+      "minimal",
+    ]);
     expect(fake.session.model).toBe(activeModel);
+    await service.dispose();
+  });
+
+  it("deduplicates a same-model title fallback with the same thinking level", async () => {
+    const activeModel = testModel();
+    const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Shared title"));
+    const fake = fakeRuntime("deduplicated-name-session", {
+      model: activeModel,
+      agent: { streamFunction: streamFn },
+    });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([
+          utilityCandidate(activeModel, "minimal"),
+        ]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("deduplicated-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("deduplicated-name-session"), "Please fix the login bug");
+    await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Shared title"); });
+
+    expect(streamFn).toHaveBeenCalledOnce();
+    expect(streamFn.mock.calls[0]?.[0]).toBe(activeModel);
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "minimal" });
+    await service.dispose();
+  });
+
+  it("keeps a same-model title fallback when its thinking level differs", async () => {
+    const activeModel = testModel();
+    let attempts = 0;
+    const streamFn = vi.fn<StreamFn>((streamModel) => {
+      attempts += 1;
+      return attempts === 1
+        ? failedTitleStream(streamModel.id)
+        : completedTitleStream(streamModel.id, "Minimal title");
+    });
+    const fake = fakeRuntime("level-distinct-name-session", {
+      model: activeModel,
+      agent: { streamFunction: streamFn },
+    });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([
+          utilityCandidate(activeModel, "high"),
+        ]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("level-distinct-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("level-distinct-name-session"), "Please fix the login bug");
+    await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Minimal title"); });
+
+    expect(streamFn.mock.calls.map(([model]) => model)).toEqual([activeModel, activeModel]);
+    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([
+      "high",
+      "minimal",
+    ]);
     await service.dispose();
   });
 
@@ -231,7 +318,9 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
   });
 
   it("names relay handoffs deterministically without resolving or calling a model", async () => {
-    const configuredCandidates = vi.fn(() => Promise.resolve([testModel()]));
+    const configuredCandidates = vi.fn(() => Promise.resolve([
+      utilityCandidate(testModel(), "minimal"),
+    ]));
     const streamFn = vi.fn<StreamFn>(() => { throw new Error("title stream should not run"); });
     const fake = fakeRuntime("relay-name-session", { agent: { streamFunction: streamFn } });
     const service = new PiSessionService(new CapturingSessionEventHub(), {
@@ -261,14 +350,18 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const activeModel = modelRuntime.getModel(TEST_MODEL_PROVIDER, TEST_MODEL_ID);
     if (activeModel === undefined) throw new Error("Expected active model fixture");
     const utilityModel = { ...activeModel, id: "utility-lightweight" };
-    const configuredCandidates = vi.fn().mockResolvedValue([utilityModel]);
+    const configuredCandidates = vi.fn().mockResolvedValue([
+      utilityCandidate(utilityModel, "high"),
+    ]);
     const streamFunction = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Runtime factory summary"));
     const setModel = vi.fn(() => Promise.resolve());
+    const setThinkingLevel = vi.fn();
     const fake = fakeRuntime("factory-session", {
       modelRuntime,
       model: activeModel,
       thinkingLevel: "high",
       setModel,
+      setThinkingLevel,
       agent: { streamFunction },
     });
     const services = fakeAgentSessionServices();
@@ -355,6 +448,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     expect(configuredCandidates).toHaveBeenCalledWith("lightweight");
     expect(streamFunction).toHaveBeenCalledOnce();
     expect(streamFunction.mock.calls[0]?.[0]).toBe(utilityModel);
+    expect(streamFunction.mock.calls[0]?.[2]).toMatchObject({ reasoning: "high" });
     expect(createFromServices).toHaveBeenCalledOnce();
     expect(createFromServices.mock.calls[0]?.[0].services).toBe(services);
     expect(result.session).toBe(createdSession);
@@ -364,6 +458,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     expect(fake.session.model).toBe(activeModel);
     expect(fake.session.thinkingLevel).toBe("high");
     expect(setModel).not.toHaveBeenCalled();
+    expect(setThinkingLevel).not.toHaveBeenCalled();
     expect(setDefaultProvider).not.toHaveBeenCalled();
     expect(setDefaultModel).not.toHaveBeenCalled();
     expect(setDefaultModelAndProvider).not.toHaveBeenCalled();
@@ -757,6 +852,14 @@ function failedTitleStream(modelId: string) {
   stream.push({ type: "error", reason: "error", error: message });
   stream.end(message);
   return stream;
+}
+
+function utilityCandidate(
+  model: ReturnType<typeof testModel>,
+  thinkingLevel: ResolvedUtilityModel<ReturnType<typeof testModel>>["thinkingLevel"],
+  slot: ResolvedUtilityModel<ReturnType<typeof testModel>>["slot"] = "lightweight",
+): ResolvedUtilityModel<ReturnType<typeof testModel>> {
+  return { model, thinkingLevel, slot };
 }
 
 function titleAssistantMessage(modelId: string, patch: Partial<AssistantMessage>): AssistantMessage {

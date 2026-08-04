@@ -16,8 +16,9 @@ import {
   type SessionBeforeCompactEvent,
   type SessionBeforeTreeEvent,
 } from "@earendil-works/pi-coding-agent";
-import { runtimeThinkingLevels as piRuntimeThinkingLevels } from "./modelTierRegistry.js";
+import type { ThinkingLevel } from "../../shared/thinkingLevels.js";
 import type {
+  ResolvedUtilityModel,
   UtilityModelResolver,
   UtilityModelResolverLogger,
   UtilityModelTask,
@@ -42,7 +43,6 @@ export interface UtilityModelExtensionDependencies {
   logger?: UtilityModelResolverLogger;
   generateBranchSummary?: typeof piGenerateBranchSummary;
   compact?: typeof piCompact;
-  runtimeThinkingLevels?: (model: Model<Api>) => readonly string[];
 }
 
 export interface UtilityBranchSummaryHandlerResult {
@@ -94,7 +94,6 @@ export function createUtilityModelHandlers(
   const generateBranchSummary =
     deps.generateBranchSummary ?? piGenerateBranchSummary;
   const compact = deps.compact ?? piCompact;
-  const thinkingLevels = deps.runtimeThinkingLevels ?? piRuntimeThinkingLevels;
 
   return {
     sessionBeforeTree: async (event, ctx) => {
@@ -120,19 +119,21 @@ export function createUtilityModelHandlers(
       }
 
       const candidates = await deps.resolver.configuredCandidates("lightweight");
-      for (const model of candidates) {
+      for (const candidate of candidates) {
         if (isAborted(event.signal)) return { cancel: true };
-        const auth = await resolveCandidateAuth(deps, "lightweight", model);
+        const auth = await resolveCandidateAuth(deps, "lightweight", candidate);
         if (isAborted(event.signal)) return { cancel: true };
         if (auth === undefined) continue;
 
         try {
-          const thinking = utilityThinking(model, thinkingLevels);
           const options: GenerateBranchSummaryOptions = {
-            model,
+            model: candidate.model,
             signal: event.signal,
             reserveTokens,
-            streamFn: utilityStreamFunction(refs.streamFunction, thinking),
+            streamFn: utilityStreamFunction(
+              refs.streamFunction,
+              candidate.thinkingLevel,
+            ),
             retry,
             ...auth,
             ...(event.preparation.customInstructions === undefined
@@ -153,7 +154,7 @@ export function createUtilityModelHandlers(
             logCandidateFailure(
               deps.logger,
               "lightweight",
-              model,
+              candidate,
               new Error(result.error ?? "branch summary was empty"),
             );
             continue;
@@ -162,7 +163,7 @@ export function createUtilityModelHandlers(
             logCandidateFailure(
               deps.logger,
               "lightweight",
-              model,
+              candidate,
               new Error("branch summary was missing"),
             );
             continue;
@@ -179,7 +180,7 @@ export function createUtilityModelHandlers(
           };
         } catch (error) {
           if (isAborted(event.signal)) return { cancel: true };
-          logCandidateFailure(deps.logger, "lightweight", model, error);
+          logCandidateFailure(deps.logger, "lightweight", candidate, error);
         }
       }
       return undefined;
@@ -200,23 +201,25 @@ export function createUtilityModelHandlers(
       }
 
       const candidates = await deps.resolver.configuredCandidates("context");
-      for (const model of candidates) {
+      for (const candidate of candidates) {
         if (isAborted(event.signal)) return { cancel: true };
-        const auth = await resolveCandidateAuth(deps, "context", model);
+        const auth = await resolveCandidateAuth(deps, "context", candidate);
         if (isAborted(event.signal)) return { cancel: true };
         if (auth === undefined) continue;
 
         try {
-          const thinking = utilityThinking(model, thinkingLevels);
           const result = await compact(
             event.preparation,
-            model,
+            candidate.model,
             auth.apiKey,
             auth.headers,
             event.customInstructions,
             event.signal,
-            thinking,
-            utilityStreamFunction(refs.streamFunction, thinking),
+            candidate.thinkingLevel,
+            utilityStreamFunction(
+              refs.streamFunction,
+              candidate.thinkingLevel,
+            ),
             auth.env,
             retry,
           );
@@ -224,7 +227,7 @@ export function createUtilityModelHandlers(
           return { compaction: result };
         } catch (error) {
           if (isAborted(event.signal)) return { cancel: true };
-          logCandidateFailure(deps.logger, "context", model, error);
+          logCandidateFailure(deps.logger, "context", candidate, error);
         }
       }
       return undefined;
@@ -261,15 +264,15 @@ function availableRefs(
 async function resolveCandidateAuth(
   deps: UtilityModelExtensionDependencies,
   task: UtilityModelTask,
-  model: Model<Api>,
+  candidate: ResolvedUtilityModel<Model<Api>>,
 ): Promise<ResolvedUtilityAuth | undefined> {
   try {
-    const result = await deps.modelRuntime.getAuth(model);
+    const result = await deps.modelRuntime.getAuth(candidate.model);
     if (result === undefined) {
       logCandidateFailure(
         deps.logger,
         task,
-        model,
+        candidate,
         new Error("utility model authentication is unavailable"),
       );
       return undefined;
@@ -281,7 +284,7 @@ async function resolveCandidateAuth(
       ...(result.env === undefined ? {} : { env: result.env }),
     };
   } catch (error) {
-    logCandidateFailure(deps.logger, task, model, error);
+    logCandidateFailure(deps.logger, task, candidate, error);
     return undefined;
   }
 }
@@ -301,35 +304,33 @@ function isAborted(signal: AbortSignal): boolean {
   return signal.aborted;
 }
 
-function utilityThinking(
-  model: Model<Api>,
-  thinkingLevels: (model: Model<Api>) => readonly string[],
-): "minimal" | "off" {
-  return model.reasoning && thinkingLevels(model).includes("minimal")
-    ? "minimal"
-    : "off";
-}
-
 function utilityStreamFunction(
   streamFunction: StreamFn,
-  thinking: "minimal" | "off",
+  thinkingLevel: ThinkingLevel,
 ): StreamFn {
-  if (thinking === "off") return streamFunction;
+  if (thinkingLevel === "off") return streamFunction;
   return (model, context, options) => streamFunction(model, context, {
     ...options,
-    reasoning: "minimal",
+    reasoning: thinkingLevel,
   });
 }
 
 function logCandidateFailure(
   logger: UtilityModelResolverLogger | undefined,
   task: UtilityModelTask,
-  model: Model<Api>,
+  candidate: ResolvedUtilityModel<Model<Api>>,
   error: unknown,
 ): void {
   logNoThrow(
     logger,
-    { err: error, task, provider: model.provider, modelId: model.id },
+    {
+      err: error,
+      task,
+      provider: candidate.model.provider,
+      modelId: candidate.model.id,
+      slot: candidate.slot,
+      thinkingLevel: candidate.thinkingLevel,
+    },
     "utility model candidate failed",
   );
 }

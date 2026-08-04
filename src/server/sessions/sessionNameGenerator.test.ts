@@ -1,7 +1,7 @@
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cleanSessionName, deterministicSessionName, fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
 
 function fakeModel(): Model<Api> {
@@ -44,17 +44,55 @@ function streamThatErrors(): StreamFn {
 
 describe("sessionNameGenerator", () => {
   it("generates a session name by calling the injected streamFn", async () => {
-    const calls: unknown[] = [];
     const stream = streamThatCompletes('Title: "Fix the bug"');
-    const streamFn: StreamFn = (model, context, options) => {
-      calls.push({ model, context, options });
-      return stream(model, context, options);
-    };
+    const streamFn = vi.fn<StreamFn>((model, context, options) =>
+      stream(model, context, options),
+    );
 
     const name = await generateShortSessionName(streamFn, fakeModel(), "Please fix the login bug");
 
     expect(name).toBe("Fix the bug");
-    expect(calls).toHaveLength(1);
+    expect(streamFn).toHaveBeenCalledOnce();
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({
+      maxTokens: 24,
+      reasoning: "minimal",
+    });
+  });
+
+  it("sends an explicit max thinking level with a title request", async () => {
+    const stream = streamThatCompletes("Fix the bug");
+    const streamFn = vi.fn<StreamFn>((model, context, options) =>
+      stream(model, context, options),
+    );
+
+    await generateShortSessionName(
+      streamFn,
+      fakeModel(),
+      "Please fix the login bug",
+      "max",
+    );
+
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({
+      maxTokens: 24,
+      reasoning: "max",
+    });
+  });
+
+  it("omits reasoning from an off title request", async () => {
+    const stream = streamThatCompletes("Fix the bug");
+    const streamFn = vi.fn<StreamFn>((model, context, options) =>
+      stream(model, context, options),
+    );
+
+    await generateShortSessionName(
+      streamFn,
+      fakeModel(),
+      "Please fix the login bug",
+      "off",
+    );
+
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 24 });
+    expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
   });
 
   it("returns undefined when the stream reports an error", async () => {

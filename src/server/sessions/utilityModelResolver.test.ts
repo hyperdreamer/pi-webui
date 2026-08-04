@@ -1,7 +1,9 @@
+import type { UtilityModelSettings } from "../../shared/apiTypes.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   createUtilityModelResolver,
   runWithUtilityModelFallback,
+  type UtilityModelAttempt,
   type UtilityModelResolver,
 } from "./utilityModelResolver.js";
 
@@ -16,37 +18,124 @@ interface FakeModel {
 
 const lightweight = fakeModel("acme", "small", "Acme Small");
 const context = fakeModel("acme", "large", "Acme Large");
-const active = fakeModel("session", "active", "Session Active");
+const supportedThinkingLevels = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 
 describe("utility model resolver", () => {
-  it("resolves lightweight from the current exact catalog entry", async () => {
+  it("resolves an omitted utility thinking intent to minimal when supported", async () => {
     const { resolver } = createHarness({
       utilityModels: { lightweight: { provider: "acme", id: "small" } },
     });
 
-    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([lightweight]);
+    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "minimal", slot: "lightweight" },
+    ]);
   });
 
-  it("resolves context before lightweight", async () => {
+  it("resolves an omitted utility thinking intent to off without minimal support", async () => {
+    const { resolver } = createHarness(
+      { utilityModels: { lightweight: { provider: "acme", id: "small" } } },
+      { thinkingLevelsForModel: () => ["off"] },
+    );
+
+    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "off", slot: "lightweight" },
+    ]);
+  });
+
+  it("passes explicit xhigh and max levels through to their configured slots", async () => {
     const { resolver } = createHarness({
       utilityModels: {
-        lightweight: { provider: "acme", id: "small" },
-        context: { provider: "acme", id: "large" },
+        lightweight: {
+          provider: "acme",
+          id: "small",
+          thinkingLevel: "xhigh",
+        },
+        context: {
+          provider: "acme",
+          id: "large",
+          thinkingLevel: "max",
+        },
       },
     });
 
-    await expect(resolver.configuredCandidates("context")).resolves.toEqual([context, lightweight]);
+    await expect(resolver.configuredCandidates("context")).resolves.toEqual([
+      { model: context, thinkingLevel: "max", slot: "context" },
+      { model: lightweight, thinkingLevel: "xhigh", slot: "lightweight" },
+    ]);
   });
 
-  it("deduplicates repeated provider/id candidates in first-seen order", async () => {
+  it("skips only a context slot whose explicit level is no longer supported", async () => {
+    const { resolver } = createHarness(
+      {
+        utilityModels: {
+          lightweight: {
+            provider: "acme",
+            id: "small",
+            thinkingLevel: "low",
+          },
+          context: {
+            provider: "acme",
+            id: "large",
+            thinkingLevel: "max",
+          },
+        },
+      },
+      {
+        thinkingLevelsForModel: (model) =>
+          model?.id === "large" ? ["off", "minimal"] : ["off", "low"],
+      },
+    );
+
+    await expect(resolver.configuredCandidates("context")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "low", slot: "lightweight" },
+    ]);
+  });
+
+  it("deduplicates same-model candidates with the same effective level in first-seen order", async () => {
     const { resolver } = createHarness({
       utilityModels: {
-        lightweight: { provider: "acme", id: "small" },
+        lightweight: {
+          provider: "acme",
+          id: "small",
+          thinkingLevel: "minimal",
+        },
         context: { provider: "acme", id: "small" },
       },
     });
 
-    await expect(resolver.configuredCandidates("context")).resolves.toEqual([lightweight]);
+    await expect(resolver.configuredCandidates("context")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "minimal", slot: "context" },
+    ]);
+  });
+
+  it("keeps same-model candidates with distinct effective levels in slot order", async () => {
+    const { resolver } = createHarness({
+      utilityModels: {
+        lightweight: {
+          provider: "acme",
+          id: "small",
+          thinkingLevel: "low",
+        },
+        context: {
+          provider: "acme",
+          id: "small",
+          thinkingLevel: "max",
+        },
+      },
+    });
+
+    await expect(resolver.configuredCandidates("context")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "max", slot: "context" },
+      { model: lightweight, thinkingLevel: "low", slot: "lightweight" },
+    ]);
   });
 
   it.each([
@@ -81,12 +170,17 @@ describe("utility model resolver", () => {
     const resolver = createUtilityModelResolver({
       loadConfig,
       modelRuntime: { refresh, getAvailableSnapshot },
+      thinkingLevelsForModel: () => supportedThinkingLevels,
     });
 
-    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([lightweight]);
+    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([
+      { model: lightweight, thinkingLevel: "minimal", slot: "lightweight" },
+    ]);
     config = { utilityModels: { lightweight: { provider: "acme", id: "large" } } };
     catalog = [context];
-    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([context]);
+    await expect(resolver.configuredCandidates("lightweight")).resolves.toEqual([
+      { model: context, thinkingLevel: "minimal", slot: "lightweight" },
+    ]);
 
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(refresh).toHaveBeenNthCalledWith(1, { allowNetwork: false });
@@ -97,64 +191,105 @@ describe("utility model resolver", () => {
 });
 
 describe("utility model fallback runner", () => {
-  it("continues after throws and undefined results, then returns the active-model result", async () => {
-    const configured = [Object.freeze({ ...lightweight }), Object.freeze({ ...context })];
-    const frozenActive = Object.freeze({ ...active });
+  it("keeps same-model attempts with different levels and advances after failures", async () => {
+    const configuredOff = Object.freeze({
+      model: Object.freeze({ ...lightweight }),
+      thinkingLevel: "off" as const,
+      slot: "context" as const,
+    });
+    const configuredXhigh = Object.freeze({
+      model: Object.freeze({ ...context }),
+      thinkingLevel: "xhigh" as const,
+      slot: "lightweight" as const,
+    });
+    const configured = Object.freeze([configuredOff, configuredXhigh]);
+    const activeAttempt = Object.freeze({
+      model: Object.freeze({ ...lightweight, name: "Active alias" }),
+      thinkingLevel: "minimal" as const,
+    });
     const resolver: UtilityModelResolver<FakeModel> = {
       configuredCandidates: vi.fn(() => Promise.resolve(configured)),
     };
-    const failure = new Error("lightweight failed");
-    const run = vi.fn((model: FakeModel): Promise<string | undefined> => {
-      if (model.id === "small") return Promise.reject(failure);
-      if (model.id === "large") return Promise.resolve(undefined);
+    const failure = new Error("off attempt failed");
+    const run = vi.fn((attempt: UtilityModelAttempt<FakeModel>): Promise<string | undefined> => {
+      if (attempt.thinkingLevel === "off") return Promise.reject(failure);
+      if (attempt.thinkingLevel === "xhigh") return Promise.resolve(undefined);
       return Promise.resolve("active result");
     });
     const onFailure = vi.fn();
 
     await expect(
-      runWithUtilityModelFallback(resolver, "context", frozenActive, run, onFailure),
+      runWithUtilityModelFallback(
+        resolver,
+        "context",
+        activeAttempt,
+        run,
+        onFailure,
+      ),
     ).resolves.toBe("active result");
 
-    expect(run.mock.calls.map(([model]) => `${model.provider}/${model.id}`)).toEqual([
-      "acme/small",
-      "acme/large",
-      "session/active",
+    expect(run.mock.calls.map(([attempt]) => [
+      attempt.model.provider,
+      attempt.model.id,
+      attempt.thinkingLevel,
+    ])).toEqual([
+      ["acme", "small", "off"],
+      ["acme", "large", "xhigh"],
+      ["acme", "small", "minimal"],
     ]);
     expect(onFailure).toHaveBeenCalledOnce();
-    expect(onFailure).toHaveBeenCalledWith(configured[0], failure);
-    expect(configured).toEqual([lightweight, context]);
-    expect(frozenActive).toEqual(active);
+    expect(onFailure).toHaveBeenCalledWith(configuredOff, failure);
+    expect(configuredOff).toEqual({
+      model: lightweight,
+      thinkingLevel: "off",
+      slot: "context",
+    });
+    expect(activeAttempt).toEqual({
+      model: { ...lightweight, name: "Active alias" },
+      thinkingLevel: "minimal",
+    });
   });
 
-  it("does not retry the active model when its provider/id is already configured", async () => {
-    const configured = Object.freeze({ ...lightweight });
-    const duplicateActive = Object.freeze({ ...lightweight, name: "Active alias" });
+  it("deduplicates an active attempt with the configured model and level", async () => {
+    const configured = Object.freeze({
+      model: Object.freeze({ ...lightweight }),
+      thinkingLevel: "minimal" as const,
+      slot: "lightweight" as const,
+    });
+    const activeAttempt = Object.freeze({
+      model: Object.freeze({ ...lightweight, name: "Active alias" }),
+      thinkingLevel: "minimal" as const,
+    });
     const resolver: UtilityModelResolver<FakeModel> = {
       configuredCandidates: vi.fn(() => Promise.resolve([configured])),
     };
     const run = vi.fn(() => Promise.resolve(undefined));
 
     await expect(
-      runWithUtilityModelFallback(resolver, "lightweight", duplicateActive, run),
+      runWithUtilityModelFallback(resolver, "lightweight", activeAttempt, run),
     ).resolves.toBeUndefined();
 
     expect(run).toHaveBeenCalledOnce();
     expect(run).toHaveBeenCalledWith(configured);
-    expect(duplicateActive).toEqual({ ...lightweight, name: "Active alias" });
+    expect(activeAttempt).toEqual({
+      model: { ...lightweight, name: "Active alias" },
+      thinkingLevel: "minimal",
+    });
   });
 });
 
 interface ResolverConfig {
-  utilityModels?: {
-    lightweight?: { provider: string; id: string };
-    context?: { provider: string; id: string };
-  };
+  utilityModels?: UtilityModelSettings;
   utilityModelsError?: string;
 }
 
 function createHarness(
   config: ResolverConfig,
-  options: { loadConfigError?: Error; refreshError?: Error } = {},
+  options: {
+    loadConfigError?: Error;
+    refreshError?: Error;
+    thinkingLevelsForModel?: (model: FakeModel | undefined) => readonly string[];
+  } = {},
 ) {
   const refresh = vi.fn(() => {
     if (options.refreshError !== undefined) return Promise.reject(options.refreshError);
@@ -169,6 +304,8 @@ function createHarness(
     resolver: createUtilityModelResolver({
       loadConfig,
       modelRuntime: { refresh, getAvailableSnapshot },
+      thinkingLevelsForModel:
+        options.thinkingLevelsForModel ?? (() => supportedThinkingLevels),
     }),
     refresh,
     getAvailableSnapshot,
