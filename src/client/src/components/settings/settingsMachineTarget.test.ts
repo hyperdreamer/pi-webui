@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Machine, MachineRuntime } from "../../api";
 import { PI_WEBUI_CAPABILITIES } from "../../../../shared/capabilities";
-import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, selectedMachineSettingsUnavailableMessage, settingsMachineTarget, settingsMachineTargetLabel } from "./settingsMachineTarget";
+import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, selectedMachineSettingsUnavailableMessage, settingsMachineTarget, settingsMachineTargetLabel, utilityModelSettingsSupport } from "./settingsMachineTarget";
 
 const remoteMachine: Machine = {
   id: "remote-a",
@@ -74,6 +74,33 @@ describe("selected-machine settings target helpers", () => {
     expect(modelTierSettingsSupport(target, {
       ok: true,
       capabilities: [PI_WEBUI_CAPABILITIES.selectedMachineSettings],
+    })).toEqual({
+      state: "unsupported",
+      message: selectedMachineSettingsUnavailableMessage(target),
+    });
+  });
+
+  it("gates remote utility model settings on their granular capability", () => {
+    const target = settingsMachineTarget(remoteMachine);
+
+    expect(utilityModelSettingsSupport({ id: "local", name: "local", kind: "local" }, undefined)).toEqual({ state: "supported" });
+    expect(utilityModelSettingsSupport(target, undefined)).toEqual({ state: "unknown" });
+    expect(utilityModelSettingsSupport(target, { ok: false })).toEqual({ state: "unknown" });
+    expect(utilityModelSettingsSupport(target, {
+      ok: true,
+      capabilities: [PI_WEBUI_CAPABILITIES.utilityModelSettings],
+    })).toEqual({ state: "supported" });
+
+    expect(utilityModelSettingsSupport(target, {
+      ok: true,
+      capabilities: [PI_WEBUI_CAPABILITIES.selectedMachineSettings],
+    })).toEqual({
+      state: "unsupported",
+      message: selectedMachineSettingsUnavailableMessage(target),
+    });
+    expect(utilityModelSettingsSupport(target, {
+      ok: true,
+      capabilities: [PI_WEBUI_CAPABILITIES.modelTierSettings],
     })).toEqual({
       state: "unsupported",
       message: selectedMachineSettingsUnavailableMessage(target),

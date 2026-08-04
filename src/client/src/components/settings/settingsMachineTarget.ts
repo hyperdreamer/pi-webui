@@ -16,6 +16,7 @@ export interface SelectedMachineSettingsSupport {
 
 export type AgentProfileSettingsSupport = SelectedMachineSettingsSupport;
 export type ModelTierSettingsSupport = SelectedMachineSettingsSupport;
+export type UtilityModelSettingsSupport = SelectedMachineSettingsSupport;
 
 export function settingsMachineTarget(machine: Pick<Machine, "id" | "name" | "kind"> | undefined): SettingsMachineTarget {
   if (machine !== undefined) return { id: machine.id, name: machine.name, kind: machine.kind };
@@ -52,6 +53,13 @@ export function modelTierSettingsSupport(target: SettingsMachineTarget, runtime:
   if (target.kind === "local") return { state: "supported" };
   if (runtime?.ok !== true) return { state: "unknown" };
   if (supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.modelTierSettings)) return { state: "supported" };
+  return { state: "unsupported", message: selectedMachineSettingsUnavailableMessage(target) };
+}
+
+export function utilityModelSettingsSupport(target: SettingsMachineTarget, runtime: Pick<MachineRuntime, "ok" | "capabilities"> | undefined): UtilityModelSettingsSupport {
+  if (target.kind === "local") return { state: "supported" };
+  if (runtime?.ok !== true) return { state: "unknown" };
+  if (supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.utilityModelSettings)) return { state: "supported" };
   return { state: "unsupported", message: selectedMachineSettingsUnavailableMessage(target) };
 }
 

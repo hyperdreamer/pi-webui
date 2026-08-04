@@ -18,6 +18,7 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(activeSettingsPanelTag("packages")).toBe("settings-packages-panel");
     expect(activeSettingsPanelTag("plugins")).toBe("settings-plugins-panel");
     expect(activeSettingsPanelTag("shortcuts")).toBe("settings-shortcuts-panel");
+    expect(activeSettingsPanelTag("utilitymodels")).toBe("settings-utility-models-panel");
   });
 
   it("keeps gateway server config saves on the gateway config endpoint", async () => {
