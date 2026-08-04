@@ -442,6 +442,32 @@ describe("session API compatibility", () => {
     });
   });
 
+  it("requests negotiated session defaults through local and selected-machine routes", async () => {
+    const v2Defaults = {
+      starterModelPolicyContractVersion: 2,
+      model: { provider: "openai", id: "gpt-default" },
+      thinkingLevel: "high",
+      models: [{ provider: "openai", id: "gpt-default" }],
+      thinkingLevels: ["off", "low", "high"],
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse(v2Defaults),
+      jsonResponse(v2Defaults),
+    ]);
+
+    await sessionsApi.sessionDefaultsV2("/repo with spaces");
+    await sessionsApi.sessionDefaultsV2("/repo with spaces", "remote /?");
+
+    expect(fetchCall(fetchMock, 0)[0]).toBe(
+      "https://pi.example.test/api/machines/local/session-defaults?cwd=%2Frepo+with+spaces&starterModelPolicyContract=2",
+    );
+    expect(fetchCall(fetchMock, 1)[0]).toBe(
+      "https://pi.example.test/api/machines/remote%20%2F%3F/session-defaults?cwd=%2Frepo+with+spaces&starterModelPolicyContract=2",
+    );
+    expect(toUrl(fetchCall(fetchMock, 0)[0]).searchParams.getAll("starterModelPolicyContract")).toEqual(["2"]);
+    expect(toUrl(fetchCall(fetchMock, 1)[0]).searchParams.getAll("starterModelPolicyContract")).toEqual(["2"]);
+  });
+
   it("posts session cleanup preview and execute requests through the selected machine", async () => {
     const preview = { generatedAt: "2026-06-25T12:00:00.000Z", thresholds: { archiveIdleDays: 7 }, projects: [{ cwd: "/repo", archiveCount: 2, deleteCount: 0 }], totals: { archiveCount: 2, deleteCount: 0 } };
     const executed = { ...preview, archivedSessionIds: ["s1", "s2"], deletedSessionIds: [] };
@@ -856,6 +882,12 @@ function fetchCall(fetchMock: FetchMock, index: number): Parameters<FetchLike> {
   const call = fetchMock.mock.calls[index];
   if (call === undefined) throw new Error(`Missing fetch call ${String(index)}`);
   return call;
+}
+
+function toUrl(input: string | URL | Request): URL {
+  if (input instanceof URL) return input;
+  if (input instanceof Request) return new URL(input.url);
+  return new URL(input, "https://pi.example.test");
 }
 
 function requestBody(init: RequestInit | undefined): string {

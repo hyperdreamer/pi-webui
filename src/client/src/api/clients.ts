@@ -58,6 +58,7 @@ import {
   parseSessionCleanupExecuteResponse,
   parseSessionCleanupPreviewResponse,
   parseSessionDefaultsResponse,
+  parseSessionDefaultsV2Response,
   parseSessionInfo,
   parseSessionMessageForkResult,
   parseSessionModelPolicyResponse,
@@ -301,6 +302,16 @@ export const sessionsApi = {
   dismissAllNotifications: (session: SessionLookup, daemonInstanceId: string, through: SessionNotificationDismissThrough, machineId = "local") => request(sessionPath(session, "notifications/dismiss-all", machineId), parseSessionNotificationInboxSnapshot, { method: "POST", body: sessionBody(session, { daemonInstanceId, throughOrder: through.order, throughOverflowWatermark: through.overflowWatermark }) }),
   startSession: (cwd: string, machineId = "local", modelPolicy?: SessionModelPolicyUpdate) => request(`${machinePrefix(machineId)}/sessions`, parseSessionInfo, { method: "POST", body: JSON.stringify({ cwd, ...(modelPolicy === undefined ? {} : { modelPolicy }) }) }),
   sessionDefaults: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/session-defaults?cwd=${encodeURIComponent(cwd)}`, parseSessionDefaultsResponse),
+  sessionDefaultsV2: (cwd: string, machineId = "local") => {
+    const params = new URLSearchParams({
+      cwd,
+      starterModelPolicyContract: "2",
+    });
+    return request(
+      `${machinePrefix(machineId)}/session-defaults?${params.toString()}`,
+      parseSessionDefaultsV2Response,
+    );
+  },
   updateSessionDefaults: (cwd: string, update: SessionDefaultsUpdate, machineId = "local") => request(`${machinePrefix(machineId)}/session-defaults`, parseSessionDefaultsResponse, { method: "PUT", body: JSON.stringify({ cwd, ...update }) }),
   cleanupPreview: (input: SessionCleanupRequest, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup/preview`, parseSessionCleanupPreviewResponse, { method: "POST", body: JSON.stringify(input) }),
   cleanup: (input: SessionCleanupRequest, machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup`, parseSessionCleanupExecuteResponse, { method: "POST", body: JSON.stringify(input) }),
