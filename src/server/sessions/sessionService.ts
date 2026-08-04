@@ -9,6 +9,8 @@ import type {
   SessionNotificationInboxSnapshot,
   SessionModelPolicyResponse,
   SessionModelPolicyUpdate,
+  SessionReorderRequest,
+  SessionReorderResponse,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
 } from "../../shared/apiTypes.js";
@@ -90,4 +92,5 @@ export interface SessionRouteService {
   detachParent(ref: SessionRouteLookup): Promise<void>;
   pin(ref: SessionRouteLookup): Promise<ClientSession>;
   unpin(ref: SessionRouteLookup): Promise<ClientSession>;
+  reorder(ref: SessionRouteRef, request: SessionReorderRequest): Promise<SessionReorderResponse>;
 }

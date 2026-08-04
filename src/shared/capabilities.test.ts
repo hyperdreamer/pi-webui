@@ -187,6 +187,21 @@ describe("PI WEBUI capabilities", () => {
     })).toContain(unread);
   });
 
+  it("requires web and session daemon support for session reordering", () => {
+    const reorder = PI_WEBUI_CAPABILITIES.sessionsReorder;
+    expect(reorder).toBe("sessions.reorder");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(reorder);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(reorder);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [reorder] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(reorder);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [reorder] },
+      sessiond: { available: true, capabilities: [reorder] },
+    })).toContain(reorder);
+  });
+
   it("keeps only known string capabilities when parsing runtime data", () => {
     expect(parseKnownPiWebUiCapabilities([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, "future.capability"])).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings]);
     expect(parseKnownPiWebUiCapabilities([PI_WEBUI_CAPABILITIES.piPackagesManage, 1])).toBeUndefined();

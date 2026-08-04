@@ -1,8 +1,8 @@
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataStore } from "./sessionMetadataStore.js";
 
 describe("SessionMetadataStore", () => {
@@ -138,5 +138,74 @@ describe("SessionMetadataStore", () => {
     expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
       "/session.jsonl": { pinned: false },
     });
+  });
+
+  it("atomically normalizes a complete group and preserves unrelated metadata", async () => {
+    await store.pin("/pinned.jsonl");
+    await store.replaceOrder(
+      ["/second.jsonl", "/first.jsonl"],
+      { kind: "root", cwd: "/repo" },
+      false,
+    );
+
+    expect(await store.snapshot()).toEqual({
+      "/pinned.jsonl": { pinned: true },
+      "/second.jsonl": {
+        order: { position: 0, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+      "/first.jsonl": {
+        order: { position: 1, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+    });
+  });
+
+  it("rejects the whole batch when current pin metadata differs", async () => {
+    await store.pin("/changed.jsonl");
+    await expect(store.replaceOrder(
+      ["/unchanged.jsonl", "/changed.jsonl"],
+      { kind: "root", cwd: "/repo" },
+      false,
+    )).rejects.toThrow("Session pin state changed during reorder");
+    expect(await store.get("/unchanged.jsonl")).toBeUndefined();
+  });
+
+  it("serializes complete batches with deterministic last-writer order", async () => {
+    const first = store.replaceOrder(
+      ["/first.jsonl", "/second.jsonl"],
+      { kind: "root", cwd: "/repo" },
+      false,
+    );
+    const second = store.replaceOrder(
+      ["/second.jsonl", "/first.jsonl"],
+      { kind: "root", cwd: "/repo" },
+      false,
+    );
+    await Promise.all([first, second]);
+    const snapshot = await store.snapshot();
+    expect(snapshot["/second.jsonl"]?.order?.position).toBe(0);
+    expect(snapshot["/first.jsonl"]?.order?.position).toBe(1);
+  });
+
+  it("removes the temporary file when the atomic rename fails", async () => {
+    const renameFailure = vi.fn(() => Promise.reject(new Error("rename failed")));
+    const failingStore = new SessionMetadataStore(filePath, {
+      mkdir,
+      readFile,
+      writeFile,
+      rename: renameFailure,
+      unlink,
+    });
+
+    await expect(failingStore.replaceOrder(
+      ["/first.jsonl"],
+      { kind: "root", cwd: "/repo" },
+      false,
+    )).rejects.toThrow("rename failed");
+    expect(renameFailure).toHaveBeenCalledOnce();
+    const tempPrefix = `.${basename(filePath)}.`;
+    expect((await readdir(dirname(filePath)))
+      .filter((name) => name.startsWith(tempPrefix) && name.endsWith(".tmp")))
+      .toEqual([]);
+    await expect(readFile(filePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

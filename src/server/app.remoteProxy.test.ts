@@ -229,6 +229,44 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).toHaveBeenCalledWith("POST", "/api/sessions/s1/reload", { cwd: "/repo" });
   });
 
+  it("proxies remote session reorder bodies through the selected machine", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/machines",
+      payload: { name: "Remote", baseUrl: "https://remote.example.test/" },
+    });
+    const remote = addResponse.json<{ id: string }>();
+    const request = vi.fn<MachineClient["request"]>((method, path, body) => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ method, path, body })]),
+    }));
+    appTestContext.remoteClient = fakeRemoteClient({ request });
+    const body = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [
+        { id: "s-2", cwd: "/repo" },
+        { id: "s-1", cwd: "/repo" },
+      ],
+    };
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${remote.id}/sessions/s-1/reorder`,
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(request).toHaveBeenCalledWith(
+      "POST",
+      "/api/sessions/s-1/reorder",
+      body,
+    );
+  });
+
   it("proxies only the four allowlisted remote notification HTTP routes", async () => {
     const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();

@@ -20,6 +20,7 @@ export const PI_WEBUI_CAPABILITIES = {
   modelTierSettings: "settings.modelTiers",
   sessionsModelPolicy: "sessions.modelPolicy",
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
+  sessionsReorder: "sessions.reorder",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -444,6 +445,27 @@ export interface SessionRef {
 export type SessionReorderScope =
   | { kind: "root"; cwd: string }
   | { kind: "children"; parentSessionPath: string };
+
+export const SESSION_REORDER_LIMIT = 1_000;
+export const SESSION_REORDER_SESSION_ID_MAX_LENGTH = 512;
+export const SESSION_REORDER_CWD_MAX_LENGTH = 32 * 1024;
+export const SESSION_REORDER_PARENT_PATH_MAX_LENGTH = 32 * 1024;
+
+export interface SessionReorderRequest {
+  cwd: string;
+  scope: SessionReorderScope;
+  pinned: boolean;
+  catalogCwds: string[];
+  orderedSessions: SessionRef[];
+}
+
+export interface SessionOrderEntry extends SessionRef {
+  manualOrder: number;
+}
+
+export interface SessionReorderResponse {
+  orderedSessions: SessionOrderEntry[];
+}
 
 export const SESSION_UNREAD_LIMIT = 1_000;
 export const SESSION_UNREAD_SESSION_ID_MAX_LENGTH = 512;

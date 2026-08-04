@@ -15,6 +15,13 @@ export interface SessionMetadata {
   order?: SessionOrderMetadata;
 }
 
+export class SessionMetadataOrderConflictError extends Error {
+  constructor() {
+    super("Session pin state changed during reorder");
+    this.name = "SessionMetadataOrderConflictError";
+  }
+}
+
 export interface SessionMetadataFileSystem {
   readFile(path: string, encoding: "utf8"): Promise<string>;
   mkdir(path: string, options: { recursive: true }): Promise<unknown>;
@@ -62,6 +69,29 @@ export class SessionMetadataStore {
 
   async clearOrder(sessionPath: string): Promise<void> {
     await this.update(sessionPath, withoutOrder);
+  }
+
+  /**
+   * Atomically normalize a complete sibling group into positions matching
+   * `sessionPaths` order. Rejects the whole batch if any member's current
+   * pin state no longer matches `pinned`, since that means the group the
+   * caller validated is now stale.
+   */
+  async replaceOrder(
+    sessionPaths: readonly string[],
+    scope: SessionReorderScope,
+    pinned: boolean,
+  ): Promise<void> {
+    await this.exclusive(async () => {
+      const data = await this.read();
+      if (sessionPaths.some((path) => (data[path]?.pinned === true) !== pinned)) {
+        throw new SessionMetadataOrderConflictError();
+      }
+      sessionPaths.forEach((path, position) => {
+        data[path] = { ...data[path], order: { position, scope, pinned } };
+      });
+      await this.write(data);
+    });
   }
 
   async pinnedPaths(): Promise<string[]> {
