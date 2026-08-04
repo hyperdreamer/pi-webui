@@ -1,6 +1,15 @@
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionModel } from "../../shared/apiTypes.js";
+import type {
+  ExactModelSelection,
+  LegacyStarterModelPolicyPreference,
+  SessionDefaultsResponse,
+  SessionDefaultsUpdate,
+  SessionDefaultsV2Response,
+  SessionModel,
+  StarterModelPolicyPreference,
+  StarterModelPolicyPreferenceResponse,
+} from "../../shared/apiTypes.js";
 import { KNOWN_THINKING_LEVELS, isKnownThinkingLevel, type ThinkingLevel } from "../../shared/thinkingLevels.js";
 import type {
   StarterModelPolicyPreferenceStore,
@@ -12,7 +21,7 @@ type DefaultModel = Model<Api>;
 interface SessionDefaultsSettings {
   getDefaultProvider(): string | undefined;
   getDefaultModel(): string | undefined;
-  getDefaultThinkingLevel(): ThinkingLevel | undefined;
+  getDefaultThinkingLevel(): string | undefined;
   setDefaultModelAndProvider(provider: string, modelId: string): void;
   setDefaultThinkingLevel(level: ThinkingLevel): void;
   flush(): Promise<void>;
@@ -48,6 +57,16 @@ export class SessionDefaultsService {
       this.inspectStarterPreference(cwd),
     ]);
     return this.response(settings, models, preferenceInspection);
+  }
+
+  async readV2(cwd: string): Promise<SessionDefaultsV2Response> {
+    const settings = this.createSettingsManager(cwd, this.deps.agentDir);
+    const configuredExact = rawConfiguredExact(settings);
+    const [models, preferenceInspection] = await Promise.all([
+      this.availableModels(),
+      this.inspectStarterPreference(cwd),
+    ]);
+    return this.responseV2(settings, models, configuredExact, preferenceInspection);
   }
 
   async update(cwd: string, update: SessionDefaultsUpdate): Promise<SessionDefaultsResponse> {
@@ -116,6 +135,18 @@ export class SessionDefaultsService {
     const thinkingLevel = effectiveThinkingLevel(settings.getDefaultThinkingLevel() ?? "off", thinkingLevels);
     return responseFor(models, model, thinkingLevel, thinkingLevels, preferenceInspection);
   }
+
+  private responseV2(
+    settings: SessionDefaultsSettings,
+    models: readonly DefaultModel[],
+    configuredExact: ExactModelSelection | undefined,
+    preferenceInspection: StarterPreferenceInspection,
+  ): SessionDefaultsV2Response {
+    const model = configuredDefaultModel(settings, models);
+    const thinkingLevels = this.thinkingLevelsForModel(model);
+    const thinkingLevel = effectiveThinkingLevel(settings.getDefaultThinkingLevel() ?? "off", thinkingLevels);
+    return responseV2For(models, model, thinkingLevel, thinkingLevels, configuredExact, preferenceInspection);
+  }
 }
 
 function defaultThinkingLevelsForModel(model: DefaultModel | undefined): readonly ThinkingLevel[] {
@@ -129,8 +160,89 @@ function configuredDefaultModel(settings: SessionDefaultsSettings, models: reado
   return models.find((model) => model.provider === provider && model.id === modelId);
 }
 
-function effectiveThinkingLevel(configured: ThinkingLevel, levels: readonly ThinkingLevel[]): ThinkingLevel {
-  return levels.includes(configured) ? configured : (levels[0] ?? "off");
+function effectiveThinkingLevel(configured: string, levels: readonly ThinkingLevel[]): ThinkingLevel {
+  return isKnownThinkingLevel(configured) && levels.includes(configured) ? configured : (levels[0] ?? "off");
+}
+
+function responseV2For(
+  models: readonly DefaultModel[],
+  model: DefaultModel | undefined,
+  thinkingLevel: ThinkingLevel,
+  thinkingLevels: readonly ThinkingLevel[],
+  configuredExact: ExactModelSelection | undefined,
+  preferenceInspection: StarterPreferenceInspection,
+): SessionDefaultsV2Response {
+  return {
+    starterModelPolicyContractVersion: 2,
+    ...(model === undefined ? {} : { model: modelToClientModel(model) }),
+    thinkingLevel,
+    models: models.map(modelToClientModel),
+    thinkingLevels: [...thinkingLevels],
+    ...preferenceFieldsV2(preferenceInspection, configuredExact),
+  };
+}
+
+function preferenceFieldsV2(
+  inspection: StarterPreferenceInspection,
+  configuredExact: ExactModelSelection | undefined,
+): Pick<
+  SessionDefaultsV2Response,
+  "starterModelPolicyPreference" | "starterModelPolicyPreferenceError"
+> {
+  if (inspection.kind === "full") {
+    return { starterModelPolicyPreference: cloneFullPreference(inspection.preference) };
+  }
+  if (inspection.kind === "legacy-v1") {
+    return { starterModelPolicyPreference: hydrateLegacyPreference(inspection.preference, configuredExact) };
+  }
+  if (inspection.kind === "invalid") {
+    return { starterModelPolicyPreferenceError: inspection.reason };
+  }
+  return {};
+}
+
+function rawConfiguredExact(settings: SessionDefaultsSettings): ExactModelSelection | undefined {
+  const provider = settings.getDefaultProvider();
+  const id = settings.getDefaultModel();
+  const thinkingLevel = settings.getDefaultThinkingLevel();
+  if (provider?.trim() === "" || id?.trim() === "" || thinkingLevel?.trim() === "") {
+    return undefined;
+  }
+  if (provider === undefined || id === undefined || thinkingLevel === undefined) {
+    return undefined;
+  }
+  return { model: { provider, id }, thinkingLevel };
+}
+
+function hydrateLegacyPreference(
+  preference: LegacyStarterModelPolicyPreference,
+  exact: ExactModelSelection | undefined,
+): StarterModelPolicyPreferenceResponse {
+  if (exact === undefined) {
+    return preference.tier === undefined
+      ? { mode: preference.mode }
+      : { mode: preference.mode, tier: preference.tier };
+  }
+  return {
+    mode: preference.mode,
+    exact: cloneExactModelSelection(exact),
+    ...(preference.tier === undefined ? {} : { tier: preference.tier }),
+  };
+}
+
+function cloneFullPreference(preference: StarterModelPolicyPreference): StarterModelPolicyPreference {
+  return {
+    mode: preference.mode,
+    exact: cloneExactModelSelection(preference.exact),
+    ...(preference.tier === undefined ? {} : { tier: preference.tier }),
+  };
+}
+
+function cloneExactModelSelection(selection: ExactModelSelection): ExactModelSelection {
+  return {
+    model: { provider: selection.model.provider, id: selection.model.id },
+    thinkingLevel: selection.thinkingLevel,
+  };
 }
 
 function responseFor(

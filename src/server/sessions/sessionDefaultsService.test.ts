@@ -59,7 +59,128 @@ describe("SessionDefaultsService", () => {
       mode: "tiered",
       tier: "frontier",
     });
+    expect(defaults).not.toHaveProperty("starterModelPolicyContractVersion");
     expect(defaults.starterModelPolicyPreference).not.toHaveProperty("exact");
+  });
+
+  it("returns a cloned full starter preference under contract version two", async () => {
+    const preference = {
+      mode: "tiered" as const,
+      exact: {
+        model: { provider: "retired", id: "remembered" },
+        thinkingLevel: "retired-level",
+      },
+      tier: "frontier" as const,
+    };
+    const harness = createHarness({
+      model: testModel(),
+      thinkingLevel: "high",
+      preferenceInspection: { kind: "full", preference },
+    });
+
+    const defaults = await harness.service.readV2("/workspace");
+
+    const hydratedPreference = defaults.starterModelPolicyPreference;
+    expect(defaults.starterModelPolicyContractVersion).toBe(2);
+    expect(hydratedPreference).toEqual(preference);
+    expect(hydratedPreference).not.toBe(preference);
+    if (hydratedPreference === undefined || !("exact" in hydratedPreference)) {
+      throw new Error("Expected a full starter model policy preference");
+    }
+    expect(hydratedPreference.exact).not.toBe(preference.exact);
+    expect(hydratedPreference.exact.model).not.toBe(preference.exact.model);
+  });
+
+  it("hydrates unavailable raw Exact settings for a legacy preference", async () => {
+    const harness = createHarness({
+      model: testModel(),
+      thinkingLevel: "high",
+      configuredProvider: "retired",
+      configuredModelId: "remembered",
+      configuredThinkingLevel: "retired-level",
+      preferenceInspection: {
+        kind: "legacy-v1",
+        preference: { mode: "exact" },
+      },
+    });
+
+    const defaults = await harness.service.readV2("/workspace");
+
+    expect(defaults.starterModelPolicyPreference).toEqual({
+      mode: "exact",
+      exact: {
+        model: { provider: "retired", id: "remembered" },
+        thinkingLevel: "retired-level",
+      },
+    });
+    expect(defaults.model).toBeUndefined();
+    expect(defaults.thinkingLevel).toBe("off");
+  });
+
+  it("hydrates raw Exact settings and a canonical tier for a legacy Tiered preference", async () => {
+    const model = testModel();
+    const harness = createHarness({
+      model,
+      thinkingLevel: "high",
+      preferenceInspection: {
+        kind: "legacy-v1",
+        preference: { mode: "tiered", tier: "frontier" },
+      },
+    });
+
+    const defaults = await harness.service.readV2("/workspace");
+
+    expect(defaults.starterModelPolicyPreference).toEqual({
+      mode: "tiered",
+      exact: {
+        model: { provider: model.provider, id: model.id },
+        thinkingLevel: "high",
+      },
+      tier: "frontier",
+    });
+  });
+
+  it.each([
+    ["provider is undefined", { configuredProvider: undefined }],
+    ["model id is undefined", { configuredModelId: undefined }],
+    ["thinking level is undefined", { configuredThinkingLevel: undefined }],
+    ["provider is blank", { configuredProvider: "" }],
+    ["model id is blank", { configuredModelId: "" }],
+    ["thinking level is blank", { configuredThinkingLevel: "" }],
+  ])("retains the legacy preference shape when the raw %s", async (_description, configured) => {
+    const harness = createHarness({
+      model: testModel(),
+      thinkingLevel: "high",
+      ...configured,
+      preferenceInspection: {
+        kind: "legacy-v1",
+        preference: { mode: "tiered", tier: "frontier" },
+      },
+    });
+
+    const defaults = await harness.service.readV2("/workspace");
+
+    expect(defaults.starterModelPolicyPreference).toEqual({ mode: "tiered", tier: "frontier" });
+    expect(defaults.starterModelPolicyPreference).not.toHaveProperty("exact");
+  });
+
+  it("returns ordinary defaults and a preference error when inspection throws", async () => {
+    const model = testModel();
+    const harness = createHarness({
+      model,
+      thinkingLevel: "high",
+      inspectError: new Error("preference store unavailable"),
+    });
+
+    const defaults = await harness.service.readV2("/workspace");
+
+    expect(defaults).toMatchObject({
+      starterModelPolicyContractVersion: 2,
+      model: { provider: model.provider, id: model.id },
+      thinkingLevel: "high",
+      starterModelPolicyPreferenceError: "preference store unavailable",
+    });
+    expect(defaults).not.toHaveProperty("starterModelPolicyPreference");
   });
 
   it("keeps Exact defaults available when preference inspection fails", async () => {
@@ -178,13 +299,16 @@ function createHarness(input: {
   model: ReturnType<typeof testModel>;
   models?: readonly ReturnType<typeof testModel>[];
   thinkingLevel: "off" | "low" | "high";
+  configuredProvider?: string | undefined;
+  configuredModelId?: string | undefined;
+  configuredThinkingLevel?: string | undefined;
   preferenceInspection?: StarterPreferenceInspection;
   inspectError?: Error;
   replaceError?: Error;
 }) {
-  let provider = input.model.provider;
-  let modelId = input.model.id;
-  let thinkingLevel = input.thinkingLevel;
+  let provider = "configuredProvider" in input ? input.configuredProvider : input.model.provider;
+  let modelId = "configuredModelId" in input ? input.configuredModelId : input.model.id;
+  let thinkingLevel = "configuredThinkingLevel" in input ? input.configuredThinkingLevel : input.thinkingLevel;
   const settings = {
     getDefaultProvider: () => provider,
     getDefaultModel: () => modelId,
