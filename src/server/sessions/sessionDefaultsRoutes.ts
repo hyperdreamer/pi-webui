@@ -11,13 +11,23 @@ import type { SessionDefaultsService } from "./sessionDefaultsService.js";
 
 export interface SessionDefaultsRouteService {
   read(cwd: string): ReturnType<SessionDefaultsService["read"]>;
+  readV2(cwd: string): ReturnType<SessionDefaultsService["readV2"]>;
   update(cwd: string, update: SessionDefaultsUpdate): ReturnType<SessionDefaultsService["update"]>;
 }
 
+interface SessionDefaultsQuery {
+  cwd?: string;
+  starterModelPolicyContract?: string | string[];
+}
+
 export function registerSessionDefaultsRoutes(app: FastifyInstance, service: SessionDefaultsRouteService, prefix = ""): void {
-  app.get<{ Querystring: { cwd?: string } }>(`${prefix}/session-defaults`, async (request, reply) => {
+  app.get<{ Querystring: SessionDefaultsQuery }>(`${prefix}/session-defaults`, async (request, reply) => {
     try {
-      return await service.read(normalizeRequestCwd(requireString(request.query.cwd, "cwd")));
+      const cwd = normalizeRequestCwd(requireString(request.query.cwd, "cwd"));
+      const contract = request.query.starterModelPolicyContract;
+      if (contract === undefined) return await service.read(cwd);
+      if (contract !== "2") throw new Error("Unsupported starter model policy contract");
+      return await service.readV2(cwd);
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }

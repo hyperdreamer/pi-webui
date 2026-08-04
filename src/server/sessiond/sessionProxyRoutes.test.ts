@@ -29,7 +29,10 @@ describe("machine-scoped session proxy routes", () => {
   });
 
   it("forwards session-default reads and writes without a session id", async () => {
-    const read = await app.inject({ method: "GET", url: `/api/machines/local/session-defaults?cwd=${encodeURIComponent("/repo")}` });
+    const read = await app.inject({
+      method: "GET",
+      url: "/api/machines/local/session-defaults?cwd=%2Frepo%20one&starterModelPolicyContract=2",
+    });
     const update = await app.inject({
       method: "PUT",
       url: "/api/machines/local/session-defaults",
@@ -45,8 +48,12 @@ describe("machine-scoped session proxy routes", () => {
     });
 
     expect([read.statusCode, update.statusCode, preferenceUpdate.statusCode]).toEqual([200, 200, 200]);
-    expect(daemon.requests).toEqual([
-      { method: "GET", path: "/session-defaults?cwd=%2Frepo", body: undefined },
+    expect(daemon.requests[0]).toEqual({
+      method: "GET",
+      path: "/session-defaults?cwd=%2Frepo%20one&starterModelPolicyContract=2",
+      body: undefined,
+    });
+    expect(daemon.requests.slice(1)).toEqual([
       { method: "PUT", path: "/session-defaults", body: { cwd: "/repo", thinkingLevel: "high" } },
       {
         method: "PUT",

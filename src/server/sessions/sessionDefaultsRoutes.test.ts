@@ -1,10 +1,12 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionDefaultsV2Response } from "../../shared/apiTypes.js";
 import { registerSessionDefaultsRoutes, type SessionDefaultsRouteService } from "./sessionDefaultsRoutes.js";
 
 let app: FastifyInstance;
 let service: SessionDefaultsRouteService;
 let read: ReturnType<typeof vi.fn<SessionDefaultsRouteService["read"]>>;
+let readV2: ReturnType<typeof vi.fn<SessionDefaultsRouteService["readV2"]>>;
 let update: ReturnType<typeof vi.fn<SessionDefaultsRouteService["update"]>>;
 
 const defaults = {
@@ -14,10 +16,23 @@ const defaults = {
   thinkingLevels: ["off", "low", "high"],
 };
 
+const v2Defaults: SessionDefaultsV2Response = {
+  ...defaults,
+  starterModelPolicyContractVersion: 2,
+  starterModelPolicyPreference: {
+    mode: "exact",
+    exact: {
+      model: { provider: "openai", id: "gpt-default" },
+      thinkingLevel: "high",
+    },
+  },
+};
+
 beforeEach(async () => {
   read = vi.fn<SessionDefaultsRouteService["read"]>(() => Promise.resolve(defaults));
+  readV2 = vi.fn<SessionDefaultsRouteService["readV2"]>(() => Promise.resolve(v2Defaults));
   update = vi.fn<SessionDefaultsRouteService["update"]>(() => Promise.resolve(defaults));
-  service = { read, update };
+  service = { read, readV2, update };
   app = Fastify({ logger: false });
   registerSessionDefaultsRoutes(app, service);
   await app.ready();
@@ -34,6 +49,36 @@ describe("session defaults routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(defaults);
     expect(read).toHaveBeenCalledWith("/repo one");
+    expect(readV2).not.toHaveBeenCalled();
+  });
+
+  it("reads version-two defaults only for contract selector 2", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/session-defaults?cwd=%2Frepo%20one&starterModelPolicyContract=2",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(v2Defaults);
+    expect(readV2).toHaveBeenCalledWith("/repo one");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an empty selector", "starterModelPolicyContract="],
+    ["version one", "starterModelPolicyContract=1"],
+    ["an unknown version", "starterModelPolicyContract=3"],
+    ["duplicate version-two selectors", "starterModelPolicyContract=2&starterModelPolicyContract=2"],
+    ["conflicting selectors", "starterModelPolicyContract=2&starterModelPolicyContract=3"],
+  ])("rejects %s before invoking either read method", async (_label, selector) => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/session-defaults?cwd=%2Frepo%20one&${selector}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(read).not.toHaveBeenCalled();
+    expect(readV2).not.toHaveBeenCalled();
   });
 
   it("updates a model default without a session id", async () => {
