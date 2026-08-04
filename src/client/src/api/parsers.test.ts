@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -507,6 +507,31 @@ describe("API parsers", () => {
         manualOrder,
       })).toThrow("Expected non-negative safe integer field: manualOrder");
     }
+  });
+
+  it("parses strict normalized session reorder responses", () => {
+    expect(parseSessionReorderResponse({
+      orderedSessions: [
+        { id: "second", cwd: "/repo", manualOrder: 0 },
+        { id: "first", cwd: "/repo", manualOrder: 1 },
+      ],
+    })).toEqual({
+      orderedSessions: [
+        { id: "second", cwd: "/repo", manualOrder: 0 },
+        { id: "first", cwd: "/repo", manualOrder: 1 },
+      ],
+    });
+
+    for (const manualOrder of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "0"]) {
+      expect(() => parseSessionReorderResponse({
+        orderedSessions: [{ id: "first", cwd: "/repo", manualOrder }],
+      })).toThrow("Expected non-negative safe integer field: manualOrder");
+    }
+    expect(() => parseSessionReorderResponse({
+      orderedSessions: [{ id: "first", cwd: "/repo" }],
+    })).toThrow("Expected non-negative safe integer field: manualOrder");
+    expect(() => parseSessionReorderResponse({ orderedSessions: {} }))
+      .toThrow("Expected array response");
   });
 
   it("parses a complete session model policy response", () => {

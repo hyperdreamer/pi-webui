@@ -1,4 +1,4 @@
-import { api as defaultApi, type CommandResult, type PromptAttachment, type QueuedSessionMessage, type SessionActivity, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionInfo, type SessionRef, type SessionStatus, type SessionStreamSnapshot, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type Workspace } from "../api";
+import { api as defaultApi, type CommandResult, type PromptAttachment, type QueuedSessionMessage, type SessionActivity, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionInfo, type SessionOrderEntry, type SessionRef, type SessionReorderRequest, type SessionStatus, type SessionStreamSnapshot, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type Workspace } from "../api";
 import type { AppState } from "../appState";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
 import { textMessage } from "../chatMessages";
@@ -76,6 +76,7 @@ export interface SessionControllerDependencies {
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
+  refreshProjectSessionCatalog?: () => void | Promise<void>;
 }
 
 interface BulkSessionMutationResult {
@@ -171,7 +172,9 @@ export class SessionController {
   private readonly notifications: SessionNotificationSessionBridge | undefined;
   private readonly replacePromptEditorText: SessionControllerDependencies["replacePromptEditorText"];
   private readonly onSelectedSessionReady: SessionControllerDependencies["onSelectedSessionReady"];
+  private readonly refreshProjectSessionCatalog: NonNullable<SessionControllerDependencies["refreshProjectSessionCatalog"]>;
   private selectionSeq = 0;
+  private sessionReorderInFlight = false;
   private disposed = false;
   // Join-time stream watermark for the selected session. `seq` is the
   // `SessionEventHub` sequence captured together with the seeded partial by the
@@ -232,6 +235,7 @@ export class SessionController {
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
+    this.refreshProjectSessionCatalog = deps.refreshProjectSessionCatalog ?? (() => undefined);
   }
 
   applyGlobalEvent(event: GlobalSessionEvent): void {
@@ -904,6 +908,58 @@ export class SessionController {
     }
   }
 
+  async reorderSession(session: SessionInfo, input: SessionReorderRequest): Promise<void> {
+    if (this.sessionReorderInFlight || session.archived === true || session.persisted !== true) return;
+    const before = this.getState();
+    const machineId = selectedMachineId(before);
+    const workspaceId = before.selectedWorkspace?.id;
+    const selectionSeq = this.selectionSeq;
+    const optimistic: SessionOrderEntry[] = input.orderedSessions.map((ref, manualOrder) => ({ ...ref, manualOrder }));
+    const priorSessionOrders = captureSessionOrderEntries(before.sessions, input.orderedSessions);
+    const priorProjectOrders = captureSessionOrderEntries(before.projectSessions, input.orderedSessions);
+    const priorSelectedOrder = captureSessionOrderEntries(
+      before.selectedSession === undefined ? [] : [before.selectedSession],
+      input.orderedSessions,
+    );
+    this.sessionReorderInFlight = true;
+    this.setState({
+      sessions: applySessionOrderEntries(before.sessions, optimistic),
+      projectSessions: applySessionOrderEntries(before.projectSessions, optimistic),
+      selectedSession: before.selectedSession === undefined
+        ? undefined
+        : applySessionOrderEntries([before.selectedSession], optimistic)[0],
+    });
+    try {
+      const response = await this.api.reorder(session, input, machineId);
+      if (!this.isCurrentSessionOrderScope(machineId, workspaceId, selectionSeq)) return;
+      const state = this.getState();
+      this.setState({
+        sessions: applySessionOrderEntries(state.sessions, response.orderedSessions),
+        projectSessions: applySessionOrderEntries(state.projectSessions, response.orderedSessions),
+        selectedSession: state.selectedSession === undefined
+          ? undefined
+          : applySessionOrderEntries([state.selectedSession], response.orderedSessions)[0],
+      });
+    } catch (error) {
+      if (!this.isCurrentSessionOrderScope(machineId, workspaceId, selectionSeq)) return;
+      const state = this.getState();
+      this.setState({
+        sessions: restoreSessionOrderEntries(state.sessions, priorSessionOrders),
+        projectSessions: restoreSessionOrderEntries(state.projectSessions, priorProjectOrders),
+        selectedSession: state.selectedSession === undefined
+          ? undefined
+          : restoreSessionOrderEntries([state.selectedSession], priorSelectedOrder)[0],
+        error: `Reorder failed: ${errorMessage(error)}`,
+      });
+      await Promise.allSettled([
+        this.refreshCurrentWorkspaceSessions(machineId),
+        Promise.resolve().then(() => this.refreshProjectSessionCatalog()),
+      ]);
+    } finally {
+      this.sessionReorderInFlight = false;
+    }
+  }
+
   async deleteCachedNewSession(session = this.getState().selectedSession) {
     if (session === undefined || !isTransientNewSessionInfo(session, this.statusForSession(session), this.sessionPersistenceOptions())) return;
     const pendingStart = isClientPendingStartSessionInfo(session) ? this.pendingSessionStarts.get(session.id) : undefined;
@@ -975,6 +1031,7 @@ export class SessionController {
       await this.api.detachParent(session, selectedMachineId(this.getState()));
       const detached = { ...session };
       delete detached.parentSessionPath;
+      delete detached.manualOrder;
       this.replaceSession(detached);
     } catch (error) {
       this.setState({ error: String(error) });
@@ -1341,6 +1398,14 @@ export class SessionController {
 
   private isCurrentSessionSelection(sessionId: string, machineId: string, selectionSeq: number): boolean {
     return selectionSeq === this.selectionSeq && this.isSelectedSessionIdentity(sessionId, machineId);
+  }
+
+  private isCurrentSessionOrderScope(machineId: string, workspaceId: string | undefined, selectionSeq: number): boolean {
+    const state = this.getState();
+    return !this.disposed
+      && selectionSeq === this.selectionSeq
+      && selectedMachineId(state) === machineId
+      && state.selectedWorkspace?.id === workspaceId;
   }
 
   private isSelectedSessionIdentity(sessionId: string, machineId: string): boolean {
@@ -2014,6 +2079,54 @@ function isRejected<T>(result: PromiseSettledResult<T>): result is PromiseReject
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+type SessionOrderReference = Pick<SessionOrderEntry, "id" | "cwd">;
+
+interface CapturedSessionOrderEntry extends SessionOrderReference {
+  manualOrder: number | undefined;
+}
+
+function applySessionOrderEntries(sessions: readonly SessionInfo[], entries: readonly SessionOrderEntry[]): SessionInfo[] {
+  const entriesByIdentity = new Map(entries.map((entry) => [sessionOrderEntryKey(entry), entry]));
+  return sessions.map((session) => {
+    const entry = entriesByIdentity.get(sessionOrderEntryKey(session));
+    if (entry === undefined || session.manualOrder === entry.manualOrder) return session;
+    return { ...session, manualOrder: entry.manualOrder };
+  });
+}
+
+function captureSessionOrderEntries(
+  sessions: readonly SessionInfo[],
+  entries: readonly SessionOrderReference[],
+): CapturedSessionOrderEntry[] {
+  const submittedIdentities = new Set(entries.map(sessionOrderEntryKey));
+  return sessions.flatMap((session) => submittedIdentities.has(sessionOrderEntryKey(session))
+    ? [{ id: session.id, cwd: session.cwd, manualOrder: session.manualOrder }]
+    : []);
+}
+
+function restoreSessionOrderEntries(
+  sessions: readonly SessionInfo[],
+  entries: readonly CapturedSessionOrderEntry[],
+): SessionInfo[] {
+  const priorEntriesByIdentity = new Map(entries.map((entry) => [sessionOrderEntryKey(entry), entry]));
+  return sessions.map((session) => {
+    const prior = priorEntriesByIdentity.get(sessionOrderEntryKey(session));
+    if (prior === undefined) return session;
+    if (prior.manualOrder === undefined) {
+      if (!Object.hasOwn(session, "manualOrder")) return session;
+      const { manualOrder: _previousManualOrder, ...restored } = session;
+      void _previousManualOrder;
+      return restored;
+    }
+    if (session.manualOrder === prior.manualOrder) return session;
+    return { ...session, manualOrder: prior.manualOrder };
+  });
+}
+
+function sessionOrderEntryKey(entry: SessionOrderReference): string {
+  return JSON.stringify([entry.cwd, entry.id]);
 }
 
 function sessionMessageCountPatch(state: AppState, sessionId: string, messageCount: number | undefined): Pick<Partial<AppState>, "sessions" | "projectSessions" | "selectedSession"> {
