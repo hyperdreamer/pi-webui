@@ -74,8 +74,15 @@ Process restarts depend on the key:
     "frontier": { "provider": "openai", "modelId": "o3-mini", "thinkingLevel": "high" }
   },
   "utilityModels": {
-    "lightweight": { "provider": "anthropic", "id": "claude-haiku" },
-    "context": { "provider": "anthropic", "id": "claude-sonnet" }
+    "lightweight": {
+      "provider": "anthropic",
+      "id": "claude-haiku",
+      "thinkingLevel": "low"
+    },
+    "context": {
+      "provider": "anthropic",
+      "id": "claude-sonnet"
+    }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -232,14 +239,18 @@ The navigation footer exposes **Models** for the selected machine and **Skills**
 
 ### Utility models
 
-`utilityModels` is a machine-global setting stored in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. In **Settings → Utility models**, configure models for utility work on the selected machine. This is separate from **Settings → Model tiers**, which controls session model routing.
+`utilityModels` is a machine-global setting stored in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. In **Settings → Utility models**, configure models and thinking levels for utility work on the selected machine. This is separate from **Settings → Model tiers**, which controls session model routing.
 
-- `lightweight` handles automatic titles and requested branch summaries.
-- `context` handles compaction.
-- Title generation and branch summaries try `lightweight`, then the active session model.
-- Compaction tries `context`, then `lightweight`, then the active session model.
-- When both settings are unset, existing active-session behavior is preserved. An unset, malformed, unavailable, unauthenticated, authentication-failing, or call-failing candidate advances to the next fallback in its order.
+- `lightweight` handles automatic titles and requested branch summaries. `context` handles compaction.
+- Each row selects one model and one thinking level for every operation routed through that row.
+- The UI displays the automatic choice as lowercase `auto`; it is represented by an omitted `thinkingLevel` in config rather than a literal `auto` value.
+- `auto` uses `minimal` when the exact selected model supports it, otherwise `off`.
+- Explicit options are derived from the selected model's supported levels and may include `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+- Changing a model resets that row to `auto`. A saved explicit level that the model no longer supports remains visible, blocks save, and causes only that utility slot to be skipped until repaired.
+- Title generation and branch summaries try `lightweight`, then the active session model. Compaction tries `context`, then `lightweight`, then the active session model; the Context-to-Lightweight fallback uses each row's own configured level.
+- When both settings are unset, existing active-session behavior is preserved. An unset, malformed, unavailable, unauthenticated, authentication-failing, or call-failing candidate advances to the next fallback in its order. The active-session fallback keeps its existing behavior.
 - Utility calls never change the selected session model, its thinking level, or Pi's remembered default.
+- Version 1 remotes remain model-configurable but require an upgraded runtime for explicit thinking levels.
 - Settings target the selected machine. Existing sessions read saved changes on their next utility operation; remote editing requires the additive `settings.utilityModels` capability.
 
 ### Model tiers

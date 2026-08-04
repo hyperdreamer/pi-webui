@@ -223,8 +223,15 @@
     "frontier": { "provider": "openai", "modelId": "o3-mini", "thinkingLevel": "high" }
   },
   "utilityModels": {
-    "lightweight": { "provider": "anthropic", "id": "claude-haiku" },
-    "context": { "provider": "anthropic", "id": "claude-sonnet" }
+    "lightweight": {
+      "provider": "anthropic",
+      "id": "claude-haiku",
+      "thinkingLevel": "low"
+    },
+    "context": {
+      "provider": "anthropic",
+      "id": "claude-sonnet"
+    }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -658,16 +665,20 @@
               <p>
                 <code>utilityModels</code> is a machine-global setting stored in <code>$PI_WEBUI_CONFIG</code> or
                 <code>~/.config/pi-webui/config.json</code>. In <strong>Settings → Utility models</strong>, configure
-                models for utility work on the selected machine. This is separate from <strong>Settings → Model tiers</strong>,
+                models and thinking levels for utility work on the selected machine. This is separate from <strong>Settings → Model tiers</strong>,
                 which controls session model routing.
               </p>
               <ul>
-                <li><code>lightweight</code> handles automatic titles and requested branch summaries.</li>
-                <li><code>context</code> handles compaction.</li>
-                <li>Title generation and branch summaries try <code>lightweight</code>, then the active session model.</li>
-                <li>Compaction tries <code>context</code>, then <code>lightweight</code>, then the active session model.</li>
-                <li>When both settings are unset, existing active-session behavior is preserved. An unset, malformed, unavailable, unauthenticated, authentication-failing, or call-failing candidate advances to the next fallback in its order.</li>
+                <li><code>lightweight</code> handles automatic titles and requested branch summaries. <code>context</code> handles compaction.</li>
+                <li>Each row selects one model and one thinking level for every operation routed through that row.</li>
+                <li>The UI displays the automatic choice as lowercase <code>auto</code>; it is represented by an omitted <code>thinkingLevel</code> in config rather than a literal <code>auto</code> value.</li>
+                <li><code>auto</code> uses <code>minimal</code> when the exact selected model supports it, otherwise <code>off</code>.</li>
+                <li>Explicit options are derived from the selected model's supported levels and may include <code>off</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, and <code>max</code>.</li>
+                <li>Changing a model resets that row to <code>auto</code>. A saved explicit level that the model no longer supports remains visible, blocks save, and causes only that utility slot to be skipped until repaired.</li>
+                <li>Title generation and branch summaries try <code>lightweight</code>, then the active session model. Compaction tries <code>context</code>, then <code>lightweight</code>, then the active session model; the Context-to-Lightweight fallback uses each row's own configured level.</li>
+                <li>When both settings are unset, existing active-session behavior is preserved. An unset, malformed, unavailable, unauthenticated, authentication-failing, or call-failing candidate advances to the next fallback in its order. The active-session fallback keeps its existing behavior.</li>
                 <li>Utility calls never change the selected session model, its thinking level, or Pi's remembered default.</li>
+                <li>Version 1 remotes remain model-configurable but require an upgraded runtime for explicit thinking levels.</li>
                 <li>Settings target the selected machine. Existing sessions read saved changes on their next utility operation; remote editing requires the additive <code>settings.utilityModels</code> capability.</li>
               </ul>
             </section>
