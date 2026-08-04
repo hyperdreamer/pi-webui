@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicyResponse, SessionModelPolicyUpdate } from "../../../shared/apiTypes";
-import { SessionController } from "./sessionController";
-import { defaultApi, deferred, emptyPage, FakeSocket, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
+import { SessionController, type SessionControllerDependencies } from "./sessionController";
+import { defaultApi, deferred, emptyPage, FakeSocket, fullStarterModelPolicyPreference, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionInfo, type SessionStatus } from "./sessionController.testSupport";
 
 const exact: ExactModelSelection = { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" };
 
@@ -56,6 +56,7 @@ function harness(
   api: typeof defaultApi,
   initial: Partial<AppState> = {},
   updateUrl: () => void = () => undefined,
+  deps: Pick<SessionControllerDependencies, "onStarterModelPolicyConfirmed"> = {},
 ): Harness {
   let state: AppState = {
     ...initialAppState(),
@@ -74,7 +75,7 @@ function harness(
     },
     updateUrl,
     undefined,
-    { api, socket: new FakeSocket() },
+    { api, socket: new FakeSocket(), ...deps },
   );
   return { controller, state: () => state, statePatches, setSelection: (patch) => { state = { ...state, ...patch }; } };
 }
@@ -180,6 +181,136 @@ describe("SessionController model policy state", () => {
     expect(state().status).toEqual(confirmed.session);
     expect(state().isSavingModelPolicy).toBe(false);
     expect(state().modelPolicyError).toBeUndefined();
+  });
+
+  it("confirms a successful full policy response for the selected plus-created root", async () => {
+    const plusSession: SessionInfo = { ...selectedSession, creationSource: "session-list-plus" };
+    const confirmedPolicy = {
+      ...fullStarterModelPolicyPreference,
+      exact: {
+        ...fullStarterModelPolicyPreference.exact,
+        model: { ...fullStarterModelPolicyPreference.exact.model },
+      },
+    };
+    const confirmed: SessionModelPolicyResponse = {
+      contractVersion: 1,
+      policy: confirmedPolicy,
+      session: policyStatus(plusSession.id),
+    };
+    const optimistic: SessionModelPolicyUpdate = { mode: "exact", exact: switchedExact };
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller, state } = harness(
+      { ...defaultApi, setModelPolicy: () => Promise.resolve(confirmed) },
+      { selectedSession: plusSession, sessions: [plusSession, otherSession] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(optimistic);
+
+    expect(onStarterModelPolicyConfirmed).toHaveBeenCalledWith({
+      machineId: "remote",
+      session: plusSession,
+      policy: confirmedPolicy,
+    });
+    const event = onStarterModelPolicyConfirmed.mock.calls[0]?.[0];
+    if (event === undefined) throw new Error("Expected a confirmed starter policy event");
+    expect(event.policy).not.toBe(confirmedPolicy);
+    expect(event.policy).not.toBe(optimistic);
+    expect(event.policy.exact).not.toBe(confirmedPolicy.exact);
+    expect(event.policy.exact.model).not.toBe(confirmedPolicy.exact.model);
+    event.policy.exact.model.id = "mutated-by-observer";
+    expect(confirmedPolicy.exact.model.id).toBe("gpt-advanced");
+    expect(state().modelPolicy).toBe(confirmed);
+  });
+
+  it("does not confirm a failed policy save", async () => {
+    const plusSession: SessionInfo = { ...selectedSession, creationSource: "session-list-plus" };
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller } = harness(
+      { ...defaultApi, setModelPolicy: () => Promise.reject(new Error("write rejected")) },
+      { selectedSession: plusSession, sessions: [plusSession] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(tieredUpdate);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a blocked policy response even when it includes a full policy", async () => {
+    const plusSession: SessionInfo = { ...selectedSession, creationSource: "session-list-plus" };
+    const blocked: SessionModelPolicyResponse = {
+      contractVersion: 1,
+      policy: { ...fullStarterModelPolicyPreference },
+      session: policyStatus(plusSession.id, { blockedReason: "MODEL_POLICY_BLOCKED: restore unproven" }),
+    };
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller } = harness(
+      { ...defaultApi, setModelPolicy: () => Promise.resolve(blocked) },
+      { selectedSession: plusSession, sessions: [plusSession] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(tieredUpdate);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a policy response that omits the full policy", async () => {
+    const plusSession: SessionInfo = { ...selectedSession, creationSource: "session-list-plus" };
+    const omitted: SessionModelPolicyResponse = {
+      contractVersion: 1,
+      session: policyStatus(plusSession.id, { ladderValid: false, blockedReason: "Persisted policy entry is malformed" }),
+    };
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller } = harness(
+      { ...defaultApi, setModelPolicy: () => Promise.resolve(omitted) },
+      { selectedSession: plusSession, sessions: [plusSession] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(tieredUpdate);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ordinary", selectedSession],
+    ["imported", { ...selectedSession, creationSource: "session-list-plus" as const, parentSessionPath: "/tmp/parent.jsonl" }],
+  ])("does not confirm a successful save for an %s session", async (_kind, ineligibleSession) => {
+    const confirmed = tieredResponse(ineligibleSession.id);
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller } = harness(
+      { ...defaultApi, setModelPolicy: () => Promise.resolve(confirmed) },
+      { selectedSession: ineligibleSession, sessions: [ineligibleSession] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(tieredUpdate);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not save or confirm policy for an archived plus-created root", async () => {
+    const archived: SessionInfo = { ...selectedSession, creationSource: "session-list-plus", archived: true };
+    const setModelPolicy = vi.fn(() => Promise.resolve(tieredResponse(archived.id)));
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const { controller } = harness(
+      { ...defaultApi, setModelPolicy },
+      { selectedSession: archived, sessions: [archived] },
+      undefined,
+      { onStarterModelPolicyConfirmed },
+    );
+
+    await controller.saveModelPolicy(tieredUpdate);
+
+    expect(setModelPolicy).not.toHaveBeenCalled();
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
   });
 
   it("ignores a policy read that resolves after the selection changed", async () => {

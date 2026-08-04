@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { isCachedNewSessionInfo, loadCachedNewSessions } from "../cachedNewSessions";
 import { loadDraft, saveDraft } from "../promptDraftStorage";
-import { SessionController } from "./sessionController";
-import { defaultApi, deferred, emptyPage, FakeSocket, MemoryStorage, oldSession, sessionKey, sessionLookupId, status, workspace, type AppState, type SessionInfo } from "./sessionController.testSupport";
+import { SessionController, type SessionControllerDependencies } from "./sessionController";
+import { defaultApi, deferred, emptyPage, FakeSocket, fullStarterModelPolicyPreference, MemoryStorage, oldSession, replacementSession, sessionKey, sessionLookupId, status, workspace, type AppState, type SessionInfo } from "./sessionController.testSupport";
 
 describe("SessionController pending starts", () => {
   it("creates and selects a temporary editable session before backend start resolves", async () => {
@@ -328,4 +328,180 @@ describe("SessionController pending starts", () => {
     expect(state.sessions).toEqual([]);
     expect(state.selectedSession).toBeUndefined();
   });
+
+  it("confirms a plus start from its cloned initializer after the sourced session resolves", async () => {
+    const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
+    const startRequest = deferred<SessionInfo>();
+    const startPlusSession = vi.fn<typeof defaultApi.startPlusSession>(() => startRequest.promise);
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness({ startPlusSession }, onStarterModelPolicyConfirmed);
+    const initialModelPolicy = {
+      ...fullStarterModelPolicyPreference,
+      exact: {
+        ...fullStarterModelPolicyPreference.exact,
+        model: { ...fullStarterModelPolicyPreference.exact.model },
+      },
+    };
+
+    const start = harness.controller.startPlusSession(initialModelPolicy);
+    const temporarySession = harness.state().selectedSession;
+    const requestedPolicy = startPlusSession.mock.calls[0]?.[1];
+
+    expect(temporarySession?.creationSource).toBe("session-list-plus");
+    expect(startPlusSession).toHaveBeenCalledWith("/repo", fullStarterModelPolicyPreference, "local");
+    expect(requestedPolicy).not.toBe(initialModelPolicy);
+    expect(requestedPolicy?.exact).not.toBe(initialModelPolicy.exact);
+    expect(requestedPolicy?.exact.model).not.toBe(initialModelPolicy.exact.model);
+    initialModelPolicy.mode = "exact";
+    initialModelPolicy.exact.model.id = "mutated-after-start";
+
+    startRequest.resolve(started);
+    await expect(start).resolves.toBe(true);
+
+    expect(onStarterModelPolicyConfirmed).toHaveBeenCalledTimes(1);
+    const confirmation = onStarterModelPolicyConfirmed.mock.calls[0]?.[0];
+    if (confirmation === undefined) throw new Error("Expected a plus-start confirmation");
+    expect(confirmation.machineId).toBe("local");
+    expect(confirmation.session).toMatchObject({
+      id: "new-session",
+      creationSource: "session-list-plus",
+    });
+    expect(confirmation.policy).toEqual(fullStarterModelPolicyPreference);
+    expect(confirmation.policy).toBe(requestedPolicy);
+  });
+
+  it("queues a plus start's initial prompt until backend creation succeeds", async () => {
+    const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
+    const startRequest = deferred<SessionInfo>();
+    const startPlusSession = vi.fn<typeof defaultApi.startPlusSession>(() => startRequest.promise);
+    const prompt = vi.fn(() => Promise.resolve({ accepted: true } as const));
+    const harness = pendingStartHarness({ startPlusSession, prompt });
+    const startOutcomes: boolean[] = [];
+
+    const starting = harness.controller.startPlusSessionWithPrompt(
+      "Plan the migration",
+      undefined,
+      undefined,
+      "inline",
+      fullStarterModelPolicyPreference,
+      (startedSuccessfully) => { startOutcomes.push(startedSuccessfully); },
+    );
+
+    expect(startPlusSession).toHaveBeenCalledWith("/repo", fullStarterModelPolicyPreference, "local");
+    expect(prompt).not.toHaveBeenCalled();
+    expect(startOutcomes).toEqual([]);
+
+    startRequest.resolve(started);
+    await expect(starting).resolves.toBeUndefined();
+
+    expect(prompt).toHaveBeenCalledWith(
+      expect.objectContaining({ id: started.id }),
+      "Plan the migration",
+      undefined,
+      "local",
+      undefined,
+    );
+    expect(startOutcomes).toEqual([true]);
+  });
+
+  it("does not confirm a failed plus start", async () => {
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness(
+      { startPlusSession: () => Promise.reject(new Error("backend unavailable")) },
+      onStarterModelPolicyConfirmed,
+    );
+
+    await expect(harness.controller.startPlusSession(fullStarterModelPolicyPreference)).resolves.toBe(false);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a discarded plus start that resolves later", async () => {
+    const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
+    const startRequest = deferred<SessionInfo>();
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness(
+      {
+        startPlusSession: () => startRequest.promise,
+        stop: () => Promise.resolve({ stopped: true }),
+      },
+      onStarterModelPolicyConfirmed,
+    );
+
+    const start = harness.controller.startPlusSession(fullStarterModelPolicyPreference);
+    await harness.controller.deleteCachedNewSession(harness.state().selectedSession);
+    startRequest.resolve(started);
+    await start;
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a plus start that became stale after its workspace changed", async () => {
+    const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
+    const startRequest = deferred<SessionInfo>();
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness({ startPlusSession: () => startRequest.promise }, onStarterModelPolicyConfirmed);
+
+    const start = harness.controller.startPlusSession(fullStarterModelPolicyPreference);
+    harness.setState({ selectedWorkspace: { ...workspace, id: "other-workspace", path: "/other" } });
+    startRequest.resolve(started);
+    await start;
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a plus start when the resolved session omits its source", async () => {
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness(
+      { startPlusSession: () => Promise.resolve(replacementSession) },
+      onStarterModelPolicyConfirmed,
+    );
+
+    await expect(harness.controller.startPlusSession(fullStarterModelPolicyPreference)).resolves.toBe(true);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a legacy start even when its response projects plus provenance", async () => {
+    const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
+    const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
+    const harness = pendingStartHarness(
+      { startSession: () => Promise.resolve(started) },
+      onStarterModelPolicyConfirmed,
+    );
+
+    await expect(harness.controller.startSession()).resolves.toBe(true);
+
+    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+  });
 });
+
+function pendingStartHarness(
+  apiOverrides: Partial<typeof defaultApi>,
+  onStarterModelPolicyConfirmed: NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]> = () => undefined,
+): {
+  controller: SessionController;
+  state: () => AppState;
+  setState: (patch: Partial<AppState>) => void;
+} {
+  let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+  const api: typeof defaultApi = {
+    ...defaultApi,
+    messages: () => Promise.resolve(emptyPage),
+    status: (session) => Promise.resolve(status(sessionLookupId(session))),
+    streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+    ...apiOverrides,
+  };
+  const controller = new SessionController(
+    () => state,
+    (patch) => { state = { ...state, ...patch }; },
+    () => undefined,
+    undefined,
+    { api, socket: new FakeSocket(), onStarterModelPolicyConfirmed },
+  );
+  return {
+    controller,
+    state: () => state,
+    setState: (patch) => { state = { ...state, ...patch }; },
+  };
+}

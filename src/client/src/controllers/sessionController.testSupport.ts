@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, vi } from "vitest";
+import type { StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type { MessagePage, SessionInfo, SessionRef, SessionStatus, Workspace } from "../api";
 import { machineSessionKey } from "../machineKeys";
 import type { SessionUiEvent } from "../sessionSocket";
@@ -111,6 +112,15 @@ export const replacementSession: SessionInfo = {
   ...oldSession,
   id: "new-session",
   path: "/tmp/new-session.jsonl",
+};
+
+export const fullStarterModelPolicyPreference: StarterModelPolicyPreference = {
+  mode: "tiered",
+  exact: {
+    model: { provider: "openai", id: "gpt-advanced" },
+    thinkingLevel: "high",
+  },
+  tier: "advanced",
 };
 
 export const emptyPage: MessagePage = { messages: [], start: 0, total: 0 };

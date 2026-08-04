@@ -12,7 +12,7 @@ import { StreamEventBuffer, isBufferedStreamEvent } from "../streamEventBuffer";
 import { isArchivableSessionInfo, isTransientNewSessionInfo, sessionPersistenceOptionsForRuntime } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
-import type { ClientSessionModelPolicyStatus, PromptAttachmentDelivery, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionNotificationInboxEvent } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, PromptAttachmentDelivery, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionNotificationInboxEvent, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
@@ -65,6 +65,12 @@ export interface SelectedSessionReady {
   session: SessionInfo;
 }
 
+export interface StarterModelPolicyConfirmedEvent {
+  machineId: string;
+  session: SessionInfo;
+  policy: StarterModelPolicyPreference;
+}
+
 export interface SessionControllerDependencies {
   api?: typeof defaultApi;
   socket?: SessionEventSocket;
@@ -76,6 +82,7 @@ export interface SessionControllerDependencies {
   notifications?: SessionNotificationSessionBridge;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
+  onStarterModelPolicyConfirmed?: (event: StarterModelPolicyConfirmedEvent) => void;
 }
 
 interface BulkSessionMutationResult {
@@ -93,6 +100,10 @@ type QueuedPendingSessionSendInput =
 
 type QueuedPendingSessionSend = QueuedPendingSessionSendInput & { id: string };
 
+type PendingSessionStartRequest =
+  | { kind: "legacy"; modelPolicy?: SessionModelPolicyUpdate }
+  | { kind: "plus"; initialModelPolicy: StarterModelPolicyPreference };
+
 interface PendingSessionStart {
   tempId: string;
   workspaceId: string;
@@ -101,8 +112,7 @@ interface PendingSessionStart {
   session: ClientPendingStartSessionInfo;
   queuedSends: QueuedPendingSessionSend[];
   discarded: boolean;
-  /** Starter policy snapshot captured before `POST /sessions`, handed to the request unchanged. */
-  modelPolicy: SessionModelPolicyUpdate | undefined;
+  request: PendingSessionStartRequest;
 }
 
 interface SuppressedCreatedSession {
@@ -171,6 +181,7 @@ export class SessionController {
   private readonly notifications: SessionNotificationSessionBridge | undefined;
   private readonly replacePromptEditorText: SessionControllerDependencies["replacePromptEditorText"];
   private readonly onSelectedSessionReady: SessionControllerDependencies["onSelectedSessionReady"];
+  private readonly onStarterModelPolicyConfirmed: SessionControllerDependencies["onStarterModelPolicyConfirmed"];
   private selectionSeq = 0;
   private disposed = false;
   // Join-time stream watermark for the selected session. `seq` is the
@@ -232,6 +243,7 @@ export class SessionController {
     this.notifications = deps.notifications;
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
+    this.onStarterModelPolicyConfirmed = deps.onStarterModelPolicyConfirmed;
   }
 
   applyGlobalEvent(event: GlobalSessionEvent): void {
@@ -276,15 +288,39 @@ export class SessionController {
   }
 
   async startSession(modelPolicy?: SessionModelPolicyUpdate): Promise<boolean> {
+    return this.startSessionRequest({
+      kind: "legacy",
+      ...(modelPolicy === undefined ? {} : { modelPolicy }),
+    });
+  }
+
+  async startPlusSession(initialModelPolicy: StarterModelPolicyPreference): Promise<boolean> {
+    return this.startSessionRequest({ kind: "plus", initialModelPolicy });
+  }
+
+  private async startSessionRequest(request: PendingSessionStartRequest): Promise<boolean> {
     const workspace = this.getState().selectedWorkspace;
     if (!workspace) return false;
     const machineId = selectedMachineId(this.getState());
-    const pending = this.createPendingSessionStart(workspace, machineId, modelPolicy);
+    const pending = this.createPendingSessionStart(workspace, machineId, request);
     this.pendingSessionStarts.set(pending.tempId, pending);
     this.insertAndSelectPendingSession(pending.session);
     try {
-      const session = await this.api.startSession(workspace.path, machineId, pending.modelPolicy);
-      await this.resolvePendingSessionStart(pending.tempId, session);
+      const session = pending.request.kind === "plus"
+        ? await this.api.startPlusSession(workspace.path, pending.request.initialModelPolicy, machineId)
+        : await this.api.startSession(workspace.path, machineId, pending.request.modelPolicy);
+      const accepted = await this.resolvePendingSessionStart(pending.tempId, session);
+      if (
+        accepted
+        && pending.request.kind === "plus"
+        && session.creationSource === "session-list-plus"
+      ) {
+        this.publishStarterModelPolicyConfirmed({
+          machineId,
+          session: { ...session },
+          policy: pending.request.initialModelPolicy,
+        });
+      }
       return true;
     } catch (error) {
       this.failPendingSessionStart(pending.tempId, error);
@@ -300,7 +336,46 @@ export class SessionController {
     modelPolicy?: SessionModelPolicyUpdate,
     onStarted?: (started: boolean) => void,
   ): Promise<void> {
-    const startingSession = this.startSession(modelPolicy).then(
+    return this.startSessionWithPromptRequest(
+      text,
+      streamingBehavior,
+      attachments,
+      delivery,
+      {
+        kind: "legacy",
+        ...(modelPolicy === undefined ? {} : { modelPolicy }),
+      },
+      onStarted,
+    );
+  }
+
+  async startPlusSessionWithPrompt(
+    text: string,
+    streamingBehavior: "steer" | "followUp" | undefined,
+    attachments: PromptAttachment[] | undefined,
+    delivery: PromptAttachmentDelivery,
+    initialModelPolicy: StarterModelPolicyPreference,
+    onStarted?: (started: boolean) => void,
+  ): Promise<void> {
+    return this.startSessionWithPromptRequest(
+      text,
+      streamingBehavior,
+      attachments,
+      delivery,
+      { kind: "plus", initialModelPolicy },
+      onStarted,
+    );
+  }
+
+  private async startSessionWithPromptRequest(
+    text: string,
+    streamingBehavior: "steer" | "followUp" | undefined,
+    attachments: PromptAttachment[] | undefined,
+    delivery: PromptAttachmentDelivery,
+    request: PendingSessionStartRequest,
+    onStarted: ((started: boolean) => void) | undefined,
+  ): Promise<void> {
+    const startingSession = this.startSessionRequest(request).then(
       (started) => ({ rejected: false as const, started }),
       (error: unknown) => ({ rejected: true as const, started: false, error }),
     );
@@ -1037,7 +1112,7 @@ export class SessionController {
   async saveModelPolicy(update: SessionModelPolicyUpdate): Promise<void> {
     const target = this.selectedModelPolicyTarget();
     if (target === undefined) return;
-    const { session, machineId, selectionSeq } = target;
+    const { session, sessionInfo, machineId, selectionSeq } = target;
     const saveSeq = ++this.modelPolicyIssueSeq;
     this.modelPolicySaveSeq = saveSeq;
     this.modelPolicySavesInFlight.add(saveSeq);
@@ -1048,6 +1123,17 @@ export class SessionController {
       const response = await this.api.setModelPolicy(session, update, machineId);
       if (this.canWriteModelPolicyWriteResult(session.id, machineId, selectionSeq, saveSeq)) {
         this.applyConfirmedModelPolicyResponse(response);
+        if (
+          isPlusCreatedRoot(sessionInfo)
+          && response.policy !== undefined
+          && response.session.modelPolicy?.blockedReason === undefined
+        ) {
+          this.publishStarterModelPolicyConfirmed({
+            machineId,
+            session: { ...sessionInfo },
+            policy: cloneStarterModelPolicyPreference(response.policy),
+          });
+        }
       }
     } catch (error) {
       if (this.canWriteModelPolicyWriteResult(session.id, machineId, selectionSeq, saveSeq)) this.setState({ modelPolicyError: String(error) });
@@ -1076,11 +1162,16 @@ export class SessionController {
    * undefined when there is nothing policy-addressable selected (no session, an
    * archived session, or a client-pending start that has no backend session yet).
    */
-  private selectedModelPolicyTarget(): { session: SessionRef; machineId: string; selectionSeq: number } | undefined {
+  private selectedModelPolicyTarget(): { session: SessionRef; sessionInfo: SessionInfo; machineId: string; selectionSeq: number } | undefined {
     const state = this.getState();
     const selected = state.selectedSession;
     if (selected === undefined || selected.archived === true || isClientPendingStartSessionInfo(selected)) return undefined;
-    return { session: { id: selected.id, cwd: selected.cwd }, machineId: selectedMachineId(state), selectionSeq: this.selectionSeq };
+    return {
+      session: { id: selected.id, cwd: selected.cwd },
+      sessionInfo: { ...selected },
+      machineId: selectedMachineId(state),
+      selectionSeq: this.selectionSeq,
+    };
   }
 
   /**
@@ -1103,6 +1194,14 @@ export class SessionController {
    */
   private canWriteModelPolicyWriteResult(sessionId: string, machineId: string, selectionSeq: number, saveSeq: number): boolean {
     return saveSeq === this.modelPolicySaveSeq && this.isCurrentSessionSelection(sessionId, machineId, selectionSeq);
+  }
+
+  private publishStarterModelPolicyConfirmed(event: StarterModelPolicyConfirmedEvent): void {
+    try {
+      this.onStarterModelPolicyConfirmed?.(event);
+    } catch {
+      // Confirmed preference writeback is observational and must not block session work.
+    }
   }
 
   /**
@@ -1388,9 +1487,16 @@ export class SessionController {
     });
   }
 
-  private createPendingSessionStart(workspace: Workspace, machineId: string, modelPolicy: SessionModelPolicyUpdate | undefined): PendingSessionStart {
+  private createPendingSessionStart(
+    workspace: Workspace,
+    machineId: string,
+    request: PendingSessionStartRequest,
+  ): PendingSessionStart {
     const tempId = `pending-session-${String(++this.pendingSessionStartSeq)}-${Date.now().toString(36)}`;
     const now = new Date().toISOString();
+    const acceptedRequest: PendingSessionStartRequest = request.kind === "plus"
+      ? { kind: "plus", initialModelPolicy: cloneStarterModelPolicyPreference(request.initialModelPolicy) }
+      : request;
     const session: ClientPendingStartSessionInfo = {
       id: tempId,
       path: `pi-webui://pending-session/${tempId}`,
@@ -1403,8 +1509,18 @@ export class SessionController {
       firstMessage: "",
       clientPendingStart: true,
       machineId,
+      ...(acceptedRequest.kind === "plus" ? { creationSource: "session-list-plus" as const } : {}),
     };
-    return { tempId, workspaceId: workspace.id, cwd: workspace.path, machineId, session, queuedSends: [], discarded: false, modelPolicy };
+    return {
+      tempId,
+      workspaceId: workspace.id,
+      cwd: workspace.path,
+      machineId,
+      session,
+      queuedSends: [],
+      discarded: false,
+      request: acceptedRequest,
+    };
   }
 
   private insertAndSelectPendingSession(session: ClientPendingStartSessionInfo): void {
@@ -1444,9 +1560,9 @@ export class SessionController {
     if (options?.updateUrl !== false) this.updateUrl();
   }
 
-  private async resolvePendingSessionStart(tempId: string, session: SessionInfo): Promise<void> {
+  private async resolvePendingSessionStart(tempId: string, session: SessionInfo): Promise<boolean> {
     const pending = this.pendingSessionStarts.get(tempId);
-    if (pending === undefined) return;
+    if (pending === undefined) return false;
     this.pendingSessionStarts.delete(tempId);
     const queuedSends = pending.queuedSends.splice(0);
     const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
@@ -1457,7 +1573,7 @@ export class SessionController {
       void this.api.stop(session, pending.machineId).catch(() => {
         // Best-effort cleanup for a backend session whose temporary UI row was discarded before creation finished.
       });
-      return;
+      return false;
     }
 
     rememberCachedNewSession(session, pending.machineId);
@@ -1466,7 +1582,7 @@ export class SessionController {
     if (!this.isCurrentPendingStart(pending)) {
       this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
       await this.flushQueuedPendingSends(cachedSession, pending.machineId, queuedSends);
-      return;
+      return false;
     }
 
     const state = this.getState();
@@ -1485,6 +1601,7 @@ export class SessionController {
       await this.selectSession(cachedSession, { updateUrl: false });
     }
     await this.flushQueuedPendingSends(cachedSession, pending.machineId, queuedSends);
+    return true;
   }
 
   private failPendingSessionStart(tempId: string, error: unknown): void {
@@ -1846,6 +1963,28 @@ export class SessionController {
 
 function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
   return omitKey(activities, sessionId);
+}
+
+function cloneStarterModelPolicyPreference(
+  preference: StarterModelPolicyPreference,
+): StarterModelPolicyPreference {
+  return {
+    mode: preference.mode,
+    exact: {
+      model: {
+        provider: preference.exact.model.provider,
+        id: preference.exact.model.id,
+      },
+      thinkingLevel: preference.exact.thinkingLevel,
+    },
+    ...(preference.tier === undefined ? {} : { tier: preference.tier }),
+  };
+}
+
+function isPlusCreatedRoot(session: SessionInfo): boolean {
+  return session.creationSource === "session-list-plus"
+    && session.parentSessionPath === undefined
+    && session.archived !== true;
 }
 
 /**
