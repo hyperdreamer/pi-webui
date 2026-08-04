@@ -55,6 +55,7 @@ export function registerSessionProxyRoutes(app: FastifyInstance, daemon: Session
   app.all(`${prefix}/models-config/discover`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/session-defaults`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/model-tiers`, (request, reply) => proxy(request, reply));
+  app.all(`${prefix}/utility-models`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/skills`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/skills/*`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/sessions`, (request, reply) => proxy(request, reply));

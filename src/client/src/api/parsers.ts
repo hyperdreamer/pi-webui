@@ -4,8 +4,8 @@ import type { SessionDefaultsResponse, StarterModelPolicyPreference } from "../.
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
-import { MODEL_TIERS } from "../../../shared/apiTypes";
-import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef } from "../../../shared/apiTypes";
+import { MODEL_TIERS, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
+import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelOption, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
 
@@ -1324,6 +1324,77 @@ export function parseWorkspaceActivity(value: unknown): WorkspaceActivity {
 export function parseWorkspaceActivityResponse(value: unknown): WorkspaceActivityResponse {
   const record = requireRecord(value);
   return { workspaces: arrayOf(parseWorkspaceActivity)(record["workspaces"]), generatedAt: requireString(record, "generatedAt") };
+}
+
+export function parseUtilityModelSettingsResponse(value: unknown): UtilityModelSettingsResponse {
+  const record = requireObjectRecord(value, "utility model settings response");
+  const unknownKey = Object.keys(record).find((key) => !isUtilityModelSettingsResponseKey(key));
+  if (unknownKey !== undefined) throw new Error(`Invalid utility model settings response field: ${unknownKey}`);
+  if (record["contractVersion"] !== 1) throw new Error("Invalid utility model settings contract version");
+  const configError = optionalString(record, "configError");
+  return {
+    contractVersion: 1,
+    settings: parseUtilityModelSettings(record["settings"]),
+    models: arrayOf(parseUtilityModelOption)(record["models"]),
+    slots: parseUtilityModelSlots(record["slots"]),
+    valid: requireBoolean(record, "valid"),
+    ...optionalField("configError", configError),
+  };
+}
+
+function isUtilityModelSettingsResponseKey(key: string): boolean {
+  return key === "contractVersion" || key === "settings" || key === "models" || key === "slots" || key === "valid" || key === "configError";
+}
+
+function parseUtilityModelSettings(value: unknown): UtilityModelSettings {
+  const record = requireObjectRecord(value, "settings");
+  const unknownSlot = Object.keys(record).find((key) => !isUtilityModelSlot(key));
+  if (unknownSlot !== undefined) throw new Error(`Invalid utility model settings field: settings.${unknownSlot}`);
+  return {
+    ...optionalField("lightweight", record["lightweight"] === undefined ? undefined : parseTierModelRef(record["lightweight"], "settings.lightweight")),
+    ...optionalField("context", record["context"] === undefined ? undefined : parseTierModelRef(record["context"], "settings.context")),
+  };
+}
+
+function parseUtilityModelOption(value: unknown): UtilityModelOption {
+  const record = requireObjectRecord(value, "models");
+  const unknownKey = Object.keys(record).find((key) => key !== "model" && key !== "name");
+  if (unknownKey !== undefined) throw new Error(`Invalid utility model option field: models.${unknownKey}`);
+  return {
+    model: parseTierModelRef(record["model"], "models.model"),
+    ...optionalField("name", optionalString(record, "name")),
+  };
+}
+
+function parseUtilityModelSlots(value: unknown): Record<UtilityModelSlot, UtilityModelSlotValidation> {
+  const record = requireCanonicalUtilityModelSlotRecord(value, "slots");
+  return {
+    lightweight: parseUtilityModelSlotValidation(record["lightweight"], "slots.lightweight"),
+    context: parseUtilityModelSlotValidation(record["context"], "slots.context"),
+  };
+}
+
+function parseUtilityModelSlotValidation(value: unknown, field: string): UtilityModelSlotValidation {
+  const record = requireObjectRecord(value, field);
+  const unknownKey = Object.keys(record).find((key) => key !== "valid" && key !== "reason");
+  if (unknownKey !== undefined) throw new Error(`Invalid utility model validation field: ${field}.${unknownKey}`);
+  return {
+    valid: requireBoolean(record, "valid"),
+    ...optionalField("reason", optionalString(record, "reason")),
+  };
+}
+
+function isUtilityModelSlot(value: string): value is UtilityModelSlot {
+  return UTILITY_MODEL_SLOTS.some((slot) => slot === value);
+}
+
+function requireCanonicalUtilityModelSlotRecord(value: unknown, field: string): Record<string, unknown> {
+  const record = requireObjectRecord(value, field);
+  const unknownSlot = Object.keys(record).find((key) => !isUtilityModelSlot(key));
+  if (unknownSlot !== undefined) throw new Error(`Invalid utility model ${field} field: unknown slot ${unknownSlot}`);
+  const missingSlot = UTILITY_MODEL_SLOTS.find((slot) => record[slot] === undefined);
+  if (missingSlot !== undefined) throw new Error(`Invalid utility model ${field} field: missing slot ${missingSlot}`);
+  return record;
 }
 
 export function parseModelTierSettingsResponse(value: unknown): ModelTierSettingsResponse {

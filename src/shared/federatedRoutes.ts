@@ -25,6 +25,8 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "PUT", path: "/session-defaults" },
   { method: "GET", path: "/model-tiers" },
   { method: "PUT", path: "/model-tiers" },
+  { method: "GET", path: "/utility-models" },
+  { method: "PUT", path: "/utility-models" },
   { method: "GET", path: "/agent-memory/snapshot" },
   { method: "GET", path: "/skills" },
   { method: "PATCH", path: "/skills" },

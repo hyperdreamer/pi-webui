@@ -18,6 +18,7 @@ export const PI_WEBUI_CAPABILITIES = {
   selectedMachineSettings: "settings.selectedMachine",
   agentProfileConfig: "settings.agentProfile",
   modelTierSettings: "settings.modelTiers",
+  utilityModelSettings: "settings.utilityModels",
   sessionsModelPolicy: "sessions.modelPolicy",
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
 } as const;

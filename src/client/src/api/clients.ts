@@ -3,6 +3,7 @@ import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from ".
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate } from "../../../shared/apiTypes";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
+import type { UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
@@ -33,6 +34,7 @@ import {
   parseModelDiscoveryResponse,
   parseModelSelectionResponse,
   parseModelTierSettingsResponse,
+  parseUtilityModelSettingsResponse,
   parseModelsConfigDocument,
   parseModelsConfigSaveResponse,
   parseSkillMutationResponse,
@@ -192,6 +194,15 @@ function modelTiersPath(machineId = "local"): string {
 export const modelTiersApi = {
   settings: (machineId = "local") => request(modelTiersPath(machineId), parseModelTierSettingsResponse),
   save: (ladder: ModelTierLadder, machineId = "local") => request(modelTiersPath(machineId), parseModelTierSettingsResponse, { method: "PUT", body: JSON.stringify({ ladder }) }),
+};
+
+function utilityModelsPath(machineId = "local"): string {
+  return `${machinePrefix(machineId)}/utility-models`;
+}
+
+export const utilityModelsApi = {
+  settings: (machineId = "local") => request(utilityModelsPath(machineId), parseUtilityModelSettingsResponse),
+  save: (settings: UtilityModelSettingsUpdate, machineId = "local") => request(utilityModelsPath(machineId), parseUtilityModelSettingsResponse, { method: "PUT", body: JSON.stringify({ settings }) }),
 };
 
 function skillsConfigPath(machineId = "local"): string {
@@ -443,6 +454,7 @@ export const api = {
   ...machinesApi,
   ...memoryApi,
   ...modelTiersApi,
+  utilityModels: utilityModelsApi,
   ...configApi,
   ...pluginsApi,
   ...piPackagesApi,

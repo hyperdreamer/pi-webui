@@ -23,6 +23,7 @@ export const WEB_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.selectedMachineSettings,
   PI_WEBUI_CAPABILITIES.agentProfileConfig,
   PI_WEBUI_CAPABILITIES.modelTierSettings,
+  PI_WEBUI_CAPABILITIES.utilityModelSettings,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
 ] as const satisfies readonly PiWebUiCapability[];
@@ -40,6 +41,7 @@ export const SESSIOND_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.sessionsUnread,
   PI_WEBUI_CAPABILITIES.promptAttachments,
   PI_WEBUI_CAPABILITIES.modelTierSettings,
+  PI_WEBUI_CAPABILITIES.utilityModelSettings,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
 ] as const satisfies readonly PiWebUiCapability[];
@@ -61,6 +63,7 @@ const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
   [PI_WEBUI_CAPABILITIES.selectedMachineSettings]: ["web"],
   [PI_WEBUI_CAPABILITIES.agentProfileConfig]: ["web"],
   [PI_WEBUI_CAPABILITIES.modelTierSettings]: ["web", "sessiond"],
+  [PI_WEBUI_CAPABILITIES.utilityModelSettings]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicy]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults]: ["web", "sessiond"],
 } as const satisfies Record<PiWebUiCapability, readonly PiWebUiServiceComponent[]>;

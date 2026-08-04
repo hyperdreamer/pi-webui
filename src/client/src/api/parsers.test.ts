@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -987,6 +987,56 @@ describe("API parsers", () => {
     })).toThrow("Invalid notification clear reason");
   });
 
+  it("parses utility-model settings snapshots with exact model references", () => {
+    const wire = utilityModelSettingsWire();
+
+    expect(parseUtilityModelSettingsResponse(wire)).toEqual(wire);
+    expect(parseUtilityModelSettingsResponse(wire).settings.context).toEqual({
+      provider: "openai",
+      id: "org/gpt-5.6-luna/medium",
+    });
+  });
+
+  it("accepts empty utility settings and preserves stale configured references", () => {
+    const empty = utilityModelSettingsWire({ settings: {}, models: [], slots: { lightweight: { valid: true }, context: { valid: true } } });
+    const stale = utilityModelSettingsWire({
+      settings: { lightweight: { provider: "openai", id: "retired" } },
+      slots: {
+        lightweight: { valid: false, reason: "lightweight utility model openai/retired is unavailable" },
+        context: { valid: true },
+      },
+      valid: false,
+    });
+
+    expect(parseUtilityModelSettingsResponse(empty)).toEqual(empty);
+    expect(parseUtilityModelSettingsResponse(stale)).toEqual(stale);
+  });
+
+  it("rejects malformed utility references, slot maps, validation rows, and contract versions", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      settings: { lightweight: { provider: "openai" } },
+    }))).toThrow("id");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      models: [{ model: { provider: "openai", id: "gpt" }, unexpected: true }],
+    }))).toThrow("models");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      settings: { lightweight: { provider: "openai", id: "gpt" }, unsupported: { provider: "acme", id: "small" } },
+    }))).toThrow("settings");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      unexpected: true,
+    }))).toThrow("field");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      slots: { lightweight: { valid: true } },
+    }))).toThrow("slots");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      slots: { lightweight: { valid: true }, context: { valid: true }, unsupported: { valid: true } },
+    }))).toThrow("slots");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      slots: { lightweight: { valid: "yes" }, context: { valid: true } },
+    }))).toThrow("valid");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({ contractVersion: 2 }))).toThrow("contract version");
+  });
+
   it("parses model-tier settings snapshots with stale ladders and separate provider/model IDs", () => {
     const wire = modelTierSettingsWire();
 
@@ -1103,6 +1153,26 @@ function sessionModelPolicyResponseWire() {
         ladderValid: true,
       },
     },
+  };
+}
+
+function utilityModelSettingsWire(overrides: Record<string, unknown> = {}) {
+  return {
+    contractVersion: 1,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna" },
+      { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" } },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+    ...overrides,
   };
 }
 

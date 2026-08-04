@@ -16,6 +16,30 @@ describe("PI WEBUI capabilities", () => {
     })).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, PI_WEBUI_CAPABILITIES.agentProfileConfig]);
   });
 
+  it("requires web and session daemon support for utility model settings", () => {
+    const utilityModels = PI_WEBUI_CAPABILITIES.utilityModelSettings;
+    expect(utilityModels).toBe("settings.utilityModels");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(utilityModels);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(utilityModels);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: false, capabilities: [utilityModels] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: false, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [utilityModels] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [utilityModels] },
+    })).toContain(utilityModels);
+  });
+
   it("requires web and session daemon support for model-tier settings", () => {
     const modelTiers = PI_WEBUI_CAPABILITIES.modelTierSettings;
     expect(modelTiers).toBe("settings.modelTiers");

@@ -59,6 +59,25 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("forwards utility-model reads and updates through the session daemon", async () => {
+    const read = await app.inject({ method: "GET", url: "/api/machines/local/utility-models" });
+    const update = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/utility-models",
+      payload: { settings: { lightweight: null, context: { provider: "acme", id: "large" } } },
+    });
+
+    expect([read.statusCode, update.statusCode]).toEqual([200, 200]);
+    expect(daemon.requests).toEqual([
+      { method: "GET", path: "/utility-models", body: undefined },
+      {
+        method: "PUT",
+        path: "/utility-models",
+        body: { settings: { lightweight: null, context: { provider: "acme", id: "large" } } },
+      },
+    ]);
+  });
+
   it("forwards model-tier reads and complete-ladder replacements", async () => {
     const ladder = {
       economy: { model: { provider: "acme", id: "small" }, thinkingLevel: "low" },
