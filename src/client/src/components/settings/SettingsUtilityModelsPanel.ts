@@ -3,14 +3,25 @@ import { customElement, property, state } from "lit/decorators.js";
 import type {
   TierModelRef,
   UtilityModelOption,
-  UtilityModelSettings,
   UtilityModelSettingsResponse,
   UtilityModelSettingsUpdate,
   UtilityModelSlot,
 } from "../../../../shared/apiTypes";
+import { isKnownThinkingLevel } from "../../../../shared/thinkingLevels";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import type { UtilityModelSettingsSupport } from "./settingsMachineTarget";
+import {
+  AUTO_UTILITY_MODEL_THINKING,
+  updateUtilityModelDraftModel,
+  updateUtilityModelDraftThinkingLevel,
+  utilityModelSettingsDraftFromResponse,
+  utilityModelSettingsUpdateFromDraft,
+  utilityModelThinkingOptions,
+  validateUtilityModelSettingsDraft,
+  type UtilityModelDraftThinkingLevel,
+  type UtilityModelSettingsDraft,
+} from "./utilityModelSettingsDraft";
 
 const SLOT_DETAILS: Record<UtilityModelSlot, { label: string; description: string; emptyLabel: string }> = {
   lightweight: {
@@ -37,19 +48,21 @@ export class SettingsUtilityModelsPanel extends LitElement {
   @property({ attribute: false }) onReload?: () => void | Promise<void>;
   @property({ attribute: false }) onSave?: (update: UtilityModelSettingsUpdate) => void | Promise<void>;
 
-  @state() draft: UtilityModelSettings = {};
+  @state() draft: UtilityModelSettingsDraft = {};
 
   get editingDisabled(): boolean {
     return this.loading || this.saving || this.support.state !== "supported";
   }
 
   get canSave(): boolean {
-    return this.isDraftValid() && !this.editingDisabled;
+    return this.response !== undefined &&
+      validateUtilityModelSettingsDraft(this.draft, this.response).valid &&
+      !this.editingDisabled;
   }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (!changed.has("response")) return;
-    this.draft = this.response === undefined ? {} : { ...this.response.settings };
+    this.draft = this.response === undefined ? {} : utilityModelSettingsDraftFromResponse(this.response);
   }
 
   handleReload(): void {
@@ -57,17 +70,18 @@ export class SettingsUtilityModelsPanel extends LitElement {
   }
 
   handleSave(): void {
-    if (!this.canSave) return;
-    void this.onSave?.({
-      lightweight: this.draft.lightweight ?? null,
-      context: this.draft.context ?? null,
-    });
+    const response = this.response;
+    if (!this.canSave || response === undefined) return;
+    const update = utilityModelSettingsUpdateFromDraft(this.draft, response);
+    if (update !== undefined && this.onSave !== undefined) void this.onSave(update);
   }
 
   handleModelChange(slot: UtilityModelSlot, option: UtilityModelOption | undefined): void {
-    this.draft = option === undefined
-      ? withoutUtilityModel(this.draft, slot)
-      : { ...this.draft, [slot]: option.model };
+    this.draft = updateUtilityModelDraftModel(this.draft, slot, option);
+  }
+
+  handleThinkingChange(slot: UtilityModelSlot, level: UtilityModelDraftThinkingLevel): void {
+    this.draft = updateUtilityModelDraftThinkingLevel(this.draft, slot, level);
   }
 
   panelNotices(): readonly SettingsNotice[] {
@@ -83,6 +97,12 @@ export class SettingsUtilityModelsPanel extends LitElement {
         type: "availability",
         tone: "warning",
         content: this.support.message ?? `Utility model settings support is unknown for ${this.targetLabel}.`,
+      });
+    }
+    if (this.response?.contractVersion === 1) {
+      notices.push({
+        type: "info",
+        content: `Explicit thinking levels require a newer PI WEBUI runtime on ${this.targetLabel}. Model routing remains available.`,
       });
     }
     if (this.error !== "") notices.push({ type: "error", content: this.error });
@@ -112,6 +132,11 @@ export class SettingsUtilityModelsPanel extends LitElement {
             ? html`<div class="loading-message">Utility model settings are unavailable. Click Refresh models to try again.</div>`
             : html`
                 <div class="field-list">
+                  <div class="field-header" aria-hidden="true">
+                    <div></div>
+                    <div>Model</div>
+                    <div>Thinking</div>
+                  </div>
                   ${this.renderFieldRow("lightweight")}
                   ${this.renderFieldRow("context")}
                 </div>
@@ -132,40 +157,78 @@ export class SettingsUtilityModelsPanel extends LitElement {
   }
 
   private renderFieldRow(slot: UtilityModelSlot): TemplateResult {
+    const response = this.response;
+    if (response === undefined) return html``;
+
     const detail = SLOT_DETAILS[slot];
-    const selectedRef = this.draft[slot];
-    const models = this.response?.models ?? [];
-    const selectedOption = selectedRef === undefined ? undefined : models.find((option) => sameModel(option.model, selectedRef));
-    const valid = selectedRef === undefined || selectedOption !== undefined;
-    const selectId = `select-utility-model-${slot}`;
+    const binding = this.draft[slot];
+    const selectedOption = binding === undefined
+      ? undefined
+      : response.models.find((option) => sameModel(option.model, binding));
+    const validation = validateUtilityModelSettingsDraft(this.draft, response).slots[slot];
+    const modelId = `select-utility-model-${slot}`;
+    const thinkingId = `select-utility-thinking-${slot}`;
+    const thinkingOptions = utilityModelThinkingOptions(response, binding);
+    const thinkingValue = response.contractVersion === 2 && selectedOption !== undefined
+      ? binding?.thinkingLevel ?? AUTO_UTILITY_MODEL_THINKING
+      : AUTO_UTILITY_MODEL_THINKING;
+    const thinkingDisabled = this.editingDisabled ||
+      response.contractVersion === 1 ||
+      binding === undefined ||
+      selectedOption === undefined;
 
     return html`
-      <div class="field-row">
+      <div class="field-row ${validation.valid ? "" : "invalid"}" data-slot=${slot}>
         <div class="field-copy">
-          <label for=${selectId}>${detail.label}</label>
+          <span class="slot-label">${detail.label}</span>
           <p>${detail.description}</p>
         </div>
-        <select
-          id=${selectId}
-          aria-label=${`${detail.label} utility model`}
-          aria-invalid=${String(!valid)}
-          ?disabled=${this.editingDisabled}
-          .value=${selectedRef === undefined ? "" : modelKey(selectedRef)}
-          @change=${(event: Event) => {
-            this.onModelSelectChange(slot, event);
-          }}
-          title=${selectedRef === undefined ? detail.emptyLabel : describeModel(selectedRef)}
-        >
-          <option value="" ?selected=${selectedRef === undefined}>${detail.emptyLabel}</option>
-          ${selectedRef !== undefined && selectedOption === undefined
-            ? html`<option value=${modelKey(selectedRef)} disabled selected>${describeModel(selectedRef)} (unavailable)</option>`
-            : null}
-          ${models.map((option) => html`
-            <option value=${modelKey(option.model)} ?selected=${selectedRef !== undefined && sameModel(option.model, selectedRef)}>
-              ${describeOption(option)}
-            </option>
-          `)}
-        </select>
+        <div class="field-control">
+          <label class="field-label" for=${modelId}>Model</label>
+          <select
+            id=${modelId}
+            aria-label=${`${slot} utility model`}
+            aria-invalid=${String(!validation.valid)}
+            ?disabled=${this.editingDisabled}
+            .value=${binding === undefined ? "" : modelKey(binding)}
+            @change=${(event: Event) => {
+              this.onModelSelectChange(slot, event);
+            }}
+            title=${binding === undefined ? detail.emptyLabel : describeModel(binding)}
+          >
+            <option value="" ?selected=${binding === undefined}>${detail.emptyLabel}</option>
+            ${binding !== undefined && selectedOption === undefined
+              ? html`<option value=${modelKey(binding)} disabled selected>${describeModel(binding)} (unavailable)</option>`
+              : null}
+            ${response.models.map((option) => html`
+              <option value=${modelKey(option.model)} ?selected=${binding !== undefined && sameModel(option.model, binding)}>
+                ${describeOption(option)}
+              </option>
+            `)}
+          </select>
+        </div>
+        <div class="field-control">
+          <label class="field-label" for=${thinkingId}>Thinking</label>
+          <select
+            id=${thinkingId}
+            aria-label=${`${slot} utility thinking`}
+            aria-invalid=${String(!validation.valid)}
+            ?disabled=${thinkingDisabled}
+            .value=${thinkingValue}
+            @change=${(event: Event) => {
+              this.onThinkingSelectChange(slot, event);
+            }}
+          >
+            ${thinkingOptions.map((option) => html`
+              <option value=${option.value} ?disabled=${option.disabled} ?selected=${thinkingValue === option.value}>
+                ${option.label}
+              </option>
+            `)}
+          </select>
+        </div>
+        ${!validation.valid && validation.reason !== undefined && validation.reason !== ""
+          ? html`<div class="row-error" role="alert">${validation.reason}</div>`
+          : null}
       </div>
     `;
   }
@@ -173,35 +236,40 @@ export class SettingsUtilityModelsPanel extends LitElement {
   private onModelSelectChange(slot: UtilityModelSlot, event: Event): void {
     if (!(event.target instanceof HTMLSelectElement)) return;
     const selectedKey = event.target.value;
-    const option = (this.response?.models ?? []).find((candidate) => modelKey(candidate.model) === selectedKey);
+    const option = this.response?.models.find((candidate) => modelKey(candidate.model) === selectedKey);
     this.handleModelChange(slot, option);
   }
 
-  private isDraftValid(): boolean {
-    const models = this.response?.models ?? [];
-    return this.isAvailable(this.draft.lightweight, models) && this.isAvailable(this.draft.context, models);
-  }
-
-  private isAvailable(model: TierModelRef | undefined, models: readonly UtilityModelOption[]): boolean {
-    return model === undefined || models.some((option) => sameModel(option.model, model));
+  private onThinkingSelectChange(slot: UtilityModelSlot, event: Event): void {
+    if (!(event.target instanceof HTMLSelectElement)) return;
+    const level = event.target.value;
+    if (level !== AUTO_UTILITY_MODEL_THINKING && !isKnownThinkingLevel(level)) return;
+    this.handleThinkingChange(slot, level);
   }
 
   static override styles = css`
     :host { display: block; }
     .loading-message { color: var(--pi-muted); }
     .field-list { display: grid; gap: 14px; }
-    .field-row { display: grid; grid-template-columns: minmax(160px, 0.6fr) minmax(0, 1fr); gap: 16px; align-items: center; padding: 0 0 14px; border-bottom: 1px solid var(--pi-border-muted); }
-    .field-copy { min-width: 0; }
-    label { display: block; font-weight: 600; }
+    .field-header, .field-row { display: grid; grid-template-columns: minmax(140px, 0.6fr) minmax(220px, 1fr) minmax(120px, 140px); gap: 16px; }
+    .field-header { align-items: end; padding: 0 0 4px; color: var(--pi-muted); font-size: 12px; font-weight: 600; }
+    .field-row { align-items: center; padding: 0 0 14px; border-bottom: 1px solid var(--pi-border-muted); }
+    .field-copy, .field-control { min-width: 0; }
+    .field-control { display: grid; gap: 6px; }
+    .slot-label { display: block; font-weight: 600; }
     p { margin: 4px 0 0; color: var(--pi-muted); font-size: 13px; line-height: 1.4; }
+    .field-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     select { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); color: var(--pi-text); padding: 7px 10px; font: inherit; font-size: 13px; }
     select[aria-invalid="true"] { border-color: var(--pi-danger); }
     select:disabled, button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .row-error { grid-column: 1 / -1; color: var(--pi-danger); font-size: 12px; }
     .panel-footer { display: flex; justify-content: flex-end; margin-top: 2px; }
     button.primary { border: 1px solid var(--pi-accent, #0066cc); border-radius: 8px; background: var(--pi-accent, #0066cc); color: #ffffff; padding: 8px 16px; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
 
     @media (max-width: 760px) {
-      .field-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+      .field-header { display: none; }
+      .field-row { grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: stretch; }
+      .field-label { position: static; width: auto; height: auto; padding: 0; margin: 0; overflow: visible; clip: auto; white-space: normal; border: 0; font-weight: 600; }
       .panel-footer { display: block; }
       button.primary { width: 100%; }
     }
@@ -223,13 +291,6 @@ function describeModel(model: TierModelRef): string {
 function describeOption(option: UtilityModelOption): string {
   const model = describeModel(option.model);
   return option.name === undefined || option.name === "" ? model : `${option.name} (${model})`;
-}
-
-function withoutUtilityModel(settings: UtilityModelSettings, slot: UtilityModelSlot): UtilityModelSettings {
-  if (slot === "lightweight") {
-    return settings.context === undefined ? {} : { context: settings.context };
-  }
-  return settings.lightweight === undefined ? {} : { lightweight: settings.lightweight };
 }
 
 declare global {

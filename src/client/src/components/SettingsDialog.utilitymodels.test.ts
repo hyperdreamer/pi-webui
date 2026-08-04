@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
+import type { UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV2, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import { utilityModelsApi } from "../api";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
 import {
@@ -18,13 +18,16 @@ import {
 const lightweight = { provider: "openai", id: "gpt-small" };
 const context = { provider: "anthropic", id: "claude-context" };
 
-function response(overrides: Partial<UtilityModelSettingsResponseV1> = {}): UtilityModelSettingsResponseV1 {
+function response(overrides: Partial<UtilityModelSettingsResponseV2> = {}): UtilityModelSettingsResponseV2 {
   return {
-    contractVersion: 1,
-    settings: { lightweight, context },
+    contractVersion: 2,
+    settings: {
+      lightweight: { ...lightweight, thinkingLevel: "max" },
+      context: { ...context, thinkingLevel: "medium" },
+    },
     models: [
-      { model: lightweight, name: "Small" },
-      { model: context, name: "Context" },
+      { model: lightweight, name: "Small", thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+      { model: context, name: "Context", thinkingLevels: ["off", "low", "medium"] },
     ],
     slots: {
       lightweight: { valid: true },
@@ -36,20 +39,7 @@ function response(overrides: Partial<UtilityModelSettingsResponseV1> = {}): Util
 }
 
 function responseV2(overrides: Partial<UtilityModelSettingsResponseV2> = {}): UtilityModelSettingsResponseV2 {
-  return {
-    contractVersion: 2,
-    settings: { lightweight: { ...lightweight, thinkingLevel: "max" }, context },
-    models: [
-      { model: lightweight, name: "Small", thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
-      { model: context, name: "Context", thinkingLevels: ["off", "max"] },
-    ],
-    slots: {
-      lightweight: { valid: true },
-      context: { valid: true },
-    },
-    valid: true,
-    ...overrides,
-  };
+  return response(overrides);
 }
 
 afterEach(() => {
@@ -94,9 +84,9 @@ describe("settings-dialog utility model machine targeting", () => {
 
   it("saves utility model settings using the loaded contract version through the selected-machine endpoint", async () => {
     stubWindowTimers();
-    const update = { lightweight, context: null } satisfies UtilityModelSettingsUpdate;
+    const update = { lightweight: { ...lightweight, thinkingLevel: "xhigh" }, context: null } satisfies UtilityModelSettingsUpdate;
     const loaded = responseV2();
-    const saved = responseV2({ settings: { lightweight } });
+    const saved = responseV2({ settings: { lightweight: { ...lightweight, thinkingLevel: "xhigh" } } });
     const saveSpy = vi.spyOn(utilityModelsApi, "save").mockResolvedValue(saved);
     const dialog = new SettingsDialog();
     dialog.machine = remoteMachine;
@@ -130,7 +120,10 @@ describe("settings-dialog utility model machine targeting", () => {
       host: "127.0.0.1",
       utilityModels: { lightweight, context },
     });
-    const confirmedSettings = { context };
+    const confirmedSettings = {
+      lightweight: { ...lightweight, thinkingLevel: "max" },
+      context: { ...context, thinkingLevel: "medium" },
+    } satisfies UtilityModelSettings;
     const saved = response({ settings: confirmedSettings });
     vi.spyOn(utilityModelsApi, "save").mockResolvedValue(saved);
     const onConfigSaved = vi.fn();
@@ -139,7 +132,7 @@ describe("settings-dialog utility model machine targeting", () => {
     setDialogProperty(dialog, "configResponse", initialConfig);
     setDialogProperty(dialog, "utilityModelsConfigResponse", response());
 
-    await callDialogPromise(dialog, "saveUtilityModels", { lightweight: null, context });
+    await callDialogPromise(dialog, "saveUtilityModels", confirmedSettings);
 
     expect(getDialogProperty(dialog, "configResponse")).toMatchObject({
       config: { host: "127.0.0.1", utilityModels: confirmedSettings },
