@@ -1456,24 +1456,134 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     });
   });
 
-  it("queues a late confirmation against its originating machine and workspace without publishing stale UI", async () => {
+  it("queues a plus creation that settles after navigation without publishing into the new scope", async () => {
     const app = createApp();
     const session = plusCreatedSession({ cwd: mainWorkspace.path });
+    const featurePolicy: StarterModelPolicyPreference = {
+      mode: "exact",
+      tier: "frontier",
+      exact: { model: { ...advancedModelOption.model }, thinkingLevel: "high" },
+    };
+    const startRequest = deferred<SessionInfo>();
+    const startPlusSession = vi.fn<typeof api.startPlusSession>(() => startRequest.promise);
+    vi.spyOn(sessionsApi, "sessionDefaultsV2")
+      .mockResolvedValueOnce(starterDefaultsV2())
+      .mockResolvedValueOnce(starterDefaultsV2({ starterModelPolicyPreference: featurePolicy }));
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
     const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy")
       .mockRejectedValue(new Error("origin write failed"));
+    stubComposerFocus(app);
+    if (!Reflect.set(app, "updateUrl", () => undefined)) throw new Error("Could not stub route updates");
+    if (!Reflect.set(app, "refreshSelectedWorkspaceTool", () => undefined)) {
+      throw new Error("Could not stub workspace tool refresh");
+    }
+    stubWorkspaceChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+    setSessionControllerApi(app, { startPlusSession });
     setAppState(app, {
-      ...starterState(),
+      ...fullPreferenceCapableStarterState(),
       workspaces: [mainWorkspace, featureWorkspace],
-      selectedWorkspace: featureWorkspace,
+    });
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await vi.waitFor(() => {
+      expect(starterPlusModelPolicyInitializer(app)).toEqual(completeDefaultPolicy);
     });
 
-    confirmStarterPolicy(app, { machineId: remoteMachine.id, session, policy: completeDefaultPolicy });
+    await startSessionAndOpenChat(app);
+    expect(startPlusSession).toHaveBeenCalledWith(mainWorkspace.path, completeDefaultPolicy, "local");
 
+    const mainState = appState(app);
+    const featureState: AppState = {
+      ...mainState,
+      selectedWorkspace: featureWorkspace,
+      selectedSession: undefined,
+      sessions: [],
+    };
+    setAppState(app, featureState);
+    handleWorkspaceChange(app, mainState, featureState);
+    const featureDefaults = loadStarterSessionDefaults(app, featureWorkspace);
+    startRequest.resolve(session);
+
+    await featureDefaults;
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledOnce(); });
-    expect(remember).toHaveBeenCalledWith(session, remoteMachine.id);
-    expect(starterModelPolicy(app)).toBeUndefined();
+    await vi.waitFor(() => { expect(starterModelPolicy(app)).toEqual(featurePolicy); });
+    expect(remember).toHaveBeenCalledWith(session, "local");
     expect(templateText(renderApp(app))).not.toContain("origin write failed");
     expect(appState(app).error).toBe("");
+  });
+
+  it("does not publish another same-workspace session's write failure", async () => {
+    const app = createApp();
+    const selectedSession = plusCreatedSession();
+    const otherSession = plusCreatedSession({
+      id: "session-b",
+      path: "/sessions/session-b.jsonl",
+    });
+    const selectedWrite = deferred<StarterModelPolicyPreference>();
+    const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy")
+      .mockReturnValueOnce(selectedWrite.promise)
+      .mockRejectedValueOnce(new Error("other session write failed"));
+    setAppState(app, activeState({
+      sessions: [selectedSession, otherSession],
+      selectedSession,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, {
+      machineId: "local",
+      session: otherSession,
+      policy: {
+        mode: "tiered",
+        tier: "advanced",
+        exact: { model: { ...advancedModelOption.model }, thinkingLevel: "high" },
+      },
+    });
+    selectedWrite.resolve(completeDefaultPolicy);
+
+    await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
+    await flush();
+    expect(starterModelPolicy(app)).toEqual(completeDefaultPolicy);
+    expect(templateText(renderApp(app))).not.toContain("other session write failed");
+  });
+
+  it("does not let another same-workspace session's successful write clear the current diagnostic", async () => {
+    const app = createApp();
+    const selectedSession = plusCreatedSession();
+    const otherSession = plusCreatedSession({
+      id: "session-b",
+      path: "/sessions/session-b.jsonl",
+    });
+    const selectedWrite = deferred<StarterModelPolicyPreference>();
+    const otherWrite = deferred<StarterModelPolicyPreference>();
+    const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy")
+      .mockReturnValueOnce(selectedWrite.promise)
+      .mockReturnValueOnce(otherWrite.promise);
+    setAppState(app, activeState({
+      sessions: [selectedSession, otherSession],
+      selectedSession,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    if (!Reflect.set(app, "starterModelPolicyPreferenceReadError", "current session diagnostic")) {
+      throw new Error("Could not set the starter model policy diagnostic");
+    }
+    confirmStarterPolicy(app, { machineId: "local", session: otherSession, policy: completeDefaultPolicy });
+    selectedWrite.reject(new Error("selected session write failed"));
+
+    await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
+    otherWrite.resolve(completeDefaultPolicy);
+    await flush();
+    setAppState(app, {
+      ...appState(app),
+      selectedSession: undefined,
+      sessions: [],
+    });
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
+      .toBe("current session diagnostic");
   });
 });
 

@@ -1618,8 +1618,9 @@ export class PiWebUiApp extends LitElement {
       machineId: event.machineId,
       cwd: event.session.cwd,
     };
+    const scopeMatchesCurrentSelection = this.starterModelPolicyPreferenceScopeMatchesCurrentSelection(scope);
     if (
-      this.starterModelPolicyPreferenceScopeMatchesCurrentSelection(scope)
+      scopeMatchesCurrentSelection
       && this.state.selectedSession?.id === event.session.id
       && this.state.selectedSession.cwd === event.session.cwd
     ) {
@@ -1627,6 +1628,18 @@ export class PiWebUiApp extends LitElement {
       this.starterModelPolicyPreferenceReadError = "";
       this.confirmedStarterModelPolicyUiScope = scope;
       this.confirmedStarterModelPolicyUiGeneration = this.starterModelPolicySelectionGeneration;
+    } else if (
+      scopeMatchesCurrentSelection
+      && (
+        this.confirmedStarterModelPolicyUiScope !== undefined
+        || this.confirmedStarterModelPolicyUiGeneration !== undefined
+      )
+    ) {
+      // The writer is workspace-scoped, so a confirmation for another session
+      // would otherwise publish its outcome through the current session's owner.
+      this.confirmedStarterModelPolicyUiScope = undefined;
+      this.confirmedStarterModelPolicyUiGeneration = undefined;
+      this.requestUpdate();
     }
     void this.confirmedStarterModelPolicyPreferenceWriter.write(scope, event.session);
   }

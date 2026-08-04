@@ -436,7 +436,7 @@ describe("SessionController pending starts", () => {
     expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
   });
 
-  it("does not confirm a plus start that became stale after its workspace changed", async () => {
+  it("confirms a plus start against its originating scope after the selected workspace changes", async () => {
     const started: SessionInfo = { ...replacementSession, creationSource: "session-list-plus" };
     const startRequest = deferred<SessionInfo>();
     const onStarterModelPolicyConfirmed = vi.fn<NonNullable<SessionControllerDependencies["onStarterModelPolicyConfirmed"]>>();
@@ -447,7 +447,11 @@ describe("SessionController pending starts", () => {
     startRequest.resolve(started);
     await start;
 
-    expect(onStarterModelPolicyConfirmed).not.toHaveBeenCalled();
+    expect(onStarterModelPolicyConfirmed).toHaveBeenCalledWith({
+      machineId: "local",
+      session: started,
+      policy: fullStarterModelPolicyPreference,
+    });
   });
 
   it("does not confirm a plus start when the resolved session omits its source", async () => {

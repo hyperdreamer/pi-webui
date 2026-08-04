@@ -309,9 +309,9 @@ export class SessionController {
       const session = pending.request.kind === "plus"
         ? await this.api.startPlusSession(workspace.path, pending.request.initialModelPolicy, machineId)
         : await this.api.startSession(workspace.path, machineId, pending.request.modelPolicy);
-      const accepted = await this.resolvePendingSessionStart(pending.tempId, session);
+      await this.resolvePendingSessionStart(pending.tempId, session);
       if (
-        accepted
+        !pending.discarded
         && pending.request.kind === "plus"
         && session.creationSource === "session-list-plus"
       ) {
