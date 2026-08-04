@@ -82,6 +82,37 @@ export interface TierModelRef {
   id: string;
 }
 
+export const UTILITY_MODEL_SLOTS = ["lightweight", "context"] as const;
+export type UtilityModelSlot = (typeof UTILITY_MODEL_SLOTS)[number];
+
+export interface UtilityModelSettings {
+  lightweight?: TierModelRef;
+  context?: TierModelRef;
+}
+
+export type UtilityModelSettingsUpdate = Partial<
+  Record<UtilityModelSlot, TierModelRef | null>
+>;
+
+export interface UtilityModelOption {
+  model: TierModelRef;
+  name?: string;
+}
+
+export interface UtilityModelSlotValidation {
+  valid: boolean;
+  reason?: string;
+}
+
+export interface UtilityModelSettingsResponse {
+  contractVersion: 1;
+  settings: UtilityModelSettings;
+  models: UtilityModelOption[];
+  slots: Record<UtilityModelSlot, UtilityModelSlotValidation>;
+  valid: boolean;
+  configError?: string;
+}
+
 export interface ModelTierEntry {
   model: TierModelRef;
   thinkingLevel: string;
@@ -170,6 +201,8 @@ export interface PiWebUiConfigValues {
   maxUploadBytes?: number;
   /** Machine-global exact model and thinking bindings for the six canonical tiers. */
   modelTiers?: ModelTierLadder;
+  /** Machine-global model bindings for utility operations outside active sessions. */
+  utilityModels?: UtilityModelSettings;
   /** When true, LLMs can start new sessions via the spawn_session tool. */
   spawnSessions?: boolean;
   /**

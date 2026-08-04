@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, replacePiWebUiModelTiers, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled } from "./config.js";
+import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled } from "./config.js";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
 import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
 
 let tempDir: string;
@@ -120,6 +121,87 @@ describe("PI WEBUI config persistence", () => {
     savePiWebUiConfig({ port: 9000 }, testOptions());
 
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ modelTiers: invalid, future: { enabled: true }, port: 9000 });
+  });
+
+  it("persists and reads utility model settings", () => {
+    const utilityModels = {
+      lightweight: { provider: "acme", id: "small" },
+      context: { provider: "acme", id: "large" },
+    };
+
+    savePiWebUiConfig({ utilityModels }, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config.utilityModels).toEqual(utilityModels);
+  });
+
+  it("replaces utility model settings without retaining removed slots or changing unrelated fields", async () => {
+    const original = {
+      future: { enabled: true },
+      port: 9000,
+      utilityModels: {
+        lightweight: { provider: "acme", id: "small" },
+        context: { provider: "acme", id: "large" },
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(original, null, 2)}\n`, "utf8");
+
+    replacePiWebUiUtilityModels({ context: original.utilityModels.context }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      future: { enabled: true },
+      port: 9000,
+      utilityModels: { context: { provider: "acme", id: "large" } },
+    });
+  });
+
+  it("reports malformed external utility model settings without blocking other valid config", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000, utilityModels: { lightweight: { provider: "acme" } } }, null, 2)}\n`, "utf8");
+
+    const loaded = loadPiWebUiConfig(testOptions());
+
+    expect(loaded.config).toMatchObject({ port: 9000 });
+    expect(loaded.config.utilityModels).toBeUndefined();
+    expect(loaded.utilityModelsError).toContain("utilityModels.lightweight.id");
+  });
+
+  it("retains malformed external utility model settings when saving an unrelated update", async () => {
+    const utilityModels = { lightweight: { provider: "acme" } };
+    await writeFile(configPath, `${JSON.stringify({ utilityModels, future: { enabled: true } }, null, 2)}\n`, "utf8");
+
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ utilityModels, future: { enabled: true }, port: 9000 });
+  });
+
+  it("expresses utility slot clear requests and validation responses", () => {
+    const update = {
+      lightweight: null,
+      context: { provider: "acme", id: "large" },
+    } satisfies UtilityModelSettingsUpdate;
+    const response = {
+      contractVersion: 1,
+      settings: { context: update.context },
+      models: [{ model: { provider: "acme", id: "large" }, name: "Acme Large" }],
+      slots: {
+        lightweight: { valid: false, reason: "Not configured" },
+        context: { valid: true },
+      },
+      valid: false,
+    } satisfies UtilityModelSettingsResponse;
+
+    expect(response).toMatchObject({
+      settings: { context: { provider: "acme", id: "large" } },
+      slots: { lightweight: { valid: false }, context: { valid: true } },
+    });
+  });
+
+  it.each([
+    ["unknown utility slot", { unsupported: { provider: "acme", id: "small" } }, 'contains unknown key "unsupported"'],
+    ["unknown model-reference key", { lightweight: { provider: "acme", id: "small", extra: true } }, 'utilityModels.lightweight contains unknown key "extra"'],
+    ["empty provider", { lightweight: { provider: "", id: "small" } }, "utilityModels.lightweight.provider must be a non-empty string"],
+    ["empty id", { lightweight: { provider: "acme", id: "" } }, "utilityModels.lightweight.id must be a non-empty string"],
+  ])("rejects %s", (_description, value, message) => {
+    expect(() => parseUtilityModelsConfig(value, configPath)).toThrow(message);
   });
 
   it("persists and reads custom agent runtime settings", () => {
