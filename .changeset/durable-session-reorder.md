@@ -2,4 +2,4 @@
 "@hyperdreamer/pi-webui": patch
 ---
 
-Add durable manual ordering for persisted session groups.
+Add persistent drag ordering for selected sessions in the Sessions sidebar.
