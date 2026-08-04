@@ -8,6 +8,10 @@ import { defaultApi, deferred, FakeSocket, workspace } from "./sessionController
 const first = session("first");
 const second = session("second");
 
+function machine(id: string): NonNullable<AppState["selectedMachine"]> {
+  return { id, name: id, kind: "remote", createdAt: "now", updatedAt: "now" };
+}
+
 function session(id: string, cwd = "/repo", patch: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id,
@@ -60,24 +64,55 @@ function createHarness(
 
 describe("SessionController session reorder", () => {
   it("optimistically updates every catalog and merges the authoritative response", async () => {
+    const submittedAlreadyCorrect = session("already-correct", "/repo", { manualOrder: 2 });
+    const unsubmitted = session("unsubmitted", "/repo", { manualOrder: 8 });
+    const projectSubmittedAlreadyCorrect = session("already-correct", "/repo", { manualOrder: 2 });
+    const projectUnsubmitted = session("unsubmitted", "/repo", { manualOrder: 8 });
     const pending = deferred<SessionReorderResponse>();
     const reorder = vi.fn(() => pending.promise);
     const harness = createHarness({ reorder });
-    const running = harness.controller.reorderSession(first, request([second, first]));
+    harness.mutateState((state) => ({
+      ...state,
+      sessions: [first, second, submittedAlreadyCorrect, unsubmitted],
+      projectSessions: [first, second, projectSubmittedAlreadyCorrect, projectUnsubmitted],
+    }));
+    const running = harness.controller.reorderSession(first, request([second, first, submittedAlreadyCorrect]));
 
     expect(harness.state().sessions.map(({ id, manualOrder }) => [id, manualOrder])).toEqual([
-      ["first", 1], ["second", 0],
+      ["first", 1], ["second", 0], ["already-correct", 2], ["unsubmitted", 8],
     ]);
     expect(harness.state().projectSessions.map(({ id, manualOrder }) => [id, manualOrder])).toEqual([
-      ["first", 1], ["second", 0],
+      ["first", 1], ["second", 0], ["already-correct", 2], ["unsubmitted", 8],
     ]);
+    expect(harness.state().sessions.find(({ id }) => id === submittedAlreadyCorrect.id))
+      .toBe(submittedAlreadyCorrect);
+    expect(harness.state().sessions.find(({ id }) => id === unsubmitted.id)).toBe(unsubmitted);
+    expect(harness.state().projectSessions.find(({ id }) => id === projectSubmittedAlreadyCorrect.id))
+      .toBe(projectSubmittedAlreadyCorrect);
+    expect(harness.state().projectSessions.find(({ id }) => id === projectUnsubmitted.id))
+      .toBe(projectUnsubmitted);
     expect(harness.state().selectedSession).toMatchObject({ id: "first", manualOrder: 1 });
 
     pending.resolve({ orderedSessions: [
       { id: "second", cwd: "/repo", manualOrder: 4 },
       { id: "first", cwd: "/repo", manualOrder: 5 },
+      { id: "already-correct", cwd: "/repo", manualOrder: 2 },
     ] });
     await running;
+
+    expect(harness.state().sessions.map(({ id, manualOrder }) => [id, manualOrder])).toEqual([
+      ["first", 5], ["second", 4], ["already-correct", 2], ["unsubmitted", 8],
+    ]);
+    expect(harness.state().projectSessions.map(({ id, manualOrder }) => [id, manualOrder])).toEqual([
+      ["first", 5], ["second", 4], ["already-correct", 2], ["unsubmitted", 8],
+    ]);
+    expect(harness.state().sessions.find(({ id }) => id === submittedAlreadyCorrect.id))
+      .toBe(submittedAlreadyCorrect);
+    expect(harness.state().sessions.find(({ id }) => id === unsubmitted.id)).toBe(unsubmitted);
+    expect(harness.state().projectSessions.find(({ id }) => id === projectSubmittedAlreadyCorrect.id))
+      .toBe(projectSubmittedAlreadyCorrect);
+    expect(harness.state().projectSessions.find(({ id }) => id === projectUnsubmitted.id))
+      .toBe(projectUnsubmitted);
     expect(harness.state().selectedSession).toMatchObject({ id: "first", manualOrder: 5 });
   });
 
@@ -97,6 +132,54 @@ describe("SessionController session reorder", () => {
     expect(sessions).toHaveBeenCalledWith("/repo", "local");
     expect(refreshProjectSessionCatalog).toHaveBeenCalledOnce();
     expect(harness.state().error).toContain("response lost");
+  });
+
+  it("ignores an authoritative completion after the selected machine changes", async () => {
+    const pending = deferred<SessionReorderResponse>();
+    const harness = createHarness({ reorder: () => pending.promise });
+    const running = harness.controller.reorderSession(first, request([second, first]));
+    const remoteMachine = machine("remote");
+    harness.mutateState((state) => ({ ...state, selectedMachine: remoteMachine }));
+    const replacementState = harness.state();
+
+    pending.resolve({ orderedSessions: [
+      { id: "second", cwd: "/repo", manualOrder: 4 },
+      { id: "first", cwd: "/repo", manualOrder: 5 },
+    ] });
+    await running;
+
+    expect(harness.state()).toBe(replacementState);
+    expect(harness.state().selectedMachine).toBe(remoteMachine);
+    expect(harness.state().selectedWorkspace).toBe(workspace);
+  });
+
+  it("does not write a stale reorder failure after clearing the active session", async () => {
+    const pending = deferred<SessionReorderResponse>();
+    const sessions = vi.fn(() => Promise.resolve([]));
+    const refreshProjectSessionCatalog = vi.fn(() => Promise.resolve());
+    const harness = createHarness({ reorder: () => pending.promise, sessions }, refreshProjectSessionCatalog);
+    const running = harness.controller.reorderSession(first, request([second, first]));
+    const replacement = session("replacement");
+
+    harness.controller.clearActiveSession();
+    harness.mutateState((state) => ({
+      ...state,
+      sessions: [replacement],
+      projectSessions: [replacement],
+      selectedSession: replacement,
+      error: "replacement error",
+    }));
+    pending.reject(new Error("response lost"));
+    await running;
+
+    expect(harness.state().sessions).toEqual([replacement]);
+    expect(harness.state().sessions[0]).toBe(replacement);
+    expect(harness.state().projectSessions).toEqual([replacement]);
+    expect(harness.state().projectSessions[0]).toBe(replacement);
+    expect(harness.state().selectedSession).toBe(replacement);
+    expect(harness.state().error).toBe("replacement error");
+    expect(sessions).not.toHaveBeenCalled();
+    expect(refreshProjectSessionCatalog).not.toHaveBeenCalled();
   });
 
   it("ignores an authoritative completion after the workspace changes", async () => {
