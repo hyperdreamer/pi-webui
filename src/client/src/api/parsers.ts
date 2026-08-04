@@ -6,9 +6,10 @@ import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelP
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { MODEL_TIERS, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
-import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelOption, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
+import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
+import { isKnownThinkingLevel } from "../../../shared/thinkingLevels";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -1349,12 +1350,29 @@ export function parseUtilityModelSettingsResponse(value: unknown): UtilityModelS
   const record = requireObjectRecord(value, "utility model settings response");
   const unknownKey = Object.keys(record).find((key) => !isUtilityModelSettingsResponseKey(key));
   if (unknownKey !== undefined) throw new Error(`Invalid utility model settings response field: ${unknownKey}`);
-  if (record["contractVersion"] !== 1) throw new Error("Invalid utility model settings contract version");
+  if (record["contractVersion"] === 1) return parseUtilityModelSettingsResponseV1(record);
+  if (record["contractVersion"] === 2) return parseUtilityModelSettingsResponseV2(record);
+  throw new Error("Invalid utility model settings contract version");
+}
+
+function parseUtilityModelSettingsResponseV1(record: Record<string, unknown>): UtilityModelSettingsResponseV1 {
   const configError = optionalString(record, "configError");
   return {
     contractVersion: 1,
-    settings: parseUtilityModelSettings(record["settings"]),
-    models: arrayOf(parseUtilityModelOption)(record["models"]),
+    settings: parseUtilityModelSettingsV1(record["settings"]),
+    models: arrayOf(parseUtilityModelOptionV1)(record["models"]),
+    slots: parseUtilityModelSlots(record["slots"]),
+    valid: requireBoolean(record, "valid"),
+    ...optionalField("configError", configError),
+  };
+}
+
+function parseUtilityModelSettingsResponseV2(record: Record<string, unknown>): UtilityModelSettingsResponseV2 {
+  const configError = optionalString(record, "configError");
+  return {
+    contractVersion: 2,
+    settings: parseUtilityModelSettingsV2(record["settings"]),
+    models: arrayOf(parseUtilityModelOptionV2)(record["models"]),
     slots: parseUtilityModelSlots(record["slots"]),
     valid: requireBoolean(record, "valid"),
     ...optionalField("configError", configError),
@@ -1365,7 +1383,7 @@ function isUtilityModelSettingsResponseKey(key: string): boolean {
   return key === "contractVersion" || key === "settings" || key === "models" || key === "slots" || key === "valid" || key === "configError";
 }
 
-function parseUtilityModelSettings(value: unknown): UtilityModelSettings {
+function parseUtilityModelSettingsV1(value: unknown): UtilityModelSettings {
   const record = requireObjectRecord(value, "settings");
   const unknownSlot = Object.keys(record).find((key) => !isUtilityModelSlot(key));
   if (unknownSlot !== undefined) throw new Error(`Invalid utility model settings field: settings.${unknownSlot}`);
@@ -1375,13 +1393,50 @@ function parseUtilityModelSettings(value: unknown): UtilityModelSettings {
   };
 }
 
-function parseUtilityModelOption(value: unknown): UtilityModelOption {
+function parseUtilityModelSettingsV2(value: unknown): UtilityModelSettings {
+  const record = requireObjectRecord(value, "settings");
+  const unknownSlot = Object.keys(record).find((key) => !isUtilityModelSlot(key));
+  if (unknownSlot !== undefined) throw new Error(`Invalid utility model settings field: settings.${unknownSlot}`);
+  return {
+    ...optionalField("lightweight", record["lightweight"] === undefined ? undefined : parseUtilityModelBinding(record["lightweight"], "settings.lightweight")),
+    ...optionalField("context", record["context"] === undefined ? undefined : parseUtilityModelBinding(record["context"], "settings.context")),
+  };
+}
+
+function parseUtilityModelBinding(value: unknown, field: string): UtilityModelBinding {
+  const record = requireObjectRecord(value, field);
+  const unknownKey = Object.keys(record).find((key) => key !== "provider" && key !== "id" && key !== "thinkingLevel");
+  if (unknownKey !== undefined) throw new Error(`Invalid utility model binding field: ${field}.${unknownKey}`);
+  const provider = requireNonEmptyString(record, "provider");
+  const id = requireNonEmptyString(record, "id");
+  const thinkingLevel = optionalString(record, "thinkingLevel");
+  if (thinkingLevel === undefined) return { provider, id };
+  if (!isKnownThinkingLevel(thinkingLevel)) throw new Error(`Invalid utility model thinking level: ${field}.thinkingLevel`);
+  return { provider, id, thinkingLevel };
+}
+
+function parseUtilityModelOptionV1(value: unknown): UtilityModelOptionV1 {
   const record = requireObjectRecord(value, "models");
   const unknownKey = Object.keys(record).find((key) => key !== "model" && key !== "name");
   if (unknownKey !== undefined) throw new Error(`Invalid utility model option field: models.${unknownKey}`);
   return {
     model: parseTierModelRef(record["model"], "models.model"),
     ...optionalField("name", optionalString(record, "name")),
+  };
+}
+
+function parseUtilityModelOptionV2(value: unknown): UtilityModelOptionV2 {
+  const record = requireObjectRecord(value, "models");
+  const unknownKey = Object.keys(record).find((key) => key !== "model" && key !== "name" && key !== "thinkingLevels");
+  if (unknownKey !== undefined) throw new Error(`Invalid utility model option field: models.${unknownKey}`);
+  const thinkingLevels = arrayOfString(record["thinkingLevels"], "models.thinkingLevels").map((thinkingLevel) => {
+    if (!isKnownThinkingLevel(thinkingLevel)) throw new Error("Invalid utility model thinking levels: models.thinkingLevels");
+    return thinkingLevel;
+  });
+  return {
+    model: parseTierModelRef(record["model"], "models.model"),
+    ...optionalField("name", optionalString(record, "name")),
+    thinkingLevels,
   };
 }
 

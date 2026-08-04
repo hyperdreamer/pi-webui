@@ -186,25 +186,56 @@ describe("Models configuration API", () => {
 });
 
 describe("Utility model settings API", () => {
-  it("uses an encoded application-relative machine route and wraps PUT updates in settings", async () => {
+  it("uses an encoded application-relative machine route and preserves version 2 thinking bindings", async () => {
     vi.stubEnv("BASE_URL", "./");
     vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
-    const response = utilityModelSettingsResponse();
+    const response = utilityModelSettingsV2Response();
     const update = {
-      lightweight: null,
-      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+      lightweight: { provider: "openai", id: "gpt-small", thinkingLevel: "xhigh" },
+      context: null,
     } satisfies UtilityModelSettingsUpdate;
     const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response)]);
 
     await expect(utilityModelsApi.settings("remote /?")).resolves.toEqual(response);
-    await expect(utilityModelsApi.save(update, "remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(update, 2, "remote /?")).resolves.toEqual(response);
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
       "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
     ]);
     expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
-    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({ settings: update });
+    expect(requestBody(fetchCall(fetchMock, 1)[1])).toBe(JSON.stringify({ settings: update }));
+  });
+
+  it("accepts version 1 responses and projects explicit thinking bindings before saving", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = utilityModelSettingsResponse();
+    const update = {
+      lightweight: { provider: "openai", id: "gpt-small", thinkingLevel: "xhigh" },
+      context: null,
+    } satisfies UtilityModelSettingsUpdate;
+    const partialUpdate = { lightweight: update.lightweight } satisfies UtilityModelSettingsUpdate;
+    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response), jsonResponse(response)]);
+
+    await expect(utilityModelsApi.settings("remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(update, 1, "remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(partialUpdate, 1, "remote /?")).resolves.toEqual(response);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+    ]);
+    expect(requestBody(fetchCall(fetchMock, 1)[1])).toBe(JSON.stringify({
+      settings: {
+        lightweight: { provider: "openai", id: "gpt-small" },
+        context: null,
+      },
+    }));
+    expect(requestBody(fetchCall(fetchMock, 2)[1])).toBe(JSON.stringify({
+      settings: { lightweight: { provider: "openai", id: "gpt-small" } },
+    }));
   });
 });
 
@@ -934,6 +965,28 @@ function utilityModelSettingsResponse() {
     models: [
       { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna" },
       { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" } },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+  };
+}
+
+function utilityModelSettingsV2Response() {
+  return {
+    contractVersion: 2 as const,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      {
+        model: { provider: "openai", id: "gpt-5.6-luna" },
+        name: "Luna",
+        thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      },
     ],
     slots: {
       lightweight: { valid: true },

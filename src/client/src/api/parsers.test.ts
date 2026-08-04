@@ -1037,7 +1037,7 @@ describe("API parsers", () => {
     })).toThrow("Invalid notification clear reason");
   });
 
-  it("parses utility-model settings snapshots with exact model references", () => {
+  it("parses version 1 utility-model settings snapshots with exact model-only references", () => {
     const wire = utilityModelSettingsWire();
 
     expect(parseUtilityModelSettingsResponse(wire)).toEqual(wire);
@@ -1047,7 +1047,17 @@ describe("API parsers", () => {
     });
   });
 
-  it("accepts empty utility settings and preserves stale configured references", () => {
+  it("parses version 2 utility-model settings snapshots with explicit thinking levels", () => {
+    const wire = utilityModelSettingsV2Wire();
+
+    expect(parseUtilityModelSettingsResponse(wire)).toEqual(wire);
+    expect(parseUtilityModelSettingsResponse(wire).settings).toEqual({
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    });
+  });
+
+  it("accepts empty version 1 utility settings and preserves stale configured references", () => {
     const empty = utilityModelSettingsWire({ settings: {}, models: [], slots: { lightweight: { valid: true }, context: { valid: true } } });
     const stale = utilityModelSettingsWire({
       settings: { lightweight: { provider: "openai", id: "retired" } },
@@ -1062,29 +1072,62 @@ describe("API parsers", () => {
     expect(parseUtilityModelSettingsResponse(stale)).toEqual(stale);
   });
 
-  it("rejects malformed utility references, slot maps, validation rows, and contract versions", () => {
+  it("rejects malformed utility top-level fields, slot maps, and validation rows in both versions", () => {
+    for (const wire of [utilityModelSettingsWire({ unexpected: true }), utilityModelSettingsV2Wire({ unexpected: true })]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("field");
+    }
+    for (const wire of [
+      utilityModelSettingsWire({ slots: { lightweight: { valid: true } } }),
+      utilityModelSettingsV2Wire({ slots: { lightweight: { valid: true } } }),
+    ]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("slots");
+    }
+    for (const wire of [
+      utilityModelSettingsWire({ slots: { lightweight: { valid: "yes" }, context: { valid: true } } }),
+      utilityModelSettingsV2Wire({ slots: { lightweight: { valid: "yes" }, context: { valid: true } } }),
+    ]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("valid");
+    }
+  });
+
+  it("rejects thinking fields and malformed references in version 1 utility settings", () => {
     expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      settings: { lightweight: { provider: "openai" } },
+      settings: { lightweight: { provider: "openai", id: "gpt", thinkingLevel: "max" } },
+    }))).toThrow("thinkingLevel");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off"] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      settings: { lightweight: { provider: "", id: "gpt" } },
+    }))).toThrow("provider");
+  });
+
+  it("strictly parses version 2 utility thinking fields", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" } }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "gpt", thinkingLevel: "auto" } },
+    }))).toThrow("thinkingLevel");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "", thinkingLevel: "max" } },
     }))).toThrow("id");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      models: [{ model: { provider: "openai", id: "gpt" }, unexpected: true }],
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off", "unknown"] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off", 1] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "gpt", unexpected: true } },
+    }))).toThrow("settings.lightweight");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off"], unexpected: true }],
     }))).toThrow("models");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      settings: { lightweight: { provider: "openai", id: "gpt" }, unsupported: { provider: "acme", id: "small" } },
-    }))).toThrow("settings");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      unexpected: true,
-    }))).toThrow("field");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      slots: { lightweight: { valid: true } },
-    }))).toThrow("slots");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      slots: { lightweight: { valid: true }, context: { valid: true }, unsupported: { valid: true } },
-    }))).toThrow("slots");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
-      slots: { lightweight: { valid: "yes" }, context: { valid: true } },
-    }))).toThrow("valid");
-    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({ contractVersion: 2 }))).toThrow("contract version");
+  });
+
+  it("rejects unsupported utility model contract versions", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({ contractVersion: 3 }))).toThrow("contract version");
   });
 
   it("parses model-tier settings snapshots with stale ladders and separate provider/model IDs", () => {
@@ -1216,6 +1259,33 @@ function utilityModelSettingsWire(overrides: Record<string, unknown> = {}) {
     models: [
       { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna" },
       { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" } },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+    ...overrides,
+  };
+}
+
+function utilityModelSettingsV2Wire(overrides: Record<string, unknown> = {}) {
+  return {
+    contractVersion: 2,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      {
+        model: { provider: "openai", id: "gpt-5.6-luna" },
+        name: "Luna",
+        thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        model: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+        thinkingLevels: ["off", "max"],
+      },
     ],
     slots: {
       lightweight: { valid: true },

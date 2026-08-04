@@ -607,6 +607,11 @@ export class SettingsDialog extends LitElement {
   private async saveUtilityModels(update: UtilityModelSettingsUpdate): Promise<void> {
     if (this.saving) return;
     const target = this.settingsTarget();
+    const loadedResponse = this.utilityModelsConfigResponse;
+    if (loadedResponse === undefined) {
+      this.utilityModelsError = "Utility model settings must be loaded before saving.";
+      return;
+    }
     const support = this.utilityModelSettingsSupport(target);
     if (isSelectedMachineSettingsUnsupported(support)) {
       this.utilityModelsError = support.message ?? `Selected-machine settings are not available on ${settingsMachineTargetLabel(target)}.`;
@@ -616,7 +621,7 @@ export class SettingsDialog extends LitElement {
     this.utilityModelsError = "";
     this.savedMessage = "";
     try {
-      const response = await utilityModelsApi.save(update, target.id);
+      const response = await utilityModelsApi.save(update, loadedResponse.contractVersion, target.id);
       if (!this.isCurrentSettingsTarget(target)) return;
       this.utilityModelsConfigResponse = response;
       if (target.kind === "local" && this.configResponse !== undefined) {

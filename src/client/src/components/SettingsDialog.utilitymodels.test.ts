@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import { utilityModelsApi } from "../api";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
 import {
@@ -25,6 +25,23 @@ function response(overrides: Partial<UtilityModelSettingsResponseV1> = {}): Util
     models: [
       { model: lightweight, name: "Small" },
       { model: context, name: "Context" },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+    ...overrides,
+  };
+}
+
+function responseV2(overrides: Partial<UtilityModelSettingsResponseV2> = {}): UtilityModelSettingsResponseV2 {
+  return {
+    contractVersion: 2,
+    settings: { lightweight: { ...lightweight, thinkingLevel: "max" }, context },
+    models: [
+      { model: lightweight, name: "Small", thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+      { model: context, name: "Context", thinkingLevels: ["off", "max"] },
     ],
     slots: {
       lightweight: { valid: true },
@@ -75,19 +92,35 @@ describe("settings-dialog utility model machine targeting", () => {
     expect(getDialogProperty(dialog, "utilityModelsConfigResponse")).toBeUndefined();
   });
 
-  it("saves utility model settings through the selected-machine endpoint", async () => {
+  it("saves utility model settings using the loaded contract version through the selected-machine endpoint", async () => {
     stubWindowTimers();
     const update = { lightweight, context: null } satisfies UtilityModelSettingsUpdate;
-    const saved = response({ settings: { lightweight } });
+    const loaded = responseV2();
+    const saved = responseV2({ settings: { lightweight } });
     const saveSpy = vi.spyOn(utilityModelsApi, "save").mockResolvedValue(saved);
     const dialog = new SettingsDialog();
     dialog.machine = remoteMachine;
+    setDialogProperty(dialog, "utilityModelsConfigResponse", loaded);
 
     await callDialogPromise(dialog, "saveUtilityModels", update);
 
-    expect(saveSpy.mock.calls).toEqual([[update, "remote-a"]]);
+    expect(saveSpy.mock.calls).toEqual([[update, loaded.contractVersion, "remote-a"]]);
     expect(getDialogProperty(dialog, "utilityModelsConfigResponse")).toBe(saved);
     expect(getDialogProperty(dialog, "savedMessage")).toBe("Config saved.");
+    expect(getDialogProperty(dialog, "saving")).toBe(false);
+  });
+
+  it("does not save utility model settings before their response is loaded", async () => {
+    const saveSpy = vi.spyOn(utilityModelsApi, "save");
+    const dialog = new SettingsDialog();
+    dialog.machine = remoteMachine;
+
+    await callDialogPromise(dialog, "saveUtilityModels", { lightweight, context });
+
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(getDialogProperty(dialog, "utilityModelsError")).toBe(
+      "Utility model settings must be loaded before saving.",
+    );
     expect(getDialogProperty(dialog, "saving")).toBe(false);
   });
 
@@ -104,6 +137,7 @@ describe("settings-dialog utility model machine targeting", () => {
     const dialog = new SettingsDialog();
     dialog.onConfigSaved = onConfigSaved;
     setDialogProperty(dialog, "configResponse", initialConfig);
+    setDialogProperty(dialog, "utilityModelsConfigResponse", response());
 
     await callDialogPromise(dialog, "saveUtilityModels", { lightweight: null, context });
 
@@ -149,6 +183,7 @@ describe("settings-dialog utility model machine targeting", () => {
     vi.spyOn(utilityModelsApi, "save").mockRejectedValue(new Error("Save failed"));
     const saveDialog = new SettingsDialog();
     saveDialog.machine = remoteMachine;
+    setDialogProperty(saveDialog, "utilityModelsConfigResponse", response());
 
     await callDialogPromise(saveDialog, "saveUtilityModels", { lightweight, context });
 
