@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled } from "./config.js";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
+import type { UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
 import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
 
 let tempDir: string;
@@ -123,11 +123,11 @@ describe("PI WEBUI config persistence", () => {
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ modelTiers: invalid, future: { enabled: true }, port: 9000 });
   });
 
-  it("persists and reads utility model settings", () => {
+  it("persists explicit utility thinking levels while model-only bindings remain auto", () => {
     const utilityModels = {
-      lightweight: { provider: "acme", id: "small" },
+      lightweight: { provider: "acme", id: "small", thinkingLevel: "low" },
       context: { provider: "acme", id: "large" },
-    };
+    } satisfies UtilityModelSettings;
 
     savePiWebUiConfig({ utilityModels }, testOptions());
 
@@ -140,7 +140,7 @@ describe("PI WEBUI config persistence", () => {
       port: 9000,
       utilityModels: {
         lightweight: { provider: "acme", id: "small" },
-        context: { provider: "acme", id: "large" },
+        context: { provider: "acme", id: "large", thinkingLevel: "max" } satisfies UtilityModelSettings["context"],
       },
     };
     await writeFile(configPath, `${JSON.stringify(original, null, 2)}\n`, "utf8");
@@ -150,7 +150,7 @@ describe("PI WEBUI config persistence", () => {
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
       future: { enabled: true },
       port: 9000,
-      utilityModels: { context: { provider: "acme", id: "large" } },
+      utilityModels: { context: { provider: "acme", id: "large", thinkingLevel: "max" } },
     });
   });
 
@@ -162,6 +162,16 @@ describe("PI WEBUI config persistence", () => {
     expect(loaded.config).toMatchObject({ port: 9000 });
     expect(loaded.config.utilityModels).toBeUndefined();
     expect(loaded.utilityModelsError).toContain("utilityModels.lightweight.id");
+  });
+
+  it("reports invalid external utility thinking levels without blocking other valid config", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000, utilityModels: { lightweight: { provider: "acme", id: "small", thinkingLevel: "turbo" } } }, null, 2)}\n`, "utf8");
+
+    const loaded = loadPiWebUiConfig(testOptions());
+
+    expect(loaded.config).toMatchObject({ port: 9000 });
+    expect(loaded.config.utilityModels).toBeUndefined();
+    expect(loaded.utilityModelsError).toContain("utilityModels.lightweight.thinkingLevel");
   });
 
   it("retains malformed external utility model settings when saving an unrelated update", async () => {
@@ -197,9 +207,13 @@ describe("PI WEBUI config persistence", () => {
 
   it.each([
     ["unknown utility slot", { unsupported: { provider: "acme", id: "small" } }, 'contains unknown key "unsupported"'],
-    ["unknown model-reference key", { lightweight: { provider: "acme", id: "small", extra: true } }, 'utilityModels.lightweight contains unknown key "extra"'],
+    ["unknown utility binding key", { lightweight: { provider: "acme", id: "small", extra: true } }, 'utilityModels.lightweight contains unknown key "extra"'],
     ["empty provider", { lightweight: { provider: "", id: "small" } }, "utilityModels.lightweight.provider must be a non-empty string"],
     ["empty id", { lightweight: { provider: "acme", id: "" } }, "utilityModels.lightweight.id must be a non-empty string"],
+    ["auto thinking level", { lightweight: { provider: "acme", id: "small", thinkingLevel: "auto" } }, "utilityModels.lightweight.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max"],
+    ["unknown thinking level", { lightweight: { provider: "acme", id: "small", thinkingLevel: "turbo" } }, "utilityModels.lightweight.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max"],
+    ["empty thinking level", { lightweight: { provider: "acme", id: "small", thinkingLevel: "" } }, "utilityModels.lightweight.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max"],
+    ["non-string thinking level", { lightweight: { provider: "acme", id: "small", thinkingLevel: false } }, "utilityModels.lightweight.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max"],
   ])("rejects %s", (_description, value, message) => {
     expect(() => parseUtilityModelsConfig(value, configPath)).toThrow(message);
   });

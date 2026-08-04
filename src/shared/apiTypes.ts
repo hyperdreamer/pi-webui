@@ -1,3 +1,5 @@
+import type { ThinkingLevel } from "./thinkingLevels.js";
+
 export type MachineKind = "local" | "remote";
 export type MachineStatus = "unknown" | "online" | "offline" | "error";
 
@@ -87,33 +89,57 @@ export interface TierModelRef {
 export const UTILITY_MODEL_SLOTS = ["lightweight", "context"] as const;
 export type UtilityModelSlot = (typeof UTILITY_MODEL_SLOTS)[number];
 
+export interface UtilityModelBinding extends TierModelRef {
+  thinkingLevel?: ThinkingLevel;
+}
+
 export interface UtilityModelSettings {
-  lightweight?: TierModelRef;
-  context?: TierModelRef;
+  lightweight?: UtilityModelBinding;
+  context?: UtilityModelBinding;
 }
 
 export type UtilityModelSettingsUpdate = Partial<
-  Record<UtilityModelSlot, TierModelRef | null>
+  Record<UtilityModelSlot, UtilityModelBinding | null>
 >;
 
-export interface UtilityModelOption {
+export interface UtilityModelOptionV1 {
   model: TierModelRef;
   name?: string;
 }
+
+export interface UtilityModelOptionV2 extends UtilityModelOptionV1 {
+  thinkingLevels: ThinkingLevel[];
+}
+
+export type UtilityModelOption = UtilityModelOptionV1 | UtilityModelOptionV2;
 
 export interface UtilityModelSlotValidation {
   valid: boolean;
   reason?: string;
 }
 
-export interface UtilityModelSettingsResponse {
-  contractVersion: 1;
+interface UtilityModelSettingsResponseFields {
   settings: UtilityModelSettings;
-  models: UtilityModelOption[];
   slots: Record<UtilityModelSlot, UtilityModelSlotValidation>;
   valid: boolean;
   configError?: string;
 }
+
+export interface UtilityModelSettingsResponseV1
+  extends UtilityModelSettingsResponseFields {
+  contractVersion: 1;
+  models: UtilityModelOptionV1[];
+}
+
+export interface UtilityModelSettingsResponseV2
+  extends UtilityModelSettingsResponseFields {
+  contractVersion: 2;
+  models: UtilityModelOptionV2[];
+}
+
+export type UtilityModelSettingsResponse =
+  | UtilityModelSettingsResponseV1
+  | UtilityModelSettingsResponseV2;
 
 export interface ModelTierEntry {
   model: TierModelRef;

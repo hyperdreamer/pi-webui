@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TierModelRef, UtilityModelOption, UtilityModelSettingsResponse } from "../../../../shared/apiTypes";
+import type { TierModelRef, UtilityModelOption, UtilityModelSettingsResponseV1 } from "../../../../shared/apiTypes";
 import { templateText } from "../../templateInspection.testSupport";
 import { SettingsPanelFrame } from "./SettingsPanelFrame";
 import { SettingsUtilityModelsPanel } from "./SettingsUtilityModelsPanel";
@@ -15,7 +15,7 @@ const models: UtilityModelOption[] = [
   { model: contextModel, name: "Context" },
 ];
 
-function response(overrides: Partial<UtilityModelSettingsResponse> = {}): UtilityModelSettingsResponse {
+function response(overrides: Partial<UtilityModelSettingsResponseV1> = {}): UtilityModelSettingsResponseV1 {
   return {
     contractVersion: 1,
     settings: { lightweight: smallModel, context: contextModel },

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import { utilityModelsApi } from "../api";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
 import {
@@ -18,7 +18,7 @@ import {
 const lightweight = { provider: "openai", id: "gpt-small" };
 const context = { provider: "anthropic", id: "claude-context" };
 
-function response(overrides: Partial<UtilityModelSettingsResponse> = {}): UtilityModelSettingsResponse {
+function response(overrides: Partial<UtilityModelSettingsResponseV1> = {}): UtilityModelSettingsResponseV1 {
   return {
     contractVersion: 1,
     settings: { lightweight, context },

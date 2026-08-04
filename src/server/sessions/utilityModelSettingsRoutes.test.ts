@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../shared/apiTypes";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsUpdate } from "../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES } from "../../shared/federatedRoutes";
 import type { UtilityModelSettingsRouteService } from "./utilityModelSettingsRoutes";
 import { registerUtilityModelSettingsRoutes } from "./utilityModelSettingsRoutes";
@@ -151,7 +151,7 @@ function settingsAfter(patch: UtilityModelSettingsUpdate) {
   };
 }
 
-function snapshot(overrides: Partial<UtilityModelSettingsResponse> = {}): UtilityModelSettingsResponse {
+function snapshot(overrides: Partial<UtilityModelSettingsResponseV1> = {}): UtilityModelSettingsResponseV1 {
   return {
     contractVersion: 1,
     settings: {},

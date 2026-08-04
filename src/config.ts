@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type TierModelRef, type UtilityModelSettings } from "./shared/apiTypes.js";
+import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type TierModelRef, type UtilityModelBinding, type UtilityModelSettings } from "./shared/apiTypes.js";
 import { isPiCompanionCommand, usesPiCodingAgentStateCompatibility } from "./shared/activeAgentProfile.js";
 import { isPiWebUiPluginId, piWebUiPluginIdPattern } from "./shared/pluginIds.js";
+import { isKnownThinkingLevel } from "./shared/thinkingLevels.js";
 
 export { isPiCompanionCommand };
 
@@ -319,8 +320,45 @@ export function parseUtilityModelsConfig(value: unknown, path: string): UtilityM
   }
 
   return {
-    ...(value["lightweight"] !== undefined ? { lightweight: parseModelReference(value["lightweight"], "utilityModels.lightweight", path) } : {}),
-    ...(value["context"] !== undefined ? { context: parseModelReference(value["context"], "utilityModels.context", path) } : {}),
+    ...(value["lightweight"] !== undefined ? { lightweight: parseUtilityModelBinding(value["lightweight"], "utilityModels.lightweight", path) } : {}),
+    ...(value["context"] !== undefined ? { context: parseUtilityModelBinding(value["context"], "utilityModels.context", path) } : {}),
+  };
+}
+
+function parseUtilityModelBinding(
+  value: unknown,
+  key: string,
+  path: string,
+): UtilityModelBinding {
+  if (!isRecord(value)) {
+    throw new Error(`PI WEBUI config ${key} must be an object: ${path}`);
+  }
+  const unknownKey = Object.keys(value).find(
+    (entryKey) =>
+      entryKey !== "provider" &&
+      entryKey !== "id" &&
+      entryKey !== "thinkingLevel",
+  );
+  if (unknownKey !== undefined) {
+    throw new Error(
+      `PI WEBUI config ${key} contains unknown key ${JSON.stringify(unknownKey)}: ${path}`,
+    );
+  }
+
+  const thinkingLevel = value["thinkingLevel"];
+  if (
+    thinkingLevel !== undefined &&
+    (typeof thinkingLevel !== "string" || !isKnownThinkingLevel(thinkingLevel))
+  ) {
+    throw new Error(
+      `PI WEBUI config ${key}.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max: ${path}`,
+    );
+  }
+
+  return {
+    provider: parseString(value["provider"], `${key}.provider`, path),
+    id: parseString(value["id"], `${key}.id`, path),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
   };
 }
 
