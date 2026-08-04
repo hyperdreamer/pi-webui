@@ -455,8 +455,8 @@ describe("session API compatibility", () => {
       jsonResponse(v2Defaults),
     ]);
 
-    await sessionsApi.sessionDefaultsV2("/repo with spaces");
-    await sessionsApi.sessionDefaultsV2("/repo with spaces", "remote /?");
+    await expect(sessionsApi.sessionDefaultsV2("/repo with spaces")).resolves.toEqual(v2Defaults);
+    await expect(sessionsApi.sessionDefaultsV2("/repo with spaces", "remote /?")).resolves.toEqual(v2Defaults);
 
     expect(fetchCall(fetchMock, 0)[0]).toBe(
       "https://pi.example.test/api/machines/local/session-defaults?cwd=%2Frepo+with+spaces&starterModelPolicyContract=2",
