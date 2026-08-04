@@ -6,8 +6,10 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
+  type SessionBeforeTreeEvent,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultRuntimeFactory, PiSessionService } from "./piSessionService.js";
@@ -158,6 +160,76 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
+  it("uses the narrowed active-model snapshot for first-prompt title fallback", async () => {
+    const activeModel = testModel();
+    const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Snapshot model title"));
+    const fake = fakeRuntime("snapshot-name-session", { agent: { streamFunction: streamFn } });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("snapshot-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+    await service.status(sessionRef("snapshot-name-session"));
+    let modelReads = 0;
+    Object.defineProperty(fake.session, "model", {
+      configurable: true,
+      get() {
+        modelReads += 1;
+        return modelReads === 3 ? undefined : activeModel;
+      },
+    });
+
+    await service.prompt(sessionRef("snapshot-name-session"), "Please fix the login bug");
+    Object.defineProperty(fake.session, "model", {
+      configurable: true,
+      value: activeModel,
+      writable: true,
+    });
+    await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Snapshot model title"); });
+
+    expect(streamFn.mock.calls.map(([model]) => model)).toEqual([activeModel]);
+    await service.dispose();
+  });
+
+  it("contains and logs failures from asynchronous title bookkeeping", async () => {
+    const bookkeepingFailure = new Error("session name write failed");
+    const logger = { info: vi.fn() };
+    const activeModel = testModel();
+    const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Unused title"));
+    const fake = fakeRuntime("failed-name-session", { model: activeModel, agent: { streamFunction: streamFn } });
+    fake.session.setSessionName = () => { throw bookkeepingFailure; };
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      logger,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("failed-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("failed-name-session"), "Please fix the login bug");
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(
+        {
+          sessionId: "failed-name-session",
+          error: "session name write failed",
+        },
+        "failed to apply generated session name",
+      );
+    });
+
+    expect(fake.session.sessionName).toBeUndefined();
+    await service.dispose();
+  });
+
   it("names relay handoffs deterministically without resolving or calling a model", async () => {
     const configuredCandidates = vi.fn(() => Promise.resolve([testModel()]));
     const streamFn = vi.fn<StreamFn>(() => { throw new Error("title stream should not run"); });
@@ -182,11 +254,18 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
-  it("installs utility routing in each default runtime without mutating model settings", async () => {
-    const activeModel = testModel();
-    const streamFunction = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Unused title"));
+  it("installs working utility routing in each default runtime without mutating model settings", async () => {
+    const credentials = new InMemoryCredentialStore();
+    await seedCredential(credentials, TEST_MODEL_PROVIDER, { type: "api_key", key: "sk-test" });
+    const modelRuntime = await createTestModelRuntime(credentials);
+    const activeModel = modelRuntime.getModel(TEST_MODEL_PROVIDER, TEST_MODEL_ID);
+    if (activeModel === undefined) throw new Error("Expected active model fixture");
+    const utilityModel = { ...activeModel, id: "utility-lightweight" };
+    const configuredCandidates = vi.fn().mockResolvedValue([utilityModel]);
+    const streamFunction = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Runtime factory summary"));
     const setModel = vi.fn(() => Promise.resolve());
     const fake = fakeRuntime("factory-session", {
+      modelRuntime,
       model: activeModel,
       thinkingLevel: "high",
       setModel,
@@ -207,9 +286,9 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
       extensionsResult: services.resourceLoader.getExtensions(),
     }));
     const runtimeFactory = createDefaultRuntimeFactory(
-      testModelRuntime,
+      modelRuntime,
       sessionGateway([]),
-      { configuredCandidates: vi.fn().mockResolvedValue([]) },
+      { configuredCandidates },
       { info: vi.fn() },
       undefined,
       undefined,
@@ -230,16 +309,56 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     expect(createServicesOptions).toMatchObject({
       cwd: process.cwd(),
       agentDir: TEST_AGENT_DIR,
-      modelRuntime: testModelRuntime,
+      modelRuntime,
     });
-    expect(createServicesOptions?.resourceLoaderOptions?.extensionFactories).toHaveLength(1);
-    expect(createServicesOptions?.resourceLoaderOptions?.extensionFactories?.[0]).toMatchObject({
+    const extensionFactories = createServicesOptions?.resourceLoaderOptions?.extensionFactories;
+    expect(extensionFactories).toHaveLength(1);
+    expect(extensionFactories?.[0]).toMatchObject({
       name: "pi-webui-utility-models",
       hidden: true,
     });
+    if (extensionFactories === undefined) throw new Error("Expected utility extension factory");
+    const loader = new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir: TEST_AGENT_DIR,
+      settingsManager: services.settingsManager,
+      extensionFactories,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    });
+    await loader.reload();
+    const loadedExtensions = loader.getExtensions();
+    expect(loadedExtensions.errors).toEqual([]);
+    const beforeTree = loadedExtensions.extensions[0]?.handlers.get("session_before_tree")?.[0];
+    if (beforeTree === undefined) throw new Error("Expected utility tree handler");
+
+    const utilityResult = await beforeTree(runtimeFactoryTreeEvent(), {
+      model: activeModel,
+    });
+    if (
+      typeof utilityResult !== "object" ||
+      utilityResult === null ||
+      !("summary" in utilityResult) ||
+      typeof utilityResult.summary !== "object" ||
+      utilityResult.summary === null ||
+      !("summary" in utilityResult.summary) ||
+      typeof utilityResult.summary.summary !== "string"
+    ) {
+      throw new Error("Expected utility branch summary result");
+    }
+    expect(utilityResult.summary.summary).toContain("Runtime factory summary");
+
+    expect(configuredCandidates).toHaveBeenCalledOnce();
+    expect(configuredCandidates).toHaveBeenCalledWith("lightweight");
+    expect(streamFunction).toHaveBeenCalledOnce();
+    expect(streamFunction.mock.calls[0]?.[0]).toBe(utilityModel);
     expect(createFromServices).toHaveBeenCalledOnce();
     expect(createFromServices.mock.calls[0]?.[0].services).toBe(services);
     expect(result.session).toBe(createdSession);
+    expect(result.session.agent.streamFunction).toBe(streamFunction);
     expect(result.services).toBe(services);
     expect(result.diagnostics).toBe(services.diagnostics);
     expect(fake.session.model).toBe(activeModel);
@@ -596,6 +715,28 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 });
+
+function runtimeFactoryTreeEvent(): SessionBeforeTreeEvent {
+  return {
+    type: "session_before_tree",
+    preparation: {
+      targetId: "target-entry",
+      oldLeafId: "branch-entry",
+      commonAncestorId: null,
+      entriesToSummarize: [{
+        type: "custom_message",
+        id: "branch-entry",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        customType: "runtime-factory-test",
+        content: "Verify utility routing",
+        display: false,
+      }],
+      userWantsSummary: true,
+    },
+    signal: new AbortController().signal,
+  };
+}
 
 function completedTitleStream(modelId: string, text: string) {
   const stream = createAssistantMessageEventStream();

@@ -4750,7 +4750,7 @@ export class PiSessionService implements SessionRouteService {
     void runWithUtilityModelFallback(
       this.utilityModelResolver,
       "lightweight",
-      session.model,
+      model,
       (candidate) =>
         generateShortSessionName(
           session.agent.streamFunction,
@@ -4767,12 +4767,22 @@ export class PiSessionService implements SessionRouteService {
           "utility title model failed"
         );
       }
-    ).then((name) => {
-      this.applyGeneratedSessionName(
-        session,
-        name ?? fallbackSessionName(firstMessage)
-      );
-    });
+    )
+      .then((name) => {
+        this.applyGeneratedSessionName(
+          session,
+          name ?? fallbackSessionName(firstMessage)
+        );
+      })
+      .catch((error: unknown) => {
+        this.logger.info(
+          {
+            sessionId: session.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "failed to apply generated session name"
+        );
+      });
   }
 
   private applyGeneratedSessionName(
