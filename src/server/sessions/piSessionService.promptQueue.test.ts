@@ -3,10 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSessionFromServices,
+  createAgentSessionServices,
+  ModelRuntime,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { PiSessionService } from "./piSessionService.js";
-import { CapturingSessionEventHub, createTestModelRuntime, fakeRuntime, runtimeCreator, seedCredential, sessionGateway, sessionRecord, sessionRef, TEST_MODEL_ID, TEST_MODEL_PROVIDER, testModel, testModelRuntime, type RuntimeCreator } from "./piSessionService.testSupport.js";
+import { createDefaultRuntimeFactory, PiSessionService } from "./piSessionService.js";
+import { CapturingSessionEventHub, createTestModelRuntime, fakeAgentSessionServices, fakeRuntime, runtimeCreator, seedCredential, sessionGateway, sessionRecord, sessionRef, TEST_MODEL_ID, TEST_MODEL_PROVIDER, testModel, testModelRuntime, type RuntimeCreator } from "./piSessionService.testSupport.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-webui-test-agent";
 
@@ -78,31 +83,18 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 
-  it("generates a session name for the first prompt via the session's agent.streamFunction", async () => {
-    const model = testModel();
-    const streamCalls: unknown[] = [];
-    const streamFn: StreamFn = (streamModel, context, options) => {
-      streamCalls.push({ streamModel, context, options });
-      const stream = createAssistantMessageEventStream();
-      const message: AssistantMessage = {
-        role: "assistant",
-        content: [{ type: "text", text: "Fix login bug" }],
-        api: "anthropic-messages",
-        provider: "anthropic",
-        model: model.id,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-        stopReason: "stop",
-        timestamp: Date.now(),
-      };
-      stream.push({ type: "done", reason: "stop", message });
-      stream.end(message);
-      return stream;
-    };
+  it("uses the configured lightweight model for the first-prompt title without changing the active model", async () => {
+    const activeModel = testModel();
+    const lightweightModel = { ...activeModel, id: "utility-lightweight" };
+    const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Fix login bug"));
     const hub = new CapturingSessionEventHub();
-    const fake = fakeRuntime("name-session", { model, agent: { streamFunction: streamFn } });
+    const fake = fakeRuntime("name-session", { model: activeModel, agent: { streamFunction: streamFn } });
     const service = new PiSessionService(hub, {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([lightweightModel]),
+      },
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -111,9 +103,151 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.prompt(sessionRef("name-session"), "Please fix the login bug");
     await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Fix login bug"); });
 
-    expect(streamCalls).toHaveLength(1);
+    expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel]);
+    expect(fake.session.model).toBe(activeModel);
     expect(hub.sessionEvents.some(({ event }) => event.type === "session.name" && event.name === "Fix login bug")).toBe(true);
     await service.dispose();
+  });
+
+  it("falls back from a failed lightweight title model to the active model", async () => {
+    const activeModel = testModel();
+    const lightweightModel = { ...activeModel, id: "utility-lightweight" };
+    const streamFn = vi.fn<StreamFn>((streamModel) => streamModel === lightweightModel
+      ? failedTitleStream(streamModel.id)
+      : completedTitleStream(streamModel.id, "Active model title"));
+    const fake = fakeRuntime("fallback-name-session", { model: activeModel, agent: { streamFunction: streamFn } });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([lightweightModel]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("fallback-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("fallback-name-session"), "Please fix the login bug");
+    await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Active model title"); });
+
+    expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
+    expect(fake.session.model).toBe(activeModel);
+    await service.dispose();
+  });
+
+  it("uses only the active model for a first-prompt title when no utility model is configured", async () => {
+    const activeModel = testModel();
+    const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Active model title"));
+    const fake = fakeRuntime("active-name-session", { model: activeModel, agent: { streamFunction: streamFn } });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: {
+        configuredCandidates: vi.fn().mockResolvedValue([]),
+      },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("active-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(sessionRef("active-name-session"), "Please fix the login bug");
+    await vi.waitFor(() => { expect(fake.session.sessionName).toBe("Active model title"); });
+
+    expect(streamFn.mock.calls.map(([model]) => model)).toEqual([activeModel]);
+    expect(fake.session.model).toBe(activeModel);
+    await service.dispose();
+  });
+
+  it("names relay handoffs deterministically without resolving or calling a model", async () => {
+    const configuredCandidates = vi.fn(() => Promise.resolve([testModel()]));
+    const streamFn = vi.fn<StreamFn>(() => { throw new Error("title stream should not run"); });
+    const fake = fakeRuntime("relay-name-session", { agent: { streamFunction: streamFn } });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      utilityModelResolver: { configuredCandidates },
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("relay-name-session")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.prompt(
+      sessionRef("relay-name-session"),
+      'Relay "utility-routing" leg 2 begins now.\n\nContinue the implementation.',
+    );
+
+    expect(fake.session.sessionName).toBe("Relay utility-routing leg 2");
+    expect(configuredCandidates).not.toHaveBeenCalled();
+    expect(streamFn).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it("installs utility routing in each default runtime without mutating model settings", async () => {
+    const activeModel = testModel();
+    const streamFunction = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Unused title"));
+    const setModel = vi.fn(() => Promise.resolve());
+    const fake = fakeRuntime("factory-session", {
+      model: activeModel,
+      thinkingLevel: "high",
+      setModel,
+      agent: { streamFunction },
+    });
+    const services = fakeAgentSessionServices();
+    const setDefaultProvider = vi.spyOn(services.settingsManager, "setDefaultProvider");
+    const setDefaultModel = vi.spyOn(services.settingsManager, "setDefaultModel");
+    const setDefaultModelAndProvider = vi.spyOn(services.settingsManager, "setDefaultModelAndProvider");
+    const createServices = vi.fn<typeof createAgentSessionServices>(() => Promise.resolve(services));
+    // The SDK session class has private state; this host-surface fake is the tested adapter boundary.
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    const createdSession = fake.session as unknown as Awaited<
+      ReturnType<typeof createAgentSessionFromServices>
+    >["session"];
+    const createFromServices = vi.fn<typeof createAgentSessionFromServices>(() => Promise.resolve({
+      session: createdSession,
+      extensionsResult: services.resourceLoader.getExtensions(),
+    }));
+    const runtimeFactory = createDefaultRuntimeFactory(
+      testModelRuntime,
+      sessionGateway([]),
+      { configuredCandidates: vi.fn().mockResolvedValue([]) },
+      { info: vi.fn() },
+      undefined,
+      undefined,
+      undefined,
+      { createServices, createFromServices },
+    );
+    const sessionManager = SessionManager.inMemory(process.cwd());
+
+    const result = await runtimeFactory({
+      cwd: process.cwd(),
+      agentDir: TEST_AGENT_DIR,
+      sessionManager,
+      delegationToolsEnabled: false,
+    });
+
+    expect(createServices).toHaveBeenCalledOnce();
+    const createServicesOptions = createServices.mock.calls[0]?.[0];
+    expect(createServicesOptions).toMatchObject({
+      cwd: process.cwd(),
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+    });
+    expect(createServicesOptions?.resourceLoaderOptions?.extensionFactories).toHaveLength(1);
+    expect(createServicesOptions?.resourceLoaderOptions?.extensionFactories?.[0]).toMatchObject({
+      name: "pi-webui-utility-models",
+      hidden: true,
+    });
+    expect(createFromServices).toHaveBeenCalledOnce();
+    expect(createFromServices.mock.calls[0]?.[0].services).toBe(services);
+    expect(result.session).toBe(createdSession);
+    expect(result.services).toBe(services);
+    expect(result.diagnostics).toBe(services.diagnostics);
+    expect(fake.session.model).toBe(activeModel);
+    expect(fake.session.thinkingLevel).toBe("high");
+    expect(setModel).not.toHaveBeenCalled();
+    expect(setDefaultProvider).not.toHaveBeenCalled();
+    expect(setDefaultModel).not.toHaveBeenCalled();
+    expect(setDefaultModelAndProvider).not.toHaveBeenCalled();
   });
 
   it("includes queued message details in session status", async () => {
@@ -462,6 +596,41 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.dispose();
   });
 });
+
+function completedTitleStream(modelId: string, text: string) {
+  const stream = createAssistantMessageEventStream();
+  const message = titleAssistantMessage(modelId, {
+    content: [{ type: "text", text }],
+  });
+  stream.push({ type: "done", reason: "stop", message });
+  stream.end(message);
+  return stream;
+}
+
+function failedTitleStream(modelId: string) {
+  const stream = createAssistantMessageEventStream();
+  const message = titleAssistantMessage(modelId, {
+    stopReason: "error",
+    errorMessage: "utility title failed",
+  });
+  stream.push({ type: "error", reason: "error", error: message });
+  stream.end(message);
+  return stream;
+}
+
+function titleAssistantMessage(modelId: string, patch: Partial<AssistantMessage>): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: "anthropic-messages",
+    provider: "anthropic",
+    model: modelId,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop",
+    timestamp: Date.now(),
+    ...patch,
+  };
+}
 
 async function writeLocalModelsConfig(path: string, modelId: string): Promise<void> {
   await writeFile(path, JSON.stringify({

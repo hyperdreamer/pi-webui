@@ -164,6 +164,15 @@ import {
   type ModelTier,
 } from "./modelTierRegistry.js";
 import {
+  createUtilityModelExtension,
+  type UtilityModelExtensionRuntimeRefs,
+} from "./utilityModelExtension.js";
+import {
+  createUtilityModelResolver,
+  runWithUtilityModelFallback,
+  type UtilityModelResolver,
+} from "./utilityModelResolver.js";
+import {
   inspectSessionModelPolicy,
   planSessionModelPolicyUpdate,
   serializeSessionModelPolicy,
@@ -889,12 +898,23 @@ export function createPiWebUiCustomToolDefinitions(
   ];
 }
 
-function createDefaultRuntimeFactory(
+interface PiWebUiAgentSessionSdk {
+  createServices: typeof createAgentSessionServices;
+  createFromServices: typeof createAgentSessionFromServices;
+}
+
+export function createDefaultRuntimeFactory(
   modelRuntime: ModelRuntime,
   sessionManagers: Pick<PiSessionManagerGateway, "open">,
+  utilityModelResolver: UtilityModelResolver<AgentModel>,
+  logger: PiSessionLogger,
   spawn?: SpawnSessionFn,
   subsessions?: SubsessionToolDeps,
-  modelPolicy?: ModelPolicyToolDeps
+  modelPolicy?: ModelPolicyToolDeps,
+  sdk: PiWebUiAgentSessionSdk = {
+    createServices: createAgentSessionServices,
+    createFromServices: createAgentSessionFromServices,
+  }
 ): PiWebUiCreateAgentSessionRuntimeFactory {
   return async ({
     cwd,
@@ -905,11 +925,25 @@ function createDefaultRuntimeFactory(
     initialThinkingLevel,
     delegationToolsEnabled,
   }) => {
-    const services = await createAgentSessionServices({
+    const runtimeRefs: UtilityModelExtensionRuntimeRefs = {};
+    const services = await sdk.createServices({
       cwd,
       agentDir,
       modelRuntime,
+      resourceLoaderOptions: {
+        extensionFactories: [
+          createUtilityModelExtension({
+            // Pi's ExtensionContext exposes Model<any>; production candidates still come from ModelRuntime's Model<Api> snapshot.
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            resolver: utilityModelResolver,
+            modelRuntime,
+            refs: runtimeRefs,
+            logger,
+          }),
+        ],
+      },
     });
+    runtimeRefs.settingsManager = services.settingsManager;
     const resolvedDelegationToolsEnabled =
       delegationToolsEnabled ??
       (await sessionAllowsDelegationTools(sessionManager, sessionManagers));
@@ -920,7 +954,7 @@ function createDefaultRuntimeFactory(
       subsessions,
       modelPolicy
     );
-    const result = await createAgentSessionFromServices({
+    const result = await sdk.createFromServices({
       services,
       sessionManager,
       customTools,
@@ -930,6 +964,7 @@ function createDefaultRuntimeFactory(
         ? {}
         : { thinkingLevel: initialThinkingLevel }),
     });
+    runtimeRefs.streamFunction = result.session.agent.streamFunction;
     return { ...result, services, diagnostics: services.diagnostics };
   };
 }
@@ -983,6 +1018,8 @@ export interface PiSessionServiceDependencies {
   modelRuntime: ModelRuntime;
   /** Injectable typed tier resolver; production resolves the global config at dispatch time. */
   modelTierRegistry?: ModelTierRegistry<AgentModel>;
+  /** Injectable utility resolver; production resolves global config for each operation. */
+  utilityModelResolver?: UtilityModelResolver<AgentModel>;
   heartbeatIntervalMs?: number;
   workspaceActivity?: Pick<
     WorkspaceActivityService,
@@ -1134,6 +1171,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly createAgentRuntime: CreateAgentRuntime;
   private readonly modelRuntime: ModelRuntime;
   private readonly modelTierRegistry: ModelTierRegistry<AgentModel>;
+  private readonly utilityModelResolver: UtilityModelResolver<AgentModel>;
   private readonly workspaceActivity:
     | Pick<
         WorkspaceActivityService,
@@ -1172,6 +1210,23 @@ export class PiSessionService implements SessionRouteService {
     this.modelRuntime = deps.modelRuntime;
     this.spawnTargets = deps.spawnTargets;
     this.logger = deps.logger ?? noopLogger;
+    this.utilityModelResolver =
+      deps.utilityModelResolver ??
+      createUtilityModelResolver({
+        loadConfig: () => {
+          const loaded = loadPiWebUiConfig();
+          return {
+            ...(loaded.config.utilityModels === undefined
+              ? {}
+              : { utilityModels: loaded.config.utilityModels }),
+            ...(loaded.utilityModelsError === undefined
+              ? {}
+              : { utilityModelsError: loaded.utilityModelsError }),
+          };
+        },
+        modelRuntime: this.modelRuntime,
+        logger: this.logger,
+      });
     this.now = deps.now ?? (() => new Date());
     this.notificationStore =
       deps.notificationStore ?? new SessionNotificationStore();
@@ -1190,6 +1245,8 @@ export class PiSessionService implements SessionRouteService {
       createDefaultRuntimeFactory(
         this.modelRuntime,
         this.sessionManager,
+        this.utilityModelResolver,
+        this.logger,
         this.spawnTargets === undefined
           ? undefined
           : (input) => this.spawnSession(input),
@@ -4690,23 +4747,32 @@ export class PiSessionService implements SessionRouteService {
     const model = session.model;
     if (model === undefined) return;
 
-    void generateShortSessionName(
-      session.agent.streamFunction,
-      model,
-      firstMessage
-    )
-      .then((name) => {
-        this.applyGeneratedSessionName(
-          session,
-          name ?? fallbackSessionName(firstMessage)
+    void runWithUtilityModelFallback(
+      this.utilityModelResolver,
+      "lightweight",
+      session.model,
+      (candidate) =>
+        generateShortSessionName(
+          session.agent.streamFunction,
+          candidate,
+          firstMessage
+        ),
+      (candidate, error) => {
+        this.logger.info(
+          {
+            provider: candidate.provider,
+            modelId: candidate.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "utility title model failed"
         );
-      })
-      .catch(() => {
-        this.applyGeneratedSessionName(
-          session,
-          fallbackSessionName(firstMessage)
-        );
-      });
+      }
+    ).then((name) => {
+      this.applyGeneratedSessionName(
+        session,
+        name ?? fallbackSessionName(firstMessage)
+      );
+    });
   }
 
   private applyGeneratedSessionName(

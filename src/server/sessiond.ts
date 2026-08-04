@@ -38,6 +38,7 @@ import { createActiveAgentProfileDescriptor } from "../sessiond/activeAgentProfi
 import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
+import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
 
 const daemonEnvironment: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
 const { config } = effectivePiWebUiConfig({ env: daemonEnvironment });
@@ -69,6 +70,18 @@ await runSessionDaemonStartup({
       agentDir: activeAgentProfile.dir,
       ...(githubToken === undefined ? {} : { githubToken }),
     });
+    const loadUtilityModelConfig = () => {
+      const loaded = loadPiWebUiConfig({ env: daemonEnvironment });
+      return {
+        ...(loaded.config.utilityModels === undefined ? {} : { utilityModels: loaded.config.utilityModels }),
+        ...(loaded.utilityModelsError === undefined ? {} : { utilityModelsError: loaded.utilityModelsError }),
+      };
+    };
+    const utilityModelResolver = createUtilityModelResolver({
+      loadConfig: loadUtilityModelConfig,
+      modelRuntime: auth.runtime,
+      logger: app.log,
+    });
     const spawnTargets = config.spawnSessions
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
       : undefined;
@@ -77,6 +90,7 @@ await runSessionDaemonStartup({
       agentDir: activeAgentProfile.dir,
       workspaceActivity,
       logger: app.log,
+      utilityModelResolver,
       ...(spawnTargets === undefined ? {} : { spawnTargets }),
       subsessionsEnabled: spawnTargets !== undefined && config.subsessions,
       notificationStore,
@@ -107,13 +121,6 @@ await runSessionDaemonStartup({
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
     });
-    const loadUtilityModelConfig = () => {
-      const loaded = loadPiWebUiConfig({ env: daemonEnvironment });
-      return {
-        ...(loaded.config.utilityModels === undefined ? {} : { utilityModels: loaded.config.utilityModels }),
-        ...(loaded.utilityModelsError === undefined ? {} : { utilityModelsError: loaded.utilityModelsError }),
-      };
-    };
     const utilityModels = createUtilityModelSettingsService({
       loadConfig: loadUtilityModelConfig,
       saveConfig: ({ utilityModels: settings }) => {
