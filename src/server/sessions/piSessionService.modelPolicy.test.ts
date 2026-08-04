@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExactModelSelection, ModelTier } from "../../shared/apiTypes.js";
 import { PiSessionService, type PiAgentSession, type PiSessionRuntime } from "./piSessionService.js";
+import { SESSION_CREATION_SOURCE_CUSTOM_TYPE } from "./sessionCreationSource.js";
 import { SESSION_MODEL_POLICY_CUSTOM_TYPE } from "./sessionModelPolicy.js";
 import { runtimeThinkingLevels, type LadderValidation } from "./modelTierRegistry.js";
 import {
@@ -333,6 +334,44 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(createdIndex).toBeGreaterThan(appendIndex);
   });
 
+  it("persists a plus-session creation source before publishing session.created", async () => {
+    const harness = createModelPolicyHarness({ existing: false });
+
+    const created = await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+    });
+
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(
+      SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+      { version: 1, source: "session-list-plus" }
+    );
+    const sourceAppendIndex = harness.operations.indexOf(
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
+    );
+    const createdIndex = harness.operations.indexOf("global:session.created");
+    expect(sourceAppendIndex).toBeGreaterThanOrEqual(0);
+    expect(createdIndex).toBeGreaterThan(sourceAppendIndex);
+    expect(created).toMatchObject({ creationSource: "session-list-plus" });
+    const createdEvent = harness.hub.globalEvents.find(
+      (event) => event.type === "session.created"
+    );
+    expect(createdEvent).toMatchObject({
+      type: "session.created",
+      session: { creationSource: "session-list-plus" },
+    });
+  });
+
+  it("does not append a creation source for an ordinary new root", async () => {
+    const harness = createModelPolicyHarness({ existing: false });
+
+    const created = await harness.service.start(TEST_CWD);
+
+    expect(harness.operations).not.toContain(
+      `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
+    );
+    expect(created).not.toHaveProperty("creationSource");
+  });
+
   it("serves streaming status from the lifecycle cache without rescanning policy or ladder state", async () => {
     const harness = createModelPolicyHarness();
 
@@ -387,6 +426,25 @@ describe("PiSessionService model policy lifecycle", () => {
     });
     expect(replacementBranch).toHaveBeenCalled();
     expect(harness.validate).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans up a plus-session root when source persistence is unavailable", async () => {
+    const harness = createModelPolicyHarness({ existing: false, append: "missing" });
+
+    await expect(
+      harness.service.start(TEST_CWD, {
+        creationSource: "session-list-plus",
+      })
+    ).rejects.toThrow(/persist.*creation source/iu);
+
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.hub.globalEvents).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "session.created" }),
+      ])
+    );
   });
 
   it("cleans up a new root when default policy persistence is unavailable", async () => {

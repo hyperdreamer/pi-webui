@@ -1,11 +1,22 @@
-import type { Dirent } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { createReadStream, type Dirent } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createInterface } from "node:readline";
+import {
+  parseSessionEntries,
+  SessionManager,
+  SettingsManager,
+  type SessionHeader,
+} from "@earendil-works/pi-coding-agent";
 import { canonicalizeStoredCwd, cwdPathsEqual } from "../workingDirectory.js";
 import type { PiSessionListEntry, PiSessionManager, PiSessionManagerGateway } from "./piSessionService.js";
-import { inspectSessionCreationSource } from "./sessionCreationSource.js";
+import {
+  inspectSessionCreationSource,
+  SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+} from "./sessionCreationSource.js";
+
+const MAX_CONCURRENT_SESSION_LIST_LOADS = 10;
 
 type SessionDirSource = "env" | "settings" | "pi-default";
 
@@ -93,23 +104,192 @@ class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
 }
 
 export async function listSessionsInDir(sessionDir: string): Promise<PiSessionListEntry[]> {
-  // listAll(sessionDir) lists without the SDK's internal cwd filter, which would
-  // otherwise compare against this process's cwd and drop other projects' sessions.
-  // Cwd filtering is applied explicitly by filterSessionsForCwd where needed.
-  // Session file headers are written by external tools (Pi CLI, SDK consumers),
-  // so their cwd is canonicalized here before it enters pi-webui.
-  const sessions = await SessionManager.listAll(sessionDir);
-  return sessions.map((session) => {
-    const manager = SessionManager.open(session.path, dirname(session.path));
-    const sourceInspection = inspectSessionCreationSource(manager.getEntries());
+  // Listing and source inspection share one asynchronous JSONL pass. Constructing
+  // a persisted SessionManager here would migrate legacy files as a side effect.
+  let files: string[];
+  try {
+    files = (await readdir(sessionDir))
+      .filter((file) => file.endsWith(".jsonl"))
+      .map((file) => join(sessionDir, file));
+  } catch {
+    return [];
+  }
+
+  const sessions: PiSessionListEntry[] = [];
+  for (
+    let index = 0;
+    index < files.length;
+    index += MAX_CONCURRENT_SESSION_LIST_LOADS
+  ) {
+    const batch = await Promise.all(
+      files
+        .slice(index, index + MAX_CONCURRENT_SESSION_LIST_LOADS)
+        .map((file) => readSessionListEntry(file))
+    );
+    for (const session of batch) {
+      if (session !== undefined) sessions.push(session);
+    }
+  }
+
+  return sessions.sort(
+    (left, right) => right.modified.getTime() - left.modified.getTime()
+  );
+}
+
+async function readSessionListEntry(
+  path: string
+): Promise<PiSessionListEntry | undefined> {
+  try {
+    const stats = await stat(path);
+    const lines = createInterface({
+      input: createReadStream(path, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    let header: SessionHeader | undefined;
+    let name: string | undefined;
+    let messageCount = 0;
+    let firstMessage = "";
+    const allMessages: string[] = [];
+    let lastActivityTime: number | undefined;
+    let newestCreationSourceEntry: unknown;
+
+    for await (const line of lines) {
+      for (const parsed of parseSessionEntries(line)) {
+        if (header === undefined) {
+          if (parsed.type !== "session") return undefined;
+          header = parsed;
+          continue;
+        }
+        if (
+          parsed.type === "custom" &&
+          parsed.customType === SESSION_CREATION_SOURCE_CUSTOM_TYPE
+        ) {
+          newestCreationSourceEntry = parsed;
+        }
+        if (parsed.type === "session_info") {
+          name = normalizedSessionName(parsed.name);
+        }
+        if (parsed.type !== "message") continue;
+
+        messageCount += 1;
+        const message = sessionMessage(parsed.message);
+        if (message === undefined) continue;
+        const activityTime = sessionMessageActivityTime(
+          parsed.timestamp,
+          message
+        );
+        if (activityTime !== undefined) {
+          lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
+        }
+        if (
+          message.role !== "user" &&
+          message.role !== "assistant"
+        ) {
+          continue;
+        }
+        if (message.text === "") continue;
+        allMessages.push(message.text);
+        if (firstMessage === "" && message.role === "user") {
+          firstMessage = message.text;
+        }
+      }
+    }
+
+    if (header === undefined) return undefined;
+    const headerTimestamp = header.timestamp;
+    const headerTime = new Date(headerTimestamp).getTime();
+    const sourceInspection = inspectSessionCreationSource(
+      newestCreationSourceEntry === undefined
+        ? []
+        : [newestCreationSourceEntry]
+    );
+    const cwd =
+      typeof header.cwd === "string"
+        ? canonicalizeStoredCwd(header.cwd)
+        : "";
+    const parentSessionPath =
+      typeof header.parentSession === "string"
+        ? header.parentSession
+        : undefined;
+
     return {
-      ...session,
-      cwd: canonicalizeStoredCwd(session.cwd),
+      path,
+      id: header.id,
+      cwd,
+      ...(name === undefined ? {} : { name }),
+      ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+      created: new Date(headerTimestamp),
+      modified:
+        lastActivityTime !== undefined && lastActivityTime > 0
+          ? new Date(lastActivityTime)
+          : !Number.isNaN(headerTime)
+          ? new Date(headerTime)
+          : stats.mtime,
+      messageCount,
+      firstMessage: firstMessage || "(no messages)",
+      allMessagesText: allMessages.join(" "),
       ...(sourceInspection.kind === "valid"
         ? { creationSource: sourceInspection.source }
         : {}),
     };
-  });
+  } catch {
+    return undefined;
+  }
+}
+
+interface ParsedSessionMessage {
+  role: string;
+  text: string;
+  timestamp?: number;
+}
+
+function sessionMessage(value: unknown): ParsedSessionMessage | undefined {
+  if (!isRecord(value)) return undefined;
+  const { content, role, timestamp } = value;
+  if (typeof role !== "string") return undefined;
+  let text: string;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .flatMap((block) => {
+        if (!isRecord(block)) return [];
+        const { text: blockText, type } = block;
+        return type === "text" && typeof blockText === "string"
+          ? [blockText]
+          : [];
+      })
+      .join(" ");
+  } else {
+    return undefined;
+  }
+  return {
+    role,
+    text,
+    ...(typeof timestamp === "number" ? { timestamp } : {}),
+  };
+}
+
+function sessionMessageActivityTime(
+  entryTimestamp: unknown,
+  message: ParsedSessionMessage
+): number | undefined {
+  if (message.role !== "user" && message.role !== "assistant") {
+    return undefined;
+  }
+  if (message.timestamp !== undefined) return message.timestamp;
+  if (typeof entryTimestamp !== "string") return undefined;
+  const timestamp = new Date(entryTimestamp).getTime();
+  return Number.isNaN(timestamp) ? undefined : timestamp;
+}
+
+function normalizedSessionName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export async function listSessionsInDefaultPiStore(storeRoot: string): Promise<PiSessionListEntry[]> {

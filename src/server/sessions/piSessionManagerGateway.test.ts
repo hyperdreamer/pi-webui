@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -166,6 +166,41 @@ describe("Pi session manager gateway", () => {
     const [listed] = await gateway.list(cwd);
     expect(listed).toBeDefined();
     expect(listed).not.toHaveProperty("creationSource");
+  });
+
+  it("lists legacy sessions without rewriting their JSONL contents", async () => {
+    const sessionDir = defaultPiSessionDir(cwd, agentDir);
+    const sessionPath = join(sessionDir, "legacy-plus.jsonl");
+    const contents = [
+      JSON.stringify({ type: "session", version: 2, id: "legacy-plus", timestamp: "2026-01-01T00:00:00.000Z", cwd }),
+      JSON.stringify(sourceEntry("source-1", serializeSessionCreationSource("session-list-plus"))),
+      '{"type":"message","message":{"role":"assistant","content":"truncated by a crash',
+    ].join("\n");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(sessionPath, contents, "utf8");
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+
+    await expect(gateway.list(cwd)).resolves.toMatchObject([
+      { id: "legacy-plus", creationSource: "session-list-plus" },
+    ]);
+    await expect(readFile(sessionPath, "utf8")).resolves.toBe(contents);
+  });
+
+  it("keeps healthy sessions listed when another listed file has an invalid header", async () => {
+    const sessionDir = defaultPiSessionDir(cwd, agentDir);
+    await writeSessionFile(sessionDir, "healthy-session", cwd);
+    await writeFile(
+      join(sessionDir, "invalid-header.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: 12345, timestamp: "2026-01-01T00:00:00.000Z", cwd })}\n`,
+      "utf8"
+    );
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+
+    await expect(gateway.list(cwd)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "healthy-session", cwd }),
+      ])
+    );
   });
 });
 
