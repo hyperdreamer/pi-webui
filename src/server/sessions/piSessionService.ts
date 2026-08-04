@@ -186,6 +186,13 @@ import {
   type ConfirmedPolicySnapshot,
 } from "./rememberCurrentModelPolicy.js";
 import { StarterModelPolicyPreferenceStore } from "./starterModelPolicyPreferenceStore.js";
+import {
+  captureModelPolicySettings,
+  modelPolicySettingsPersistence,
+  restoreModelPolicySettings,
+  settleModelPolicySettings,
+  type ModelPolicySettingsSnapshot,
+} from "./modelPolicySettingsPersistence.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -209,69 +216,6 @@ const MIN_GENERATION_RATE_ELAPSED_MS = 500;
 
 function noop(): void {
   // Intentionally empty default unsubscribe callback.
-}
-
-function modelPolicySettingsAdapter(
-  session: PiAgentSession
-): ModelPolicySettingsAdapter {
-  const candidate: unknown = session.settingsManager;
-  if (!isModelPolicySettingsAdapter(candidate))
-    throw new Error(
-      "Cannot initialize a complete session policy without model-default settings persistence support"
-    );
-  return candidate;
-}
-
-function isModelPolicySettingsAdapter(
-  value: unknown
-): value is ModelPolicySettingsAdapter {
-  return (
-    isRecord(value) &&
-    typeof value["getGlobalSettings"] === "function" &&
-    typeof value["setDefaultProvider"] === "function" &&
-    typeof value["setDefaultModel"] === "function" &&
-    typeof value["setDefaultThinkingLevel"] === "function" &&
-    typeof value["flush"] === "function"
-  );
-}
-
-function captureModelPolicySettings(
-  session: PiAgentSession
-): ModelPolicySettingsSnapshot {
-  const settings = modelPolicySettingsAdapter(session).getGlobalSettings();
-  const defaultProvider = optionalString(settings.defaultProvider);
-  const defaultModel = optionalString(settings.defaultModel);
-  const defaultThinkingLevel = optionalThinkingLevel(
-    settings.defaultThinkingLevel
-  );
-  return {
-    ...(defaultProvider === undefined ? {} : { defaultProvider }),
-    ...(defaultModel === undefined ? {} : { defaultModel }),
-    ...(defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel }),
-  };
-}
-
-async function restoreModelPolicySettings(
-  session: PiAgentSession,
-  snapshot: ModelPolicySettingsSnapshot
-): Promise<void> {
-  const settings = modelPolicySettingsAdapter(session);
-  settings.setDefaultProvider(snapshot.defaultProvider);
-  settings.setDefaultModel(snapshot.defaultModel);
-  settings.setDefaultThinkingLevel(snapshot.defaultThinkingLevel);
-  await settings.flush();
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function optionalThinkingLevel(
-  value: unknown
-): ClientThinkingLevel | undefined {
-  return typeof value === "string" && isKnownThinkingLevel(value)
-    ? value
-    : undefined;
 }
 
 function normalizeError(error: unknown): Error {
@@ -442,27 +386,9 @@ interface InternalStartSessionOptions extends StartSessionOptions {
   initializeModelPolicy?: SessionModelPolicyInitializer;
 }
 
-interface ModelPolicySettingsSnapshot {
-  defaultProvider?: string;
-  defaultModel?: string;
-  defaultThinkingLevel?: ClientThinkingLevel;
-}
-
 interface CompleteModelPolicyInitialization {
   previousSelection: ExactModelSelection;
   previousSettings: ModelPolicySettingsSnapshot;
-}
-
-interface ModelPolicySettingsAdapter {
-  getGlobalSettings(): {
-    defaultProvider?: unknown;
-    defaultModel?: unknown;
-    defaultThinkingLevel?: unknown;
-  };
-  setDefaultProvider(provider: string | undefined): void;
-  setDefaultModel(modelId: string | undefined): void;
-  setDefaultThinkingLevel(level: ClientThinkingLevel | undefined): void;
-  flush(): Promise<void>;
 }
 
 function requirePromptText(value: unknown): string {
@@ -5513,13 +5439,18 @@ export class PiSessionService implements SessionRouteService {
       session,
       plan.target
     );
+    const settings = modelPolicySettingsPersistence(session.settingsManager);
+    await settleModelPolicySettings(
+      settings,
+      "before complete session initialization"
+    );
     this.assertModelPolicyMutationIdle(
       session,
       "initialize the session model policy"
     );
     const initialization: CompleteModelPolicyInitialization = {
       previousSelection: this.exactSelectionFromSession(session),
-      previousSettings: captureModelPolicySettings(session),
+      previousSettings: captureModelPolicySettings(settings),
     };
     try {
       await this.runSessionModelPolicyMutation(
@@ -5536,7 +5467,10 @@ export class PiSessionService implements SessionRouteService {
           );
         }
       );
-      await modelPolicySettingsAdapter(session).flush();
+      await settleModelPolicySettings(
+        settings,
+        "after complete session initialization"
+      );
       this.inspectAndCacheSessionModelPolicy(session);
       return initialization;
     } catch (error: unknown) {
@@ -5566,7 +5500,7 @@ export class PiSessionService implements SessionRouteService {
     }
     try {
       await restoreModelPolicySettings(
-        session,
+        modelPolicySettingsPersistence(session.settingsManager),
         initialization.previousSettings
       );
     } catch (error: unknown) {
