@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
-import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsUpdate } from "../../shared/apiTypes";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV2, UtilityModelSettingsUpdate } from "../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES } from "../../shared/federatedRoutes";
 import type { UtilityModelSettingsRouteService } from "./utilityModelSettingsRoutes";
 import { registerUtilityModelSettingsRoutes } from "./utilityModelSettingsRoutes";
@@ -38,12 +38,12 @@ describe("utility model settings routes", () => {
     expect(inspectMock).toHaveBeenCalledOnce();
   });
 
-  it("normalizes exact references and preserves own-property null clears for PUT", async () => {
+  it("normalizes exact explicit levels and preserves own-property null clears for PUT", async () => {
     const update = {
       lightweight: null,
-      context: { provider: "acme", id: "large" },
+      context: { provider: "acme", id: "large", thinkingLevel: "xhigh" },
     } satisfies UtilityModelSettingsUpdate;
-    const confirmed = snapshot({ settings: { context: { provider: "acme", id: "large" } } });
+    const confirmed = snapshot({ settings: { context: { provider: "acme", id: "large", thinkingLevel: "xhigh" } } });
     updateMock.mockResolvedValueOnce(confirmed);
 
     const response = await app.inject({
@@ -137,7 +137,22 @@ function invalidRequestCases(): InvalidRequestCase[] {
       message: /id/u,
     },
     {
-      name: "an unknown reference field",
+      name: "the auto omission sentinel as a persisted level",
+      body: { settings: { context: { provider: "acme", id: "large", thinkingLevel: "auto" } } },
+      message: /thinkingLevel must be one of/u,
+    },
+    {
+      name: "an unknown thinking level",
+      body: { settings: { context: { provider: "acme", id: "large", thinkingLevel: "turbo" } } },
+      message: /thinkingLevel must be one of/u,
+    },
+    {
+      name: "a non-string thinking level",
+      body: { settings: { context: { provider: "acme", id: "large", thinkingLevel: 3 } } },
+      message: /thinkingLevel must be one of/u,
+    },
+    {
+      name: "an extra utility binding key",
       body: { settings: { context: { provider: "acme", id: "large", label: "not allowed" } } },
       message: /unknown key/u,
     },
@@ -151,11 +166,22 @@ function settingsAfter(patch: UtilityModelSettingsUpdate) {
   };
 }
 
-function snapshot(overrides: Partial<UtilityModelSettingsResponseV1> = {}): UtilityModelSettingsResponseV1 {
+function snapshot(overrides: Partial<UtilityModelSettingsResponseV2> = {}): UtilityModelSettingsResponseV2 {
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     settings: {},
-    models: [],
+    models: [
+      {
+        model: { provider: "acme", id: "small" },
+        name: "Acme Small",
+        thinkingLevels: ["off", "minimal", "low"],
+      },
+      {
+        model: { provider: "acme", id: "large" },
+        name: "Acme Large",
+        thinkingLevels: ["off", "low", "medium", "high", "xhigh", "max"],
+      },
+    ],
     slots: {
       lightweight: { valid: true },
       context: { valid: true },

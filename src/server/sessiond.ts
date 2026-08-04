@@ -132,6 +132,7 @@ await runSessionDaemonStartup({
         replacePiWebUiUtilityModels(settings, { env: daemonEnvironment });
       },
       modelRuntime: auth.runtime,
+      thinkingLevelsForModel: runtimeThinkingLevels,
     });
     const terminals = new TerminalService(eventHub, workspaceActivity);
     const runtimeComponent = Object.freeze({
