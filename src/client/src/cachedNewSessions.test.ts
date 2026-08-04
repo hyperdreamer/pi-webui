@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "./api";
-import { forgetCachedNewSession, isCachedNewSessionInfo, loadCachedNewSessions, mergeCachedNewSessions, rememberCachedNewSession } from "./cachedNewSessions";
+import { forgetCachedNewSession, isCachedNewSessionInfo, loadCachedNewSessions, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "./cachedNewSessions";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -38,6 +38,7 @@ const baseSession: SessionInfo = {
   modified: "2026-05-15T00:00:00.000Z",
   messageCount: 0,
   firstMessage: "",
+  creationSource: "session-list-plus",
 };
 
 describe("cached new sessions", () => {
@@ -49,7 +50,15 @@ describe("cached new sessions", () => {
     const cached = loadCachedNewSessions(storage);
     expect(cached).toHaveLength(1);
     expect(cached[0]?.id).toBe("session-1");
+    expect(cached[0]?.creationSource).toBe("session-list-plus");
     expect(isCachedNewSessionInfo(cached[0])).toBe(true);
+  });
+
+  it("preserves creation source when stripping the browser-cache marker", () => {
+    expect(stripCachedNewSessionMarker(markCachedNewSessionInfo(baseSession))).toMatchObject({
+      id: "session-1",
+      creationSource: "session-list-plus",
+    });
   });
 
   it("merges cached sessions for the selected cwd without duplicating server sessions", () => {
@@ -63,7 +72,19 @@ describe("cached new sessions", () => {
     expect(cachedOnly.map((session) => session.id)).toEqual(["session-1"]);
     expect(mergedWithServerSession.map((session) => session.id)).toEqual(["session-1"]);
     expect(isCachedNewSessionInfo(mergedWithServerSession[0])).toBe(false);
+    expect(mergedWithServerSession[0]?.creationSource).toBe("session-list-plus");
     expect(loadCachedNewSessions(storage).map((session) => session.id)).toEqual(["other"]);
+  });
+
+  it("does not load an unknown cached creation source", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("pi-webui:cached-new-sessions:v1", JSON.stringify([
+      { ...baseSession, creationSource: "unknown" },
+    ]));
+
+    const [cached] = loadCachedNewSessions(storage);
+    expect(cached).toBeDefined();
+    expect(cached).not.toHaveProperty("creationSource");
   });
 
   it("forgets cached sessions", () => {

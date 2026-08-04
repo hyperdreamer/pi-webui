@@ -58,6 +58,7 @@ export function stripCachedNewSessionMarker(session: SessionInfo): SessionInfo {
     ...("machineId" in session && typeof session.machineId === "string" ? { machineId: session.machineId } : { machineId: defaultMachineId }),
     ...(session.archived === true ? { archived: true } : {}),
     ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
+    ...(session.creationSource === undefined ? {} : { creationSource: session.creationSource }),
   };
 }
 
@@ -95,6 +96,7 @@ function parseCachedSession(value: unknown): CachedNewSessionInfo[] {
   const name = optionalStringField(value, "name");
   const parentSessionPath = optionalStringField(value, "parentSessionPath");
   const machineId = optionalStringField(value, "machineId") ?? defaultMachineId;
+  const creationSource = value["creationSource"] === "session-list-plus" ? value["creationSource"] : undefined;
   return [{
     id,
     path,
@@ -105,6 +107,7 @@ function parseCachedSession(value: unknown): CachedNewSessionInfo[] {
     messageCount,
     firstMessage,
     ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+    ...(creationSource === undefined ? {} : { creationSource }),
     machineId,
     browserCachedNew: true,
   }];

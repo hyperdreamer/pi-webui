@@ -92,6 +92,7 @@ import type {
   SessionNotificationDismissAllRequest,
   SessionNotificationDismissRequest,
   SessionNotificationInboxSnapshot,
+  SessionCreationSource,
   SessionModelPolicyResponse,
   SessionModelPolicy,
   SessionModelPolicyUpdate,
@@ -170,6 +171,11 @@ import {
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
   type SessionModelPolicyInspection,
 } from "./sessionModelPolicy.js";
+import {
+  inspectSessionCreationSource,
+  serializeSessionCreationSource,
+  SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+} from "./sessionCreationSource.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -334,6 +340,7 @@ interface StartSessionOptions {
 
 interface InternalStartSessionOptions extends StartSessionOptions {
   creationProvenance?: SessionCreationProvenance;
+  creationSource?: SessionCreationSource;
   /**
    * Browser-root policy initializer. `true` records the new runtime's own exact
    * tuple; an update applies that transition before the root is announced.
@@ -390,6 +397,7 @@ export interface PiSessionListEntry {
   allMessagesText: string;
   name?: string;
   parentSessionPath?: string;
+  creationSource?: SessionCreationSource;
 }
 
 interface WorkspaceArchiveCandidate extends SessionArchiveTreeCandidate {
@@ -616,6 +624,7 @@ interface CreateSessionRuntimeOptions
     | "initialModel"
     | "initialThinkingLevel"
     | "creationProvenance"
+    | "creationSource"
     | "initializeModelPolicy"
   > {
   notificationGeneration?: SessionNotificationGeneration;
@@ -1577,11 +1586,17 @@ export class PiSessionService implements SessionRouteService {
 
   async start(
     cwd: string,
-    options?: { modelPolicy?: SessionModelPolicyUpdate }
+    options?: {
+      modelPolicy?: SessionModelPolicyUpdate;
+      creationSource?: SessionCreationSource;
+    }
   ): Promise<ClientSession> {
     const modelPolicy = options?.modelPolicy;
     return this.startSession(cwd, {
       initializeModelPolicy: modelPolicy ?? true,
+      ...(options?.creationSource === undefined
+        ? {}
+        : { creationSource: options.creationSource }),
     });
   }
 
@@ -1607,12 +1622,16 @@ export class PiSessionService implements SessionRouteService {
         ...(options.creationProvenance === undefined
           ? {}
           : { creationProvenance: options.creationProvenance }),
+        ...(options.creationSource === undefined
+          ? {}
+          : { creationSource: options.creationSource }),
         ...(options.initializeModelPolicy === undefined
           ? {}
           : { initializeModelPolicy: options.initializeModelPolicy }),
       }
     );
     const { session } = active.runtime;
+    const creationSource = validSessionCreationSource(session.sessionManager);
     const created: ClientSession = {
       id: session.sessionId,
       path: session.sessionFile ?? "",
@@ -1627,6 +1646,7 @@ export class PiSessionService implements SessionRouteService {
       ...(options.parentSession === undefined
         ? {}
         : { parentSessionPath: options.parentSession }),
+      ...(creationSource === undefined ? {} : { creationSource }),
     };
     // Broadcast so other clients (and the spawning agent's UI) can add the new
     // session to their list without a manual reload.
@@ -3489,6 +3509,7 @@ export class PiSessionService implements SessionRouteService {
   ): ClientSession {
     const parentSessionPath =
       session.sessionManager.getHeader?.()?.parentSession;
+    const creationSource = validSessionCreationSource(session.sessionManager);
     return {
       id: session.sessionId,
       path: session.sessionFile ?? "",
@@ -3503,6 +3524,7 @@ export class PiSessionService implements SessionRouteService {
         ? {}
         : { name: session.sessionName }),
       ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+      ...(creationSource === undefined ? {} : { creationSource }),
       ...overrides,
     };
   }
@@ -4183,6 +4205,12 @@ export class PiSessionService implements SessionRouteService {
         }
       });
       this.active.set(runtime.session.sessionId, active);
+      if (options.creationSource !== undefined) {
+        this.appendSessionCreationSource(
+          runtime.session,
+          options.creationSource
+        );
+      }
       if (options.initializeModelPolicy !== undefined) {
         await this.initializeSessionModelPolicy(
           runtime.session,
@@ -5580,6 +5608,21 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
+  private appendSessionCreationSource(
+    session: PiAgentSession,
+    source: SessionCreationSource
+  ): void {
+    if (session.sessionManager.appendCustomEntry === undefined) {
+      throw new Error(
+        "Cannot persist the session creation source: session persistence is unavailable"
+      );
+    }
+    session.sessionManager.appendCustomEntry(
+      SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+      serializeSessionCreationSource(source)
+    );
+  }
+
   private modelPolicyStatusFromSession(
     session: PiAgentSession
   ): ClientSessionModelPolicyStatus {
@@ -5803,6 +5846,9 @@ function clientSessionFromListEntry(
     ...(session.parentSessionPath === undefined
       ? {}
       : { parentSessionPath: session.parentSessionPath }),
+    ...(session.creationSource === undefined
+      ? {}
+      : { creationSource: session.creationSource }),
   };
 }
 
@@ -5821,6 +5867,9 @@ function archiveInputFromListEntry(
     ...(session.parentSessionPath === undefined
       ? {}
       : { parentSessionPath: session.parentSessionPath }),
+    ...(session.creationSource === undefined
+      ? {}
+      : { creationSource: session.creationSource }),
   };
 }
 
@@ -5831,6 +5880,7 @@ function archiveInputFromActiveSession(
   if (sessionFile === undefined || sessionFile === "")
     throw new Error("Session is not persisted");
   const parentSessionPath = session.sessionManager.getHeader?.()?.parentSession;
+  const creationSource = validSessionCreationSource(session.sessionManager);
   return {
     sessionId: session.sessionId,
     cwd: session.sessionManager.getCwd(),
@@ -5841,6 +5891,7 @@ function archiveInputFromActiveSession(
     firstMessage: "",
     ...(session.sessionName === undefined ? {} : { name: session.sessionName }),
     ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+    ...(creationSource === undefined ? {} : { creationSource }),
   };
 }
 
@@ -5941,6 +5992,7 @@ function clientSessionFromArchivedRecord(
   const name = record.name ?? fallback?.name;
   const parentSessionPath =
     record.parentSessionPath ?? fallback?.parentSessionPath;
+  const creationSource = record.creationSource ?? fallback?.creationSource;
   return {
     id: record.sessionId,
     path,
@@ -5951,9 +6003,19 @@ function clientSessionFromArchivedRecord(
     messageCount,
     firstMessage,
     ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+    ...(creationSource === undefined ? {} : { creationSource }),
     archived: true,
     archivedAt: record.archivedAt,
   };
+}
+
+function validSessionCreationSource(
+  manager: PiSessionManager
+): SessionCreationSource | undefined {
+  const inspection = inspectSessionCreationSource(
+    manager.getEntries?.() ?? manager.getBranch()
+  );
+  return inspection.kind === "valid" ? inspection.source : undefined;
 }
 
 function addSessionName(names: Set<string>, name: string | undefined): void {

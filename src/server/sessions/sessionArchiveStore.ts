@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
+import type { SessionCreationSource } from "../../shared/apiTypes.js";
 import { canonicalizeStoredCwd } from "../workingDirectory.js";
 
 export interface ArchiveSessionInput {
@@ -15,6 +16,7 @@ export interface ArchiveSessionInput {
   firstMessage: string;
   name?: string;
   parentSessionPath?: string;
+  creationSource?: SessionCreationSource;
 }
 
 export interface ArchivedSessionRecord {
@@ -29,6 +31,7 @@ export interface ArchivedSessionRecord {
   firstMessage?: string;
   name?: string;
   parentSessionPath?: string;
+  creationSource?: SessionCreationSource;
 }
 
 export interface SessionArchiveFile {
@@ -189,6 +192,7 @@ function archiveRecordFromInput(session: ArchiveSessionInput, archive: { archive
     firstMessage: session.firstMessage,
     ...(session.name === undefined ? {} : { name: session.name }),
     ...(session.parentSessionPath === undefined ? {} : { parentSessionPath: session.parentSessionPath }),
+    ...(session.creationSource === undefined ? {} : { creationSource: session.creationSource }),
   };
 }
 
@@ -251,6 +255,7 @@ function parseArchivedSessionRecord(value: unknown): ArchivedSessionRecord {
   const firstMessage = optionalString(value, "firstMessage");
   const name = optionalString(value, "name");
   const parentSessionPath = optionalString(value, "parentSessionPath");
+  const creationSource = optionalSessionCreationSource(value["creationSource"]);
   return {
     sessionId,
     cwd: canonicalCwd,
@@ -263,7 +268,14 @@ function parseArchivedSessionRecord(value: unknown): ArchivedSessionRecord {
     ...(firstMessage === undefined ? {} : { firstMessage }),
     ...(name === undefined ? {} : { name }),
     ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+    ...(creationSource === undefined ? {} : { creationSource }),
   };
+}
+
+function optionalSessionCreationSource(
+  value: unknown
+): SessionCreationSource | undefined {
+  return value === "session-list-plus" ? value : undefined;
 }
 
 function optionalString(record: Record<string, unknown>, key: string): string | undefined {

@@ -577,7 +577,7 @@ describe("API parsers", () => {
     })).toThrow("both");
   });
 
-  it("parses session info including optional persistence signals", () => {
+  it("parses session info including optional persistence and creation-source signals", () => {
     expect(parseSessionInfo({
       id: "s1",
       path: "/sessions/s1.jsonl",
@@ -588,6 +588,7 @@ describe("API parsers", () => {
       modified: "2026-01-01T00:01:00.000Z",
       messageCount: 0,
       firstMessage: "",
+      creationSource: "session-list-plus",
     })).toEqual({
       id: "s1",
       path: "/sessions/s1.jsonl",
@@ -598,8 +599,24 @@ describe("API parsers", () => {
       modified: "2026-01-01T00:01:00.000Z",
       messageCount: 0,
       firstMessage: "",
+      creationSource: "session-list-plus",
     });
     expect(() => parseSessionInfo({ id: "s1", path: "", cwd: "/repo", persisted: "yes", created: "now", modified: "now", messageCount: 0, firstMessage: "" })).toThrow("Expected optional boolean field: persisted");
+  });
+
+  it("does not invent a creation source from a malformed optional field", () => {
+    const parsed = parseSessionInfo({
+      id: "s1",
+      path: "/sessions/s1.jsonl",
+      cwd: "/repo",
+      created: "now",
+      modified: "now",
+      messageCount: 0,
+      firstMessage: "",
+      creationSource: "unknown",
+    });
+
+    expect(parsed).not.toHaveProperty("creationSource");
   });
 
   it("parses a complete session model policy response", () => {

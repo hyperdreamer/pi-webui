@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSessionArchiveFilePath, SessionArchiveStore } from "./sessionArchiveStore.js";
+import { SESSION_CREATION_SOURCE_CUSTOM_TYPE, serializeSessionCreationSource } from "./sessionCreationSource.js";
 
 const tempRoots: string[] = [];
 
@@ -81,6 +82,64 @@ describe("SessionArchiveStore", () => {
     expect(await readFile(sourcePath, "utf8")).toBe("session contents\n");
     expect(await exists(record.archivePath)).toBe(false);
     await expect(store.list()).resolves.toEqual([]);
+  });
+
+  it("round trips creation source through the archive index and preserves its JSONL marker on restore", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-webui-archive-source-"));
+    tempRoots.push(root);
+    const activeDir = join(root, "active");
+    await mkdir(activeDir, { recursive: true });
+    const sourcePath = join(activeDir, "2026-01-01_plus.jsonl");
+    const contents = [
+      JSON.stringify({ type: "session", version: 3, id: "plus", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" }),
+      JSON.stringify({ type: "custom", id: "source-1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", customType: SESSION_CREATION_SOURCE_CUSTOM_TYPE, data: serializeSessionCreationSource("session-list-plus") }),
+      "",
+    ].join("\n");
+    await writeFile(sourcePath, contents, "utf8");
+
+    const archiveFile = join(root, "archived-sessions.json");
+    const store = new SessionArchiveStore(archiveFile, join(root, "archived-files"));
+    const record = await store.archive({
+      sessionId: "plus",
+      cwd: "/workspace",
+      path: sourcePath,
+      created: "2026-01-01T00:00:00.000Z",
+      modified: "2026-01-01T00:01:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      creationSource: "session-list-plus",
+    });
+
+    expect(record.creationSource).toBe("session-list-plus");
+    await expect(store.list()).resolves.toMatchObject([
+      { sessionId: "plus", creationSource: "session-list-plus" },
+    ]);
+    await expect(readFile(archiveFile, "utf8")).resolves.toContain(
+      '"creationSource": "session-list-plus"'
+    );
+
+    await store.restore("plus");
+
+    await expect(readFile(sourcePath, "utf8")).resolves.toBe(contents);
+  });
+
+  it("does not project an unknown creation source from the archive index", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-webui-archive-invalid-source-"));
+    tempRoots.push(root);
+    const archiveFile = join(root, "archived-sessions.json");
+    await writeFile(archiveFile, JSON.stringify({
+      sessions: [{
+        sessionId: "legacy",
+        cwd: "/workspace",
+        archivedAt: "2026-01-01T00:00:00.000Z",
+        creationSource: "unknown",
+      }],
+    }), "utf8");
+    const store = new SessionArchiveStore(archiveFile, join(root, "archived-files"));
+
+    const [record] = await store.list();
+    expect(record).toBeDefined();
+    expect(record).not.toHaveProperty("creationSource");
   });
 
   it("permanently deletes archived session files and records", async () => {

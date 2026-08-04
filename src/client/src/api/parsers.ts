@@ -197,6 +197,10 @@ export function parseSessionInfo(value: unknown): SessionInfo {
   const parentSessionPath = optionalString(record, "parentSessionPath");
   const archivedAt = optionalString(record, "archivedAt");
   const pinned = parseOptionalBoolean(record["pinned"], "pinned");
+  const creationSource =
+    record["creationSource"] === "session-list-plus"
+      ? record["creationSource"]
+      : undefined;
   return {
     id: requireString(record, "id"),
     path: requireString(record, "path"),
@@ -211,6 +215,7 @@ export function parseSessionInfo(value: unknown): SessionInfo {
     ...(record["archived"] === true ? { archived: true } : {}),
     ...(archivedAt === undefined ? {} : { archivedAt }),
     ...(pinned === undefined ? {} : { pinned }),
+    ...(creationSource === undefined ? {} : { creationSource }),
   };
 }
 

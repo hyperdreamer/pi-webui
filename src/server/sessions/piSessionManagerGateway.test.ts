@@ -6,6 +6,7 @@ import { agentSessionDirEnvKeys } from "../../config.js";
 import { createPiSessionManagerGateway, defaultPiSessionDir, defaultPiSessionsRoot, filterSessionsForCwd, SessionDirResolver } from "./piSessionManagerGateway.js";
 import type { PiSessionListEntry } from "./piSessionService.js";
 import type { PiSessionManager } from "./piSessionService.js";
+import { SESSION_CREATION_SOURCE_CUSTOM_TYPE, serializeSessionCreationSource } from "./sessionCreationSource.js";
 import { sep } from "node:path";
 
 let tempDir: string;
@@ -143,6 +144,29 @@ describe("Pi session manager gateway", () => {
 
     await expect(gateway.list(cwd)).resolves.toMatchObject([{ id: "session-elsewhere", cwd }]);
   });
+
+  it("projects a valid persisted plus-session creation source", async () => {
+    await writeSessionFile(defaultPiSessionDir(cwd, agentDir), "plus-session", cwd, [
+      sourceEntry("source-1", serializeSessionCreationSource("session-list-plus")),
+    ]);
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+
+    await expect(gateway.list(cwd)).resolves.toMatchObject([
+      { id: "plus-session", creationSource: "session-list-plus" },
+    ]);
+  });
+
+  it("does not project a source when the newest persisted marker is malformed", async () => {
+    await writeSessionFile(defaultPiSessionDir(cwd, agentDir), "malformed-source", cwd, [
+      sourceEntry("source-1", serializeSessionCreationSource("session-list-plus")),
+      sourceEntry("source-2", { version: 1, source: "unknown" }),
+    ]);
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+
+    const [listed] = await gateway.list(cwd);
+    expect(listed).toBeDefined();
+    expect(listed).not.toHaveProperty("creationSource");
+  });
 });
 
 describe("filterSessionsForCwd", () => {
@@ -185,7 +209,22 @@ function sessionEntry(id: string, sessionCwd: string): PiSessionListEntry {
   return { path: join(tempDir, `${id}.jsonl`), id, cwd: sessionCwd, created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "", allMessagesText: "" };
 }
 
-async function writeSessionFile(dir: string, id: string, sessionCwd: string): Promise<void> {
+function sourceEntry(id: string, data: unknown): unknown {
+  return {
+    type: "custom",
+    id,
+    parentId: null,
+    timestamp: "2026-01-01T00:00:01.000Z",
+    customType: SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+    data,
+  };
+}
+
+async function writeSessionFile(dir: string, id: string, sessionCwd: string, entries: readonly unknown[] = []): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, `${id}.jsonl`), `${JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: sessionCwd })}\n`, "utf8");
+  const lines = [
+    { type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: sessionCwd },
+    ...entries,
+  ];
+  await writeFile(join(dir, `${id}.jsonl`), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
 }
