@@ -186,6 +186,29 @@ describe("Pi session manager gateway", () => {
     await expect(readFile(sessionPath, "utf8")).resolves.toBe(contents);
   });
 
+  it("keeps a session listed when its JSONL contains a null entry", async () => {
+    const sessionDir = defaultPiSessionDir(cwd, agentDir);
+    await writeSessionFile(sessionDir, "session-with-null", cwd, [
+      null,
+      {
+        type: "message",
+        id: "message-1",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        message: { role: "user", content: "Still visible" },
+      },
+    ]);
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+
+    await expect(gateway.list(cwd)).resolves.toMatchObject([
+      {
+        id: "session-with-null",
+        messageCount: 1,
+        firstMessage: "Still visible",
+      },
+    ]);
+  });
+
   it("keeps healthy sessions listed when another listed file has an invalid header", async () => {
     const sessionDir = defaultPiSessionDir(cwd, agentDir);
     await writeSessionFile(sessionDir, "healthy-session", cwd);

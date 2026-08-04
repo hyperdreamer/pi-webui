@@ -155,6 +155,7 @@ async function readSessionListEntry(
 
     for await (const line of lines) {
       for (const parsed of parseSessionEntries(line)) {
+        if (!isRecord(parsed)) continue;
         if (header === undefined) {
           if (parsed.type !== "session") return undefined;
           header = parsed;
