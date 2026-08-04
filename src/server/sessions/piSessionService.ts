@@ -5458,6 +5458,13 @@ export class PiSessionService implements SessionRouteService {
         "initialize the session model policy",
         async () => {
           await this.applyExactSelection(session, target);
+          // Pi queues global default writes behind its setters and swallows their
+          // storage failures, so prove durability before any transcript record
+          // exists: everything after this point must be reversible.
+          await settleModelPolicySettings(
+            settings,
+            "while applying initial model defaults"
+          );
           this.appendSessionModelPolicy(session, plan.policy);
           this.verifyPersistedSessionModelPolicy(session, plan.policy);
           this.appendSessionCreationSource(session, source);
@@ -5466,10 +5473,6 @@ export class PiSessionService implements SessionRouteService {
             plan.policy
           );
         }
-      );
-      await settleModelPolicySettings(
-        settings,
-        "after complete session initialization"
       );
       this.inspectAndCacheSessionModelPolicy(session);
       return initialization;

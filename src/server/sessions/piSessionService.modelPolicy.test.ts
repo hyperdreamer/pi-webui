@@ -61,6 +61,9 @@ interface ModelPolicyHarnessOptions {
   silentlyDropCreationSourceAppend?: boolean;
   failDurableCommit?: boolean;
   emitInitializerEvents?: boolean;
+  settingsWriteFailure?: "target" | "restore";
+  /** Fail only the first N settings writes after rollback begins. */
+  restoreWriteFailures?: number;
   model?: PiAgentSession["model"];
   thinkingLevel?: PiAgentSession["thinkingLevel"];
   ladderValidation?: LadderValidation;
@@ -145,17 +148,42 @@ function creationSourceEntry(data: unknown = {
   return { type: "custom", customType: SESSION_CREATION_SOURCE_CUSTOM_TYPE, data };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   const branch = [...(options.branch ?? [])];
   const operations: string[] = [];
   /** Runtime/persistence operations in the order the adapter performed them. */
   const calls: string[] = [];
   const getBranch = vi.fn(() => branch);
+  const settingsState: {
+    durable: string;
+    phase: "construct" | "target" | "restore";
+    writes: number;
+    restoreWrites: number;
+  } = {
+    durable: JSON.stringify({
+      defaultProvider: DEFAULT_SELECTION.model.provider,
+      defaultModel: DEFAULT_SELECTION.model.id,
+      defaultThinkingLevel: "medium",
+    }),
+    phase: "construct",
+    writes: 0,
+    restoreWrites: 0,
+  };
+  const durableSettings = (): Record<string, unknown> => {
+    const parsed: unknown = JSON.parse(settingsState.durable);
+    if (!isRecord(parsed)) throw new Error("durable settings must be an object");
+    return parsed;
+  };
   let appendFailures = 0;
   const appendCustomEntry = vi.fn((customType: string, data?: unknown) => {
     operations.push(`appendCustomEntry:${customType}`);
     calls.push(`appendCustomEntry:${customType}`);
     if (customType === SESSION_CREATION_SOURCE_CUSTOM_TYPE && options.failCreationSourceAppend === true) {
+      settingsState.phase = "restore";
       throw new Error("creation source persistence failed");
     }
     const failsOnce = options.append === "throwsOnce" && appendFailures === 0;
@@ -182,11 +210,22 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       model: runtimeModel(entry.provider, entry.id, entry.reasoning ?? false),
     }));
   const supportedLevels = (model: PiAgentSession["model"]): readonly string[] => runtimeThinkingLevels(model);
-  const settingsManager = SettingsManager.inMemory({
-    defaultProvider: DEFAULT_SELECTION.model.provider,
-    defaultModel: DEFAULT_SELECTION.model.id,
-    defaultThinkingLevel: "medium",
+  const settingsManager = SettingsManager.fromStorage({
+    withLock(scope, fn) {
+      if (scope !== "global") return;
+      settingsState.writes += 1;
+      if (settingsState.phase === "restore") settingsState.restoreWrites += 1;
+      const failing =
+        (settingsState.phase === "target" && options.settingsWriteFailure === "target") ||
+        (settingsState.phase === "restore" &&
+          (options.settingsWriteFailure === "restore" ||
+            settingsState.restoreWrites <= (options.restoreWriteFailures ?? 0)));
+      if (failing) throw new Error("simulated settings write failure");
+      const next = fn(settingsState.durable);
+      if (next !== undefined) settingsState.durable = next;
+    },
   });
+  settingsState.phase = "target";
   const settingsFlush = vi.spyOn(settingsManager, "flush");
   let releaseSetModel: (() => void) | undefined;
   const setModelGate = new Promise<void>((resolve) => { releaseSetModel = resolve; });
@@ -400,6 +439,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     calls,
     commitInitialEntries,
     discardInitialEntries,
+    durableSettings,
     durableTranscriptPresent: () => durableTranscriptPresent,
     fake,
     getBranch,
@@ -416,6 +456,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     service,
     settingsFlush,
     settingsManager,
+    settingsWrites: () => settingsState.writes,
     /** Hand a replacement runtime to the next reopen (`reload`) of this session. */
     useNextRuntime: (runtime: PiSessionRuntime) => { nextRuntime = runtime; },
     validate,
@@ -871,6 +912,87 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.fake.calls.dispose).toBe(1);
     expect(harness.prompt).not.toHaveBeenCalled();
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("rejects a plus root when target default writes are not durable", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      existing: false,
+      preferenceStore,
+      settingsWriteFailure: "target",
+    });
+
+    await expect(
+      harness.service.start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: { mode: "exact", exact: ADVANCED_SELECTION },
+      })
+    ).rejects.toThrow(/not durably persisted while applying initial model defaults/u);
+
+    expect(harness.calls).not.toContain(`appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`);
+    expect(harness.durableTranscriptPresent()).toBe(false);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("recovers durable Pi defaults when restoration storage fails transiently", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      failCreationSourceAppend: true,
+      restoreWriteFailures: 5,
+    });
+
+    await expect(
+      harness.service.start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: { mode: "exact", exact: ADVANCED_SELECTION },
+      })
+    ).rejects.toThrow("creation source persistence failed");
+
+    expect(harness.durableSettings()).toMatchObject({
+      defaultProvider: DEFAULT_SELECTION.model.provider,
+      defaultModel: DEFAULT_SELECTION.model.id,
+      defaultThinkingLevel: "medium",
+    });
+    expect(harness.fake.session.model).toMatchObject(DEFAULT_SELECTION.model);
+    expect(harness.durableTranscriptPresent()).toBe(false);
+    expect(harness.service.activeCount()).toBe(0);
+  });
+
+  it("reports an incomplete rollback when restoration never persists", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      existing: false,
+      failCreationSourceAppend: true,
+      preferenceStore,
+      settingsWriteFailure: "restore",
+    });
+
+    const failure = await harness.service
+      .start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: { mode: "exact", exact: ADVANCED_SELECTION },
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) {
+      throw new Error("expected an incomplete rollback AggregateError");
+    }
+    expect(failure.message).toMatch(/rollback was incomplete/u);
+    expect(
+      failure.errors.some(
+        (error: unknown) => error instanceof Error && error.message.includes("not durably restored")
+      )
+    ).toBe(true);
+    expect(harness.durableSettings()).toMatchObject({
+      defaultModel: ADVANCED_SELECTION.model.id,
+    });
+    expect(harness.durableTranscriptPresent()).toBe(false);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
+    expect(harness.hub.sessionEvents.some(({ event }) => event.type === "status.update")).toBe(false);
   });
 
   it.each([
