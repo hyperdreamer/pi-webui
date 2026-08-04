@@ -2,4 +2,4 @@
 "@hyperdreamer/pi-webui": patch
 ---
 
-Add machine-wide utility model settings for title generation, summaries, and compaction.
+Add Utility models settings so automatic titles, branch summaries, and compaction can use separate configured models without changing the active session model.
