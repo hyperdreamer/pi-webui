@@ -6105,7 +6105,8 @@ function mergeSessionMetadata(
     ? { kind: "root", cwd: canonicalizeStoredCwd(session.cwd) }
     : { kind: "children", parentSessionPath: session.parentSessionPath };
   const order = entry?.order;
-  const manualOrder = order?.pinned === pinned
+  const manualOrder = session.archived !== true
+    && order?.pinned === pinned
     && sessionReorderScopesEqual(order.scope, scope)
     ? order.position
     : undefined;

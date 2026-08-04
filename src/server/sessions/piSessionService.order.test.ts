@@ -290,12 +290,28 @@ describe("PiSessionService durable session ordering", () => {
       rootRequest(harness, [harness.second, harness.first]),
     );
 
+    const positioned = await harness.service.list("/repo");
+    expect(positioned.find((session) => session.id === harness.first.id)).toMatchObject({
+      manualOrder: 1,
+    });
+
     await harness.service.archive({ id: harness.first.id, cwd: harness.first.cwd });
+
+    const archived = (await harness.service.list("/repo"))
+      .find((session) => session.id === harness.first.id);
+    expect(archived).toMatchObject({ archived: true });
+    expect(archived === undefined ? undefined : Object.hasOwn(archived, "manualOrder")).toBe(false);
+    expect((await harness.metadataStore.snapshot())[harness.first.path]?.order).toEqual({
+      position: 1,
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+    });
+
     await harness.service.restore({ id: harness.first.id, cwd: harness.first.cwd });
 
-    const listed = await harness.service.list("/repo");
-    expect(listed.find((session) => session.id === harness.second.id)).toMatchObject({ manualOrder: 0 });
-    expect(listed.find((session) => session.id === harness.first.id)).toMatchObject({ manualOrder: 1 });
+    const restored = await harness.service.list("/repo");
+    expect(restored.find((session) => session.id === harness.second.id)).toMatchObject({ manualOrder: 0 });
+    expect(restored.find((session) => session.id === harness.first.id)).toMatchObject({ manualOrder: 1 });
   });
 
   for (const mutation of queuedMutations()) {
