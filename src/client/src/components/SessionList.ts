@@ -498,19 +498,17 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
               : html`${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${!row.external && session.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin session" aria-label="Unpin session" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(session); }}>★</button> ` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${externalWorkspaceLabel === undefined ? null : html` <span class="badge external-workspace" title=${`Open ${externalWorkspaceLabel} workspace`}>${externalWorkspaceLabel} ↗</span>`}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>`}
           </span><small>${this.renderSessionMetaPrefix(session, status, activity)}${String(session.messageCount)} messages</small>
           ${this.renderActivity(session, activitySessions)}
+          ${canDrag ? html`
+            <span
+              class="session-reorder-grip"
+              title="Drag to reorder selected session"
+              data-session-reorder-handle=${session.path}
+              @pointerdown=${(event: PointerEvent) => { this.beginSessionReorder(event, session, reorderGroup, reorderRows); }}
+            >${svg`<svg class="session-reorder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg>`}</span>
+          ` : null}
         </div>
         ${row.external ? null : html`
           <div class="session-row-controls">
-            <span class="session-reorder-slot">
-              ${canDrag ? html`
-                <span
-                  class="session-reorder-grip"
-                  title="Drag to reorder selected session"
-                  data-session-reorder-handle=${session.path}
-                  @pointerdown=${(event: PointerEvent) => { this.beginSessionReorder(event, session, reorderGroup, reorderRows); }}
-                >${svg`<svg class="session-reorder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg>`}</span>
-              ` : null}
-            </span>
             <div class="action-menu">
             <button class="action-menu-toggle" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
             ${this.openMenuSessionId === session.id ? html`
@@ -1099,12 +1097,10 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     .action-name, .section-selected { text-align: start; unicode-bidi: plaintext; }
     .action-main { padding-right: 56px; }
     .session-row-controls { flex: 0 0 auto; display: flex; align-items: stretch; }
-    .session-reorder-slot { box-sizing: border-box; flex: 0 0 24px; width: 24px; display: grid; place-items: center; border-block: 1px solid var(--pi-border); background: var(--pi-surface); }
-    .session-reorder-grip { box-sizing: border-box; display: grid; place-items: center; width: 24px; height: 24px; align-self: center; color: var(--pi-muted); cursor: grab; touch-action: none; user-select: none; }
+    .session-reorder-grip { position: absolute; right: 0; top: 50%; z-index: 2; box-sizing: border-box; display: grid; place-items: center; width: 24px; height: 24px; color: var(--pi-muted); cursor: grab; touch-action: none; transform: translateY(-50%); user-select: none; }
     .session-reorder-grip:active { cursor: grabbing; }
     .session-reorder-icon { width: 16px; height: 16px; fill: currentColor; }
     .session-family-frame, .action-row { position: relative; }
-    .action-row.selected .session-reorder-slot { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .session-reorder-dragging { opacity: .45; }
     .session-drop-before::before, .session-drop-after::after { content: ""; position: absolute; right: 0; left: 0; z-index: 4; height: 2px; background: var(--pi-accent); pointer-events: none; }
     .session-drop-before::before { top: -4px; }
