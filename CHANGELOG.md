@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.0-beta.10
+
+### Patch Changes
+
+- 2175ed9: Add Utility models settings so automatic titles, branch summaries, and compaction can use separate configured models without changing the active session model.
+- f0c0897: Refresh the desktop documentation screenshot with a four-state PI WEBUI collage.
+- 207780f: Add persistent drag ordering for selected sessions in the Sessions sidebar, with the selected row's handle placed inside the content area immediately before the menu.
+
 ## 1.11.0-beta.9
 
 ### Patch Changes
