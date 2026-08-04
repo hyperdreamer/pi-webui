@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+  inspectSessionCreationRootEligibility,
   inspectSessionCreationSource,
   serializeSessionCreationSource,
 } from "./sessionCreationSource.js";
@@ -19,6 +20,22 @@ describe("session creation source domain", () => {
       expect(serializeSessionCreationSource("session-list-plus")).toEqual({
         version: 1,
         source: "session-list-plus",
+      });
+    });
+
+    it("binds a version-two source to the creating session id and file", () => {
+      expect(
+        serializeSessionCreationSource("session-list-plus", {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        })
+      ).toEqual({
+        version: 2,
+        source: "session-list-plus",
+        origin: {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        },
       });
     });
   });
@@ -41,6 +58,28 @@ describe("session creation source domain", () => {
       ).toEqual({ kind: "valid", source: "session-list-plus" });
     });
 
+    it("returns the bound origin from a valid version-two entry", () => {
+      expect(
+        inspectSessionCreationSource([
+          customSourceEntry({
+            version: 2,
+            source: "session-list-plus",
+            origin: {
+              sessionId: "root-session",
+              sessionFile: "/sessions/root-session.jsonl",
+            },
+          }),
+        ])
+      ).toEqual({
+        kind: "valid",
+        source: "session-list-plus",
+        origin: {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        },
+      });
+    });
+
     it("uses the newest matching source entry", () => {
       expect(
         inspectSessionCreationSource([
@@ -60,7 +99,7 @@ describe("session creation source domain", () => {
     });
 
     it.each([
-      ["an unsupported version", { version: 2, source: "session-list-plus" }],
+      ["a version two source without an origin", { version: 2, source: "session-list-plus" }],
       ["a missing version", { source: "session-list-plus" }],
       ["a missing source", { version: 1 }],
       ["an unknown source", { version: 1, source: "unknown" }],
@@ -68,10 +107,99 @@ describe("session creation source domain", () => {
         "an unknown field",
         { version: 1, source: "session-list-plus", future: true },
       ],
+      [
+        "an incomplete version two origin",
+        {
+          version: 2,
+          source: "session-list-plus",
+          origin: { sessionId: "root-session" },
+        },
+      ],
+      [
+        "an empty version two origin id",
+        {
+          version: 2,
+          source: "session-list-plus",
+          origin: {
+            sessionId: "",
+            sessionFile: "/sessions/root-session.jsonl",
+          },
+        },
+      ],
     ] as const)("rejects %s", (_description, data) => {
       expect(
         inspectSessionCreationSource([customSourceEntry(data)])
       ).toMatchObject({ kind: "invalid" });
+    });
+  });
+
+  describe("root eligibility", () => {
+    const boundSource = inspectSessionCreationSource([
+      customSourceEntry({
+        version: 2,
+        source: "session-list-plus",
+        origin: {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        },
+      }),
+    ]);
+
+    function inspect(identity: {
+      sessionId: string;
+      sessionFile: string;
+      parentSession?: string;
+    }) {
+      return inspectSessionCreationRootEligibility(boundSource, identity);
+    }
+
+    it("accepts only the bound top-level root identity", () => {
+      expect(
+        inspect({
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        })
+      ).toEqual({ kind: "eligible" });
+    });
+
+    it.each([
+      [
+        "a parent transcript",
+        {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+          parentSession: "/sessions/parent.jsonl",
+        },
+      ],
+      [
+        "a copied session id",
+        {
+          sessionId: "derived-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        },
+      ],
+      [
+        "a copied session file",
+        {
+          sessionId: "root-session",
+          sessionFile: "/imports/root-session.jsonl",
+        },
+      ],
+    ])("rejects %s", (_description, identity) => {
+      expect(inspect(identity)).toMatchObject({ kind: "ineligible" });
+    });
+
+    it("rejects a valid legacy marker that has no bound origin", () => {
+      const legacy = inspectSessionCreationSource([
+        customSourceEntry({ version: 1, source: "session-list-plus" }),
+      ]);
+
+      expect(
+        inspectSessionCreationRootEligibility(legacy, {
+          sessionId: "root-session",
+          sessionFile: "/sessions/root-session.jsonl",
+        })
+      ).toMatchObject({ kind: "ineligible" });
     });
   });
 });

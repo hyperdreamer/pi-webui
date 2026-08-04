@@ -7,6 +7,10 @@ import type { StarterModelPolicyPreferenceStore } from "./starterModelPolicyPref
 export interface ConfirmedPolicySnapshot {
   cwd: string;
   creationSource: CreationSourceInspection;
+  persisted: boolean;
+  rootEligibility:
+    | { kind: "eligible" }
+    | { kind: "ineligible"; reason: string };
   modelPolicy: SessionModelPolicyInspection;
   transitionInFlight: boolean;
 }
@@ -49,9 +53,19 @@ export class RememberCurrentModelPolicyCommand {
 }
 
 function confirmedPreference(snapshot: ConfirmedPolicySnapshot): StarterModelPolicyPreference {
+  if (!snapshot.persisted) {
+    throw new RememberCurrentModelPolicyConflictError(
+      "Cannot remember a session before its transcript is durably persisted",
+    );
+  }
   if (snapshot.creationSource.kind !== "valid") {
     throw new RememberCurrentModelPolicyConflictError(
       "Only sessions created from SESSIONS + can be remembered",
+    );
+  }
+  if (snapshot.rootEligibility.kind !== "eligible") {
+    throw new RememberCurrentModelPolicyConflictError(
+      `Only a durable top-level root created from SESSIONS + can be remembered (${snapshot.rootEligibility.reason})`,
     );
   }
   if (snapshot.transitionInFlight) {

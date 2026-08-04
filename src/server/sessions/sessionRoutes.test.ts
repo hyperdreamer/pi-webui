@@ -212,7 +212,8 @@ describe("session routes", () => {
     try {
       const cases = [
         [new Error("Session not found"), 404],
-        [new RememberCurrentModelPolicyConflictError("confirmed policy is not eligible"), 409],
+        [new RememberCurrentModelPolicyConflictError("Only a durable top-level root created from SESSIONS + can be remembered"), 409],
+        [new RememberCurrentModelPolicyConflictError("Cannot remember a session before its transcript is durably persisted"), 409],
         [new Error("preference store unavailable"), 500],
       ] as const;
       for (const [error, statusCode] of cases) {

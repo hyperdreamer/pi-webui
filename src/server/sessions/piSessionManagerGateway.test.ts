@@ -1,12 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSessionDirEnvKeys } from "../../config.js";
 import { createPiSessionManagerGateway, defaultPiSessionDir, defaultPiSessionsRoot, filterSessionsForCwd, SessionDirResolver } from "./piSessionManagerGateway.js";
 import type { PiSessionListEntry } from "./piSessionService.js";
 import type { PiSessionManager } from "./piSessionService.js";
-import { SESSION_CREATION_SOURCE_CUSTOM_TYPE, serializeSessionCreationSource } from "./sessionCreationSource.js";
+import { inspectSessionCreationSource, SESSION_CREATION_SOURCE_CUSTOM_TYPE, serializeSessionCreationSource } from "./sessionCreationSource.js";
 import { sep } from "node:path";
 
 let tempDir: string;
@@ -86,6 +87,84 @@ describe("SessionDirResolver", () => {
 });
 
 describe("Pi session manager gateway", () => {
+  it("durably commits initial custom entries and leaves the manager appendable", async () => {
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+    const manager = gateway.create(cwd);
+    const sessionFile = manager.getSessionFile();
+    if (sessionFile === undefined) throw new Error("Expected a persistent session file");
+    manager.appendCustomEntry?.("test.policy", { mode: "exact" });
+    manager.appendCustomEntry?.(
+      SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+      serializeSessionCreationSource("session-list-plus", {
+        sessionId: manager.getSessionId(),
+        sessionFile,
+      })
+    );
+
+    await expect(readFile(sessionFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    if (gateway.commitInitialEntries === undefined) throw new Error("Expected an initial-entry commit seam");
+    await gateway.commitInitialEntries(manager);
+
+    await expect(readFile(sessionFile, "utf8")).resolves.toContain("test.policy");
+    manager.appendCustomEntry?.("test.after-commit", { durable: true });
+    expect(gateway.open(sessionFile).getEntries?.()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ customType: "test.after-commit" }),
+      ])
+    );
+  });
+
+  it("removes a newly materialized file when manager reload fails during commit", async () => {
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+    const manager = gateway.create(cwd);
+    const sessionFile = manager.getSessionFile();
+    if (sessionFile === undefined) throw new Error("Expected a persistent session file");
+    manager.appendCustomEntry?.("test.policy", { mode: "exact" });
+    if (!(manager instanceof SessionManager))
+      throw new Error("Expected an SDK SessionManager");
+    vi.spyOn(manager, "setSessionFile").mockImplementation(() => {
+      throw new Error("manager reload failed");
+    });
+
+    if (gateway.commitInitialEntries === undefined) throw new Error("Expected an initial-entry commit seam");
+    await expect(gateway.commitInitialEntries(manager)).rejects.toThrow("manager reload failed");
+    await expect(readFile(sessionFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps a copied plus origin bound to its parent after a real branched-session extraction", async () => {
+    const gateway = createPiSessionManagerGateway(piProfileOptions());
+    if (gateway.commitInitialEntries === undefined) throw new Error("Expected an initial-entry commit seam");
+    const root = gateway.create(cwd);
+    const rootFile = root.getSessionFile();
+    if (rootFile === undefined) throw new Error("Expected a persistent root file");
+    root.appendCustomEntry?.(
+      SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+      serializeSessionCreationSource("session-list-plus", {
+        sessionId: root.getSessionId(),
+        sessionFile: rootFile,
+      })
+    );
+    await gateway.commitInitialEntries(root);
+
+    const branching = gateway.open(rootFile);
+    if (!(branching instanceof SessionManager))
+      throw new Error("Expected an SDK SessionManager");
+    const leafId = branching.getLeafId();
+    if (leafId === null) throw new Error("Expected a source marker leaf");
+    const childFile = branching.createBranchedSession(leafId);
+    if (childFile === undefined) throw new Error("Expected a persistent child file");
+    await gateway.commitInitialEntries(branching);
+
+    const child = gateway.open(childFile);
+    const source = inspectSessionCreationSource(child.getEntries?.() ?? child.getBranch());
+    expect(child.getHeader?.()?.parentSession).toBe(rootFile);
+    expect(child.getSessionId()).not.toBe(root.getSessionId());
+    expect(source).toMatchObject({
+      kind: "valid",
+      origin: { sessionId: root.getSessionId(), sessionFile: rootFile },
+    });
+  });
+
   it("lists legacy id-only sessions from the default Pi session store", async () => {
     const otherCwd = join(tempDir, "other-workspace");
     await writeSessionFile(defaultPiSessionDir(cwd, agentDir), "session-a", cwd);

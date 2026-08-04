@@ -1,14 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ExactModelSelection,
   ModelTier,
   StarterModelPolicyPreference,
 } from "../../shared/apiTypes.js";
 import { PiSessionService, type PiAgentSession, type PiSessionRuntime } from "./piSessionService.js";
-import { SESSION_CREATION_SOURCE_CUSTOM_TYPE } from "./sessionCreationSource.js";
-import { SESSION_MODEL_POLICY_CUSTOM_TYPE } from "./sessionModelPolicy.js";
+import {
+  inspectSessionCreationRootEligibility,
+  inspectSessionCreationSource,
+  SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+} from "./sessionCreationSource.js";
+import {
+  inspectSessionModelPolicy,
+  SESSION_MODEL_POLICY_CUSTOM_TYPE,
+} from "./sessionModelPolicy.js";
 import type { StarterPreferenceWrite } from "./starterModelPolicyPreferenceStore.js";
 import { runtimeThinkingLevels, type LadderValidation } from "./modelTierRegistry.js";
+import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
 import {
   CapturingSessionEventHub,
   emptyArchiveStore,
@@ -22,6 +35,10 @@ import {
 const TEST_AGENT_DIR = "/tmp/pi-webui-model-policy-test-agent";
 const TEST_CWD = "/workspace";
 const TEST_SESSION_ID = "model-policy-session";
+const TEST_SESSION_DIR = mkdtempSync(
+  join(tmpdir(), "pi-webui-model-policy-test-")
+);
+const TEST_SESSION_FILE = join(TEST_SESSION_DIR, `${TEST_SESSION_ID}.jsonl`);
 const DEFAULT_SELECTION: ExactModelSelection = {
   model: { provider: "openai", id: "gpt-default" },
   thinkingLevel: "medium",
@@ -36,10 +53,14 @@ const ADVANCED_SELECTION: ExactModelSelection = {
 interface ModelPolicyHarnessOptions {
   branch?: readonly unknown[];
   existing?: boolean;
+  persistedFile?: boolean;
+  parentSession?: string;
   append?: "available" | "missing" | "throws" | "throwsOnce";
   failCreationSourceAppend?: boolean;
   silentlyDropModelPolicyAppend?: boolean;
   silentlyDropCreationSourceAppend?: boolean;
+  failDurableCommit?: boolean;
+  emitInitializerEvents?: boolean;
   model?: PiAgentSession["model"];
   thinkingLevel?: PiAgentSession["thinkingLevel"];
   ladderValidation?: LadderValidation;
@@ -83,6 +104,11 @@ const services: PiSessionService[] = [];
 
 afterEach(async () => {
   await Promise.all(services.splice(0).map(async (service) => service.dispose()));
+  rmSync(TEST_SESSION_FILE, { force: true });
+});
+
+afterAll(() => {
+  rmSync(TEST_SESSION_DIR, { recursive: true, force: true });
 });
 
 function runtimeModel(provider: string, id: string, reasoning = true): NonNullable<PiAgentSession["model"]> {
@@ -90,11 +116,32 @@ function runtimeModel(provider: string, id: string, reasoning = true): NonNullab
   return { provider, id, ...(reasoning ? { reasoning: true } : {}) } as NonNullable<PiAgentSession["model"]>;
 }
 
+function piThinkingLevel(level: string): ThinkingLevel {
+  switch (level) {
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+      return level;
+    default:
+      throw new Error(`Unknown Pi thinking level: ${level}`);
+  }
+}
+
 function policyEntry(data: unknown): unknown {
   return { type: "custom", customType: SESSION_MODEL_POLICY_CUSTOM_TYPE, data };
 }
 
-function creationSourceEntry(data: unknown = { version: 1, source: "session-list-plus" }): unknown {
+function creationSourceEntry(data: unknown = {
+  version: 2,
+  source: "session-list-plus",
+  origin: {
+    sessionId: TEST_SESSION_ID,
+    sessionFile: TEST_SESSION_FILE,
+  },
+}): unknown {
   return { type: "custom", customType: SESSION_CREATION_SOURCE_CUSTOM_TYPE, data };
 }
 
@@ -135,6 +182,12 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       model: runtimeModel(entry.provider, entry.id, entry.reasoning ?? false),
     }));
   const supportedLevels = (model: PiAgentSession["model"]): readonly string[] => runtimeThinkingLevels(model);
+  const settingsManager = SettingsManager.inMemory({
+    defaultProvider: DEFAULT_SELECTION.model.provider,
+    defaultModel: DEFAULT_SELECTION.model.id,
+    defaultThinkingLevel: "medium",
+  });
+  const settingsFlush = vi.spyOn(settingsManager, "flush");
   let releaseSetModel: (() => void) | undefined;
   const setModelGate = new Promise<void>((resolve) => { releaseSetModel = resolve; });
   let setModelCalls = 0;
@@ -146,6 +199,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       throw new Error("runtime rejected the model change");
     }
     fake.session.model = model;
+    settingsManager.setDefaultModelAndProvider(model.provider, model.id);
     // pi re-clamps thinking against the incoming model while switching models.
     const levels = supportedLevels(model);
     if (!levels.includes(fake.session.thinkingLevel)) {
@@ -158,7 +212,17 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     calls.push(`setThinkingLevel:${level}`);
     operations.push(`setThinkingLevel:${level}`);
     // pi clamps silently rather than failing; `clampThinkingTo` reproduces that.
+    const previous = fake.session.thinkingLevel;
     fake.session.thinkingLevel = options.clampThinkingTo ?? level;
+    if (fake.session.thinkingLevel !== previous) {
+      settingsManager.setDefaultThinkingLevel(fake.session.thinkingLevel);
+      if (options.emitInitializerEvents === true) {
+        fake.emit({
+          type: "thinking_level_changed",
+          level: fake.session.thinkingLevel,
+        });
+      }
+    }
   });
   const cycleModel = vi.fn(() => {
     const next = scopedModels.find(({ model }) => model.id !== fake.session.model?.id)?.model;
@@ -191,12 +255,23 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   });
   const manager = fakeSessionManager(TEST_CWD, {
     getBranch,
+    getEntries: getBranch,
+    getSessionId: () => TEST_SESSION_ID,
+    getSessionFile: () => TEST_SESSION_FILE,
+    getHeader: () => ({
+      id: TEST_SESSION_ID,
+      ...(options.parentSession === undefined
+        ? {}
+        : { parentSession: options.parentSession }),
+    }),
     ...(options.append === "missing" ? { appendCustomEntry: undefined } : { appendCustomEntry }),
   });
   const fake = fakeRuntime(TEST_SESSION_ID, {
     model: options.model ?? runtimeModel(DEFAULT_SELECTION.model.provider, DEFAULT_SELECTION.model.id),
     thinkingLevel: options.thinkingLevel ?? "medium",
     sessionManager: manager,
+    sessionFile: TEST_SESSION_FILE,
+    settingsManager,
     modelRuntime,
     scopedModels,
     prompt,
@@ -216,7 +291,13 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   vi.spyOn(hub, "publishGlobal").mockImplementation((event) => {
     operations.push(`global:${event.type}`);
     publishGlobal(event);
-  });  const validate = vi.fn(() => options.ladderValidation ?? { valid: true } as const);
+  });
+  const publish = hub.publish.bind(hub);
+  vi.spyOn(hub, "publish").mockImplementation((sessionId, event) => {
+    operations.push(`session:${event.type}`);
+    publish(sessionId, event);
+  });
+  const validate = vi.fn(() => options.ladderValidation ?? { valid: true } as const);
   const tierTarget = options.tierTarget ?? ADVANCED_SELECTION;
   const resolve = vi.fn((tier: ModelTier) => {
     const model = scopedModels.find(({ model: candidate }) => candidate.provider === tierTarget.model.provider
@@ -226,8 +307,53 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   });
   const modelTierRegistry = { resolve, validate };
   const existing = options.existing ?? true;
+  if (existing && options.persistedFile !== false) {
+    writeFileSync(
+      TEST_SESSION_FILE,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: TEST_SESSION_ID,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        cwd: TEST_CWD,
+      })}\n`,
+      "utf8"
+    );
+  } else {
+    rmSync(TEST_SESSION_FILE, { force: true });
+  }
   /** Runtime handed to the *next* `createAgentRuntime` call (e.g. after reload). */
   let nextRuntime: PiSessionRuntime | undefined;
+  let durableTranscriptPresent = false;
+  const commitInitialEntries = vi.fn(() => {
+    operations.push("commitInitialEntries");
+    durableTranscriptPresent = true;
+    writeFileSync(
+      TEST_SESSION_FILE,
+      `${[
+        {
+          type: "session",
+          version: 3,
+          id: TEST_SESSION_ID,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: TEST_CWD,
+        },
+        ...branch,
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+      "utf8"
+    );
+    return options.failDurableCommit === true
+      ? Promise.reject(new Error("initial session durable commit failed"))
+      : Promise.resolve();
+  });
+  const discardInitialEntries = vi.fn(() => {
+    operations.push("discardInitialEntries");
+    durableTranscriptPresent = false;
+    rmSync(TEST_SESSION_FILE, { force: true });
+    return Promise.resolve();
+  });
   const service = new PiSessionService(hub, {
     agentDir: TEST_AGENT_DIR,
     modelRuntime: testModelRuntime,
@@ -256,6 +382,8 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
       create: vi.fn(() => manager),
       list: vi.fn(() => Promise.resolve(existing ? [sessionRecord(TEST_SESSION_ID, TEST_CWD)] : [])),
       open: vi.fn(() => manager),
+      commitInitialEntries,
+      discardInitialEntries,
     },
     ...(options.spawnTargetCwd === undefined ? {} : {
       spawnTargets: {
@@ -270,6 +398,9 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     appendCustomEntry,
     branch,
     calls,
+    commitInitialEntries,
+    discardInitialEntries,
+    durableTranscriptPresent: () => durableTranscriptPresent,
     fake,
     getBranch,
     hub,
@@ -283,6 +414,8 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     releaseSetModel: () => { releaseSetModel?.(); },
     resolve,
     service,
+    settingsFlush,
+    settingsManager,
     /** Hand a replacement runtime to the next reopen (`reload`) of this session. */
     useNextRuntime: (runtime: PiSessionRuntime) => { nextRuntime = runtime; },
     validate,
@@ -402,7 +535,14 @@ describe("PiSessionService model policy lifecycle", () => {
     );
     expect(harness.appendCustomEntry).toHaveBeenCalledWith(
       SESSION_CREATION_SOURCE_CUSTOM_TYPE,
-      { version: 1, source: "session-list-plus" }
+      {
+        version: 2,
+        source: "session-list-plus",
+        origin: {
+          sessionId: TEST_SESSION_ID,
+          sessionFile: TEST_SESSION_FILE,
+        },
+      }
     );
     const policyAppendIndex = harness.operations.indexOf(
       `appendCustomEntry:${SESSION_MODEL_POLICY_CUSTOM_TYPE}`
@@ -410,13 +550,16 @@ describe("PiSessionService model policy lifecycle", () => {
     const sourceAppendIndex = harness.operations.indexOf(
       `appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`
     );
+    const commitIndex = harness.operations.indexOf("commitInitialEntries");
     const createdIndex = harness.operations.indexOf("global:session.created");
     expect(harness.operations.indexOf("setModel:openai/gpt-advanced")).toBeLessThan(
       harness.operations.indexOf("setThinkingLevel:high")
     );
     expect(harness.operations.indexOf("setThinkingLevel:high")).toBeLessThan(policyAppendIndex);
     expect(policyAppendIndex).toBeLessThan(sourceAppendIndex);
-    expect(createdIndex).toBeGreaterThan(sourceAppendIndex);
+    expect(commitIndex).toBeGreaterThan(sourceAppendIndex);
+    expect(createdIndex).toBeGreaterThan(commitIndex);
+    expect(harness.commitInitialEntries).toHaveBeenCalledOnce();
     expect(created).toMatchObject({ creationSource: "session-list-plus" });
     const createdEvent = harness.hub.globalEvents.find(
       (event) => event.type === "session.created"
@@ -439,6 +582,51 @@ describe("PiSessionService model policy lifecycle", () => {
             thinkingLevel: "high",
           },
           ladderValid: true,
+        },
+      },
+    });
+  });
+
+  it("does not publish initializer runtime events before the durable plus-root commit", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      emitInitializerEvents: true,
+    });
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "tiered",
+        exact: DEFAULT_SELECTION,
+        tier: "advanced",
+      },
+    });
+
+    const commitIndex = harness.operations.indexOf("commitInitialEntries");
+    const firstStatusIndex = harness.operations.findIndex(
+      (operation) => operation === "session:status.update" || operation === "global:status.update"
+    );
+    expect(commitIndex).toBeGreaterThanOrEqual(0);
+    expect(firstStatusIndex).toBeGreaterThan(commitIndex);
+    expect(
+      harness.operations
+        .slice(0, commitIndex)
+        .filter((operation) =>
+          operation === "session:status.update" ||
+          operation === "global:status.update" ||
+          operation === "session:thinking_level_changed"
+        )
+    ).toEqual([]);
+    const firstStatus = harness.hub.sessionEvents.find(
+      ({ event }) => event.type === "status.update"
+    );
+    expect(firstStatus?.event).toMatchObject({
+      type: "status.update",
+      status: {
+        modelPolicy: {
+          mode: "tiered",
+          tier: "advanced",
+          resolved: ADVANCED_SELECTION,
         },
       },
     });
@@ -685,6 +873,48 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
   });
 
+  it.each([
+    ["policy append", { append: "throws" as const }, "model policy persistence failed"],
+    ["source append", { failCreationSourceAppend: true }, "creation source persistence failed"],
+    ["durable commit", { failDurableCommit: true }, "initial session durable commit failed"],
+  ])("restores runtime and persisted Pi defaults after a %s failure", async (_failure, failureOptions, message) => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      emitInitializerEvents: true,
+      ...failureOptions,
+    });
+
+    await expect(
+      harness.service.start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: {
+          mode: "tiered",
+          exact: DEFAULT_SELECTION,
+          tier: "advanced",
+        },
+      })
+    ).rejects.toThrow(message);
+
+    expect(harness.fake.session.model).toMatchObject(DEFAULT_SELECTION.model);
+    expect(harness.fake.session.thinkingLevel).toBe(DEFAULT_SELECTION.thinkingLevel);
+    expect(harness.settingsManager.getGlobalSettings()).toMatchObject({
+      defaultProvider: DEFAULT_SELECTION.model.provider,
+      defaultModel: DEFAULT_SELECTION.model.id,
+      defaultThinkingLevel: DEFAULT_SELECTION.thinkingLevel,
+    });
+    expect(harness.settingsFlush).toHaveBeenCalled();
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.durableTranscriptPresent()).toBe(false);
+    expect(
+      harness.hub.sessionEvents.some(({ event }) => event.type === "status.update")
+    ).toBe(false);
+    expect(
+      harness.hub.globalEvents.some(
+        (event) => event.type === "status.update" || event.type === "session.created"
+      )
+    ).toBe(false);
+  });
+
   it("cleans up an unseen plus root when a source append is not durable", async () => {
     const harness = createModelPolicyHarness({
       existing: false,
@@ -730,6 +960,170 @@ describe("PiSessionService model policy lifecycle", () => {
   });
 });
 
+describe("PiSessionService real SessionManager plus-root integration", () => {
+  it("reopens durable policy, provenance, and root eligibility before publication", async () => {
+    const integrationDir = mkdtempSync(
+      join(TEST_SESSION_DIR, "real-session-manager-")
+    );
+    const integrationCwd = join(integrationDir, "workspace");
+    const integrationAgentDir = join(integrationDir, "agent");
+    const integrationSessionDir = join(integrationDir, "sessions");
+    mkdirSync(integrationCwd, { recursive: true });
+    const gateway = createPiSessionManagerGateway({
+      agentDir: integrationAgentDir,
+      env: { PI_WEBUI_AGENT_SESSION_DIR: integrationSessionDir },
+      sessionDirEnvKeys: ["PI_WEBUI_AGENT_SESSION_DIR"],
+    });
+    const hub = new CapturingSessionEventHub();
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const runtimeById = new Map<
+      string,
+      ReturnType<typeof fakeRuntime>
+    >();
+    const service = new PiSessionService(hub, {
+      agentDir: integrationAgentDir,
+      sessionManager: gateway,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: (_createRuntime, options) => {
+        const manager = options.sessionManager;
+        const settingsManager = SettingsManager.inMemory({
+          defaultProvider: DEFAULT_SELECTION.model.provider,
+          defaultModel: DEFAULT_SELECTION.model.id,
+          defaultThinkingLevel: "medium",
+        });
+        const runtime = fakeRuntime(manager.getSessionId(), {
+          sessionFile: manager.getSessionFile(),
+          sessionManager: manager,
+          settingsManager,
+          model: runtimeModel(
+            DEFAULT_SELECTION.model.provider,
+            DEFAULT_SELECTION.model.id
+          ),
+          thinkingLevel: "medium",
+          modelRuntime: testModelRuntime,
+          scopedModels: [
+            {
+              model: runtimeModel(
+                DEFAULT_SELECTION.model.provider,
+                DEFAULT_SELECTION.model.id
+              ),
+            },
+            {
+              model: runtimeModel(
+                ADVANCED_SELECTION.model.provider,
+                ADVANCED_SELECTION.model.id
+              ),
+            },
+          ],
+          setModel: (model) => {
+            runtime.session.model = model;
+            settingsManager.setDefaultModelAndProvider(
+              model.provider,
+              model.id
+            );
+            return Promise.resolve();
+          },
+          setThinkingLevel: (level) => {
+            const previous = runtime.session.thinkingLevel;
+            runtime.session.thinkingLevel = level;
+            if (level !== previous) {
+              settingsManager.setDefaultThinkingLevel(
+                piThinkingLevel(level)
+              );
+              runtime.emit({ type: "thinking_level_changed", level });
+            }
+          },
+          getAvailableThinkingLevels: () => [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+          ],
+        });
+        runtimeById.set(manager.getSessionId(), runtime);
+        return Promise.resolve(runtime.runtime);
+      },
+      modelTierRegistry: {
+        resolve: (tier) => ({
+          tier,
+          model: runtimeModel(
+            ADVANCED_SELECTION.model.provider,
+            ADVANCED_SELECTION.model.id
+          ),
+          thinkingLevel: ADVANCED_SELECTION.thinkingLevel,
+        }),
+        validate: () => ({ valid: true }),
+      },
+      starterModelPolicyPreferenceStore: preferenceStore,
+      heartbeatIntervalMs: 60_000,
+    });
+    services.push(service);
+    const initialPolicy = {
+      mode: "tiered",
+      exact: DEFAULT_SELECTION,
+      tier: "advanced",
+    } as const;
+    const publicationChecks: string[] = [];
+    const publishGlobal = hub.publishGlobal.bind(hub);
+    vi.spyOn(hub, "publishGlobal").mockImplementation((event) => {
+      if (event.type === "status.update" || event.type === "session.created") {
+        const runtime = runtimeById.values().next().value;
+        if (runtime === undefined)
+          throw new Error("Expected a runtime before publication");
+        const sessionFile = runtime.session.sessionFile;
+        if (sessionFile === undefined)
+          throw new Error("Expected a session file before publication");
+        expect(existsSync(sessionFile)).toBe(true);
+        const reopened = gateway.open(sessionFile);
+        const entries = reopened.getEntries?.() ?? reopened.getBranch();
+        expect(
+          inspectSessionModelPolicy(entries, DEFAULT_SELECTION)
+        ).toMatchObject({ kind: "persisted", policy: initialPolicy });
+        const source = inspectSessionCreationSource(entries);
+        expect(source).toMatchObject({
+          kind: "valid",
+          source: "session-list-plus",
+          origin: {
+            sessionId: reopened.getSessionId(),
+            sessionFile,
+          },
+        });
+        const header = reopened.getHeader?.();
+        if (header?.id === undefined)
+          throw new Error("Expected a reopened session header");
+        expect(
+          inspectSessionCreationRootEligibility(source, {
+            sessionId: header.id,
+            sessionFile,
+            ...(header.parentSession === undefined
+              ? {}
+              : { parentSession: header.parentSession }),
+          })
+        ).toEqual({ kind: "eligible" });
+        publicationChecks.push(event.type);
+      }
+      publishGlobal(event);
+    });
+
+    const created = await service.start(integrationCwd, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: initialPolicy,
+    });
+
+    expect(created.persisted).toBe(true);
+    expect(publicationChecks).toEqual(["status.update", "session.created"]);
+    await expect(
+      service.rememberCurrentModelPolicy({
+        id: created.id,
+        cwd: integrationCwd,
+      })
+    ).resolves.toEqual(initialPolicy);
+    expect(preferenceStore.replace).toHaveBeenCalledOnce();
+  });
+});
+
 describe("PiSessionService model policy mutation", () => {
   const ref = () => sessionRef(TEST_SESSION_ID, TEST_CWD);
   const exactEntry = (selection: ExactModelSelection = DEFAULT_SELECTION, tier?: ModelTier) => policyEntry({
@@ -768,6 +1162,57 @@ describe("PiSessionService model policy mutation", () => {
       kind: "full",
       preference: before.policy,
     });
+  });
+
+  it("rejects remember for an in-memory plus root whose JSONL is absent", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      branch: [creationSourceEntry(), exactEntry()],
+      persistedFile: false,
+      preferenceStore,
+    });
+
+    await expect(harness.service.rememberCurrentModelPolicy(ref()))
+      .rejects.toThrow(/durably persisted/u);
+
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
+  });
+
+  it("rejects remember for a parented session with a copied plus marker", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      branch: [creationSourceEntry(), exactEntry()],
+      parentSession: "/sessions/parent.jsonl",
+      preferenceStore,
+    });
+
+    await expect(harness.service.rememberCurrentModelPolicy(ref()))
+      .rejects.toThrow(/top-level root/u);
+
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
+  });
+
+  it("rejects remember when a copied marker origin does not match the opened root", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      branch: [
+        creationSourceEntry({
+          version: 2,
+          source: "session-list-plus",
+          origin: {
+            sessionId: "different-root",
+            sessionFile: "/imports/different-root.jsonl",
+          },
+        }),
+        exactEntry(),
+      ],
+      preferenceStore,
+    });
+
+    await expect(harness.service.rememberCurrentModelPolicy(ref()))
+      .rejects.toThrow(/top-level root/u);
+
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
   });
 
   it("applies a Tiered policy as model, then thinking, then persistence", async () => {

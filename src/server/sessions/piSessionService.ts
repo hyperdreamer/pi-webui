@@ -175,9 +175,11 @@ import {
   type SessionModelPolicyInspection,
 } from "./sessionModelPolicy.js";
 import {
+  inspectSessionCreationRootEligibility,
   inspectSessionCreationSource,
   serializeSessionCreationSource,
   SESSION_CREATION_SOURCE_CUSTOM_TYPE,
+  type SessionCreationRootEligibility,
 } from "./sessionCreationSource.js";
 import {
   RememberCurrentModelPolicyCommand,
@@ -207,6 +209,85 @@ const MIN_GENERATION_RATE_ELAPSED_MS = 500;
 
 function noop(): void {
   // Intentionally empty default unsubscribe callback.
+}
+
+function modelPolicySettingsAdapter(
+  session: PiAgentSession
+): ModelPolicySettingsAdapter {
+  const candidate: unknown = session.settingsManager;
+  if (!isModelPolicySettingsAdapter(candidate))
+    throw new Error(
+      "Cannot initialize a complete session policy without model-default settings persistence support"
+    );
+  return candidate;
+}
+
+function isModelPolicySettingsAdapter(
+  value: unknown
+): value is ModelPolicySettingsAdapter {
+  return (
+    isRecord(value) &&
+    typeof value["getGlobalSettings"] === "function" &&
+    typeof value["setDefaultProvider"] === "function" &&
+    typeof value["setDefaultModel"] === "function" &&
+    typeof value["setDefaultThinkingLevel"] === "function" &&
+    typeof value["flush"] === "function"
+  );
+}
+
+function captureModelPolicySettings(
+  session: PiAgentSession
+): ModelPolicySettingsSnapshot {
+  const settings = modelPolicySettingsAdapter(session).getGlobalSettings();
+  const defaultProvider = optionalString(settings.defaultProvider);
+  const defaultModel = optionalString(settings.defaultModel);
+  const defaultThinkingLevel = optionalThinkingLevel(
+    settings.defaultThinkingLevel
+  );
+  return {
+    ...(defaultProvider === undefined ? {} : { defaultProvider }),
+    ...(defaultModel === undefined ? {} : { defaultModel }),
+    ...(defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel }),
+  };
+}
+
+async function restoreModelPolicySettings(
+  session: PiAgentSession,
+  snapshot: ModelPolicySettingsSnapshot
+): Promise<void> {
+  const settings = modelPolicySettingsAdapter(session);
+  settings.setDefaultProvider(snapshot.defaultProvider);
+  settings.setDefaultModel(snapshot.defaultModel);
+  settings.setDefaultThinkingLevel(snapshot.defaultThinkingLevel);
+  await settings.flush();
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalThinkingLevel(
+  value: unknown
+): ClientThinkingLevel | undefined {
+  return typeof value === "string" && isKnownThinkingLevel(value)
+    ? value
+    : undefined;
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function completeInitializationFailure(
+  error: unknown,
+  rollbackFailures: readonly Error[]
+): Error {
+  const initializationError = normalizeError(error);
+  if (rollbackFailures.length === 0) return initializationError;
+  return new AggregateError(
+    [initializationError, ...rollbackFailures],
+    `Complete session initialization failed and rollback was incomplete: ${initializationError.message}`
+  );
 }
 
 function spawnTargetError(
@@ -361,6 +442,29 @@ interface InternalStartSessionOptions extends StartSessionOptions {
   initializeModelPolicy?: SessionModelPolicyInitializer;
 }
 
+interface ModelPolicySettingsSnapshot {
+  defaultProvider?: string;
+  defaultModel?: string;
+  defaultThinkingLevel?: ClientThinkingLevel;
+}
+
+interface CompleteModelPolicyInitialization {
+  previousSelection: ExactModelSelection;
+  previousSettings: ModelPolicySettingsSnapshot;
+}
+
+interface ModelPolicySettingsAdapter {
+  getGlobalSettings(): {
+    defaultProvider?: unknown;
+    defaultModel?: unknown;
+    defaultThinkingLevel?: unknown;
+  };
+  setDefaultProvider(provider: string | undefined): void;
+  setDefaultModel(modelId: string | undefined): void;
+  setDefaultThinkingLevel(level: ClientThinkingLevel | undefined): void;
+  flush(): Promise<void>;
+}
+
 function requirePromptText(value: unknown): string {
   if (typeof value !== "string") throw new Error("Prompt text is required");
   return value;
@@ -441,7 +545,11 @@ export interface PiSessionManager {
   getEntries?(): readonly unknown[];
   getTree?(): readonly ProjectableSessionTreeNode[];
   getLeafId(): string | null;
-  getHeader?(): { parentSession?: string } | null | undefined;
+  getHeader?(): {
+    id?: string;
+    parentSession?: string;
+  } | null | undefined;
+  setSessionFile?(sessionFile: string): void;
   appendCustomEntry?(customType: string, data?: unknown): string;
 }
 
@@ -455,6 +563,10 @@ export interface PiSessionManagerGateway {
    */
   listAll?(): Promise<PiSessionListEntry[]>;
   open(path: string): PiSessionManager;
+  /** Materialize a new manager's header and initial entries before any assistant turn. */
+  commitInitialEntries?(manager: PiSessionManager): Promise<void>;
+  /** Remove a file owned by `commitInitialEntries` when unpublished creation aborts. */
+  discardInitialEntries?(manager: PiSessionManager): Promise<void>;
 }
 
 interface PiExtensionError {
@@ -4163,6 +4275,7 @@ export class PiSessionService implements SessionRouteService {
         : notificationGeneration === undefined
         ? "registered"
         : "external";
+    let completeInitialization: CompleteModelPolicyInitialization | undefined;
 
     if (notificationOwnership === "registered") {
       const notificationIdentity = notificationIdentityForSession(
@@ -4204,7 +4317,6 @@ export class PiSessionService implements SessionRouteService {
         await this.recoverSubsessionTrackingForOpenedSession(runtime.session);
       }
       await this.bindSessionExtensions(runtime.session, notificationGeneration);
-      this.bindRuntime(active);
       runtime.setRebindSession(async (session) => {
         const priorGeneration = notificationGeneration;
         let candidateGeneration: SessionNotificationGeneration | undefined;
@@ -4248,19 +4360,32 @@ export class PiSessionService implements SessionRouteService {
           throw error;
         }
       });
-      this.active.set(runtime.session.sessionId, active);
-      if (options.initializeModelPolicy !== undefined) {
+      if (options.initializeModelPolicy?.kind === "complete-policy") {
+        if (options.creationSource === undefined) {
+          throw new Error(
+            "A complete initial model policy requires a session creation source"
+          );
+        }
+        completeInitialization =
+          await this.initializeCompleteSessionModelPolicy(
+            runtime.session,
+            options.initializeModelPolicy.policy,
+            options.creationSource
+          );
+      } else if (options.initializeModelPolicy !== undefined) {
         await this.initializeSessionModelPolicy(
           runtime.session,
           options.initializeModelPolicy
         );
       }
-      if (options.creationSource !== undefined) {
-        this.appendSessionCreationSource(
-          runtime.session,
-          options.creationSource
+      if (
+        options.creationSource !== undefined &&
+        options.initializeModelPolicy?.kind !== "complete-policy"
+      )
+        throw new Error(
+          "A session creation source requires a complete initial model policy"
         );
-      }
+      this.bindRuntime(active);
       if (
         notificationOwnership === "replacement" &&
         notificationGeneration !== undefined
@@ -4304,12 +4429,21 @@ export class PiSessionService implements SessionRouteService {
           runtime.session.sessionManager.getCwd()
         );
       }
+      let failure = error;
+      if (completeInitialization !== undefined) {
+        const rollbackFailures =
+          await this.rollbackCompleteSessionInitialization(
+            runtime.session,
+            completeInitialization
+          );
+        failure = completeInitializationFailure(error, rollbackFailures);
+      }
       try {
         await runtime.session.abort();
       } finally {
         await runtime.dispose();
       }
-      throw error;
+      throw failure;
     }
   }
 
@@ -5244,20 +5378,63 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
-  private confirmedPolicySnapshot(
+  private async confirmedPolicySnapshot(
     ref: PiSessionLookup
   ): Promise<ConfirmedPolicySnapshot> {
-    return this.getOrOpen(ref).then((session) => {
-      const entries = this.policyEntries(session);
+    const session = await this.getOrOpen(ref);
+    const sessionFile = session.sessionManager.getSessionFile();
+    const persisted = sessionFileExists(sessionFile);
+    const manager = persisted
+      ? this.sessionManager.open(sessionFile)
+      : session.sessionManager;
+    const entries = manager.getEntries?.() ?? manager.getBranch();
+    const creationSource = inspectSessionCreationSource(entries);
+    return {
+      cwd: canonicalizeStoredCwd(manager.getCwd()),
+      creationSource,
+      persisted,
+      rootEligibility: this.sessionCreationRootEligibility(
+        manager,
+        creationSource
+      ),
+      modelPolicy: inspectSessionModelPolicy(
+        entries,
+        this.exactSelectionFromSession(session)
+      ),
+      transitionInFlight: this.isModelPolicyMutationActive(session),
+    };
+  }
+
+  private sessionCreationRootEligibility(
+    manager: PiSessionManager,
+    source: ReturnType<typeof inspectSessionCreationSource>
+  ): SessionCreationRootEligibility {
+    const sessionFile = manager.getSessionFile();
+    const header = manager.getHeader?.();
+    if (sessionFile === undefined || sessionFile === "") {
       return {
-        cwd: canonicalizeStoredCwd(session.sessionManager.getCwd()),
-        creationSource: inspectSessionCreationSource(entries),
-        modelPolicy: inspectSessionModelPolicy(
-          entries,
-          this.exactSelectionFromSession(session)
-        ),
-        transitionInFlight: this.isModelPolicyMutationActive(session),
+        kind: "ineligible",
+        reason: "the session has no durable transcript path",
       };
+    }
+    if (header === undefined || header === null || typeof header.id !== "string") {
+      return {
+        kind: "ineligible",
+        reason: "the session header does not identify its root",
+      };
+    }
+    if (header.id !== manager.getSessionId()) {
+      return {
+        kind: "ineligible",
+        reason: "the session header id does not match the opened session",
+      };
+    }
+    return inspectSessionCreationRootEligibility(source, {
+      sessionId: header.id,
+      sessionFile,
+      ...(header.parentSession === undefined
+        ? {}
+        : { parentSession: header.parentSession }),
     });
   }
 
@@ -5310,8 +5487,18 @@ export class PiSessionService implements SessionRouteService {
       return;
     }
 
+    throw new Error(
+      "A complete initial model policy requires durable plus-root initialization"
+    );
+  }
+
+  private async initializeCompleteSessionModelPolicy(
+    session: PiAgentSession,
+    policy: SessionModelPolicy,
+    source: SessionCreationSource
+  ): Promise<CompleteModelPolicyInitialization> {
     const plan = planSessionModelPolicyInitialization(
-      initializer.policy,
+      policy,
       (tier) => {
         const resolved = this.modelTierRegistry.resolve(tier);
         return {
@@ -5330,15 +5517,114 @@ export class PiSessionService implements SessionRouteService {
       session,
       "initialize the session model policy"
     );
-    await this.runSessionModelPolicyMutation(
-      session,
-      "initialize the session model policy",
-      async () => {
-        await this.applyExactSelection(session, target);
-        this.appendSessionModelPolicy(session, plan.policy);
-        this.verifyPersistedSessionModelPolicy(session, plan.policy);
-      }
+    const initialization: CompleteModelPolicyInitialization = {
+      previousSelection: this.exactSelectionFromSession(session),
+      previousSettings: captureModelPolicySettings(session),
+    };
+    try {
+      await this.runSessionModelPolicyMutation(
+        session,
+        "initialize the session model policy",
+        async () => {
+          await this.applyExactSelection(session, target);
+          this.appendSessionModelPolicy(session, plan.policy);
+          this.verifyPersistedSessionModelPolicy(session, plan.policy);
+          this.appendSessionCreationSource(session, source);
+          await this.commitAndVerifyInitialSessionEntries(
+            session,
+            plan.policy
+          );
+        }
+      );
+      await modelPolicySettingsAdapter(session).flush();
+      this.inspectAndCacheSessionModelPolicy(session);
+      return initialization;
+    } catch (error: unknown) {
+      const rollbackFailures =
+        await this.rollbackCompleteSessionInitialization(
+          session,
+          initialization
+        );
+      throw completeInitializationFailure(error, rollbackFailures);
+    }
+  }
+
+  private async rollbackCompleteSessionInitialization(
+    session: PiAgentSession,
+    initialization: CompleteModelPolicyInitialization
+  ): Promise<Error[]> {
+    const failures: Error[] = [];
+    if (
+      !(await this.restoreExactSelection(
+        session,
+        initialization.previousSelection
+      ))
+    ) {
+      failures.push(
+        new Error("the previous runtime model and thinking pair was not restored")
+      );
+    }
+    try {
+      await restoreModelPolicySettings(
+        session,
+        initialization.previousSettings
+      );
+    } catch (error: unknown) {
+      failures.push(normalizeError(error));
+    }
+    try {
+      await this.sessionManager.discardInitialEntries?.(
+        session.sessionManager
+      );
+    } catch (error: unknown) {
+      failures.push(normalizeError(error));
+    }
+    this.inspectAndCacheSessionModelPolicy(session);
+    return failures;
+  }
+
+  private async commitAndVerifyInitialSessionEntries(
+    session: PiAgentSession,
+    expectedPolicy: SessionModelPolicy
+  ): Promise<void> {
+    if (this.sessionManager.commitInitialEntries === undefined) {
+      throw new Error(
+        "Cannot durably commit the complete initial session policy and provenance"
+      );
+    }
+    await this.sessionManager.commitInitialEntries(session.sessionManager);
+    const sessionFile = session.sessionManager.getSessionFile();
+    if (!sessionFileExists(sessionFile))
+      throw new Error("Cannot verify the durable initial session transcript");
+    const reopened = this.sessionManager.open(sessionFile);
+    const entries = reopened.getEntries?.() ?? reopened.getBranch();
+    const policyInspection = inspectSessionModelPolicy(
+      entries,
+      expectedPolicy.exact
     );
+    if (
+      policyInspection.kind !== "persisted" ||
+      !sameSessionModelPolicy(policyInspection.policy, expectedPolicy)
+    ) {
+      throw new Error(
+        "Cannot verify the complete initial session model policy after reopen"
+      );
+    }
+    const sourceInspection = inspectSessionCreationSource(entries);
+    if (sourceInspection.kind !== "valid") {
+      throw new Error(
+        "Cannot verify the session creation source after reopen"
+      );
+    }
+    const rootEligibility = this.sessionCreationRootEligibility(
+      reopened,
+      sourceInspection
+    );
+    if (rootEligibility.kind !== "eligible") {
+      throw new Error(
+        `Cannot verify the durable plus-session root origin: ${rootEligibility.reason}`
+      );
+    }
   }
 
   /**
@@ -5722,14 +6008,35 @@ export class PiSessionService implements SessionRouteService {
         "Cannot persist the session creation source: session persistence is unavailable"
       );
     }
+    const sessionFile = session.sessionManager.getSessionFile();
+    if (sessionFile === undefined || sessionFile === "") {
+      throw new Error(
+        "Cannot persist the session creation source without a session file"
+      );
+    }
+    if (session.sessionManager.getSessionId() !== session.sessionId) {
+      throw new Error(
+        "Cannot persist the session creation source for a mismatched session id"
+      );
+    }
     session.sessionManager.appendCustomEntry(
       SESSION_CREATION_SOURCE_CUSTOM_TYPE,
-      serializeSessionCreationSource(source)
+      serializeSessionCreationSource(source, {
+        sessionId: session.sessionId,
+        sessionFile,
+      })
     );
     const inspection = inspectSessionCreationSource(
       this.policyEntries(session)
     );
-    if (inspection.kind !== "valid") {
+    const rootEligibility = this.sessionCreationRootEligibility(
+      session.sessionManager,
+      inspection
+    );
+    if (
+      inspection.kind !== "valid" ||
+      rootEligibility.kind !== "eligible"
+    ) {
       throw new Error("Cannot verify the session creation source");
     }
   }

@@ -31,6 +31,8 @@ function eligibleSnapshot(
   return {
     cwd: "/workspace",
     creationSource: { kind: "valid", source: "session-list-plus" },
+    persisted: true,
+    rootEligibility: { kind: "eligible" },
     modelPolicy: { kind: "persisted", policy },
     transitionInFlight: false,
   };
@@ -103,6 +105,27 @@ describe("RememberCurrentModelPolicyCommand", () => {
     const harness = createHarness({ ...eligibleSnapshot(), transitionInFlight: true });
 
     await expect(harness.command.remember("session-1")).rejects.toThrow(/in progress/u);
+    expect(harness.preferenceStore.replace).not.toHaveBeenCalled();
+  });
+
+  it("rejects a plus root whose transcript is not durably persisted", async () => {
+    const harness = createHarness({ ...eligibleSnapshot(), persisted: false });
+
+    await expect(harness.command.remember("session-1")).rejects.toThrow(/durably persisted/u);
+    expect(harness.preferenceStore.replace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a derived session", "the session has a parent transcript"],
+    ["a copied source marker", "the creation origin does not match this session"],
+    ["an unbound legacy marker", "the creation source has no bound root origin"],
+  ])("rejects %s", async (_description, reason) => {
+    const harness = createHarness({
+      ...eligibleSnapshot(),
+      rootEligibility: { kind: "ineligible", reason },
+    });
+
+    await expect(harness.command.remember("session-1")).rejects.toThrow(/top-level root/u);
     expect(harness.preferenceStore.replace).not.toHaveBeenCalled();
   });
 

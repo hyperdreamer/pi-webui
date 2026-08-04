@@ -1,5 +1,6 @@
 import { createReadStream, type Dirent } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { link, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -77,6 +78,8 @@ export function createPiSessionManagerGateway(options: PiSessionManagerGatewayOp
 }
 
 class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
+  private readonly committedInitialFiles = new WeakMap<PiSessionManager, string>();
+
   constructor(private readonly resolver: SessionDirResolver) {}
 
   async list(cwd: string): Promise<PiSessionListEntry[]> {
@@ -100,6 +103,68 @@ class SettingsAwarePiSessionManagerGateway implements PiSessionManagerGateway {
 
   open(path: string): PiSessionManager {
     return SessionManager.open(path, dirname(path));
+  }
+
+  async commitInitialEntries(manager: PiSessionManager): Promise<void> {
+    const sessionFile = manager.getSessionFile();
+    const header = manager.getHeader?.();
+    const entries = manager.getEntries?.();
+    if (sessionFile === undefined || sessionFile === "")
+      throw new Error("Cannot durably commit a session without a session file");
+    if (header === undefined || header === null || entries === undefined)
+      throw new Error("Cannot durably commit a session without its header and entries");
+    if (manager.setSessionFile === undefined)
+      throw new Error("Cannot durably commit a session without manager reload support");
+
+    const tempFile = `${sessionFile}.pi-webui-${randomUUID()}.tmp`;
+    let linked = false;
+    try {
+      await writeFile(tempFile, serializeInitialSession(header, entries), {
+        encoding: "utf8",
+        flag: "wx",
+        flush: true,
+      });
+      await link(tempFile, sessionFile);
+      linked = true;
+      manager.setSessionFile(sessionFile);
+      this.committedInitialFiles.set(manager, sessionFile);
+    } catch (error: unknown) {
+      if (linked) await unlinkIfPresent(sessionFile);
+      throw error;
+    } finally {
+      await unlinkIfPresent(tempFile);
+    }
+  }
+
+  async discardInitialEntries(manager: PiSessionManager): Promise<void> {
+    const sessionFile = this.committedInitialFiles.get(manager);
+    if (sessionFile === undefined) return;
+    this.committedInitialFiles.delete(manager);
+    await unlinkIfPresent(sessionFile);
+  }
+}
+
+function serializeInitialSession(
+  header: unknown,
+  entries: readonly unknown[]
+): string {
+  return `${[header, ...entries]
+    .map((entry) => JSON.stringify(entry))
+    .join("\n")}\n`;
+}
+
+async function unlinkIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error: unknown) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return;
+    throw error;
   }
 }
 
