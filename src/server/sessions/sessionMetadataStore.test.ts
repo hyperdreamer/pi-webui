@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -70,5 +70,73 @@ describe("SessionMetadataStore", () => {
 
   it("does not throw when unpinning a non-existent path", async () => {
     await expect(store.unpin("/never-pinned.jsonl")).resolves.toBeUndefined();
+  });
+
+  it("parses additive signed order metadata while preserving pin-only files", async () => {
+    await writeFile(filePath, JSON.stringify({
+      "/old.jsonl": { pinned: true },
+      "/ordered.jsonl": {
+        pinned: false,
+        order: { position: 2, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+    }), "utf8");
+
+    await expect(store.snapshot()).resolves.toEqual({
+      "/old.jsonl": { pinned: true },
+      "/ordered.jsonl": {
+        pinned: false,
+        order: { position: 2, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+    });
+  });
+
+  it("rejects malformed order position, scope, and pin signatures", async () => {
+    const invalidOrders = [
+      [],
+      { position: -1, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      { position: 0.5, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      { position: Number.MAX_SAFE_INTEGER + 1, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      { position: 0, scope: { kind: "root" }, pinned: false },
+      { position: 0, scope: { kind: "root", cwd: "" }, pinned: false },
+      { position: 0, scope: { kind: "root", cwd: "/repo", extra: true }, pinned: false },
+      { position: 0, scope: { kind: "children", parentSessionPath: "" }, pinned: false },
+      { position: 0, scope: { kind: "future", cwd: "/repo" }, pinned: false },
+      { position: 0, scope: { kind: "root", cwd: "/repo" } },
+      { position: 0, scope: { kind: "root", cwd: "/repo" }, pinned: "no" },
+      { position: 0, scope: { kind: "root", cwd: "/repo" }, pinned: false, extra: true },
+    ];
+    for (const order of invalidOrders) {
+      await writeFile(filePath, JSON.stringify({ "/ordered.jsonl": { order } }), "utf8");
+      await expect(store.snapshot()).rejects.toThrow("Invalid session metadata order");
+    }
+  });
+
+  it("clears order when pinning, unpinning, or clearing directly", async () => {
+    await writeFile(filePath, JSON.stringify({
+      "/session.jsonl": {
+        order: { position: 1, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+    }), "utf8");
+
+    await store.pin("/session.jsonl");
+    expect(await store.get("/session.jsonl")).toEqual({ pinned: true });
+    await writeFile(filePath, JSON.stringify({
+      "/session.jsonl": {
+        pinned: true,
+        order: { position: 0, scope: { kind: "root", cwd: "/repo" }, pinned: true },
+      },
+    }), "utf8");
+    await store.unpin("/session.jsonl");
+    expect(await store.get("/session.jsonl")).toEqual({ pinned: false });
+    await writeFile(filePath, JSON.stringify({
+      "/session.jsonl": {
+        pinned: false,
+        order: { position: 0, scope: { kind: "root", cwd: "/repo" }, pinned: false },
+      },
+    }), "utf8");
+    await store.clearOrder("/session.jsonl");
+    expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
+      "/session.jsonl": { pinned: false },
+    });
   });
 });

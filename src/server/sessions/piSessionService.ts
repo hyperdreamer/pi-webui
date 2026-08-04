@@ -56,7 +56,7 @@ import {
   type ArchivedSessionRecord,
   type ArchiveSessionInput,
 } from "./sessionArchiveStore.js";
-import { SessionMetadataStore } from "./sessionMetadataStore.js";
+import { SessionMetadataStore, type SessionMetadata } from "./sessionMetadataStore.js";
 import {
   findArchiveCandidateByIdOrPrefix,
   planSessionArchiveTree,
@@ -95,6 +95,7 @@ import type {
   SessionModelPolicyResponse,
   SessionModelPolicy,
   SessionModelPolicyUpdate,
+  SessionReorderScope,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
@@ -1512,12 +1513,20 @@ export class PiSessionService implements SessionRouteService {
   }
 
   async list(cwd: string): Promise<ClientSession[]> {
-    const [sessions, archivedRecords, pinnedPaths] = await Promise.all([
+    const [sessions, archivedRecords, metadata] = await Promise.all([
       this.sessionManager.list(cwd),
       this.archiveStore.list(),
-      this.metadataStore.pinnedPaths(),
+      this.metadataStore.snapshot(),
     ]);
-    const pinnedPathSet = new Set(pinnedPaths);
+    return this.listFromSnapshots(cwd, sessions, archivedRecords, metadata);
+  }
+
+  private async listFromSnapshots(
+    cwd: string,
+    sessions: readonly PiSessionListEntry[],
+    archivedRecords: readonly ArchivedSessionRecord[],
+    metadata: Readonly<Record<string, SessionMetadata>>
+  ): Promise<ClientSession[]> {
     const sessionsById = new Map(
       sessions.map((session) => [session.id, session])
     );
@@ -1545,7 +1554,7 @@ export class PiSessionService implements SessionRouteService {
     const unarchivedSessions = sessions
       .filter((session) => !archivedById.has(session.id))
       .map((entry) =>
-        mergeSessionMetadata(clientSessionFromListEntry(entry), pinnedPathSet)
+        mergeSessionMetadata(clientSessionFromListEntry(entry), metadata)
       );
     const reconcilableSessionIds = this.reconcilableSessionIds(
       cwd,
@@ -1571,7 +1580,7 @@ export class PiSessionService implements SessionRouteService {
         )
       )
       .filter(isDefined)
-      .map((session) => mergeSessionMetadata(session, pinnedPathSet));
+      .map((session) => mergeSessionMetadata(session, metadata));
     return [...unarchivedSessions, ...archivedSessions];
   }
 
@@ -3459,6 +3468,7 @@ export class PiSessionService implements SessionRouteService {
       throw new Error("Session is not persisted");
     await clearParentSession(sessionFile);
     clearParentSessionHeader(session.sessionManager);
+    await this.metadataStore.clearOrder(sessionFile);
     this.unregisterSubsession(session.sessionId);
     await this.forgetUnreadSessions([
       { sessionId: session.sessionId, cwd: session.sessionManager.getCwd() },
@@ -5979,10 +5989,28 @@ function isDefined<T>(value: T | undefined): value is T {
 
 function mergeSessionMetadata(
   session: ClientSession,
-  pinnedPaths: ReadonlySet<string>
+  metadata: Readonly<Record<string, SessionMetadata>>
 ): ClientSession {
-  if (!pinnedPaths.has(session.path)) return session;
-  return { ...session, pinned: true };
+  const entry = metadata[session.path];
+  const pinned = entry?.pinned === true;
+  const scope: SessionReorderScope = session.parentSessionPath === undefined
+    ? { kind: "root", cwd: canonicalizeStoredCwd(session.cwd) }
+    : { kind: "children", parentSessionPath: session.parentSessionPath };
+  const order = entry?.order;
+  const manualOrder = order?.pinned === pinned
+    && sessionReorderScopesEqual(order.scope, scope)
+    ? order.position
+    : undefined;
+  return {
+    ...session,
+    ...(pinned ? { pinned: true } : {}),
+    ...(manualOrder === undefined ? {} : { manualOrder }),
+  };
+}
+
+function sessionReorderScopesEqual(a: SessionReorderScope, b: SessionReorderScope): boolean {
+  if (a.kind === "root") return b.kind === "root" && a.cwd === b.cwd;
+  return b.kind === "children" && a.parentSessionPath === b.parentSessionPath;
 }
 
 interface TrackedSubsessionSessionIdentity {

@@ -440,6 +440,11 @@ export interface SessionRef {
   cwd: string;
 }
 
+/** Identifies the sibling group a persisted manual order position belongs to. */
+export type SessionReorderScope =
+  | { kind: "root"; cwd: string }
+  | { kind: "children"; parentSessionPath: string };
+
 export const SESSION_UNREAD_LIMIT = 1_000;
 export const SESSION_UNREAD_SESSION_ID_MAX_LENGTH = 512;
 export const SESSION_UNREAD_CWD_MAX_LENGTH = 32 * 1024;
