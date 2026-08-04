@@ -117,6 +117,36 @@ describe("utility model settings service", () => {
     expect(response.valid).toBe(true);
   });
 
+  it("serializes concurrent updates so patches for different slots both survive", async () => {
+    const firstSaveStarted = deferred();
+    const releaseFirstSave = deferred();
+    let saveCalls = 0;
+    const harness = createHarness(
+      { utilityModels: {} },
+      {
+        beforeSave: async () => {
+          saveCalls += 1;
+          if (saveCalls === 1) {
+            firstSaveStarted.resolve();
+            await releaseFirstSave.promise;
+          }
+        },
+      },
+    );
+    const lightweight = { provider: "acme", id: "small" };
+    const context = { provider: "acme", id: "large" };
+
+    const first = harness.service.update({ lightweight });
+    await firstSaveStarted.promise;
+    const second = harness.service.update({ context });
+    releaseFirstSave.resolve();
+    await Promise.all([first, second]);
+
+    expect(harness.config()).toEqual({
+      utilityModels: { lightweight, context },
+    });
+  });
+
   it("starts an update from empty settings when the persisted configuration is malformed", async () => {
     const harness = createHarness({ utilityModelsError: "utilityModels.context.id is required" });
 
@@ -162,7 +192,10 @@ function invalidSlots(reason: string): UtilityModelSettingsResponse["slots"] {
   };
 }
 
-function createHarness(initialConfig: UtilityModelSettingsConfig) {
+function createHarness(
+  initialConfig: UtilityModelSettingsConfig,
+  options: { beforeSave?: () => Promise<void> } = {},
+) {
   let config = initialConfig;
   const events: string[] = [];
   const modelRuntime = {
@@ -175,8 +208,9 @@ function createHarness(initialConfig: UtilityModelSettingsConfig) {
       return availableModels;
     }),
   };
-  const saveConfig = vi.fn((patch: { utilityModels: UtilityModelSettings }) => {
+  const saveConfig = vi.fn(async (patch: { utilityModels: UtilityModelSettings }) => {
     events.push("save");
+    await options.beforeSave?.();
     config = { utilityModels: patch.utilityModels };
   });
   const service = createUtilityModelSettingsService({
@@ -184,5 +218,11 @@ function createHarness(initialConfig: UtilityModelSettingsConfig) {
     saveConfig,
     modelRuntime,
   });
-  return { events, modelRuntime, saveConfig, service };
+  return { config: () => config, events, modelRuntime, saveConfig, service };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise = (): void => undefined;
+  const promise = new Promise<void>((resolve) => { resolvePromise = resolve; });
+  return { promise, resolve: resolvePromise };
 }

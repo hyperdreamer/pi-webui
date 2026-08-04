@@ -42,6 +42,8 @@ export interface UtilityModelSettingsService {
 export function createUtilityModelSettingsService<TModel extends UtilityModelSettingsModel>(
   deps: UtilityModelSettingsServiceDependencies<TModel>,
 ): UtilityModelSettingsService {
+  let updateQueue: Promise<void> = Promise.resolve();
+
   const inspect = async (): Promise<UtilityModelSettingsResponse> => {
     const models = await refreshedSnapshot();
     return responseFor(deps.loadConfig(), models);
@@ -50,32 +52,43 @@ export function createUtilityModelSettingsService<TModel extends UtilityModelSet
   return {
     inspect,
 
-    update: async (patch) => {
-      const current = deps.loadConfig();
-      const next: UtilityModelSettings = current.utilityModelsError === undefined
-        ? { ...current.utilityModels }
-        : {};
-
-      if (Object.prototype.hasOwnProperty.call(patch, "lightweight")) {
-        if (patch.lightweight === null) delete next.lightweight;
-        else if (patch.lightweight !== undefined) next.lightweight = patch.lightweight;
-      }
-      if (Object.prototype.hasOwnProperty.call(patch, "context")) {
-        if (patch.context === null) delete next.context;
-        else if (patch.context !== undefined) next.context = patch.context;
-      }
-
-      const models = await refreshedSnapshot();
-      const slots = validationSlots(next, models);
-      const invalidSlots = UTILITY_MODEL_SLOTS.filter((slot) => !slots[slot].valid);
-      if (invalidSlots.length > 0) {
-        throw new Error(invalidSlots.map((slot) => slots[slot].reason ?? `${slot} utility model is invalid`).join("; "));
-      }
-
-      await deps.saveConfig({ utilityModels: next });
-      return await inspect();
-    },
+    update: (patch) => enqueueUpdate(() => updateSettings(patch)),
   };
+
+  function enqueueUpdate<T>(operation: () => Promise<T>): Promise<T> {
+    const queuedUpdate = updateQueue.then(operation);
+    updateQueue = queuedUpdate.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queuedUpdate;
+  }
+
+  async function updateSettings(patch: UtilityModelSettingsUpdate): Promise<UtilityModelSettingsResponse> {
+    const current = deps.loadConfig();
+    const next: UtilityModelSettings = current.utilityModelsError === undefined
+      ? { ...current.utilityModels }
+      : {};
+
+    if (Object.prototype.hasOwnProperty.call(patch, "lightweight")) {
+      if (patch.lightweight === null) delete next.lightweight;
+      else if (patch.lightweight !== undefined) next.lightweight = patch.lightweight;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "context")) {
+      if (patch.context === null) delete next.context;
+      else if (patch.context !== undefined) next.context = patch.context;
+    }
+
+    const models = await refreshedSnapshot();
+    const slots = validationSlots(next, models);
+    const invalidSlots = UTILITY_MODEL_SLOTS.filter((slot) => !slots[slot].valid);
+    if (invalidSlots.length > 0) {
+      throw new Error(invalidSlots.map((slot) => slots[slot].reason ?? `${slot} utility model is invalid`).join("; "));
+    }
+
+    await deps.saveConfig({ utilityModels: next });
+    return await inspect();
+  }
 
   async function refreshedSnapshot(): Promise<readonly TModel[]> {
     await deps.modelRuntime.refresh({ allowNetwork: false });
