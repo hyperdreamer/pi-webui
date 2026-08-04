@@ -6,8 +6,10 @@ import {
   type ModelTierModelOption,
   type ModelTierSettingsResponse,
   type SessionDefaultsResponse,
+  type SessionDefaultsV2Response,
   type SessionModelPolicy,
   type SessionModelPolicyUpdate,
+  type StarterModelPolicyPreference,
   type TierModelRef,
 } from "../../../shared/apiTypes";
 
@@ -16,6 +18,16 @@ export interface SessionModelPolicyDraft {
   exact: ExactModelSelection;
   tier?: ModelTier;
 }
+
+export type StarterModelPolicyEvaluation =
+  | {
+      kind: "ready";
+      initialModelPolicy: StarterModelPolicyPreference;
+      resolved: ExactModelSelection;
+    }
+  | { kind: "blocked"; reason: string };
+
+type StarterDefaults = SessionDefaultsResponse | SessionDefaultsV2Response;
 
 export interface DraftSeedInput {
   /** Newest persisted policy, when one exists and parsed. */
@@ -54,33 +66,41 @@ function baseDraft(input: DraftSeedInput): SessionModelPolicyDraft {
 }
 
 export function starterExactSelection(
-  defaults: SessionDefaultsResponse,
+  defaults: StarterDefaults,
 ): ExactModelSelection | undefined {
   const provider = defaults.model?.provider;
   const id = defaults.model?.id;
-  if (provider === undefined || provider === "" || id === undefined || id === "") return undefined;
-  if (defaults.thinkingLevel === "") return undefined;
+  if (provider === undefined || id === undefined || !isNonBlank(provider) || !isNonBlank(id)) return undefined;
+  if (!isNonBlank(defaults.thinkingLevel)) return undefined;
   return { model: { provider, id }, thinkingLevel: defaults.thinkingLevel };
 }
 
 export function seedStarterModelPolicyDraft(
-  defaults: SessionDefaultsResponse,
+  defaults: StarterDefaults,
 ): SessionModelPolicyDraft {
-  const exact = starterExactSelection(defaults) ?? {
-    model: { provider: "", id: "" },
-    thinkingLevel: "",
-  };
+  const exact = starterExactSelection(defaults) ?? emptyExactSelection();
   const preference = defaults.starterModelPolicyPreference;
+  if (!isSessionDefaultsV2Response(defaults)) {
+    return starterDraftFromLegacyPreference(preference, exact, "exact");
+  }
+  if (isFullStarterModelPolicyPreference(preference)) {
+    return {
+      mode: preference.mode,
+      exact: cloneExactSelection(preference.exact),
+      ...(preference.tier === undefined ? {} : { tier: preference.tier }),
+    };
+  }
+  if (preference !== undefined) return starterDraftFromLegacyPreference(preference, exact, preference.mode);
   return {
-    mode: preference?.mode ?? "exact",
+    mode: "tiered",
     exact: cloneExactSelection(exact),
-    ...(preference?.tier === undefined ? {} : { tier: preference.tier }),
+    tier: "standard",
   };
 }
 
 export function relinkStarterExactBranch(
   draft: SessionModelPolicyDraft,
-  defaults: SessionDefaultsResponse,
+  defaults: StarterDefaults,
 ): SessionModelPolicyDraft {
   const exact = starterExactSelection(defaults);
   if (exact === undefined || draft.mode === "tiered" || sameExactSelection(draft.exact, exact)) return draft;
@@ -177,19 +197,161 @@ export function isDraftReadyToApply(
   return sessionModelPolicyUpdateFromDraft(draft, catalog) !== undefined;
 }
 
+/**
+ * Fill only an unowned starter Exact branch from the active tier. A full
+ * version-two preference owns its Exact branch, even when the remembered tuple
+ * has become unavailable.
+ */
+export function completeUnownedStarterExactFromActiveTier(
+  draft: SessionModelPolicyDraft,
+  defaults: StarterDefaults,
+  catalog: ModelTierSettingsResponse,
+): SessionModelPolicyDraft {
+  const complete = cloneDraft(draft);
+  if (
+    hasFullStarterModelPolicyPreference(defaults)
+    || draft.mode !== "tiered"
+    || isSyntacticallyCompleteExactSelection(draft.exact)
+    || !isCanonicalTier(draft.tier)
+    || !hasCompleteLadder(catalog)
+    || !hasValidTierRow(catalog, draft.tier)
+  ) {
+    return complete;
+  }
+  const resolved = catalog.ladder?.[draft.tier];
+  if (resolved === undefined || !isSyntacticallyCompleteExactSelection(resolved)) return complete;
+  return { ...complete, exact: cloneExactSelection(resolved) };
+}
+
+/**
+ * Validate only the branch which will be used to start the session. The other
+ * Exact branch still needs a complete syntax-only tuple for the full protocol
+ * initializer, but an unavailable remembered selection remains valid intent.
+ */
+export function evaluateStarterModelPolicyDraft(
+  draft: SessionModelPolicyDraft,
+  catalog: ModelTierSettingsResponse,
+): StarterModelPolicyEvaluation {
+  const active = draft.mode === "exact"
+    ? evaluateActiveExact(draft.exact, catalog)
+    : evaluateActiveTiered(draft, catalog);
+  if (active.kind === "blocked") return active;
+
+  const inactiveExactSyntaxError = exactSyntaxError(draft.exact);
+  if (inactiveExactSyntaxError !== undefined) {
+    return { kind: "blocked", reason: inactiveExactSyntaxError };
+  }
+  return {
+    kind: "ready",
+    initialModelPolicy: {
+      mode: draft.mode,
+      exact: cloneExactSelection(draft.exact),
+      ...(draft.tier === undefined ? {} : { tier: draft.tier }),
+    },
+    resolved: cloneExactSelection(active.resolved),
+  };
+}
+
 function isValidExactSelection(
   exact: ExactModelSelection,
   models: readonly ModelTierModelOption[],
 ): boolean {
-  if (
-    !isNonBlank(exact.model.provider)
-    || !isNonBlank(exact.model.id)
-    || !isNonBlank(exact.thinkingLevel)
-  ) {
-    return false;
-  }
+  if (exactSyntaxError(exact) !== undefined) return false;
   const option = models.find((candidate) => sameModel(candidate.model, exact.model));
   return option?.thinkingLevels.includes(exact.thinkingLevel) === true;
+}
+
+function evaluateActiveExact(
+  exact: ExactModelSelection,
+  catalog: ModelTierSettingsResponse,
+): { kind: "ready"; resolved: ExactModelSelection } | { kind: "blocked"; reason: string } {
+  const syntaxError = exactSyntaxError(exact);
+  if (syntaxError !== undefined) return { kind: "blocked", reason: syntaxError };
+  const option = catalog.models.find((candidate) => sameModel(candidate.model, exact.model));
+  if (option === undefined) return { kind: "blocked", reason: "Selected provider/model is unavailable" };
+  if (!option.thinkingLevels.includes(exact.thinkingLevel)) {
+    return { kind: "blocked", reason: "Selected thinking level is unsupported by the selected model" };
+  }
+  return { kind: "ready", resolved: cloneExactSelection(exact) };
+}
+
+function evaluateActiveTiered(
+  draft: SessionModelPolicyDraft,
+  catalog: ModelTierSettingsResponse,
+): { kind: "ready"; resolved: ExactModelSelection } | { kind: "blocked"; reason: string } {
+  const tier = draft.tier;
+  if (!isCanonicalTier(tier)) return { kind: "blocked", reason: tierBlockReason(undefined, catalog) };
+  const row = Object.hasOwn(catalog.rows, tier) ? catalog.rows[tier] : undefined;
+  if (row?.valid !== true) return { kind: "blocked", reason: tierBlockReason(row, catalog) };
+  const resolved = catalog.ladder?.[tier];
+  if (resolved === undefined || !isSyntacticallyCompleteExactSelection(resolved)) {
+    return { kind: "blocked", reason: tierBlockReason(row, catalog) };
+  }
+  return { kind: "ready", resolved: cloneExactSelection(resolved) };
+}
+
+function starterDraftFromLegacyPreference(
+  preference: LegacyStarterModelPolicyPreference | undefined,
+  exact: ExactModelSelection,
+  defaultMode: "exact" | "tiered",
+): SessionModelPolicyDraft {
+  return {
+    mode: preference?.mode ?? defaultMode,
+    exact: cloneExactSelection(exact),
+    ...(preference?.tier === undefined ? {} : { tier: preference.tier }),
+  };
+}
+
+function isSessionDefaultsV2Response(defaults: StarterDefaults): defaults is SessionDefaultsV2Response {
+  return "starterModelPolicyContractVersion" in defaults;
+}
+
+function isFullStarterModelPolicyPreference(
+  preference: SessionDefaultsV2Response["starterModelPolicyPreference"],
+): preference is StarterModelPolicyPreference {
+  return preference !== undefined && Object.hasOwn(preference, "exact");
+}
+
+function hasFullStarterModelPolicyPreference(defaults: StarterDefaults): boolean {
+  return isSessionDefaultsV2Response(defaults)
+    && isFullStarterModelPolicyPreference(defaults.starterModelPolicyPreference);
+}
+
+function emptyExactSelection(): ExactModelSelection {
+  return { model: { provider: "", id: "" }, thinkingLevel: "" };
+}
+
+function cloneDraft(draft: SessionModelPolicyDraft): SessionModelPolicyDraft {
+  return {
+    mode: draft.mode,
+    exact: cloneExactSelection(draft.exact),
+    ...(draft.tier === undefined ? {} : { tier: draft.tier }),
+  };
+}
+
+function exactSyntaxError(exact: ExactModelSelection): string | undefined {
+  return isSyntacticallyCompleteExactSelection(exact)
+    ? undefined
+    : "Choose a provider, model, and thinking level before starting";
+}
+
+function isSyntacticallyCompleteExactSelection(exact: ExactModelSelection): boolean {
+  return isNonBlank(exact.model.provider)
+    && isNonBlank(exact.model.id)
+    && isNonBlank(exact.thinkingLevel);
+}
+
+function isCanonicalTier(tier: ModelTier | undefined): tier is ModelTier {
+  return tier !== undefined && MODEL_TIERS.includes(tier);
+}
+
+function tierBlockReason(
+  row: { reason?: string } | undefined,
+  catalog: ModelTierSettingsResponse,
+): string {
+  if (row?.reason !== undefined && isNonBlank(row.reason)) return row.reason;
+  if (catalog.configError !== undefined && isNonBlank(catalog.configError)) return catalog.configError;
+  return "Selected model tier is unavailable";
 }
 
 function hasCompleteLadder(catalog: ModelTierSettingsResponse): boolean {

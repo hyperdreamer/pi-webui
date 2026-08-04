@@ -5,9 +5,12 @@ import type {
   ModelTierModelOption,
   ModelTierSettingsResponse,
   SessionDefaultsResponse,
+  SessionDefaultsV2Response,
   SessionModelPolicy,
 } from "../../../shared/apiTypes";
 import {
+  completeUnownedStarterExactFromActiveTier,
+  evaluateStarterModelPolicyDraft,
   isDraftReadyToApply,
   modelPolicyDraftFromPolicy,
   relinkStarterExactBranch,
@@ -32,6 +35,14 @@ const repairModelOption: ModelTierModelOption = {
   model: { provider: "openai", id: "gpt-repair" },
   name: "Repair",
   thinkingLevels: ["off", "low"],
+};
+const completePiDefault: ExactModelSelection = {
+  model: { provider: "openai", id: "gpt-default" },
+  thinkingLevel: "medium",
+};
+const unavailableExact: ExactModelSelection = {
+  model: { provider: "unavailable", id: "retired-model" },
+  thinkingLevel: "retired",
 };
 
 const incompleteOrStaleExactSelections: readonly (readonly [string, ExactModelSelection])[] = [
@@ -91,6 +102,27 @@ function starterDefaults(
   };
 }
 
+function v2Defaults(
+  overrides: Partial<SessionDefaultsV2Response> = {},
+): SessionDefaultsV2Response {
+  return {
+    starterModelPolicyContractVersion: 2,
+    model: { ...completePiDefault.model },
+    thinkingLevel: completePiDefault.thinkingLevel,
+    models: [{ ...completePiDefault.model }],
+    thinkingLevels: ["low", "medium", "high"],
+    ...overrides,
+  };
+}
+
+function v2DefaultsWithoutPiExact(
+  overrides: Omit<Partial<SessionDefaultsV2Response>, "model" | "thinkingLevel"> = {},
+): SessionDefaultsV2Response {
+  const defaults = v2Defaults({ ...overrides, thinkingLevel: "" });
+  delete defaults.model;
+  return defaults;
+}
+
 describe("starter model policy drafts", () => {
   it("seeds the complete machine Exact defaults when no preference is stored", () => {
     const defaults = starterDefaults();
@@ -107,6 +139,155 @@ describe("starter model policy drafts", () => {
     });
     expect(draft.exact.model).not.toBe(defaults.model);
     expect(defaults).toEqual(before);
+  });
+
+  it("keeps old unversioned peers on the Exact Pi-default behavior", () => {
+    expect(seedStarterModelPolicyDraft(starterDefaults())).toEqual({
+      mode: "exact",
+      exact: completePiDefault,
+    });
+  });
+
+  it("seeds a fresh version-two response as Tiered with a complete Pi Exact branch", () => {
+    expect(seedStarterModelPolicyDraft(v2Defaults({}))).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: completePiDefault,
+    });
+  });
+
+  it("clones a full version-two preference verbatim, including unavailable remembered Exact intent", () => {
+    const defaults = v2Defaults({
+      starterModelPolicyPreference: {
+        mode: "exact",
+        exact: unavailableExact,
+        tier: "frontier",
+      },
+    });
+    const before = structuredClone(defaults);
+
+    const draft = seedStarterModelPolicyDraft(defaults);
+
+    expect(draft).toEqual({
+      mode: "exact",
+      exact: unavailableExact,
+      tier: "frontier",
+    });
+    expect(draft.exact).not.toBe(unavailableExact);
+    expect(draft.exact.model).not.toBe(unavailableExact.model);
+    expect(defaults).toEqual(before);
+  });
+
+  it("retains an unavailable Exact branch from a full Tiered version-two preference", () => {
+    const defaults = v2Defaults({
+      starterModelPolicyPreference: {
+        mode: "tiered",
+        exact: unavailableExact,
+        tier: "frontier",
+      },
+    });
+
+    expect(seedStarterModelPolicyDraft(defaults)).toEqual({
+      mode: "tiered",
+      exact: unavailableExact,
+      tier: "frontier",
+    });
+  });
+
+  it("hydrates a version-two legacy Tiered preference from complete Pi defaults", () => {
+    const defaults = v2Defaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "fast" },
+    });
+
+    const draft = seedStarterModelPolicyDraft(defaults);
+
+    expect(draft).toEqual({ mode: "tiered", exact: completePiDefault, tier: "fast" });
+    expect(draft.exact.model).not.toBe(defaults.model);
+  });
+
+  it("keeps an incomplete version-two legacy Exact preference incomplete and blocked", () => {
+    const defaults = v2DefaultsWithoutPiExact({
+      starterModelPolicyPreference: { mode: "exact" },
+    });
+    const draft = seedStarterModelPolicyDraft(defaults);
+
+    expect(draft).toEqual({
+      mode: "exact",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+    expect(evaluateStarterModelPolicyDraft(draft, validCatalog())).toEqual({
+      kind: "blocked",
+      reason: "Choose a provider, model, and thinking level before starting",
+    });
+  });
+
+  it("fills fresh and legacy Tiered empty Exact branches only after their active tiers resolve", () => {
+    const freshDefaults = v2DefaultsWithoutPiExact();
+    const legacyDefaults = v2DefaultsWithoutPiExact({
+      starterModelPolicyPreference: { mode: "tiered", tier: "frontier" },
+    });
+    const fresh = seedStarterModelPolicyDraft(freshDefaults);
+    const legacy = seedStarterModelPolicyDraft(legacyDefaults);
+    const unavailableCatalog = validCatalog();
+    unavailableCatalog.rows.standard = { valid: false, reason: "Standard tier is unavailable" };
+    const freshBefore = structuredClone(fresh);
+    const legacyBefore = structuredClone(legacy);
+
+    const unresolvedFresh = completeUnownedStarterExactFromActiveTier(
+      fresh,
+      freshDefaults,
+      unavailableCatalog,
+    );
+    const completedFresh = completeUnownedStarterExactFromActiveTier(fresh, freshDefaults, validCatalog());
+    const completedLegacy = completeUnownedStarterExactFromActiveTier(legacy, legacyDefaults, validCatalog());
+
+    expect(unresolvedFresh).toEqual(fresh);
+    expect(unresolvedFresh).not.toBe(fresh);
+    expect(completedFresh).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: validLadder().standard,
+    });
+    expect(completedLegacy).toEqual({
+      mode: "tiered",
+      tier: "frontier",
+      exact: validLadder().frontier,
+    });
+    expect(fresh).toEqual(freshBefore);
+    expect(legacy).toEqual(legacyBefore);
+  });
+
+  it("fills an unowned Exact branch from its selected valid tier despite inactive catalog rows", () => {
+    const defaults = v2DefaultsWithoutPiExact();
+    const draft = seedStarterModelPolicyDraft(defaults);
+    const catalog = validCatalog();
+    catalog.rows.frontier = { valid: false, reason: "Frontier tier is unavailable" };
+    catalog.valid = false;
+
+    expect(completeUnownedStarterExactFromActiveTier(draft, defaults, catalog)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: validLadder().standard,
+    });
+  });
+
+  it("never replaces a full remembered Exact branch through tier completion", () => {
+    const defaults = v2Defaults({
+      starterModelPolicyPreference: {
+        mode: "tiered",
+        exact: unavailableExact,
+        tier: "standard",
+      },
+    });
+    const draft = seedStarterModelPolicyDraft(defaults);
+    const before = structuredClone(draft);
+
+    const completed = completeUnownedStarterExactFromActiveTier(draft, defaults, validCatalog());
+
+    expect(completed).toEqual(draft);
+    expect(completed).not.toBe(draft);
+    expect(completed.exact).not.toBe(draft.exact);
+    expect(draft).toEqual(before);
   });
 
   it("restores Exact mode with its optional remembered tier", () => {
@@ -221,6 +402,139 @@ describe("starter model policy drafts", () => {
       model: { provider: "openai", id: "gpt-default" },
       thinkingLevel: "high",
     })).toBe(false);
+  });
+});
+
+describe("starter model policy readiness", () => {
+  it("reports the active Exact provider/model as unavailable while ignoring an inactive tier", () => {
+    const catalog = validCatalog();
+    catalog.rows.frontier = { valid: false, reason: "Frontier tier is unavailable" };
+    const draft: SessionModelPolicyDraft = {
+      mode: "exact",
+      exact: unavailableExact,
+      tier: "frontier",
+    };
+
+    expect(evaluateStarterModelPolicyDraft(draft, catalog)).toEqual({
+      kind: "blocked",
+      reason: "Selected provider/model is unavailable",
+    });
+  });
+
+  it("reports unsupported active Exact thinking while ignoring an inactive tier", () => {
+    const catalog = validCatalog();
+    catalog.rows.frontier = { valid: false, reason: "Frontier tier is unavailable" };
+    const draft: SessionModelPolicyDraft = {
+      mode: "exact",
+      exact: { model: { ...repairModelOption.model }, thinkingLevel: "medium" },
+      tier: "frontier",
+    };
+
+    expect(evaluateStarterModelPolicyDraft(draft, catalog)).toEqual({
+      kind: "blocked",
+      reason: "Selected thinking level is unsupported by the selected model",
+    });
+  });
+
+  it("returns the selected Tiered row reason while ignoring an unavailable inactive Exact branch", () => {
+    const catalog = validCatalog();
+    catalog.rows.advanced = { valid: false, reason: "Advanced tier is disabled" };
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: unavailableExact,
+      tier: "advanced",
+    };
+
+    expect(evaluateStarterModelPolicyDraft(draft, catalog)).toEqual({
+      kind: "blocked",
+      reason: "Advanced tier is disabled",
+    });
+  });
+
+  it("reveals a retained branch block only after that branch becomes active", () => {
+    const tiered: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: unavailableExact,
+      tier: "standard",
+    };
+
+    expect(evaluateStarterModelPolicyDraft(tiered, validCatalog())).toMatchObject({ kind: "ready" });
+    expect(evaluateStarterModelPolicyDraft(selectDraftExact(tiered), validCatalog())).toEqual({
+      kind: "blocked",
+      reason: "Selected provider/model is unavailable",
+    });
+    expect(evaluateStarterModelPolicyDraft(selectDraftTier(selectDraftExact(tiered), "standard"), validCatalog()))
+      .toMatchObject({ kind: "ready" });
+  });
+
+  it("becomes ready after tier configuration repair without changing the draft", () => {
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: unavailableExact,
+      tier: "advanced",
+    };
+    const brokenCatalog = validCatalog();
+    brokenCatalog.rows.advanced = { valid: false, reason: "Advanced tier is unavailable" };
+    const before = structuredClone(draft);
+
+    const blocked = evaluateStarterModelPolicyDraft(draft, brokenCatalog);
+    const ready = evaluateStarterModelPolicyDraft(draft, validCatalog());
+
+    expect(blocked).toEqual({ kind: "blocked", reason: "Advanced tier is unavailable" });
+    expect(ready).toMatchObject({ kind: "ready" });
+    expect(draft).toEqual(before);
+  });
+
+  it("returns a deep-cloned full Tiered initializer and selected resolved tuple", () => {
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: completePiDefault,
+      tier: "standard",
+    };
+    const catalog = validCatalog();
+    const draftBefore = structuredClone(draft);
+    const catalogBefore = structuredClone(catalog);
+
+    const evaluation = evaluateStarterModelPolicyDraft(draft, catalog);
+
+    expect(evaluation).toEqual({
+      kind: "ready",
+      initialModelPolicy: {
+        mode: "tiered",
+        exact: completePiDefault,
+        tier: "standard",
+      },
+      resolved: validLadder().standard,
+    });
+    if (evaluation.kind !== "ready") throw new Error("Expected a ready starter policy evaluation");
+    expect(evaluation.initialModelPolicy.exact).not.toBe(draft.exact);
+    expect(evaluation.initialModelPolicy.exact.model).not.toBe(draft.exact.model);
+    expect(evaluation.resolved).not.toBe(catalog.ladder?.standard);
+    expect(evaluation.resolved.model).not.toBe(catalog.ladder?.standard.model);
+    expect(draft).toEqual(draftBefore);
+    expect(catalog).toEqual(catalogBefore);
+  });
+
+  it("uses the catalog error before a stable fallback when a selected Tiered row has no reason", () => {
+    const catalogError = validCatalog();
+    catalogError.rows.frontier = { valid: false };
+    catalogError.configError = "Model tier configuration is invalid";
+    const fallback = validCatalog();
+    fallback.rows.frontier = { valid: false };
+    const draft: SessionModelPolicyDraft = {
+      mode: "tiered",
+      exact: completePiDefault,
+      tier: "frontier",
+    };
+
+    expect(evaluateStarterModelPolicyDraft(draft, catalogError)).toEqual({
+      kind: "blocked",
+      reason: "Model tier configuration is invalid",
+    });
+    expect(evaluateStarterModelPolicyDraft(draft, fallback)).toEqual({
+      kind: "blocked",
+      reason: "Selected model tier is unavailable",
+    });
   });
 });
 
