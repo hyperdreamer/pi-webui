@@ -196,6 +196,8 @@ describe("PI WEBUI capabilities", () => {
   it("requires web and session daemon support for the starter model policy selection capability", () => {
     const starterSelection = PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection;
     expect(starterSelection).toBe("sessions.modelPolicyStarterSelection");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(starterSelection);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(starterSelection);
     expect(parseKnownPiWebUiCapabilities([starterSelection, "future.capability"])).toEqual([starterSelection]);
 
     expect(effectivePiWebUiCapabilities({

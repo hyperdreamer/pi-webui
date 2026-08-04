@@ -206,6 +206,50 @@ describe("PromptEditor session controls", () => {
     expect(onSend).toHaveBeenCalledWith("keep this starter draft", undefined, undefined, undefined);
   });
 
+  it("keeps an unavailable selected Exact tuple visible and repairable while Send is blocked", () => {
+    const editor = new PromptEditor();
+    const onSelectModel = vi.fn();
+    const onSelectThinking = vi.fn();
+    const unavailable: ClientSessionModelPolicyStatus = {
+      mode: "exact",
+      tier: "standard",
+      resolved: { model: { provider: "missing", id: "remembered" }, thinkingLevel: "xhigh" },
+      ladderValid: true,
+      blockedReason: "Selected provider/model is unavailable",
+    };
+    editor.showSessionConfiguration = true;
+    editor.sessionConfiguration = {
+      model: { provider: "missing", id: "remembered" },
+      thinkingLevel: "xhigh",
+    };
+    editor.modelPolicyStatus = unavailable;
+    editor.modelTierCatalog = emptyModelTierCatalog();
+    editor.policyThinkingOptions = [
+      { level: "xhigh", supported: false, selected: true, description: "Maximum reasoning (~32k tokens)" },
+      { level: "high", supported: true, selected: false, description: "Deep reasoning (~16k tokens)" },
+    ];
+    editor.sendDisabled = true;
+    editor.onSelectModel = onSelectModel;
+    editor.onSelectPolicyThinking = onSelectThinking;
+    editor.replaceText("repair this policy");
+
+    const controls = renderCompactStatusElement(editor);
+    const model = requiredButton(controls, '[title="Select model"]');
+    const thinking = renderedThinkingMenu(controls);
+
+    expect(model.textContent).toBe("missing/remembered");
+    expect(model.disabled).toBe(false);
+    expect(thinking.label).toBe("xhigh");
+    expect(thinking.options).toContainEqual(expect.objectContaining({ level: "xhigh", selected: true, supported: false }));
+    expect(thinking.editable).toBe(true);
+    expect(requiredButton(renderPromptEditorActions(editor), ".send-button").disabled).toBe(true);
+
+    model.click();
+    thinking.onSelectLevel?.("high");
+    expect(onSelectModel).toHaveBeenCalledOnce();
+    expect(onSelectThinking).toHaveBeenCalledWith("high");
+  });
+
   it("keeps policy mutation disabled while the composer or active session is busy", () => {
     const scenarios: {
       name: string;

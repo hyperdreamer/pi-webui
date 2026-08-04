@@ -25,6 +25,7 @@ export const WEB_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.modelTierSettings,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+  PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection,
 ] as const satisfies readonly PiWebUiCapability[];
 
 export const SESSIOND_RUNTIME_CAPABILITIES = [
@@ -42,6 +43,7 @@ export const SESSIOND_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.modelTierSettings,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+  PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection,
 ] as const satisfies readonly PiWebUiCapability[];
 
 const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
