@@ -16,6 +16,8 @@ export class ProjectBrowserDialog extends LitElement {
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onShowProjectStatistics?: (project: Project) => void | Promise<void>;
+  @property({ type: Boolean }) statisticsAvailable = false;
   @property({ attribute: false }) onAdd?: () => void;
   @property({ attribute: false }) onClose?: () => void;
 
@@ -147,6 +149,7 @@ export class ProjectBrowserDialog extends LitElement {
               </button>
               ${this.openMenuProjectId === project.id ? html`
                 <div class="action-menu-panel" style=${this.menuStyle}>
+                  ${this.statisticsAvailable ? html`<button type="button" title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
                   <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
                 </div>
               ` : null}
@@ -219,6 +222,11 @@ export class ProjectBrowserDialog extends LitElement {
     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEBUI; it will not change the project folder.`)) {
       void this.onCloseProject?.(project);
     }
+  }
+
+  private showStatistics(project: Project) {
+    this.openMenuProjectId = undefined;
+    void this.onShowProjectStatistics?.(project);
   }
 
   private renderActivity(project: Project): TemplateResult | undefined {
