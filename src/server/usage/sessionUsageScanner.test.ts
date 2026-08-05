@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, ReadStream } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,29 +57,54 @@ describe("addUsageTotals", () => {
 });
 
 describe("readSessionHeader", () => {
-  it("returns the id and cwd from the first line without parsing the body", async () => {
+  it("returns the id and cwd from the first line without reading the whole body", async () => {
     const dir = await mkdtemp(join(tmpdir(), "usage-header-"));
     const path = join(dir, "session.jsonl");
     const header = JSON.stringify({ type: "session", id: "abc", cwd: "/repo" });
-    await writeFile(path, `${header}\n{not valid json`, "utf8");
+    const body = "x".repeat(64 * 1024);
+    await writeFile(path, `${header}\n${body}`, "utf8");
 
     await expect(readSessionHeader(path)).resolves.toEqual({ id: "abc", cwd: "/repo" });
     expect(vi.mocked(createReadStream)).toHaveBeenCalledWith(path, {
       encoding: "utf8",
       highWaterMark: 4 * 1024,
-      end: (4 * 1024) - 1,
     });
+    const stream: unknown = vi.mocked(createReadStream).mock.results.at(-1)?.value;
+    expect(stream).toBeInstanceOf(ReadStream);
+    if (!(stream instanceof ReadStream)) throw new Error("Expected the header reader to create a file read stream");
+    expect(stream.bytesRead).toBeLessThan(Buffer.byteLength(`${header}\n${body}`, "utf8"));
   });
 
-  it("returns undefined for malformed and empty first lines", async () => {
+  it("returns the id and cwd when the header spans more than two read chunks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "usage-header-long-"));
+    const path = join(dir, "session.jsonl");
+    const cwd = `/repo/${"x".repeat(3 * 4 * 1024)}`;
+    await writeFile(path, `${JSON.stringify({ type: "session", id: "long", cwd })}\n{not valid json`, "utf8");
+
+    await expect(readSessionHeader(path)).resolves.toEqual({ id: "long", cwd });
+    await expect(readSessionHeaderId(path)).resolves.toBe("long");
+  });
+
+  it("returns undefined for tolerant invalid-input cases", async () => {
     const dir = await mkdtemp(join(tmpdir(), "usage-header-invalid-"));
     const malformedPath = join(dir, "malformed.jsonl");
     const emptyPath = join(dir, "empty.jsonl");
+    const nonSessionPath = join(dir, "non-session.jsonl");
+    const missingIdPath = join(dir, "missing-id.jsonl");
+    const nonStringIdPath = join(dir, "non-string-id.jsonl");
+    const missingPath = join(dir, "missing.jsonl");
     await writeFile(malformedPath, `{not valid json\n`, "utf8");
     await writeFile(emptyPath, "", "utf8");
+    await writeFile(nonSessionPath, `${JSON.stringify({ type: "message", id: "abc" })}\n`, "utf8");
+    await writeFile(missingIdPath, `${JSON.stringify({ type: "session" })}\n`, "utf8");
+    await writeFile(nonStringIdPath, `${JSON.stringify({ type: "session", id: 123 })}\n`, "utf8");
 
     await expect(readSessionHeader(malformedPath)).resolves.toBeUndefined();
     await expect(readSessionHeader(emptyPath)).resolves.toBeUndefined();
+    await expect(readSessionHeader(nonSessionPath)).resolves.toBeUndefined();
+    await expect(readSessionHeader(missingIdPath)).resolves.toBeUndefined();
+    await expect(readSessionHeader(nonStringIdPath)).resolves.toBeUndefined();
+    await expect(readSessionHeader(missingPath)).resolves.toBeUndefined();
   });
 });
 

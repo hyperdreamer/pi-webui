@@ -100,7 +100,6 @@ export async function readSessionHeader(path: string): Promise<SessionHeaderSumm
     const input = createReadStream(path, {
       encoding: "utf8",
       highWaterMark: SESSION_HEADER_READ_BYTES,
-      end: SESSION_HEADER_READ_BYTES - 1,
     });
     try {
       const lines = createInterface({ input, crlfDelay: Infinity });

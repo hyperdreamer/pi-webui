@@ -18,8 +18,13 @@ interface ScanCall {
   bytesScanned: number;
 }
 
-function header(id: string): string {
-  return JSON.stringify({ type: "session", id, cwd: "/repo" });
+function header(id: string, paddingLength = 0): string {
+  return JSON.stringify({
+    type: "session",
+    id,
+    cwd: "/repo",
+    ...(paddingLength === 0 ? {} : { padding: "x".repeat(paddingLength) }),
+  });
 }
 
 function assistantLine(input: number, cost: number): string {
@@ -111,6 +116,26 @@ describe("SessionUsageCacheStore", () => {
     await writeFile(sessionPath, replaced, "utf8");
     const after = await store.totalsFor("s1", sessionPath);
     expect(after.input).toBe(8);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.startOffset).toBe(0);
+  });
+
+  it("rescans from zero when a larger replacement changes a multi-chunk header id", async () => {
+    const { cachePath, sessionPath } = await tempPaths();
+    const paddingLength = 3 * 4 * 1024;
+    const original = `${header("s1", paddingLength)}\n${assistantLine(10, 0.1)}\n`;
+    await writeFile(sessionPath, original, "utf8");
+    const calls: ScanCall[] = [];
+    const store = new SessionUsageCacheStore(cachePath, recordingScanner(calls));
+    expect((await store.totalsFor("s1", sessionPath)).input).toBe(10);
+
+    const replacement = `${header("s2", paddingLength + 512)}\n${assistantLine(4, 0.4)}\n${assistantLine(4, 0.4)}\n`;
+    expect(Buffer.byteLength(replacement, "utf8")).toBeGreaterThan(Buffer.byteLength(original, "utf8"));
+    await writeFile(sessionPath, replacement, "utf8");
+
+    const after = await store.totalsFor("s1", sessionPath);
+    expect(after.input).toBe(8);
+    expect(after.cost).toBeCloseTo(0.8);
     expect(calls).toHaveLength(2);
     expect(calls[1]?.startOffset).toBe(0);
   });

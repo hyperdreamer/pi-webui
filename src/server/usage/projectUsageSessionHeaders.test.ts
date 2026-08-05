@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defaultPiSessionDir } from "../sessions/piSessionManagerGateway";
+import { ProjectUsageService } from "./projectUsageService";
 import { ProjectUsageSessionHeaderSource, listProjectUsageSessionHeadersInDir } from "./projectUsageSessionHeaders";
 
 let tempDir: string;
@@ -29,6 +30,37 @@ describe("listProjectUsageSessionHeadersInDir", () => {
     await expect(listProjectUsageSessionHeadersInDir(sessionDir)).resolves.toEqual([
       { sessionId: "valid", path: validPath, cwd: "/dev/app" },
     ]);
+  });
+
+  it("keeps the header-only count aligned with the report for a multi-chunk header", async () => {
+    const sessionDir = join(tempDir, "long-header-sessions");
+    const sessionPath = join(sessionDir, "long.jsonl");
+    const projectPath = "/dev/app";
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(sessionPath, `${JSON.stringify({
+      type: "session",
+      id: "long",
+      cwd: projectPath,
+      padding: "x".repeat(3 * 4 * 1024),
+    })}\n`, "utf8");
+
+    const service = new ProjectUsageService({
+      candidates: {
+        listForCwd: () => Promise.resolve([]),
+        listAll: () => Promise.resolve([{ id: "long", path: sessionPath, cwd: projectPath }]),
+        listHeadersForCwd: () => Promise.resolve([]),
+        listAllHeaders: () => listProjectUsageSessionHeadersInDir(sessionDir),
+        listArchived: () => Promise.resolve([]),
+      },
+      cache: {
+        totalsFor: () => Promise.resolve({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }),
+        flush: () => Promise.resolve(undefined),
+      },
+    });
+    const scope = { projectPath, liveCwds: [] };
+
+    await expect(service.count(scope)).resolves.toBe(1);
+    await expect(service.report(scope)).resolves.toMatchObject({ total: { sessionCount: 1 } });
   });
 });
 
