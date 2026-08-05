@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.0
+
+### Patch Changes
+
+- 2175ed9: Add supported thinking-level selection to Utility models settings for automatic titles, branch summaries, and compaction without changing the active session model or thinking state.
+- 208c694: Fix the Sessions + button so it can start a new session while another session is selected.
+- 24c3f7c: Restore each workspace's last confirmed model policy from a session created through SESSIONS +, including Exact model/thinking and Tiered tier selections.
+
 ## 1.11.0-beta.10
 
 ### Patch Changes
