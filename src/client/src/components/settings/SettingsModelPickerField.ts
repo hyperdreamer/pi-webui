@@ -61,7 +61,7 @@ export class SettingsModelPickerField extends LitElement {
         ?disabled=${this.disabled}
         title=${this.triggerTitle(summary, known)}
         @click=${() => {
-          this.openPicker();
+          this.showPicker();
         }}
       >
         <span class="model-summary">${summary}</span>
@@ -82,10 +82,9 @@ export class SettingsModelPickerField extends LitElement {
       : settingsModelKey(selected);
 
     /*
-     * The settings dialog closes itself on Escape and on backdrop mousedown, so
-     * the picker's own dismissal must not reach it. Both are stopped here rather
-     * than in `command-picker`, which is also used at the app's top level where
-     * bubbling is harmless.
+     * The settings dialog closes itself on Escape and on backdrop mousedown.
+     * `command-picker` cancels and contains Escape at its dialog boundary; this
+     * host remains the outer containment boundary for settings-specific events.
      */
     return html`
       <div
@@ -113,7 +112,7 @@ export class SettingsModelPickerField extends LitElement {
     `;
   }
 
-  private openPicker(): void {
+  showPicker(): void {
     if (this.disabled) return;
     this.pickerOpen = true;
   }

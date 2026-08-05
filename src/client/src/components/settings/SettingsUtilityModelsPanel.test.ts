@@ -108,9 +108,24 @@ describe("SettingsUtilityModelsPanel", () => {
       expect(thinking.id).toBe(`select-utility-thinking-${slot}`);
       expect(model.accessibleLabel).toBe(`${slot} utility model`);
       expect(thinking.getAttribute("aria-label")).toBe(`${slot} utility thinking`);
-      expect(labelFor(panel, model.triggerId).textContent.trim()).toBe("Model");
+      expect(modelLabel(panel, slot).textContent.trim()).toBe("Model");
+      expect(modelLabel(panel, slot).hasAttribute("for")).toBe(false);
       expect(labelFor(panel, thinking.id).textContent.trim()).toBe("Thinking");
     }
+  });
+
+  it("opens the corresponding picker when its rendered Model label is clicked", async () => {
+    const panel = await mountPanel((element) => {
+      element.response = responseV2();
+    });
+    const lightweight = modelPicker(panel, "lightweight");
+    const context = modelPicker(panel, "context");
+
+    modelLabel(panel, "lightweight").click();
+    await lightweight.updateComplete;
+
+    expect(lightweight.isPickerOpen).toBe(true);
+    expect(context.isPickerOpen).toBe(false);
   });
 
   it("selects a model through the searchable picker dialog and offers the inherit entry", async () => {
@@ -431,6 +446,15 @@ function selectById(panel: SettingsUtilityModelsPanel, id: string): HTMLSelectEl
   const select = requireShadowRoot(panel).querySelector<HTMLSelectElement>(`#${id}`);
   if (select === null) throw new Error(`Expected select #${id}`);
   return select;
+}
+
+function modelLabel(
+  panel: SettingsUtilityModelsPanel,
+  slot: "lightweight" | "context",
+): HTMLLabelElement {
+  const label = requireShadowRoot(panel).querySelector<HTMLLabelElement>(`[data-slot="${slot}"] .field-control .field-label`);
+  if (label === null) throw new Error(`Expected the ${slot} model label`);
+  return label;
 }
 
 function labelFor(panel: SettingsUtilityModelsPanel, id: string): HTMLLabelElement {

@@ -8,7 +8,7 @@ import type {
   UtilityModelSlot,
 } from "../../../../shared/apiTypes";
 import { isKnownThinkingLevel } from "../../../../shared/thinkingLevels";
-import "./SettingsModelPickerField";
+import { SettingsModelPickerField } from "./SettingsModelPickerField";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import type { UtilityModelSettingsSupport } from "./settingsMachineTarget";
@@ -185,7 +185,12 @@ export class SettingsUtilityModelsPanel extends LitElement {
           <p>${detail.description}</p>
         </div>
         <div class="field-control">
-          <label class="field-label" for=${modelId}>Model</label>
+          <label
+            class="field-label"
+            @click=${(event: MouseEvent) => {
+              this.onModelLabelClick(event);
+            }}
+          >Model</label>
           <settings-model-picker-field
             .triggerId=${modelId}
             .accessibleLabel=${`${slot} utility model`}
@@ -224,6 +229,12 @@ export class SettingsUtilityModelsPanel extends LitElement {
           : null}
       </div>
     `;
+  }
+
+  private onModelLabelClick(event: MouseEvent): void {
+    if (!(event.currentTarget instanceof HTMLElement)) return;
+    const picker = event.currentTarget.nextElementSibling;
+    if (picker instanceof SettingsModelPickerField) picker.showPicker();
   }
 
   private onModelPicked(slot: UtilityModelSlot, model: TierModelRef | undefined): void {

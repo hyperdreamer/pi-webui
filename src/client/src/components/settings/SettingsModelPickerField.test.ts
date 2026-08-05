@@ -160,6 +160,59 @@ describe("SettingsModelPickerField dialog", () => {
     // from the field's shadow root like the component itself set it.
     expect(pickerRoot(field).activeElement).toBe(triggerButton(field));
   });
+
+  it("exposes a named modal dialog with labelled search and close controls", async () => {
+    const field = await mountField((f) => {
+      f.choices = catalog;
+      f.dialogTitle = "Choose a model";
+    });
+
+    await openPicker(field);
+
+    const root = pickerShadow(commandPicker(field));
+    const dialog = root.querySelector<HTMLElement>("section[role='dialog']");
+    if (dialog === null) throw new Error("Expected the picker dialog");
+    const titleId = dialog.getAttribute("aria-labelledby");
+    if (titleId === null) throw new Error("Expected the picker dialog to reference its title");
+
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(root.getElementById(titleId)?.textContent.trim()).toBe("Choose a model");
+    expect(searchInput(field).getAttribute("aria-label")).toBe("Search options");
+    expect(pickerCloseButton(field).getAttribute("aria-label")).toBe("Close Choose a model");
+  });
+
+  it("contains focus by wrapping Tab at both ends of the dialog", async () => {
+    const field = await mountField((f) => {
+      f.choices = catalog;
+    });
+    await openPicker(field);
+
+    const root = pickerShadow(commandPicker(field));
+    const close = pickerCloseButton(field);
+    const options = [...root.querySelectorAll<HTMLButtonElement>(".options button")];
+    const lastOption = options.at(-1);
+    if (lastOption === undefined) throw new Error("Expected a final picker option");
+
+    lastOption.focus();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true, composed: true });
+    lastOption.dispatchEvent(tab);
+
+    expect(tab.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(close);
+
+    close.focus();
+    const shiftTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    close.dispatchEvent(shiftTab);
+
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(lastOption);
+  });
 });
 
 describe("SettingsModelPickerField event containment", () => {
@@ -184,6 +237,36 @@ describe("SettingsModelPickerField event containment", () => {
     expect(keydownSpy).toHaveBeenCalledTimes(1);
     // The Escape still did its job inside the component: the dialog closed.
     expect(field.isPickerOpen).toBe(false);
+  });
+
+  it("closes on Escape from the focused close button without escaping the component", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const keydownSpy = vi.fn();
+    host.addEventListener("keydown", keydownSpy);
+
+    const field = await mountField((f) => {
+      f.choices = catalog;
+    }, host);
+    await openPicker(field);
+
+    const close = pickerCloseButton(field);
+    close.focus();
+    close.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, composed: true }));
+    expect(keydownSpy).toHaveBeenCalledTimes(1);
+    keydownSpy.mockClear();
+
+    close.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    }));
+    await field.updateComplete;
+
+    expect(field.isPickerOpen).toBe(false);
+    expect(pickerRoot(field).activeElement).toBe(triggerButton(field));
+    expect(keydownSpy).not.toHaveBeenCalled();
   });
 
   it("stops the picker's backdrop mousedown at the component boundary", async () => {
@@ -261,9 +344,13 @@ async function openPicker(field: SettingsModelPickerField): Promise<void> {
 }
 
 function closePickerDialog(field: SettingsModelPickerField): void {
+  pickerCloseButton(field).click();
+}
+
+function pickerCloseButton(field: SettingsModelPickerField): HTMLButtonElement {
   const close = pickerShadow(commandPicker(field)).querySelector<HTMLButtonElement>("header button");
   if (close === null) throw new Error("Expected the picker close button");
-  close.click();
+  return close;
 }
 
 function searchInput(field: SettingsModelPickerField): HTMLInputElement {
