@@ -14,6 +14,7 @@ import { SkillsConfigService } from "./skills/skillsConfigService.js";
 import { registerSkillsConfigRoutes } from "./skills/skillsConfigRoutes.js";
 import { PiSessionService } from "./sessions/piSessionService.js";
 import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGateway.js";
+import { SessionArchiveStore } from "./sessions/sessionArchiveStore.js";
 import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
 import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
 import { SessionDefaultsService } from "./sessions/sessionDefaultsService.js";
@@ -40,6 +41,10 @@ import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
 import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
+import { ProjectUsageService } from "./usage/projectUsageService.js";
+import { ProjectUsageSessionHeaderSource } from "./usage/projectUsageSessionHeaders.js";
+import { SessionUsageCacheStore } from "./usage/sessionUsageCacheStore.js";
+import { registerProjectUsageRoutes } from "./usage/projectUsageRoutes.js";
 
 const daemonEnvironment: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
 const { config } = effectivePiWebUiConfig({ env: daemonEnvironment });
@@ -92,6 +97,13 @@ await runSessionDaemonStartup({
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
       : undefined;
     const starterModelPolicyPreferenceStore = new StarterModelPolicyPreferenceStore();
+    const sessionManagerGatewayOptions = {
+      agentDir: activeAgentProfile.dir,
+      env: daemonEnvironment,
+      sessionDirEnvKeys: activeAgentProfile.sessionDirEnvKeys,
+    };
+    const sessionManagerGateway = createPiSessionManagerGateway(sessionManagerGatewayOptions);
+    const projectUsageSessionHeaders = new ProjectUsageSessionHeaderSource(sessionManagerGatewayOptions);
     const sessions = new PiSessionService(eventHub, {
       modelRuntime: auth.runtime,
       agentDir: activeAgentProfile.dir,
@@ -103,11 +115,21 @@ await runSessionDaemonStartup({
       notificationStore,
       unreadStore,
       starterModelPolicyPreferenceStore,
-      sessionManager: createPiSessionManagerGateway({
-        agentDir: activeAgentProfile.dir,
-        env: daemonEnvironment,
-        sessionDirEnvKeys: activeAgentProfile.sessionDirEnvKeys,
-      }),
+      sessionManager: sessionManagerGateway,
+    });
+    const usageArchiveStore = new SessionArchiveStore();
+    const projectUsage = new ProjectUsageService({
+      candidates: {
+        listHeadersForCwd: (cwd) => projectUsageSessionHeaders.listForCwd(cwd),
+        listAllHeaders: () => projectUsageSessionHeaders.listAll(),
+        listArchived: async () => (await usageArchiveStore.list()).map((record) => ({
+          sessionId: record.sessionId,
+          cwd: record.cwd,
+          ...(record.archivePath === undefined ? {} : { archivePath: record.archivePath }),
+          ...(record.originalPath === undefined ? {} : { originalPath: record.originalPath }),
+        })),
+      },
+      cache: new SessionUsageCacheStore(),
     });
     auth.subscribe((change) => { sessions.applyAuthChange(change); });
     const defaults = new SessionDefaultsService({
@@ -142,9 +164,9 @@ await runSessionDaemonStartup({
       ...getPiWebUiRuntimeComponent("sessiond", SESSIOND_RUNTIME_CAPABILITIES),
       activeAgentProfile,
     });
-    return { eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent };
+    return { eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent };
   },
-  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, utilityModels, terminals, runtimeComponent }) {
+  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
     registerAuthRoutes(app, auth);
     registerModelsConfigRoutes(app, models);
@@ -153,6 +175,7 @@ await runSessionDaemonStartup({
     registerModelTierSettingsRoutes(app, modelTiers);
     registerUtilityModelSettingsRoutes(app, utilityModels);
     registerSessionRoutes(app, sessions, eventHub);
+    registerProjectUsageRoutes(app, projectUsage);
     registerTerminalRoutes(app, terminals);
 
     app.get("/health", () => ({

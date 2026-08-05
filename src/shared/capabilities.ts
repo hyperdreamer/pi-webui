@@ -48,6 +48,7 @@ export const SESSIOND_RUNTIME_CAPABILITIES = [
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
   PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection,
   PI_WEBUI_CAPABILITIES.sessionsReorder,
+  PI_WEBUI_CAPABILITIES.projectUsageStatistics,
 ] as const satisfies readonly PiWebUiCapability[];
 
 const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
@@ -72,6 +73,7 @@ const EFFECTIVE_CAPABILITY_REQUIREMENTS = {
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection]: ["web", "sessiond"],
   [PI_WEBUI_CAPABILITIES.sessionsReorder]: ["web", "sessiond"],
+  [PI_WEBUI_CAPABILITIES.projectUsageStatistics]: ["sessiond"],
 } as const satisfies Record<PiWebUiCapability, readonly PiWebUiServiceComponent[]>;
 
 export function isPiWebUiCapability(value: unknown): value is PiWebUiCapability {

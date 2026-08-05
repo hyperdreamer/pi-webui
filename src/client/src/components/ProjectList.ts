@@ -20,6 +20,8 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean, reflect: true }) collapsed = false;
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onClose?: (project: Project) => void;
+  @property({ attribute: false }) onShowStatistics?: (project: Project) => void;
+  @property({ type: Boolean }) statisticsAvailable = false;
   @property({ attribute: false }) onAdd?: () => void;
   @property({ attribute: false }) onOpenExpanded?: (restoreFocus: () => void) => void;
   @property({ attribute: false }) onToggleCollapsed?: () => void;
@@ -95,6 +97,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
                   <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
                   ${this.openMenuProjectId === project.id ? html`
                     <div class="action-menu-panel" style=${this.menuStyle}>
+                      ${this.statisticsAvailable ? html`<button title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
                       <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
                     </div>
                   ` : null}
@@ -195,6 +198,11 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   private close(project: Project) {
     this.openMenuProjectId = undefined;
     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEBUI; it will not change the project folder.`)) this.onClose?.(project);
+  }
+
+  private showStatistics(project: Project) {
+    this.openMenuProjectId = undefined;
+    this.onShowStatistics?.(project);
   }
 
   static override styles = [

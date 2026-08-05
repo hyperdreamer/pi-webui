@@ -1,10 +1,10 @@
 import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, StarterModelPolicyPreference } from "../api";
-import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, ProjectUsageResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
 import { completeUnownedStarterExactFromActiveTier, evaluateStarterModelPolicyDraft, isDraftReadyToApply, modelPolicyDraftFromPolicy, relinkStarterExactBranch, sameExactSelection, seedModelPolicyDraft, seedStarterModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, starterExactSelection, starterModelPolicyPreferenceFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft, type StarterModelPolicyEvaluation } from "./sessionModelPolicyDraft";
 import { shouldRetainStarterNotice, starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
@@ -65,6 +65,7 @@ import { computeWindowTitle, createWindowTitleObserver } from "../windowTitle";
 import "./MachineList";
 import "./ProjectList";
 import "./ProjectBrowserDialog";
+import "./ProjectStatisticsDialog";
 import "./SessionBrowserDialog";
 import "./WorkspaceList";
 import { unreadSessionCount } from "./SessionList";
@@ -423,6 +424,12 @@ export class PiWebUiApp extends LitElement {
   } | undefined;
   @state() private modelsConfigDialogOpen = false;
   @state() private projectBrowserOpen = false;
+  @state() private statisticsProject: Project | undefined;
+  @state() private statisticsReport: ProjectUsageResponse | undefined;
+  @state() private statisticsSessionCount: number | undefined;
+  @state() private statisticsLoading = false;
+  @state() private statisticsError: string | undefined;
+  private statisticsRequestGeneration = 0;
   private projectBrowserRestoreFocus: (() => void) | undefined;
   @state() private sessionBrowserOpen = false;
   private sessionBrowserRestoreFocus: (() => void) | undefined;
@@ -566,6 +573,7 @@ export class PiWebUiApp extends LitElement {
       || (this.systemPromptDialogOpen && this.state.selectedSession !== undefined)
       || this.state.actionPaletteOpen
       || this.projectBrowserOpen
+      || this.statisticsProject !== undefined
       || this.sessionBrowserOpen
       || this.state.projectDialogOpen
       || this.state.machineDialogOpen
@@ -1405,6 +1413,7 @@ export class PiWebUiApp extends LitElement {
 
   private handleMachineChange(previous: AppState, next: AppState): void {
     if ((previous.selectedMachine?.id ?? "local") === (next.selectedMachine?.id ?? "local")) return;
+    this.closeProjectStatistics();
     this.projectActivityOwnership.handleSelectedMachineChanged();
     const pendingMachineId = this.pendingRemoteRouteRestore?.machineId ?? "local";
     if (pendingMachineId !== (next.selectedMachine?.id ?? "local")) this.clearPendingRemoteRouteRestore();
@@ -1553,6 +1562,11 @@ export class PiWebUiApp extends LitElement {
     // the legacy DELETE route without advertising runtime capabilities. Only
     // block when capability discovery succeeds and reports no support.
     return runtime?.ok !== true || supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsDeleteArchived);
+  }
+
+  private get projectStatisticsAvailable(): boolean {
+    const runtime = this.selectedMachineRuntime();
+    return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.projectUsageStatistics);
   }
 
   private canReloadSessions(): boolean {
@@ -2078,6 +2092,8 @@ export class PiWebUiApp extends LitElement {
         .onRemoveMachine=${(machine: Machine) => { void this.removeMachine(machine); }}
         .projects=${this.state.projects}
         .selectedProject=${this.state.selectedProject}
+        .projectStatisticsAvailable=${this.projectStatisticsAvailable}
+        .onShowProjectStatistics=${(project: Project) => { void this.showProjectStatistics(project); }}
         .workspaceActivities=${this.state.workspaceActivities}
         .workspacesByProjectId=${this.state.workspacesByProjectId}
         .workspaces=${this.state.workspaces}
@@ -3223,6 +3239,49 @@ export class PiWebUiApp extends LitElement {
     this.projectBrowserOpen = true;
   }
 
+  private async showProjectStatistics(project: Project): Promise<void> {
+    const requestGeneration = ++this.statisticsRequestGeneration;
+    const machineId = selectedMachineId(this.state);
+    const requestIsCurrent = () => requestGeneration === this.statisticsRequestGeneration
+      && selectedMachineId(this.state) === machineId;
+    this.statisticsProject = project;
+    this.statisticsReport = undefined;
+    this.statisticsSessionCount = undefined;
+    this.statisticsError = undefined;
+    this.statisticsLoading = true;
+    try {
+      const workspaces = await workspacesApi.workspaces(project.id, machineId);
+      if (!requestIsCurrent()) return;
+      const scope = {
+        projectPath: project.path,
+        liveCwds: workspaces.map((workspace) => workspace.path),
+      };
+      void projectsApi.projectUsageCount(scope, machineId).then(
+        ({ sessionCount }) => {
+          if (requestIsCurrent() && this.statisticsLoading) this.statisticsSessionCount = sessionCount;
+        },
+        () => undefined,
+      );
+      const report = await projectsApi.projectUsage(scope, machineId);
+      if (!requestIsCurrent()) return;
+      this.statisticsReport = report;
+    } catch (error: unknown) {
+      if (!requestIsCurrent()) return;
+      this.statisticsError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (requestIsCurrent()) this.statisticsLoading = false;
+    }
+  }
+
+  private closeProjectStatistics(): void {
+    this.statisticsRequestGeneration += 1;
+    this.statisticsProject = undefined;
+    this.statisticsReport = undefined;
+    this.statisticsSessionCount = undefined;
+    this.statisticsError = undefined;
+    this.statisticsLoading = false;
+  }
+
   private closeProjectBrowser(options: { restoreFocus?: boolean } = {}): void {
     const restoreFocus = options.restoreFocus === true ? this.projectBrowserRestoreFocus : undefined;
     this.projectBrowserRestoreFocus = undefined;
@@ -4271,11 +4330,26 @@ export class PiWebUiApp extends LitElement {
           .selected=${state.selectedProject}
           .activities=${state.workspaceActivities}
           .workspacesByProjectId=${state.workspacesByProjectId}
+          .statisticsAvailable=${this.projectStatisticsAvailable}
+          .onShowProjectStatistics=${(project: Project) => {
+            this.closeProjectBrowser();
+            return this.showProjectStatistics(project);
+          }}
           .onSelect=${(project: Project) => { this.selectProjectFromBrowser(project); }}
           .onClose=${() => { this.closeProjectBrowser({ restoreFocus: true }); }}
           .onAdd=${() => { this.addProjectFromBrowser(); }}
           .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
         ></project-browser-dialog>` : null}
+        ${this.statisticsProject === undefined ? null : html`
+          <project-statistics-dialog
+            .project=${this.statisticsProject}
+            .report=${this.statisticsReport}
+            .loading=${this.statisticsLoading}
+            .errorMessage=${this.statisticsError}
+            .sessionCount=${this.statisticsLoading ? this.statisticsSessionCount : undefined}
+            .onClose=${() => { this.closeProjectStatistics(); }}
+          ></project-statistics-dialog>
+        `}
         ${this.sessionBrowserOpen && state.selectedProject !== undefined ? html`<session-browser-dialog
           .projectName=${state.selectedProject.name}
           .sessions=${state.projectSessions}

@@ -23,3 +23,6 @@ dist/
 
 # Local brainstorming mockups.
 .superpowers/
+
+# Deterministic SDD run workspace.
+.sdd/

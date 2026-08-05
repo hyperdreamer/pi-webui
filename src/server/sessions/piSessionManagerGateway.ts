@@ -171,14 +171,7 @@ async function unlinkIfPresent(path: string): Promise<void> {
 export async function listSessionsInDir(sessionDir: string): Promise<PiSessionListEntry[]> {
   // Listing and source inspection share one asynchronous JSONL pass. Constructing
   // a persisted SessionManager here would migrate legacy files as a side effect.
-  let files: string[];
-  try {
-    files = (await readdir(sessionDir))
-      .filter((file) => file.endsWith(".jsonl"))
-      .map((file) => join(sessionDir, file));
-  } catch {
-    return [];
-  }
+  const files = await listSessionFilesInDir(sessionDir);
 
   const sessions: PiSessionListEntry[] = [];
   for (
@@ -199,6 +192,16 @@ export async function listSessionsInDir(sessionDir: string): Promise<PiSessionLi
   return sessions.sort(
     (left, right) => right.modified.getTime() - left.modified.getTime()
   );
+}
+
+export async function listSessionFilesInDir(sessionDir: string): Promise<string[]> {
+  try {
+    return (await readdir(sessionDir))
+      .filter((file) => file.endsWith(".jsonl"))
+      .map((file) => join(sessionDir, file));
+  } catch {
+    return [];
+  }
 }
 
 async function readSessionListEntry(
@@ -359,6 +362,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function listSessionsInDefaultPiStore(storeRoot: string): Promise<PiSessionListEntry[]> {
+  const sessionDirs = await listDefaultPiSessionDirs(storeRoot);
+  const sessions = (await Promise.all(sessionDirs.map((dir) => listSessionsInDir(dir)))).flat();
+  return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+export async function listDefaultPiSessionDirs(storeRoot: string): Promise<string[]> {
   let entries: Dirent[];
   try {
     entries = await readdir(storeRoot, { withFileTypes: true });
@@ -366,9 +375,7 @@ export async function listSessionsInDefaultPiStore(storeRoot: string): Promise<P
     return [];
   }
 
-  const sessionDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => join(storeRoot, entry.name));
-  const sessions = (await Promise.all(sessionDirs.map((dir) => listSessionsInDir(dir)))).flat();
-  return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => join(storeRoot, entry.name));
 }
 
 export function filterSessionsForCwd(sessions: readonly PiSessionListEntry[], cwd: string): PiSessionListEntry[] {
