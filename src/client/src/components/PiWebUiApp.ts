@@ -415,6 +415,12 @@ export class PiWebUiApp extends LitElement {
   private modelTierCatalogMachineId: string | undefined;
   /** Newest issued catalog request; a late response with a lower seq is dropped. */
   private modelTierCatalogSeq = 0;
+  /** Latest catalog request available for same-scope ensure callers to share. */
+  private modelTierCatalogLoad: {
+    machineId: string;
+    workspaceId: string | undefined;
+    promise: Promise<void>;
+  } | undefined;
   @state() private modelsConfigDialogOpen = false;
   @state() private projectBrowserOpen = false;
   private projectBrowserRestoreFocus: (() => void) | undefined;
@@ -1189,7 +1195,13 @@ export class PiWebUiApp extends LitElement {
     this.synchronizeMemoryPollingForSelectedWorkspace();
   }
 
-  private async loadStarterSessionDefaults(workspace: Workspace): Promise<void> {
+  private async loadStarterSessionDefaults(
+    workspace: Workspace,
+    options: {
+      awaitModelTierCatalog?: boolean;
+      expectedSelectionGeneration?: number;
+    } = {},
+  ): Promise<void> {
     const machineId = selectedMachineId(this.state);
     const seq = ++this.starterSessionDefaultsSeq;
     const useV2 = this.starterModelPolicySelectionSupported(machineId);
@@ -1198,6 +1210,10 @@ export class PiWebUiApp extends LitElement {
       && selectedMachineId(this.state) === machineId
       && this.state.selectedWorkspace?.id === workspace.id
       && this.state.selectedWorkspace.path === workspace.path
+      && (
+        options.expectedSelectionGeneration === undefined
+        || this.starterModelPolicySelectionGeneration === options.expectedSelectionGeneration
+      )
     );
     try {
       const defaults = useV2
@@ -1223,7 +1239,9 @@ export class PiWebUiApp extends LitElement {
         catalogMissing
         && (useV2 || (draft.mode === "tiered" && !this.modelTierCatalogLoading))
       ) {
-        void this.loadModelTierCatalog(machineId);
+        const catalogLoad = this.ensureModelTierCatalog(machineId);
+        if (options.awaitModelTierCatalog === true) await catalogLoad;
+        else void catalogLoad;
       }
     } catch (error) {
       if (isCurrent()) {
@@ -1713,9 +1731,23 @@ export class PiWebUiApp extends LitElement {
    * a slow earlier response can publish a catalog the user is no longer looking
    * at.
    */
-  private async loadModelTierCatalog(machineId: string): Promise<void> {
+  private loadModelTierCatalog(machineId: string): Promise<void> {
     const workspaceId = this.state.selectedWorkspace?.id;
     const seq = ++this.modelTierCatalogSeq;
+    const promise = this.performModelTierCatalogLoad(machineId, workspaceId, seq);
+    this.modelTierCatalogLoad = { machineId, workspaceId, promise };
+    const clear = () => {
+      if (this.modelTierCatalogLoad?.promise === promise) this.modelTierCatalogLoad = undefined;
+    };
+    void promise.then(clear, clear);
+    return promise;
+  }
+
+  private async performModelTierCatalogLoad(
+    machineId: string,
+    workspaceId: string | undefined,
+    seq: number,
+  ): Promise<void> {
     const isCurrent = () => (
       seq === this.modelTierCatalogSeq
       && selectedMachineId(this.state) === machineId
@@ -1735,6 +1767,16 @@ export class PiWebUiApp extends LitElement {
     } finally {
       if (seq === this.modelTierCatalogSeq) this.modelTierCatalogLoading = false;
     }
+  }
+
+  private ensureModelTierCatalog(machineId: string): Promise<void> {
+    if (this.selectedMachineModelTierCatalog() !== undefined) return Promise.resolve();
+    const workspaceId = this.state.selectedWorkspace?.id;
+    const current = this.modelTierCatalogLoad;
+    if (current?.machineId === machineId && current.workspaceId === workspaceId) {
+      return current.promise;
+    }
+    return this.loadModelTierCatalog(machineId);
   }
 
   /**
@@ -1760,6 +1802,7 @@ export class PiWebUiApp extends LitElement {
    */
   private resetModelTierCatalogForMachineChange(): void {
     this.modelTierCatalogSeq += 1;
+    this.modelTierCatalogLoad = undefined;
     this.modelTierCatalogMachineId = undefined;
     this.modelTierCatalog = undefined;
     this.modelTierCatalogLoading = false;
@@ -1784,9 +1827,7 @@ export class PiWebUiApp extends LitElement {
   /** Begin the two reads needed by policy controls as soon as an active policy appears. */
   private preloadActiveModelPolicyInputs(): void {
     void this.sessions.loadModelPolicy();
-    if (this.selectedMachineModelTierCatalog() === undefined && !this.modelTierCatalogLoading) {
-      void this.loadModelTierCatalog(selectedMachineId(this.state));
-    }
+    void this.ensureModelTierCatalog(selectedMachineId(this.state));
   }
 
   /**
@@ -1805,7 +1846,7 @@ export class PiWebUiApp extends LitElement {
     const loads: Promise<void>[] = [];
     if (this.state.modelPolicy === undefined) loads.push(this.sessions.loadModelPolicy());
     if (this.selectedMachineModelTierCatalog() === undefined) {
-      loads.push(this.loadModelTierCatalog(selectedMachineId(this.state)));
+      loads.push(this.ensureModelTierCatalog(selectedMachineId(this.state)));
     }
     await Promise.all(loads);
     if (activeSessionModelPolicyScope(this.state) !== scope) return undefined;
@@ -2140,23 +2181,40 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async startSessionAndOpenChat(shouldComplete: () => boolean = () => true): Promise<void> {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return;
+    const startMachineId = selectedMachineId(this.state);
+    const startSelectionGeneration = this.starterModelPolicySelectionGeneration;
+    let usePlusStart = this.starterModelPolicySelectionSupported(startMachineId);
+    let plusInitializer = this.starterPlusModelPolicyInitializer();
+    if (
+      usePlusStart
+      && plusInitializer === undefined
+      && (this.starterModelPolicy === undefined || this.selectedMachineModelTierCatalog() === undefined)
+    ) {
+      await this.loadMissingStarterPlusModelPolicyInputs(
+        workspace,
+        startMachineId,
+        startSelectionGeneration,
+      );
+      if (!shouldComplete() || this.starterModelPolicySelectionGeneration !== startSelectionGeneration) return;
+      usePlusStart = this.starterModelPolicySelectionSupported(startMachineId);
+      plusInitializer = this.starterPlusModelPolicyInitializer();
+    }
     const blockedReason = this.starterModelPolicyInputs()?.status.blockedReason;
     if (blockedReason !== undefined) {
       const scope = this.starterNoticeScope();
       if (shouldComplete() && scope !== undefined) this.publishStarterNotice(starterPolicyBlockedNotice(scope));
       return;
     }
+    if (usePlusStart && plusInitializer === undefined) return;
     this.starterNotice = undefined;
     // Capture the starter state synchronously, before startSession() inserts and
     // selects its pending row. Draft identity acts as a generation guard because
     // every starter edit and value-changing relink replaces the policy object;
     // a value-equivalent relink intentionally preserves it.
-    const workspaceId = this.state.selectedWorkspace?.id;
-    const startMachineId = selectedMachineId(this.state);
+    const workspaceId = workspace.id;
     const starterModelPolicy = this.starterModelPolicy;
-    const plusInitializer = this.starterPlusModelPolicyInitializer();
-    const usePlusStart = this.starterModelPolicySelectionSupported(startMachineId);
-    if (usePlusStart && plusInitializer === undefined) return;
     // `startSession()` remains in flight until the backend session resolves;
     // open the chat as soon as the controller has inserted the temporary row.
     const startRequest = plusInitializer === undefined
@@ -2165,8 +2223,8 @@ export class PiWebUiApp extends LitElement {
     const start = startRequest.then((started) => {
       if (!usePlusStart) this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
     }).catch((error: unknown) => {
-      const scope = workspaceId === undefined ? undefined : { machineId: startMachineId, workspaceId };
-      if (shouldComplete() && scope !== undefined) {
+      if (shouldComplete()) {
+        const scope = { machineId: startMachineId, workspaceId };
         this.publishStarterNotice(starterFailureNotice("start-failed", `Could not start the session. ${errorMessage(error)}`, scope));
       }
     });
@@ -2558,6 +2616,23 @@ export class PiWebUiApp extends LitElement {
     if (policy === undefined || catalog === undefined) return undefined;
     const evaluation = evaluateStarterModelPolicyDraft(policy, catalog);
     return evaluation.kind === "ready" ? evaluation.initialModelPolicy : undefined;
+  }
+
+  private async loadMissingStarterPlusModelPolicyInputs(
+    workspace: Workspace,
+    machineId: string,
+    selectionGeneration: number,
+  ): Promise<void> {
+    if (this.starterModelPolicy === undefined) {
+      await this.loadStarterSessionDefaults(workspace, {
+        awaitModelTierCatalog: true,
+        expectedSelectionGeneration: selectionGeneration,
+      });
+      return;
+    }
+    if (this.selectedMachineModelTierCatalog() === undefined) {
+      await this.ensureModelTierCatalog(machineId);
+    }
   }
 
   private clearStarterModelPolicyAfterSuccessfulStart(
@@ -3575,7 +3650,7 @@ export class PiWebUiApp extends LitElement {
   private async ensureStarterModelPolicyCatalog(): Promise<ModelTierSettingsResponse | undefined> {
     const current = this.selectedMachineModelTierCatalog();
     if (current !== undefined) return current;
-    await this.loadModelTierCatalog(selectedMachineId(this.state));
+    await this.ensureModelTierCatalog(selectedMachineId(this.state));
     return this.selectedMachineModelTierCatalog();
   }
 
@@ -3605,9 +3680,7 @@ export class PiWebUiApp extends LitElement {
           ? { ...current, mode: "tiered" as const }
           : selectDraftTier(current, current.tier);
       this.setStarterModelPolicyDraft(next);
-      if (this.selectedMachineModelTierCatalog() === undefined && !this.modelTierCatalogLoading) {
-        void this.loadModelTierCatalog(selectedMachineId(this.state));
-      }
+      void this.ensureModelTierCatalog(selectedMachineId(this.state));
       return;
     }
 
@@ -3627,9 +3700,7 @@ export class PiWebUiApp extends LitElement {
       : selectDraftTier(current, current.tier);
     const applied = this.setStarterModelPolicyDraft(next);
     if (next.tier === undefined) {
-      if (this.selectedMachineModelTierCatalog() === undefined && !this.modelTierCatalogLoading) {
-        void this.loadModelTierCatalog(selectedMachineId(this.state));
-      }
+      void this.ensureModelTierCatalog(selectedMachineId(this.state));
       return;
     }
 

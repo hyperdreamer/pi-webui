@@ -1252,6 +1252,103 @@ describe("PiWebUiApp starter policy reset", () => {
 // ── start snapshot ──────────────────────────────────────────────────────────
 
 describe("PiWebUiApp starter policy start snapshot", () => {
+  it("loads missing V2 starter inputs before starting from an active session", async () => {
+    const app = createApp();
+    const defaults = vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    const catalog = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    const startLegacy = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, activeState({
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+
+    await startSessionAndOpenChat(app);
+
+    expect(defaults).toHaveBeenCalledWith(mainWorkspace.path, "local");
+    expect(catalog).toHaveBeenCalledWith("local");
+    expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
+    expect(startLegacy).not.toHaveBeenCalled();
+  });
+
+  it("reuses an active-session catalog preload while preparing a V2 plus start", async () => {
+    const app = createApp();
+    const pendingCatalog = deferred<ModelTierSettingsResponse>();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockReturnValue(pendingCatalog.promise);
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, activeState({
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+    const catalogLoad = loadModelTierCatalog(app, "local");
+
+    const start = startSessionAndOpenChat(app);
+    await vi.waitFor(() => { expect(sessionsApi.sessionDefaultsV2).toHaveBeenCalledOnce(); });
+
+    expect(settings).toHaveBeenCalledOnce();
+    pendingCatalog.resolve(validCatalog());
+    await Promise.all([catalogLoad, start]);
+    expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
+  });
+
+  it("does not start after the selected session changes away and back while V2 defaults load", async () => {
+    const app = createApp();
+    const pendingDefaults = deferred<SessionDefaultsV2Response>();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockReturnValue(pendingDefaults.promise);
+    const settings = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    const originalSession = activeSession();
+    const otherSession = { ...activeSession(), id: "session-b", path: "/sessions/session-b.jsonl" };
+    stubComposerFocus(app);
+    setAppState(app, activeState({
+      sessions: [originalSession, otherSession],
+      selectedSession: originalSession,
+      status: undefined,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+
+    const start = startSessionAndOpenChat(app);
+    await vi.waitFor(() => { expect(sessionsApi.sessionDefaultsV2).toHaveBeenCalledOnce(); });
+    setStatePatch(app, { selectedSession: otherSession });
+    setStatePatch(app, { selectedSession: originalSession });
+    pendingDefaults.resolve(starterDefaultsV2());
+    await start;
+
+    expect(startPlus).not.toHaveBeenCalled();
+    expect(settings).not.toHaveBeenCalled();
+    expect(starterModelPolicy(app)).toBeUndefined();
+  });
+
+  it("uses the legacy start contract when V2 support is withdrawn during preparation", async () => {
+    const app = createApp();
+    const pendingDefaults = deferred<SessionDefaultsV2Response>();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockReturnValue(pendingDefaults.promise);
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    const startLegacy = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, activeState({
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+
+    const start = startSessionAndOpenChat(app);
+    await vi.waitFor(() => { expect(sessionsApi.sessionDefaultsV2).toHaveBeenCalledOnce(); });
+    setStatePatch(app, {
+      machineRuntimes: {
+        local: machineRuntime([
+          PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
+          PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+        ], "local"),
+      },
+    });
+    pendingDefaults.resolve(starterDefaultsV2());
+    await start;
+
+    expect(startPlus).not.toHaveBeenCalled();
+    expect(startLegacy).toHaveBeenCalledWith({ mode: "tiered", tier: "standard" });
+  });
+
   it("starts a ready V2 plus session with the complete initializer", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
