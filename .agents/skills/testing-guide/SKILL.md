@@ -85,3 +85,15 @@ Run the narrowest meaningful check first:
 - Cross-cutting changes or final merge review: prefer `npm run verify`.
 
 Record exact commands and results when working under relay/audit workflows or when handing work to another agent.
+
+### Resource contention during local full-suite runs
+
+The full suite is timing-sensitive. `vitest.config.ts` sets `maxWorkers: 1` to keep test files serial, but that only controls contention *inside* the Vitest process. Heavy work running alongside it on the same machine can still starve tests that wait on real subprocesses, ptys, or rendered DOM, and they fail with `Test timed out in 5000ms` even though nothing is wrong with the code.
+
+So when triaging a timeout:
+
+- Re-run the failing file alone on an otherwise idle machine before concluding anything. A test that passes alone and fails in a loaded full-suite run is evidence about the machine, not the test.
+- Check whether the same test fails in CI. CI runs `npm run verify` on `ubuntu-latest` with the suite to itself, so a green CI history means the local failure is environmental.
+- Do not run the full suite concurrently with other heavy jobs, including parallel agents or subsessions. Each run generates the contention that makes the others fail, so the results describe the load, not the code.
+
+Raising a timeout is the wrong first response to this failure mode. Confirm the deadline is genuinely too tight for the work being awaited, rather than too tight for a starved CPU; otherwise the change only makes a real future hang slower to detect. Tests that already wait on events rather than sleeping have no faster path available when the event has genuinely not happened yet.
