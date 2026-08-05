@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseProjectUsageResponse } from "./parsers";
+import { parseProjectUsageCountResponse, parseProjectUsageResponse } from "./parsers";
 
 const totals = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.5, sessionCount: 6 };
 
@@ -37,5 +37,25 @@ describe("parseProjectUsageResponse", () => {
 
   it("throws when the payload is not an object", () => {
     expect(() => parseProjectUsageResponse(null)).toThrow();
+  });
+});
+
+describe("parseProjectUsageCountResponse", () => {
+  it("parses a complete count response", () => {
+    expect(parseProjectUsageCountResponse({ sessionCount: 6 })).toEqual({ sessionCount: 6 });
+  });
+
+  it.each([
+    null,
+    {},
+    { sessionCount: "6" },
+    { sessionCount: -1 },
+    { sessionCount: 1.5 },
+  ])("rejects an invalid count response %#", (value) => {
+    expect(() => parseProjectUsageCountResponse(value)).toThrow();
+  });
+
+  it("rejects unknown response fields", () => {
+    expect(() => parseProjectUsageCountResponse({ sessionCount: 6, unexpected: true })).toThrow();
   });
 });

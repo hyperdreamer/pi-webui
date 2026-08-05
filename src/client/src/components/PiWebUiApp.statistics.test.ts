@@ -1,6 +1,6 @@
 import type { TemplateResult } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectUsageResponse } from "../../../shared/apiTypes";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectUsageCountResponse, ProjectUsageResponse } from "../../../shared/apiTypes";
 import { projectsApi, type Machine, type Project } from "../api";
 import type { AppState } from "../appState";
 import { findTemplateContaining, templateValueAfterMarker } from "../templateInspection.testSupport";
@@ -29,12 +29,124 @@ const remoteMachine: Machine = {
   updatedAt: "2026-08-01T00:00:00.000Z",
 };
 
+beforeEach(() => {
+  vi.spyOn(projectsApi, "projectUsageCount").mockResolvedValue({ sessionCount: 0 });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("PiWebUiApp project statistics requests", () => {
+  it("renders the enumerated session count while the scan is pending", async () => {
+    const app = createApp();
+    const count = deferred<ProjectUsageCountResponse>();
+    const response = deferred<ProjectUsageResponse>();
+    const countRequest = vi.mocked(projectsApi.projectUsageCount).mockReturnValue(count.promise);
+    const scanRequest = vi.spyOn(projectsApi, "projectUsage").mockReturnValue(response.promise);
+
+    const request = showProjectStatistics(app, projectA);
+    expect(countRequest).toHaveBeenCalledWith({ projectPath: projectA.path, liveCwds: [] }, "local");
+    expect(scanRequest).toHaveBeenCalledWith({ projectPath: projectA.path, liveCwds: [] }, "local");
+
+    count.resolve({ sessionCount: 639 });
+    await count.promise;
+    await Promise.resolve();
+
+    expect(statisticsDialogProperty(app, ".sessionCount=")).toBe(639);
+    expect(Reflect.get(app, "statisticsLoading")).toBe(true);
+
+    response.resolve(usageReport(projectA, 1));
+    await request;
+  });
+
+  it("ignores a superseded count and applies the current count", async () => {
+    const app = createApp();
+    const staleCount = deferred<ProjectUsageCountResponse>();
+    const currentCount = deferred<ProjectUsageCountResponse>();
+    const staleResponse = deferred<ProjectUsageResponse>();
+    const currentResponse = deferred<ProjectUsageResponse>();
+    const countRequest = vi.mocked(projectsApi.projectUsageCount)
+      .mockReturnValueOnce(staleCount.promise)
+      .mockReturnValueOnce(currentCount.promise);
+    vi.spyOn(projectsApi, "projectUsage")
+      .mockReturnValueOnce(staleResponse.promise)
+      .mockReturnValueOnce(currentResponse.promise);
+
+    const staleRequest = showProjectStatistics(app, projectA);
+    const currentRequest = showProjectStatistics(app, projectB);
+    expect(countRequest).toHaveBeenCalledTimes(2);
+
+    staleCount.resolve({ sessionCount: 99 });
+    await staleCount.promise;
+    await Promise.resolve();
+    expect(Reflect.get(app, "statisticsSessionCount")).toBeUndefined();
+
+    currentCount.resolve({ sessionCount: 4 });
+    await currentCount.promise;
+    await Promise.resolve();
+    expect(Reflect.get(app, "statisticsSessionCount")).toBe(4);
+
+    staleResponse.resolve(usageReport(projectA, 1));
+    currentResponse.resolve(usageReport(projectB, 2));
+    await Promise.all([staleRequest, currentRequest]);
+  });
+
+  it("does not populate the count after the dialog closes", async () => {
+    const app = createApp();
+    const count = deferred<ProjectUsageCountResponse>();
+    const response = deferred<ProjectUsageResponse>();
+    const countRequest = vi.mocked(projectsApi.projectUsageCount).mockReturnValue(count.promise);
+    vi.spyOn(projectsApi, "projectUsage").mockReturnValue(response.promise);
+    const request = showProjectStatistics(app, projectA);
+    expect(countRequest).toHaveBeenCalledOnce();
+
+    closeProjectStatistics(app);
+    count.resolve({ sessionCount: 8 });
+    await count.promise;
+    await Promise.resolve();
+
+    expect(Reflect.get(app, "statisticsSessionCount")).toBeUndefined();
+    response.resolve(usageReport(projectA, 1));
+    await request;
+  });
+
+  it("allows the scan to complete when the count request fails", async () => {
+    const app = createApp();
+    const report = usageReport(projectA, 7);
+    const countRequest = vi.mocked(projectsApi.projectUsageCount).mockRejectedValue(new Error("count failed"));
+    vi.spyOn(projectsApi, "projectUsage").mockResolvedValue(report);
+
+    await showProjectStatistics(app, projectA);
+
+    expect(countRequest).toHaveBeenCalledOnce();
+    expect(Reflect.get(app, "statisticsReport")).toBe(report);
+    expect(Reflect.get(app, "statisticsError")).toBeUndefined();
+    expect(statisticsDialogProperty(app, ".report=")).toBe(report);
+  });
+
+  it("starts and completes the scan without waiting for a slow count", async () => {
+    const app = createApp();
+    const count = deferred<ProjectUsageCountResponse>();
+    const report = usageReport(projectA, 5);
+    const countRequest = vi.mocked(projectsApi.projectUsageCount).mockReturnValue(count.promise);
+    const scanRequest = vi.spyOn(projectsApi, "projectUsage").mockResolvedValue(report);
+
+    const request = showProjectStatistics(app, projectA);
+    await Promise.resolve();
+    await Promise.resolve();
+    const countCallsBeforeResolution = countRequest.mock.calls.length;
+    const scanCallsBeforeResolution = scanRequest.mock.calls.length;
+    const reportBeforeCount: unknown = Reflect.get(app, "statisticsReport");
+    count.resolve({ sessionCount: 1 });
+    await request;
+
+    expect(countCallsBeforeResolution).toBe(1);
+    expect(scanCallsBeforeResolution).toBe(1);
+    expect(reportBeforeCount).toBe(report);
+  });
+
   it("ignores a superseded project response and applies the current response", async () => {
     const app = createApp();
     const stale = deferred<ProjectUsageResponse>();
@@ -111,16 +223,23 @@ describe("PiWebUiApp project statistics requests", () => {
 
   it("invalidates a request when the selected machine changes away and back", async () => {
     const app = createApp();
+    const count = deferred<ProjectUsageCountResponse>();
     const response = deferred<ProjectUsageResponse>();
+    const countRequest = vi.mocked(projectsApi.projectUsageCount).mockReturnValue(count.promise);
     vi.spyOn(projectsApi, "projectUsage").mockReturnValue(response.promise);
     const request = showProjectStatistics(app, projectA);
 
     stubMachineChangeSideEffects(app);
     changeMachine(app, remoteMachine);
     changeMachine(app, undefined);
+    count.resolve({ sessionCount: 12 });
     response.resolve(usageReport(projectA, 1));
+    await count.promise;
     await request;
+    await Promise.resolve();
 
+    expect(countRequest).toHaveBeenCalledOnce();
+    expect(Reflect.get(app, "statisticsSessionCount")).toBeUndefined();
     expect(Reflect.get(app, "statisticsReport")).toBeUndefined();
     expect(Reflect.get(app, "statisticsError")).toBeUndefined();
   });
@@ -155,11 +274,15 @@ function showProjectStatistics(app: PiWebUiApp, project: Project): Promise<void>
 }
 
 function closeProjectStatistics(app: PiWebUiApp): void {
-  const template = findTemplateContaining(renderApp(app), "<project-statistics-dialog");
-  if (template === undefined) throw new Error("PiWebUiApp did not render project-statistics-dialog");
-  const callback: unknown = templateValueAfterMarker(template, ".onClose=");
+  const callback: unknown = statisticsDialogProperty(app, ".onClose=");
   if (!isCloseProjectStatistics(callback)) throw new Error("Project statistics close callback is not callable");
   callback();
+}
+
+function statisticsDialogProperty(app: PiWebUiApp, marker: string): unknown {
+  const template = findTemplateContaining(renderApp(app), "<project-statistics-dialog");
+  if (template === undefined) throw new Error("PiWebUiApp did not render project-statistics-dialog");
+  return templateValueAfterMarker(template, marker);
 }
 
 function renderApp(app: PiWebUiApp): TemplateResult {

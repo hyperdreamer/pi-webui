@@ -13,9 +13,17 @@ function report(): ProjectUsageResponse {
   };
 }
 
-async function appWith(usage: { report: (scope: { projectPath: string; liveCwds: readonly string[] }) => Promise<ProjectUsageResponse> }) {
+interface TestProjectUsageReporter {
+  report(scope: { projectPath: string; liveCwds: readonly string[] }): Promise<ProjectUsageResponse>;
+  count(scope: { projectPath: string; liveCwds: readonly string[] }): Promise<number>;
+}
+
+async function appWith(usage: Pick<TestProjectUsageReporter, "report"> & Partial<Pick<TestProjectUsageReporter, "count">>) {
   const app = Fastify();
-  registerProjectUsageRoutes(app, usage);
+  registerProjectUsageRoutes(app, {
+    count: () => Promise.resolve(0),
+    ...usage,
+  });
   await app.ready();
   return app;
 }
@@ -36,6 +44,29 @@ describe("registerProjectUsageRoutes", () => {
     await app.inject({ method: "POST", url: "/sessions/project-usage", payload: { projectPath: "/dev/app", liveCwds: ["/dev/app", "/dev/app/.worktrees/x"] } });
 
     expect(reportFn).toHaveBeenCalledWith({ projectPath: "/dev/app", liveCwds: ["/dev/app", "/dev/app/.worktrees/x"] });
+    await app.close();
+  });
+
+  it("returns the count for a valid scope", async () => {
+    const count = vi.fn(() => Promise.resolve(3));
+    const app = await appWith({ report: () => Promise.resolve(report()), count });
+    const response = await app.inject({ method: "POST", url: "/sessions/project-usage/count", payload: { projectPath: "/dev/app", liveCwds: ["/dev/app"] } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ sessionCount: 3 });
+    expect(count).toHaveBeenCalledWith({ projectPath: "/dev/app", liveCwds: ["/dev/app"] });
+    await app.close();
+  });
+
+  it.each([
+    ["projectPath", { projectPath: "", liveCwds: [] }, { error: "projectPath is required" }],
+    ["liveCwds", { projectPath: "/dev/app", liveCwds: "nope" }, { error: "liveCwds must be an array of strings" }],
+  ])("rejects an invalid %s for the count route with the existing 400 shape", async (_field, payload, expected) => {
+    const app = await appWith({ report: () => Promise.resolve(report()) });
+    const response = await app.inject({ method: "POST", url: "/sessions/project-usage/count", payload });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(expected);
     await app.close();
   });
 

@@ -59,6 +59,30 @@ describe("ProjectUsageService", () => {
     expect(report.projectPath).toBe("/dev/app");
   });
 
+  it("counts deduplicated in-scope candidates without scanning or flushing the cache", async () => {
+    const totalsFor = vi.fn(() => Promise.resolve(totals(1, 0.1)));
+    const flush = vi.fn(() => Promise.resolve(undefined));
+    const service = new ProjectUsageService({
+      candidates: candidateSource({
+        listForCwd: () => Promise.resolve([{ id: "live", path: "/store/live.jsonl", cwd: "/dev/app" }]),
+        listAll: () => Promise.resolve([
+          { id: "live", path: "/store/live.jsonl", cwd: "/dev/app" },
+          { id: "retired", path: "/store/retired.jsonl", cwd: "/dev/app/.worktrees/retired" },
+          { id: "other", path: "/store/other.jsonl", cwd: "/dev/other" },
+        ]),
+        listArchived: () => Promise.resolve([
+          { sessionId: "archived", cwd: "/dev/app", archivePath: "/archive/archived.jsonl" },
+          { sessionId: "live", cwd: "/dev/app", archivePath: "/archive/live.jsonl" },
+        ]),
+      }),
+      cache: { totalsFor, flush },
+    });
+
+    await expect(service.count({ projectPath: "/dev/app", liveCwds: ["/dev/app"] })).resolves.toBe(3);
+    expect(totalsFor).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+  });
+
   it("waits for each session scan before starting the next", async () => {
     const firstScan = deferred<UsageTotals>();
     const firstScanStarted = deferred<undefined>();

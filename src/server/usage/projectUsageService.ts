@@ -78,10 +78,13 @@ export class ProjectUsageService {
     return run;
   }
 
+  async count(scope: ProjectUsageScopeRequest): Promise<number> {
+    return (await this.collectInScopeCandidates(scope)).length;
+  }
+
   private async buildReport(scope: ProjectUsageScopeRequest): Promise<ProjectUsageReport> {
     try {
-      const inputs = await this.collectCandidates(scope);
-      const candidates = assignBuckets(inputs, { projectPath: scope.projectPath, liveCwds: scope.liveCwds });
+      const candidates = await this.collectInScopeCandidates(scope);
 
       const buckets: Record<ProjectUsageBucket, ProjectUsageBucketTotals> = {
         live: emptyBucketTotals(),
@@ -103,6 +106,11 @@ export class ProjectUsageService {
     } finally {
       await this.options.cache.flush();
     }
+  }
+
+  private async collectInScopeCandidates(scope: ProjectUsageScopeRequest) {
+    const inputs = await this.collectCandidates(scope);
+    return assignBuckets(inputs, { projectPath: scope.projectPath, liveCwds: scope.liveCwds });
   }
 
   private async collectCandidates(scope: ProjectUsageScopeRequest): Promise<CandidateInput[]> {

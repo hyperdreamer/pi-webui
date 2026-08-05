@@ -426,6 +426,7 @@ export class PiWebUiApp extends LitElement {
   @state() private projectBrowserOpen = false;
   @state() private statisticsProject: Project | undefined;
   @state() private statisticsReport: ProjectUsageResponse | undefined;
+  @state() private statisticsSessionCount: number | undefined;
   @state() private statisticsLoading = false;
   @state() private statisticsError: string | undefined;
   private statisticsRequestGeneration = 0;
@@ -3221,11 +3222,19 @@ export class PiWebUiApp extends LitElement {
       && selectedMachineId(this.state) === machineId;
     this.statisticsProject = project;
     this.statisticsReport = undefined;
+    this.statisticsSessionCount = undefined;
     this.statisticsError = undefined;
     this.statisticsLoading = true;
     const liveCwds = (this.state.workspacesByProjectId[project.id] ?? []).map((workspace) => workspace.path);
+    const scope = { projectPath: project.path, liveCwds };
+    void projectsApi.projectUsageCount(scope, machineId).then(
+      ({ sessionCount }) => {
+        if (requestIsCurrent() && this.statisticsLoading) this.statisticsSessionCount = sessionCount;
+      },
+      () => undefined,
+    );
     try {
-      const report = await projectsApi.projectUsage({ projectPath: project.path, liveCwds }, machineId);
+      const report = await projectsApi.projectUsage(scope, machineId);
       if (!requestIsCurrent()) return;
       this.statisticsReport = report;
     } catch (error: unknown) {
@@ -3240,6 +3249,7 @@ export class PiWebUiApp extends LitElement {
     this.statisticsRequestGeneration += 1;
     this.statisticsProject = undefined;
     this.statisticsReport = undefined;
+    this.statisticsSessionCount = undefined;
     this.statisticsError = undefined;
     this.statisticsLoading = false;
   }
@@ -4308,7 +4318,7 @@ export class PiWebUiApp extends LitElement {
             .report=${this.statisticsReport}
             .loading=${this.statisticsLoading}
             .errorMessage=${this.statisticsError}
-            .sessionCount=${this.statisticsReport?.total.sessionCount}
+            .sessionCount=${this.statisticsLoading ? this.statisticsSessionCount : undefined}
             .onClose=${() => { this.closeProjectStatistics(); }}
           ></project-statistics-dialog>
         `}

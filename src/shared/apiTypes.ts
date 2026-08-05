@@ -535,6 +535,12 @@ export interface ProjectUsageRequest {
   liveCwds: string[];
 }
 
+export type ProjectUsageCountRequest = ProjectUsageRequest;
+
+export interface ProjectUsageCountResponse {
+  sessionCount: number;
+}
+
 export interface WorkspaceEffectiveConfig {
   uploads?: PiWebUiUploadsConfig;
 }
