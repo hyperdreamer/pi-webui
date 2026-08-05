@@ -25,6 +25,7 @@ export const PI_WEBUI_CAPABILITIES = {
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
   sessionsModelPolicyStarterSelection: "sessions.modelPolicyStarterSelection",
   sessionsReorder: "sessions.reorder",
+  projectUsageStatistics: "project.usageStatistics",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -507,6 +508,31 @@ export interface Project {
   name: string;
   path: string;
   createdAt: string;
+}
+
+export interface ProjectUsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  sessionCount: number;
+}
+
+export interface ProjectUsageResponse {
+  projectPath: string;
+  buckets: {
+    live: ProjectUsageTotals;
+    retired: ProjectUsageTotals;
+    archived: ProjectUsageTotals;
+  };
+  total: ProjectUsageTotals;
+  generatedAt: string;
+}
+
+export interface ProjectUsageRequest {
+  projectPath: string;
+  liveCwds: string[];
 }
 
 export interface WorkspaceEffectiveConfig {
