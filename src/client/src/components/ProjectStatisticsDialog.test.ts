@@ -58,6 +58,44 @@ describe("ProjectStatisticsDialog", () => {
     element.remove();
   });
 
+  it("renders identifiable metric pairs for the narrow table contract", async () => {
+    const { ProjectStatisticsDialog } = await import("./ProjectStatisticsDialog");
+    const element = new ProjectStatisticsDialog();
+    const usageReport = report();
+    usageReport.buckets.live = {
+      input: 111_111,
+      output: 222_222,
+      cacheRead: 3_333_333,
+      cacheWrite: 44_444,
+      cost: 1.5,
+      sessionCount: 3,
+    };
+    element.report = usageReport;
+    document.body.append(element);
+    await element.updateComplete;
+
+    const row = element.renderRoot.querySelector("tbody tr");
+    expect(row?.querySelector("th[scope='row']")?.textContent).toContain("Live workspaces");
+    expect(row?.querySelector(".usage-cost-cell")?.textContent.trim()).toBe("$1.5000");
+    expect([...row?.querySelectorAll(".usage-token-cell") ?? []].map((cell) => ({
+      label: cell.querySelector(".usage-metric-label")?.textContent.trim(),
+      value: cell.querySelector(".usage-metric-value")?.textContent.trim(),
+    }))).toEqual([
+      { label: "Input", value: "111,111" },
+      { label: "Output", value: "222,222" },
+      { label: "Cache read", value: "3.3M" },
+      { label: "Cache write", value: "44,444" },
+    ]);
+
+    const narrowStyles = ProjectStatisticsDialog.styles.cssText.slice(
+      ProjectStatisticsDialog.styles.cssText.indexOf("@media (max-width: 760px)"),
+    );
+    expect(narrowStyles).toMatch(/\.usage-cost-cell\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/);
+    expect(narrowStyles).toMatch(/\.usage-token-cell\s*\{[^}]*grid-column:\s*1 \/ -1;/);
+    expect(narrowStyles).toMatch(/\.usage-metric-label\s*\{[^}]*display:\s*block;/);
+    element.remove();
+  });
+
   it("renders a scanning state with the session count while loading", async () => {
     const { ProjectStatisticsDialog } = await import("./ProjectStatisticsDialog");
     const element = new ProjectStatisticsDialog();
@@ -67,6 +105,38 @@ describe("ProjectStatisticsDialog", () => {
     await element.updateComplete;
 
     expect(element.renderRoot.textContent).toContain("639");
+    const spinner = element.renderRoot.querySelector(".usage-spinner");
+    expect(spinner?.getAttribute("role")).toBe("progressbar");
+    expect(spinner?.getAttribute("aria-label")).toBe("Scanning project sessions");
+    expect(element.renderRoot.querySelector(".usage-scanning")?.getAttribute("role")).toBe("status");
+    element.remove();
+  });
+
+  it("renders an idle state when no report is available and no scan is running", async () => {
+    const { ProjectStatisticsDialog } = await import("./ProjectStatisticsDialog");
+    const element = new ProjectStatisticsDialog();
+    document.body.append(element);
+    await element.updateComplete;
+
+    expect(element.renderRoot.textContent).toContain("Usage data is not available.");
+    expect(element.renderRoot.textContent).not.toContain("Scanning");
+    expect(element.renderRoot.querySelector(".usage-spinner")).toBeNull();
+    element.remove();
+  });
+
+  it("keeps the narrow dialog frame within the viewport contract", async () => {
+    const { ProjectStatisticsDialog } = await import("./ProjectStatisticsDialog");
+    const element = new ProjectStatisticsDialog();
+    document.body.append(element);
+    await element.updateComplete;
+
+    expect(element.renderRoot.querySelector(".backdrop")).not.toBeNull();
+    expect(element.renderRoot.querySelector("section[role='dialog']")).not.toBeNull();
+    const styles = ProjectStatisticsDialog.styles.cssText;
+    expect(styles).toMatch(/\*\s*\{[^}]*box-sizing:\s*border-box;/);
+    const narrowStyles = styles.slice(styles.indexOf("@media (max-width: 760px)"));
+    expect(narrowStyles).toMatch(/\.backdrop\s*\{[^}]*padding:\s*0;/);
+    expect(narrowStyles).toMatch(/section\[role="dialog"\]\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*border:\s*0;[^}]*border-radius:\s*0;/);
     element.remove();
   });
 
