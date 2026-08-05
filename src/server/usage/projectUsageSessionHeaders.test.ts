@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultPiSessionDir } from "../sessions/piSessionManagerGateway";
 import { ProjectUsageService } from "./projectUsageService";
 import { ProjectUsageSessionHeaderSource, listProjectUsageSessionHeadersInDir } from "./projectUsageSessionHeaders";
+import { scanSessionUsage } from "./sessionUsageScanner";
 
 let tempDir: string;
 
@@ -46,8 +47,6 @@ describe("listProjectUsageSessionHeadersInDir", () => {
 
     const service = new ProjectUsageService({
       candidates: {
-        listForCwd: () => Promise.resolve([]),
-        listAll: () => Promise.resolve([{ id: "long", path: sessionPath, cwd: projectPath }]),
         listHeadersForCwd: () => Promise.resolve([]),
         listAllHeaders: () => listProjectUsageSessionHeadersInDir(sessionDir),
         listArchived: () => Promise.resolve([]),
@@ -61,6 +60,71 @@ describe("listProjectUsageSessionHeadersInDir", () => {
 
     await expect(service.count(scope)).resolves.toBe(1);
     await expect(service.report(scope)).resolves.toMatchObject({ total: { sessionCount: 1 } });
+  });
+  it("keeps count and report on the same header-only candidates with one content stream", async () => {
+    const sessionDir = join(tempDir, "wired-session-store");
+    const projectPath = join(tempDir, "project");
+    const retiredCwd = join(projectPath, ".worktrees", "retired");
+    const archivePath = join(tempDir, "archive", "archived.jsonl");
+    await writeUsageSession(sessionDir, "live", projectPath, 1);
+    await writeUsageSession(sessionDir, "retired", retiredCwd, 2);
+    await writeUsageSession(sessionDir, "other", join(tempDir, "other"), 4);
+    await writeUsageSession(join(tempDir, "archive"), "archived", projectPath, 8);
+
+    const headers = new ProjectUsageSessionHeaderSource({
+      agentDir: join(tempDir, "agent"),
+      env: { PI_WEBUI_AGENT_SESSION_DIR: sessionDir },
+      sessionDirEnvKeys: ["PI_WEBUI_AGENT_SESSION_DIR"],
+    });
+    const fullEntryGateway = {
+      listForCwd: vi.fn(() => Promise.reject(new Error("full cwd listing must not run"))),
+      listAll: vi.fn(() => Promise.reject(new Error("full history listing must not run"))),
+    };
+    const allHeaderCandidateIds: string[][] = [];
+    const candidates = {
+      ...fullEntryGateway,
+      listHeadersForCwd: (cwd: string) => headers.listForCwd(cwd),
+      listAllHeaders: async () => {
+        const listed = await headers.listAll();
+        allHeaderCandidateIds.push(listed.map((candidate) => candidate.sessionId));
+        return listed;
+      },
+      listArchived: () => Promise.resolve([{ sessionId: "archived", cwd: projectPath, archivePath }]),
+    };
+    let openContentStreams = 0;
+    let maxOpenContentStreams = 0;
+    const scannedCandidateIds: string[] = [];
+    const service = new ProjectUsageService({
+      candidates,
+      cache: {
+        totalsFor: async (sessionId, path) => {
+          openContentStreams += 1;
+          maxOpenContentStreams = Math.max(maxOpenContentStreams, openContentStreams);
+          scannedCandidateIds.push(sessionId);
+          try {
+            return (await scanSessionUsage(path, 0)).totals;
+          } finally {
+            openContentStreams -= 1;
+          }
+        },
+        flush: () => Promise.resolve(undefined),
+      },
+    });
+    const scope = { projectPath, liveCwds: [projectPath] };
+
+    const count = await service.count(scope);
+    const report = await service.report(scope);
+
+    expect(fullEntryGateway.listForCwd).not.toHaveBeenCalled();
+    expect(fullEntryGateway.listAll).not.toHaveBeenCalled();
+    expect(allHeaderCandidateIds).toHaveLength(2);
+    expect(allHeaderCandidateIds[1]).toEqual(allHeaderCandidateIds[0]);
+    expect(scannedCandidateIds).toEqual(["archived", "live", "retired"]);
+    expect(maxOpenContentStreams).toBe(1);
+    expect(report.total.sessionCount).toBe(count);
+    expect(report.buckets.live.sessionCount).toBe(1);
+    expect(report.buckets.retired.sessionCount).toBe(1);
+    expect(report.buckets.archived.sessionCount).toBe(1);
   });
 });
 
@@ -89,6 +153,20 @@ describe("ProjectUsageSessionHeaderSource", () => {
     ]);
   });
 });
+
+async function writeUsageSession(dir: string, id: string, cwd: string, input: number): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${id}.jsonl`), `${[
+    JSON.stringify({ type: "session", id, cwd }),
+    JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        usage: { input, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: input / 100 } },
+      },
+    }),
+  ].join("\n")}\n`, "utf8");
+}
 
 async function writeSessionHeader(dir: string, id: string, cwd: string): Promise<void> {
   await mkdir(dir, { recursive: true });

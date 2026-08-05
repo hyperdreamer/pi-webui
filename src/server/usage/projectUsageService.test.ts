@@ -8,8 +8,6 @@ function totals(input: number, cost: number): UsageTotals {
 
 function candidateSource(overrides: Partial<ProjectUsageCandidateSource> = {}): ProjectUsageCandidateSource {
   return {
-    listForCwd: () => Promise.resolve([]),
-    listAll: () => Promise.resolve([]),
     listHeadersForCwd: () => Promise.resolve([]),
     listAllHeaders: () => Promise.resolve([]),
     listArchived: () => Promise.resolve([]),
@@ -29,11 +27,11 @@ describe("ProjectUsageService", () => {
   it("sums buckets and the project total", async () => {
     const service = new ProjectUsageService({
       candidates: candidateSource({
-        listForCwd: (cwd) => Promise.resolve(cwd === "/dev/app" ? [{ id: "live1", path: "/store/live1.jsonl", cwd: "/dev/app" }] : []),
-        listAll: () => Promise.resolve([
-          { id: "live1", path: "/store/live1.jsonl", cwd: "/dev/app" },
-          { id: "gone1", path: "/store/gone1.jsonl", cwd: "/dev/app/.worktrees/gone" },
-          { id: "other", path: "/store/other.jsonl", cwd: "/dev/app-sibling" },
+        listHeadersForCwd: (cwd) => Promise.resolve(cwd === "/dev/app" ? [{ sessionId: "live1", path: "/store/live1.jsonl", cwd: "/dev/app" }] : []),
+        listAllHeaders: () => Promise.resolve([
+          { sessionId: "live1", path: "/store/live1.jsonl", cwd: "/dev/app" },
+          { sessionId: "gone1", path: "/store/gone1.jsonl", cwd: "/dev/app/.worktrees/gone" },
+          { sessionId: "other", path: "/store/other.jsonl", cwd: "/dev/app-sibling" },
         ]),
         listArchived: () => Promise.resolve([{ sessionId: "arch1", cwd: "/dev/app", archivePath: "/archive/arch1.jsonl" }]),
       }),
@@ -72,16 +70,18 @@ describe("ProjectUsageService", () => {
       { sessionId: "retired", path: "/store/retired.jsonl", cwd: "/dev/app/.worktrees/retired" },
       { sessionId: "other", path: "/store/other.jsonl", cwd: "/dev/other" },
     ]));
-    const candidates = candidateSource({
+    const candidates = {
+      ...candidateSource({
+        listHeadersForCwd,
+        listAllHeaders,
+        listArchived: () => Promise.resolve([
+          { sessionId: "archived", cwd: "/dev/app", archivePath: "/archive/archived.jsonl" },
+          { sessionId: "live", cwd: "/dev/app", archivePath: "/archive/live.jsonl" },
+        ]),
+      }),
       listForCwd,
       listAll,
-      listHeadersForCwd,
-      listAllHeaders,
-      listArchived: () => Promise.resolve([
-        { sessionId: "archived", cwd: "/dev/app", archivePath: "/archive/archived.jsonl" },
-        { sessionId: "live", cwd: "/dev/app", archivePath: "/archive/live.jsonl" },
-      ]),
-    });
+    };
     const service = new ProjectUsageService({
       candidates,
       cache: { totalsFor, flush },
@@ -108,9 +108,9 @@ describe("ProjectUsageService", () => {
     });
     const service = new ProjectUsageService({
       candidates: candidateSource({
-        listAll: () => Promise.resolve([
-          { id: "a", path: "/store/a.jsonl", cwd: "/dev/app" },
-          { id: "b", path: "/store/b.jsonl", cwd: "/dev/app" },
+        listAllHeaders: () => Promise.resolve([
+          { sessionId: "a", path: "/store/a.jsonl", cwd: "/dev/app" },
+          { sessionId: "b", path: "/store/b.jsonl", cwd: "/dev/app" },
         ]),
       }),
       cache: { totalsFor, flush: () => Promise.resolve(undefined) },
@@ -131,19 +131,19 @@ describe("ProjectUsageService", () => {
 
   it("queries every live cwd and includes sessions found only by the live source", async () => {
     const liveCwds = ["/dev/app", "/dev/app/.worktrees/feature"];
-    const listForCwd = vi.fn((cwd: string) => Promise.resolve(
+    const listHeadersForCwd = vi.fn((cwd: string) => Promise.resolve(
       cwd === liveCwds[1]
-        ? [{ id: "live-only", path: "/store/live-only.jsonl", cwd }]
+        ? [{ sessionId: "live-only", path: "/store/live-only.jsonl", cwd }]
         : [],
     ));
     const service = new ProjectUsageService({
-      candidates: candidateSource({ listForCwd }),
+      candidates: candidateSource({ listHeadersForCwd }),
       cache: { totalsFor: () => Promise.resolve(totals(7, 0.7)), flush: () => Promise.resolve(undefined) },
     });
 
     const report = await service.report({ projectPath: "/dev/app", liveCwds });
 
-    expect(listForCwd.mock.calls).toEqual([[liveCwds[0]], [liveCwds[1]]]);
+    expect(listHeadersForCwd.mock.calls).toEqual([[liveCwds[0]], [liveCwds[1]]]);
     expect(report.buckets.live).toEqual({ ...totals(7, 0.7), sessionCount: 1 });
     expect(report.total).toEqual({ ...totals(7, 0.7), sessionCount: 1 });
   });
@@ -165,8 +165,8 @@ describe("ProjectUsageService", () => {
     const totalsFor = vi.fn(() => Promise.resolve(totals(5, 0.5)));
     const service = new ProjectUsageService({
       candidates: candidateSource({
-        listForCwd: () => Promise.resolve([{ id: "dup", path: "/store/live-dup.jsonl", cwd: "/dev/app" }]),
-        listAll: () => Promise.resolve([{ id: "dup", path: "/store/history-dup.jsonl", cwd: "/dev/app" }]),
+        listHeadersForCwd: () => Promise.resolve([{ sessionId: "dup", path: "/store/live-dup.jsonl", cwd: "/dev/app" }]),
+        listAllHeaders: () => Promise.resolve([{ sessionId: "dup", path: "/store/history-dup.jsonl", cwd: "/dev/app" }]),
         listArchived: () => Promise.resolve([{ sessionId: "dup", cwd: "/dev/app", archivePath: "/archive/dup.jsonl" }]),
       }),
       cache: { totalsFor, flush: () => Promise.resolve(undefined) },
@@ -184,7 +184,7 @@ describe("ProjectUsageService", () => {
 
   it("returns zeroed buckets when no session belongs to the project", async () => {
     const service = new ProjectUsageService({
-      candidates: candidateSource({ listAll: () => Promise.resolve([{ id: "x", path: "/store/x.jsonl", cwd: "/elsewhere" }]) }),
+      candidates: candidateSource({ listAllHeaders: () => Promise.resolve([{ sessionId: "x", path: "/store/x.jsonl", cwd: "/elsewhere" }]) }),
       cache: { totalsFor: () => Promise.resolve(totals(9, 9)), flush: () => Promise.resolve(undefined) },
     });
 
@@ -194,9 +194,9 @@ describe("ProjectUsageService", () => {
 
   it("shares concurrent scans but starts a fresh scan after they settle", async () => {
     let currentTotals = totals(2, 0.2);
-    const listAll = vi.fn(() => Promise.resolve([{ id: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]));
+    const listAllHeaders = vi.fn(() => Promise.resolve([{ sessionId: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]));
     const service = new ProjectUsageService({
-      candidates: candidateSource({ listAll }),
+      candidates: candidateSource({ listAllHeaders }),
       cache: { totalsFor: () => Promise.resolve(currentTotals), flush: () => Promise.resolve(undefined) },
     });
 
@@ -207,7 +207,7 @@ describe("ProjectUsageService", () => {
     currentTotals = totals(3, 0.3);
     const later = await service.report({ projectPath: "/dev/app", liveCwds: [] });
 
-    expect(listAll).toHaveBeenCalledTimes(2);
+    expect(listAllHeaders).toHaveBeenCalledTimes(2);
     expect(first.total.input).toBe(2);
     expect(second.total.input).toBe(2);
     expect(later.total.input).toBe(3);
@@ -231,7 +231,7 @@ describe("ProjectUsageService", () => {
       return Promise.resolve(totals(4, 0.4));
     });
     const service = new ProjectUsageService({
-      candidates: candidateSource({ listAll: () => Promise.resolve([{ id: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]) }),
+      candidates: candidateSource({ listAllHeaders: () => Promise.resolve([{ sessionId: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]) }),
       cache: { totalsFor, flush: () => Promise.resolve(undefined) },
     });
 
@@ -246,7 +246,7 @@ describe("ProjectUsageService", () => {
   it("still flushes when a session scan throws", async () => {
     const flush = vi.fn(() => Promise.resolve(undefined));
     const service = new ProjectUsageService({
-      candidates: candidateSource({ listAll: () => Promise.resolve([{ id: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]) }),
+      candidates: candidateSource({ listAllHeaders: () => Promise.resolve([{ sessionId: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]) }),
       cache: {
         totalsFor: () => Promise.reject(new Error("scan failed")),
         flush,

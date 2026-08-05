@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
-import { formatUsageTokens, usageBucketRows } from "./ProjectStatisticsDialog";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProjectStatisticsDialog, formatUsageTokens, usageBucketRows } from "./ProjectStatisticsDialog";
 import type { ProjectUsageResponse } from "../../../shared/apiTypes";
 
 function totals(input: number, sessionCount: number) {
@@ -16,6 +16,10 @@ function report(): ProjectUsageResponse {
     generatedAt: "2026-08-05T00:00:00.000Z",
   };
 }
+
+afterEach(() => {
+  document.body.replaceChildren();
+});
 
 describe("formatUsageTokens", () => {
   it("keeps small values exact", () => {
@@ -41,6 +45,59 @@ describe("usageBucketRows", () => {
 });
 
 describe("ProjectStatisticsDialog", () => {
+  it("opens as an aria modal with initial focus on its close control", async () => {
+    const element = await mountDialog();
+    const dialog = requiredElement(element, "section[role='dialog']");
+    const closeButton = requiredElement(element, ".close-button");
+
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(element.shadowRoot?.activeElement).toBe(closeButton);
+  });
+
+  it("wraps Tab from the last focusable control to the first", async () => {
+    const element = await mountDialog();
+    const closeButton = requiredElement(element, ".close-button");
+    const lastButton = appendLastFocusable(element);
+    lastButton.focus();
+    const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+
+    lastButton.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(element.shadowRoot?.activeElement).toBe(closeButton);
+  });
+
+  it("wraps Shift+Tab from the first focusable control to the last", async () => {
+    const element = await mountDialog();
+    const closeButton = requiredElement(element, ".close-button");
+    const lastButton = appendLastFocusable(element);
+    closeButton.focus();
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    closeButton.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(element.shadowRoot?.activeElement).toBe(lastButton);
+  });
+
+  it("closes when Escape is pressed inside the dialog", async () => {
+    const element = await mountDialog();
+    const onClose = vi.fn();
+    element.onClose = onClose;
+    const closeButton = requiredElement(element, ".close-button");
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+
+    closeButton.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("renders bucket labels, the total, and the deleted-note when a report is present", async () => {
     const { ProjectStatisticsDialog } = await import("./ProjectStatisticsDialog");
     const element = new ProjectStatisticsDialog();
@@ -151,3 +208,25 @@ describe("ProjectStatisticsDialog", () => {
     element.remove();
   });
 });
+
+async function mountDialog(): Promise<ProjectStatisticsDialog> {
+  const element = new ProjectStatisticsDialog();
+  document.body.append(element);
+  await element.updateComplete;
+  return element;
+}
+
+function requiredElement(dialog: ProjectStatisticsDialog, selector: string): HTMLElement {
+  const element = dialog.renderRoot.querySelector<HTMLElement>(selector);
+  if (element === null) throw new Error(`Project statistics dialog is missing ${selector}`);
+  return element;
+}
+
+function appendLastFocusable(dialog: ProjectStatisticsDialog): HTMLButtonElement {
+  const section = requiredElement(dialog, "section[role='dialog']");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Test boundary";
+  section.append(button);
+  return button;
+}

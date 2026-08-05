@@ -17,12 +17,6 @@ export interface ProjectUsageReport {
   generatedAt: string;
 }
 
-export interface ProjectUsageStoreSession {
-  id: string;
-  path: string;
-  cwd: string;
-}
-
 export interface ProjectUsageHeaderSession {
   sessionId: string;
   path: string;
@@ -37,8 +31,6 @@ export interface ProjectUsageArchivedSession {
 }
 
 export interface ProjectUsageCandidateSource {
-  listForCwd(cwd: string): Promise<ProjectUsageStoreSession[]>;
-  listAll(): Promise<ProjectUsageStoreSession[]>;
   listHeadersForCwd(cwd: string): Promise<ProjectUsageHeaderSession[]>;
   listAllHeaders(): Promise<ProjectUsageHeaderSession[]>;
   listArchived(): Promise<ProjectUsageArchivedSession[]>;
@@ -87,8 +79,7 @@ export class ProjectUsageService {
   }
 
   async count(scope: ProjectUsageScopeRequest): Promise<number> {
-    const inputs = await this.collectHeaderCandidates(scope);
-    return assignBuckets(inputs, { projectPath: scope.projectPath, liveCwds: scope.liveCwds }).length;
+    return (await this.collectInScopeCandidates(scope)).length;
   }
 
   private async buildReport(scope: ProjectUsageScopeRequest): Promise<ProjectUsageReport> {
@@ -122,28 +113,10 @@ export class ProjectUsageService {
     return assignBuckets(inputs, { projectPath: scope.projectPath, liveCwds: scope.liveCwds });
   }
 
+  // Candidates are enumerated from session headers only, and one directory at a
+  // time, so neither the report nor the count reads whole session files or opens
+  // more than one stream before the sequential totals scan.
   private async collectCandidates(scope: ProjectUsageScopeRequest): Promise<CandidateInput[]> {
-    const [archived, history, live] = await Promise.all([
-      this.options.candidates.listArchived(),
-      this.options.candidates.listAll(),
-      Promise.all(scope.liveCwds.map((cwd) => this.options.candidates.listForCwd(cwd))),
-    ]);
-
-    // Archived first so a session that also still appears in the Pi store keeps
-    // its archive classification and archive file path.
-    return [
-      ...archived.map((record) => ({
-        sessionId: record.sessionId,
-        path: record.archivePath ?? record.originalPath ?? "",
-        cwd: record.cwd,
-        archived: true,
-      })),
-      ...live.flat().map((session) => ({ sessionId: session.id, path: session.path, cwd: session.cwd })),
-      ...history.map((session) => ({ sessionId: session.id, path: session.path, cwd: session.cwd })),
-    ];
-  }
-
-  private async collectHeaderCandidates(scope: ProjectUsageScopeRequest): Promise<CandidateInput[]> {
     const archived = await this.options.candidates.listArchived();
     const history = await this.options.candidates.listAllHeaders();
     const live: ProjectUsageHeaderSession[] = [];
@@ -151,6 +124,8 @@ export class ProjectUsageService {
       live.push(...await this.options.candidates.listHeadersForCwd(cwd));
     }
 
+    // Archived first so a session that also still appears in the Pi store keeps
+    // its archive classification and archive file path.
     return [
       ...archived.map((record) => ({
         sessionId: record.sessionId,

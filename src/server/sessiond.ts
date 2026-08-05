@@ -120,12 +120,6 @@ await runSessionDaemonStartup({
     const usageArchiveStore = new SessionArchiveStore();
     const projectUsage = new ProjectUsageService({
       candidates: {
-        listForCwd: async (cwd) => (await sessionManagerGateway.list(cwd)).map((entry) => ({ id: entry.id, path: entry.path, cwd: entry.cwd })),
-        listAll: async () => {
-          const entries = await sessionManagerGateway.listAll?.();
-          if (entries === undefined) throw new Error("Session manager gateway does not support listing all sessions");
-          return entries.map((entry) => ({ id: entry.id, path: entry.path, cwd: entry.cwd }));
-        },
         listHeadersForCwd: (cwd) => projectUsageSessionHeaders.listForCwd(cwd),
         listAllHeaders: () => projectUsageSessionHeaders.listAll(),
         listArchived: async () => (await usageArchiveStore.list()).map((record) => ({

@@ -1,5 +1,5 @@
 import { LitElement, css, html } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, query } from "lit/decorators.js";
 import type { Project, ProjectUsageResponse, ProjectUsageTotals } from "../../../shared/apiTypes";
 import { formatCompactNumber, formatFullNumber, formatPreciseCost } from "../utils/format";
 
@@ -31,22 +31,64 @@ export class ProjectStatisticsDialog extends LitElement {
   @property({ attribute: false }) errorMessage?: string;
   @property({ attribute: false }) sessionCount?: number;
   @property({ attribute: false }) onClose?: () => void;
+  @query(".close-button") private closeButton?: HTMLButtonElement;
+
+  override firstUpdated(): void {
+    this.closeButton?.focus();
+  }
 
   override render() {
     return html`
-      <div class="backdrop" @click=${(event: MouseEvent) => { if (event.target === event.currentTarget) this.onClose?.(); }}>
-        <section role="dialog" aria-label=${`Statistics for ${this.project?.name ?? "project"}`}>
+      <div class="backdrop" @click=${(event: MouseEvent) => { if (event.target === event.currentTarget) this.close(); }}>
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-label=${`Statistics for ${this.project?.name ?? "project"}`}
+          tabindex="-1"
+          @keydown=${(event: KeyboardEvent) => { this.handleDialogKeyDown(event); }}
+        >
           <header>
             <div>
               <strong>Project Statistics</strong>
               ${this.project === undefined ? null : html`<small>${this.project.name}</small>`}
             </div>
-            <button class="close-button" type="button" title="Close statistics" aria-label="Close statistics" @click=${() => { this.onClose?.(); }}>×</button>
+            <button class="close-button" type="button" title="Close statistics" aria-label="Close statistics" @click=${() => { this.close(); }}>×</button>
           </header>
           <div class="body">${this.renderBody()}</div>
         </section>
       </div>
     `;
+  }
+
+  private close(): void {
+    this.onClose?.();
+  }
+
+  private handleDialogKeyDown(event: KeyboardEvent): void {
+    if (event.key === "Tab") {
+      this.trapTabFocus(event);
+      return;
+    }
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.close();
+  }
+
+  private trapTabFocus(event: KeyboardEvent): void {
+    const focusable = [...this.renderRoot.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex='0']")];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      this.renderRoot.querySelector<HTMLElement>("section[role='dialog']")?.focus();
+      return;
+    }
+    const active = this.shadowRoot?.activeElement;
+    const activeIndex = focusable.findIndex((element) => element === active);
+    const movingPastEnd = !event.shiftKey && activeIndex === focusable.length - 1;
+    const movingBeforeStart = event.shiftKey && activeIndex <= 0;
+    if (!movingPastEnd && !movingBeforeStart) return;
+    event.preventDefault();
+    (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus();
   }
 
   private renderBody() {

@@ -3225,15 +3225,19 @@ export class PiWebUiApp extends LitElement {
     this.statisticsSessionCount = undefined;
     this.statisticsError = undefined;
     this.statisticsLoading = true;
-    const liveCwds = (this.state.workspacesByProjectId[project.id] ?? []).map((workspace) => workspace.path);
-    const scope = { projectPath: project.path, liveCwds };
-    void projectsApi.projectUsageCount(scope, machineId).then(
-      ({ sessionCount }) => {
-        if (requestIsCurrent() && this.statisticsLoading) this.statisticsSessionCount = sessionCount;
-      },
-      () => undefined,
-    );
     try {
+      const workspaces = await workspacesApi.workspaces(project.id, machineId);
+      if (!requestIsCurrent()) return;
+      const scope = {
+        projectPath: project.path,
+        liveCwds: workspaces.map((workspace) => workspace.path),
+      };
+      void projectsApi.projectUsageCount(scope, machineId).then(
+        ({ sessionCount }) => {
+          if (requestIsCurrent() && this.statisticsLoading) this.statisticsSessionCount = sessionCount;
+        },
+        () => undefined,
+      );
       const report = await projectsApi.projectUsage(scope, machineId);
       if (!requestIsCurrent()) return;
       this.statisticsReport = report;
