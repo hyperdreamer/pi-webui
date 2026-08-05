@@ -15,6 +15,9 @@ describe("settingsModelPickerOptions", () => {
       { model: { provider: "anthropic", id: "claude-opus" } },
       { model: { provider: "google", id: "gemini-2.5-pro" }, name: "Gemini 2.5 Pro" },
       { model: { provider: "openai", id: "gpt-4o" }, name: "GPT-4o" },
+      // provider z sorts after every other provider while id "alpha" sorts
+      // before them all, so an id-only sort would interleave providers here.
+      { model: { provider: "z", id: "alpha" } },
     ];
 
     const options = settingsModelPickerOptions(choices);
@@ -24,14 +27,16 @@ describe("settingsModelPickerOptions", () => {
       "gemini-2.5-pro",
       "gpt-4o",
       "gpt-5",
+      "alpha",
     ]);
     expect(options.map((option) => option.group)).toEqual([
       "anthropic",
       "google",
       "openai",
       "openai",
+      "z",
     ]);
-    expect(new Set(options.map((option) => option.group)).size).toBe(3);
+    expect(new Set(options.map((option) => option.group)).size).toBe(4);
   });
 
   it("labels options with the bare model id and groups them by provider", () => {
