@@ -222,16 +222,55 @@ function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+class SessionInitializationCleanupAggregateError extends AggregateError {
+  readonly initializationError: Error;
+  readonly cleanupFailures: readonly Error[];
+  readonly completeInitialization: boolean;
+
+  constructor(
+    initializationError: Error,
+    cleanupFailures: readonly Error[],
+    completeInitialization: boolean
+  ) {
+    super(
+      [initializationError, ...cleanupFailures],
+      completeInitialization
+        ? `Complete session initialization failed and rollback was incomplete: ${initializationError.message}`
+        : `Session initialization failed and cleanup was incomplete: ${initializationError.message}`
+    );
+    this.initializationError = initializationError;
+    this.cleanupFailures = [...cleanupFailures];
+    this.completeInitialization = completeInitialization;
+  }
+}
+
+function sessionInitializationCleanupFailure(
+  error: unknown,
+  cleanupFailures: readonly Error[],
+  completeInitialization = false
+): Error {
+  if (error instanceof SessionInitializationCleanupAggregateError) {
+    if (cleanupFailures.length === 0) return error;
+    return new SessionInitializationCleanupAggregateError(
+      error.initializationError,
+      [...error.cleanupFailures, ...cleanupFailures],
+      error.completeInitialization || completeInitialization
+    );
+  }
+  const initializationError = normalizeError(error);
+  if (cleanupFailures.length === 0) return initializationError;
+  return new SessionInitializationCleanupAggregateError(
+    initializationError,
+    cleanupFailures,
+    completeInitialization
+  );
+}
+
 function completeInitializationFailure(
   error: unknown,
   rollbackFailures: readonly Error[]
 ): Error {
-  const initializationError = normalizeError(error);
-  if (rollbackFailures.length === 0) return initializationError;
-  return new AggregateError(
-    [initializationError, ...rollbackFailures],
-    `Complete session initialization failed and rollback was incomplete: ${initializationError.message}`
-  );
+  return sessionInitializationCleanupFailure(error, rollbackFailures, true);
 }
 
 function spawnTargetError(
@@ -4355,7 +4394,7 @@ export class PiSessionService implements SessionRouteService {
           runtime.session.sessionManager.getCwd()
         );
       }
-      let failure = error;
+      let failure: unknown = error;
       if (completeInitialization !== undefined) {
         const rollbackFailures =
           await this.rollbackCompleteSessionInitialization(
@@ -4364,10 +4403,23 @@ export class PiSessionService implements SessionRouteService {
           );
         failure = completeInitializationFailure(error, rollbackFailures);
       }
+      const teardownFailures: Error[] = [];
       try {
         await runtime.session.abort();
-      } finally {
+      } catch (abortError: unknown) {
+        teardownFailures.push(normalizeError(abortError));
+      }
+      try {
         await runtime.dispose();
+      } catch (disposeError: unknown) {
+        teardownFailures.push(normalizeError(disposeError));
+      }
+      if (teardownFailures.length > 0) {
+        failure = sessionInitializationCleanupFailure(
+          failure,
+          teardownFailures,
+          completeInitialization !== undefined
+        );
       }
       throw failure;
     }
@@ -5298,10 +5350,7 @@ export class PiSessionService implements SessionRouteService {
   }
 
   private policyEntries(session: PiAgentSession): readonly unknown[] {
-    return (
-      session.sessionManager.getEntries?.() ??
-      session.sessionManager.getBranch()
-    );
+    return session.sessionManager.getBranch();
   }
 
   private async confirmedPolicySnapshot(
@@ -5313,8 +5362,11 @@ export class PiSessionService implements SessionRouteService {
     const manager = persisted
       ? this.sessionManager.open(sessionFile)
       : session.sessionManager;
-    const entries = manager.getEntries?.() ?? manager.getBranch();
-    const creationSource = inspectSessionCreationSource(entries);
+    const activeEntries = manager.getBranch();
+    // Creation provenance belongs to the durable root file, even when its
+    // original entry is not on the currently selected conversation branch.
+    const creationSourceEntries = manager.getEntries?.() ?? activeEntries;
+    const creationSource = inspectSessionCreationSource(creationSourceEntries);
     return {
       cwd: canonicalizeStoredCwd(manager.getCwd()),
       creationSource,
@@ -5324,7 +5376,7 @@ export class PiSessionService implements SessionRouteService {
         creationSource
       ),
       modelPolicy: inspectSessionModelPolicy(
-        entries,
+        activeEntries,
         this.exactSelectionFromSession(session)
       ),
       transitionInFlight: this.isModelPolicyMutationActive(session),
@@ -5516,7 +5568,11 @@ export class PiSessionService implements SessionRouteService {
     } catch (error: unknown) {
       failures.push(normalizeError(error));
     }
-    this.inspectAndCacheSessionModelPolicy(session);
+    try {
+      this.inspectAndCacheSessionModelPolicy(session);
+    } catch (error: unknown) {
+      failures.push(normalizeError(error));
+    }
     return failures;
   }
 

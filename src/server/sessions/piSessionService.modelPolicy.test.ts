@@ -1,4 +1,4 @@
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,6 +64,8 @@ interface ModelPolicyHarnessOptions {
   settingsWriteFailure?: "target" | "restore";
   /** Fail only the first N settings writes after rollback begins. */
   restoreWriteFailures?: number;
+  /** Fail the post-initialization runtime bind after making cache reinspection fail. */
+  runtimeBindingFailureWithUnresolvedModel?: Error;
   model?: PiAgentSession["model"];
   thinkingLevel?: PiAgentSession["thinkingLevel"];
   ladderValidation?: LadderValidation;
@@ -152,12 +154,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function aggregateErrorItems(error: AggregateError): readonly unknown[] {
+  const items: unknown = error.errors;
+  return Array.isArray(items)
+    ? items.map((item: unknown) => item)
+    : [];
+}
+
 function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   const branch = [...(options.branch ?? [])];
   const operations: string[] = [];
   /** Runtime/persistence operations in the order the adapter performed them. */
   const calls: string[] = [];
   const getBranch = vi.fn(() => branch);
+  const getEntries = vi.fn(() => branch);
   const settingsState: {
     durable: string;
     phase: "construct" | "target" | "restore";
@@ -294,7 +304,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   });
   const manager = fakeSessionManager(TEST_CWD, {
     getBranch,
-    getEntries: getBranch,
+    getEntries,
     getSessionId: () => TEST_SESSION_ID,
     getSessionFile: () => TEST_SESSION_FILE,
     getHeader: () => ({
@@ -320,6 +330,15 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     cycleThinkingLevel,
     getAvailableThinkingLevels,
   });
+  const runtimeBindingFailure =
+    options.runtimeBindingFailureWithUnresolvedModel;
+  if (runtimeBindingFailure !== undefined) {
+    fake.session.subscribe = () => {
+      settingsState.phase = "restore";
+      fake.session.model = undefined;
+      throw runtimeBindingFailure;
+    };
+  }
   let rebindSession: ((session: PiAgentSession) => Promise<void>) | undefined;
   fake.runtime.setRebindSession = (callback) => {
     rebindSession = callback;
@@ -995,6 +1014,85 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.hub.sessionEvents.some(({ event }) => event.type === "status.update")).toBe(false);
   });
 
+  it("keeps the original initialization failure primary while attempting every rollback and teardown step", async () => {
+    const initializationError = new Error("runtime binding failed after complete initialization");
+    const abortError = new Error("session abort failed");
+    const disposeError = new Error("runtime dispose failed");
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      existing: false,
+      preferenceStore,
+      runtimeBindingFailureWithUnresolvedModel: initializationError,
+      settingsWriteFailure: "restore",
+    });
+    const abort = harness.fake.session.abort.bind(harness.fake.session);
+    harness.fake.session.abort = async () => {
+      await abort();
+      throw abortError;
+    };
+    const dispose = harness.fake.runtime.dispose.bind(harness.fake.runtime);
+    harness.fake.runtime.dispose = async () => {
+      await dispose();
+      throw disposeError;
+    };
+
+    const failure = await harness.service
+      .start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: { mode: "exact", exact: ADVANCED_SELECTION },
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) {
+      throw new Error("expected an incomplete cleanup AggregateError");
+    }
+    const failureErrors = aggregateErrorItems(failure);
+    const settingsFailure = failureErrors.find(
+      (error) =>
+        error instanceof AggregateError &&
+        error.message.includes("Pi model defaults were not durably restored")
+    );
+    expect(settingsFailure).toBeInstanceOf(AggregateError);
+    if (!(settingsFailure instanceof AggregateError)) {
+      throw new Error("expected the checked settings restoration AggregateError");
+    }
+    const settingsErrors = aggregateErrorItems(settingsFailure);
+    expect(settingsErrors).toHaveLength(9);
+    expect(
+      settingsErrors.every(
+        (error) =>
+          error instanceof Error &&
+          error.message.includes("simulated settings write failure")
+      )
+    ).toBe(true);
+    expect(failureErrors).toHaveLength(6);
+    expect(failureErrors[0]).toBe(initializationError);
+    expect(failureErrors[1]).toMatchObject({
+      message: "the previous runtime model and thinking pair was not restored",
+    });
+    expect(failureErrors[2]).toBe(settingsFailure);
+    expect(failureErrors[3]).toMatchObject({
+      message: "Session model policy requires a resolved runtime model provider and id",
+    });
+    expect(failureErrors[4]).toBe(abortError);
+    expect(failureErrors[5]).toBe(disposeError);
+    expect(harness.discardInitialEntries).toHaveBeenCalledOnce();
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.durableTranscriptPresent()).toBe(false);
+    expect(harness.service.activeCount()).toBe(0);
+    expect(preferenceStore.replace).not.toHaveBeenCalled();
+    expect(
+      harness.hub.sessionEvents.some(({ event }) => event.type === "status.update")
+    ).toBe(false);
+    expect(
+      harness.hub.globalEvents.some(
+        (event) => event.type === "status.update" || event.type === "session.created"
+      )
+    ).toBe(false);
+  });
+
   it.each([
     ["policy append", { append: "throws" as const }, "model policy persistence failed"],
     ["source append", { failCreationSourceAppend: true }, "creation source persistence failed"],
@@ -1083,7 +1181,7 @@ describe("PiSessionService model policy lifecycle", () => {
 });
 
 describe("PiSessionService real SessionManager plus-root integration", () => {
-  it("reopens durable policy, provenance, and root eligibility before publication", async () => {
+  it("reopens durable root metadata and remembers the active policy after branch navigation", async () => {
     const integrationDir = mkdtempSync(
       join(TEST_SESSION_DIR, "real-session-manager-")
     );
@@ -1243,6 +1341,72 @@ describe("PiSessionService real SessionManager plus-root integration", () => {
       })
     ).resolves.toEqual(initialPolicy);
     expect(preferenceStore.replace).toHaveBeenCalledOnce();
+
+    const runtime = runtimeById.get(created.id);
+    if (runtime === undefined) throw new Error("Expected the created runtime");
+    const manager = runtime.session.sessionManager;
+    if (!(manager instanceof SessionManager))
+      throw new Error("Expected an SDK SessionManager");
+    const initialPolicyEntry = manager
+      .getEntries()
+      .find(
+        (entry) =>
+          entry.type === "custom" &&
+          entry.customType === SESSION_MODEL_POLICY_CUSTOM_TYPE
+      );
+    if (initialPolicyEntry === undefined)
+      throw new Error("Expected the initial model policy entry");
+    const activePolicy = {
+      mode: "exact",
+      exact: DEFAULT_SELECTION,
+      tier: "standard",
+    } as const;
+    const abandonedPolicy = {
+      mode: "tiered",
+      exact: DEFAULT_SELECTION,
+      tier: "frontier",
+    } as const;
+    manager.branch(initialPolicyEntry.id);
+    const activePolicyId = manager.appendCustomEntry(
+      SESSION_MODEL_POLICY_CUSTOM_TYPE,
+      { version: 1, ...activePolicy }
+    );
+    manager.appendCustomEntry(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      ...abandonedPolicy,
+    });
+    manager.branch(activePolicyId);
+    manager.appendCustomEntry("pi-webui.note", { on: "alternate" });
+
+    expect(
+      inspectSessionModelPolicy(manager.getEntries(), DEFAULT_SELECTION)
+    ).toMatchObject({ kind: "persisted", policy: abandonedPolicy });
+    expect(
+      inspectSessionModelPolicy(manager.getBranch(), DEFAULT_SELECTION)
+    ).toMatchObject({ kind: "persisted", policy: activePolicy });
+    expect(
+      manager
+        .getBranch()
+        .some(
+          (entry) =>
+            entry.type === "custom" &&
+            entry.customType === SESSION_CREATION_SOURCE_CUSTOM_TYPE
+        )
+    ).toBe(false);
+    await expect(
+      service.modelPolicy({ id: created.id, cwd: integrationCwd })
+    ).resolves.toMatchObject({ policy: activePolicy });
+    await expect(
+      service.rememberCurrentModelPolicy({
+        id: created.id,
+        cwd: integrationCwd,
+      })
+    ).resolves.toEqual(activePolicy);
+    expect(preferenceStore.replace).toHaveBeenCalledTimes(2);
+    expect(preferenceStore.replace).toHaveBeenLastCalledWith(integrationCwd, {
+      kind: "full",
+      preference: activePolicy,
+    });
   });
 });
 
