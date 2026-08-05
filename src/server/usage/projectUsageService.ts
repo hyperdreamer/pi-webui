@@ -23,6 +23,12 @@ export interface ProjectUsageStoreSession {
   cwd: string;
 }
 
+export interface ProjectUsageHeaderSession {
+  sessionId: string;
+  path: string;
+  cwd: string;
+}
+
 export interface ProjectUsageArchivedSession {
   sessionId: string;
   cwd: string;
@@ -33,6 +39,8 @@ export interface ProjectUsageArchivedSession {
 export interface ProjectUsageCandidateSource {
   listForCwd(cwd: string): Promise<ProjectUsageStoreSession[]>;
   listAll(): Promise<ProjectUsageStoreSession[]>;
+  listHeadersForCwd(cwd: string): Promise<ProjectUsageHeaderSession[]>;
+  listAllHeaders(): Promise<ProjectUsageHeaderSession[]>;
   listArchived(): Promise<ProjectUsageArchivedSession[]>;
 }
 
@@ -79,7 +87,8 @@ export class ProjectUsageService {
   }
 
   async count(scope: ProjectUsageScopeRequest): Promise<number> {
-    return (await this.collectInScopeCandidates(scope)).length;
+    const inputs = await this.collectHeaderCandidates(scope);
+    return assignBuckets(inputs, { projectPath: scope.projectPath, liveCwds: scope.liveCwds }).length;
   }
 
   private async buildReport(scope: ProjectUsageScopeRequest): Promise<ProjectUsageReport> {
@@ -131,6 +140,26 @@ export class ProjectUsageService {
       })),
       ...live.flat().map((session) => ({ sessionId: session.id, path: session.path, cwd: session.cwd })),
       ...history.map((session) => ({ sessionId: session.id, path: session.path, cwd: session.cwd })),
+    ];
+  }
+
+  private async collectHeaderCandidates(scope: ProjectUsageScopeRequest): Promise<CandidateInput[]> {
+    const archived = await this.options.candidates.listArchived();
+    const history = await this.options.candidates.listAllHeaders();
+    const live: ProjectUsageHeaderSession[] = [];
+    for (const cwd of scope.liveCwds) {
+      live.push(...await this.options.candidates.listHeadersForCwd(cwd));
+    }
+
+    return [
+      ...archived.map((record) => ({
+        sessionId: record.sessionId,
+        path: record.archivePath ?? record.originalPath ?? "",
+        cwd: record.cwd,
+        archived: true,
+      })),
+      ...live,
+      ...history,
     ];
   }
 }

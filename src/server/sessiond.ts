@@ -42,6 +42,7 @@ import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
 import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
 import { ProjectUsageService } from "./usage/projectUsageService.js";
+import { ProjectUsageSessionHeaderSource } from "./usage/projectUsageSessionHeaders.js";
 import { SessionUsageCacheStore } from "./usage/sessionUsageCacheStore.js";
 import { registerProjectUsageRoutes } from "./usage/projectUsageRoutes.js";
 
@@ -96,11 +97,13 @@ await runSessionDaemonStartup({
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
       : undefined;
     const starterModelPolicyPreferenceStore = new StarterModelPolicyPreferenceStore();
-    const sessionManagerGateway = createPiSessionManagerGateway({
+    const sessionManagerGatewayOptions = {
       agentDir: activeAgentProfile.dir,
       env: daemonEnvironment,
       sessionDirEnvKeys: activeAgentProfile.sessionDirEnvKeys,
-    });
+    };
+    const sessionManagerGateway = createPiSessionManagerGateway(sessionManagerGatewayOptions);
+    const projectUsageSessionHeaders = new ProjectUsageSessionHeaderSource(sessionManagerGatewayOptions);
     const sessions = new PiSessionService(eventHub, {
       modelRuntime: auth.runtime,
       agentDir: activeAgentProfile.dir,
@@ -123,6 +126,8 @@ await runSessionDaemonStartup({
           if (entries === undefined) throw new Error("Session manager gateway does not support listing all sessions");
           return entries.map((entry) => ({ id: entry.id, path: entry.path, cwd: entry.cwd }));
         },
+        listHeadersForCwd: (cwd) => projectUsageSessionHeaders.listForCwd(cwd),
+        listAllHeaders: () => projectUsageSessionHeaders.listAll(),
         listArchived: async () => (await usageArchiveStore.list()).map((record) => ({
           sessionId: record.sessionId,
           cwd: record.cwd,

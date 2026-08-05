@@ -10,6 +10,8 @@ function candidateSource(overrides: Partial<ProjectUsageCandidateSource> = {}): 
   return {
     listForCwd: () => Promise.resolve([]),
     listAll: () => Promise.resolve([]),
+    listHeadersForCwd: () => Promise.resolve([]),
+    listAllHeaders: () => Promise.resolve([]),
     listArchived: () => Promise.resolve([]),
     ...overrides,
   };
@@ -62,23 +64,34 @@ describe("ProjectUsageService", () => {
   it("counts deduplicated in-scope candidates without scanning or flushing the cache", async () => {
     const totalsFor = vi.fn(() => Promise.resolve(totals(1, 0.1)));
     const flush = vi.fn(() => Promise.resolve(undefined));
+    const listForCwd = vi.fn(() => Promise.reject(new Error("full live-session listing must not run")));
+    const listAll = vi.fn(() => Promise.reject(new Error("full history listing must not run")));
+    const listHeadersForCwd = vi.fn(() => Promise.resolve([{ sessionId: "live", path: "/store/live.jsonl", cwd: "/dev/app" }]));
+    const listAllHeaders = vi.fn(() => Promise.resolve([
+      { sessionId: "live", path: "/store/live.jsonl", cwd: "/dev/app" },
+      { sessionId: "retired", path: "/store/retired.jsonl", cwd: "/dev/app/.worktrees/retired" },
+      { sessionId: "other", path: "/store/other.jsonl", cwd: "/dev/other" },
+    ]));
+    const candidates = candidateSource({
+      listForCwd,
+      listAll,
+      listHeadersForCwd,
+      listAllHeaders,
+      listArchived: () => Promise.resolve([
+        { sessionId: "archived", cwd: "/dev/app", archivePath: "/archive/archived.jsonl" },
+        { sessionId: "live", cwd: "/dev/app", archivePath: "/archive/live.jsonl" },
+      ]),
+    });
     const service = new ProjectUsageService({
-      candidates: candidateSource({
-        listForCwd: () => Promise.resolve([{ id: "live", path: "/store/live.jsonl", cwd: "/dev/app" }]),
-        listAll: () => Promise.resolve([
-          { id: "live", path: "/store/live.jsonl", cwd: "/dev/app" },
-          { id: "retired", path: "/store/retired.jsonl", cwd: "/dev/app/.worktrees/retired" },
-          { id: "other", path: "/store/other.jsonl", cwd: "/dev/other" },
-        ]),
-        listArchived: () => Promise.resolve([
-          { sessionId: "archived", cwd: "/dev/app", archivePath: "/archive/archived.jsonl" },
-          { sessionId: "live", cwd: "/dev/app", archivePath: "/archive/live.jsonl" },
-        ]),
-      }),
+      candidates,
       cache: { totalsFor, flush },
     });
 
     await expect(service.count({ projectPath: "/dev/app", liveCwds: ["/dev/app"] })).resolves.toBe(3);
+    expect(listHeadersForCwd).toHaveBeenCalledWith("/dev/app");
+    expect(listAllHeaders).toHaveBeenCalledTimes(1);
+    expect(listForCwd).not.toHaveBeenCalled();
+    expect(listAll).not.toHaveBeenCalled();
     expect(totalsFor).not.toHaveBeenCalled();
     expect(flush).not.toHaveBeenCalled();
   });

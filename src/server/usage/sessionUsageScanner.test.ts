@@ -1,8 +1,14 @@
+import { createReadStream } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { addUsageTotals, emptyUsageTotals, readSessionHeaderId, scanSessionUsage, usageTotalsFromLine } from "./sessionUsageScanner";
+import { describe, expect, it, vi } from "vitest";
+import { addUsageTotals, emptyUsageTotals, readSessionHeader, readSessionHeaderId, scanSessionUsage, usageTotalsFromLine } from "./sessionUsageScanner";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+});
 
 function usageLine(role: string, usage: Record<string, unknown>): string {
   return JSON.stringify({ type: "message", message: { role, usage } });
@@ -47,6 +53,33 @@ describe("addUsageTotals", () => {
 
   it("starts from zero", () => {
     expect(emptyUsageTotals()).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  });
+});
+
+describe("readSessionHeader", () => {
+  it("returns the id and cwd from the first line without parsing the body", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "usage-header-"));
+    const path = join(dir, "session.jsonl");
+    const header = JSON.stringify({ type: "session", id: "abc", cwd: "/repo" });
+    await writeFile(path, `${header}\n{not valid json`, "utf8");
+
+    await expect(readSessionHeader(path)).resolves.toEqual({ id: "abc", cwd: "/repo" });
+    expect(vi.mocked(createReadStream)).toHaveBeenCalledWith(path, {
+      encoding: "utf8",
+      highWaterMark: 4 * 1024,
+      end: (4 * 1024) - 1,
+    });
+  });
+
+  it("returns undefined for malformed and empty first lines", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "usage-header-invalid-"));
+    const malformedPath = join(dir, "malformed.jsonl");
+    const emptyPath = join(dir, "empty.jsonl");
+    await writeFile(malformedPath, `{not valid json\n`, "utf8");
+    await writeFile(emptyPath, "", "utf8");
+
+    await expect(readSessionHeader(malformedPath)).resolves.toBeUndefined();
+    await expect(readSessionHeader(emptyPath)).resolves.toBeUndefined();
   });
 });
 

@@ -14,10 +14,16 @@ export interface ScanResult {
   bytesScanned: number;
 }
 
+export interface SessionHeaderSummary {
+  id: string;
+  cwd?: string;
+}
+
 /** Entry types whose own `usage` counts, matching Pi's `getSessionStats`. */
 const USAGE_ENTRY_TYPES = new Set(["branch_summary", "compaction"]);
 /** Message roles whose `usage` counts. User messages carry none. */
 const USAGE_MESSAGE_ROLES = new Set(["assistant", "toolResult"]);
+const SESSION_HEADER_READ_BYTES = 4 * 1024;
 
 export function emptyUsageTotals(): UsageTotals {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -88,24 +94,40 @@ export function usageTotalsFromLine(line: string): UsageTotals | undefined {
   return totalsFromUsage(usage);
 }
 
-/** Read the `id` from a session file's header line without parsing the body. */
-export async function readSessionHeaderId(path: string): Promise<string | undefined> {
+/** Read a session file's header line without parsing the body. */
+export async function readSessionHeader(path: string): Promise<SessionHeaderSummary | undefined> {
   try {
-    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+    const input = createReadStream(path, {
+      encoding: "utf8",
+      highWaterMark: SESSION_HEADER_READ_BYTES,
+      end: SESSION_HEADER_READ_BYTES - 1,
+    });
     try {
-      for await (const line of lines) {
-        const parsed: unknown = JSON.parse(line);
-        if (!isRecord(parsed) || parsed["type"] !== "session") return undefined;
-        const id = parsed["id"];
-        return typeof id === "string" ? id : undefined;
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          const parsed: unknown = JSON.parse(line);
+          if (!isRecord(parsed) || parsed["type"] !== "session") return undefined;
+          const id = parsed["id"];
+          if (typeof id !== "string") return undefined;
+          const cwd = parsed["cwd"];
+          return { id, ...(typeof cwd === "string" ? { cwd } : {}) };
+        }
+        return undefined;
+      } finally {
+        lines.close();
       }
-      return undefined;
     } finally {
-      lines.close();
+      input.destroy();
     }
   } catch {
     return undefined;
   }
+}
+
+/** Read the `id` from a session file's header line without parsing the body. */
+export async function readSessionHeaderId(path: string): Promise<string | undefined> {
+  return (await readSessionHeader(path))?.id;
 }
 
 /**
