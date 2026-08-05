@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.1
+
+### Patch Changes
+
+- 1bbd699: Make Model tiers and Utility models setup visible in the README quick start.
+- c13242d: Saving the model tier ladder now updates the composer's tier choices without reloading the browser tab.
+
 ## 1.11.0
 
 ### Patch Changes
