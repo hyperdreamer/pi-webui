@@ -713,6 +713,34 @@ describe("PiWebUiApp model tier catalog save publish", () => {
 
     expect(loadModelPolicy).not.toHaveBeenCalled();
   });
+
+  it("completes a starter draft waiting on a catalog from a selected-machine ladder save", async () => {
+    const app = createApp();
+    const pendingCatalog = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings").mockReturnValue(pendingCatalog.promise);
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2WithoutResolvedModel());
+    setAppState(app, fullPreferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    // These V2 defaults carry no resolved model, so the seeded starter draft
+    // holds an empty Exact branch until a catalog can resolve it.
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+
+    invokeModelTiersSaved(app, "local", validCatalog());
+
+    // The pending catalog read has not resolved, so only the save's publish
+    // path can complete the draft, resolving its Exact branch from Standard.
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+  });
 });
 
 describe("PiWebUiApp starter defaults capability ordering", () => {
