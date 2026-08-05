@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
-import { addUsageTotals, emptyUsageTotals, readSessionHeaderId, scanSessionUsage, type UsageTotals } from "./sessionUsageScanner.js";
+import { addUsageTotals, emptyUsageTotals, readSessionHeaderId, scanSessionUsage, type ScanResult, type UsageTotals } from "./sessionUsageScanner.js";
 
 export interface SessionUsageCacheEntry extends UsageTotals {
   size: number;
@@ -14,6 +14,9 @@ export interface SessionUsageCacheEntry extends UsageTotals {
 export interface SessionUsageCacheFile {
   sessions: Record<string, SessionUsageCacheEntry>;
 }
+
+/** Injected seam for `scanSessionUsage`, letting tests observe scan offsets. */
+export type SessionUsageScanner = (path: string, startOffset: number) => Promise<ScanResult>;
 
 export function defaultSessionUsageCachePath(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
   return join(piWebUiDataDir(env, cwd), "usage-cache.json");
@@ -71,7 +74,10 @@ export class SessionUsageCacheStore {
   private dirty = false;
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath = defaultSessionUsageCachePath()) {}
+  constructor(
+    private readonly filePath = defaultSessionUsageCachePath(),
+    private readonly scan: SessionUsageScanner = scanSessionUsage,
+  ) {}
 
   async totalsFor(sessionId: string, path: string): Promise<UsageTotals> {
     return this.exclusive(async () => {
@@ -92,13 +98,13 @@ export class SessionUsageCacheStore {
       const headerId = await readSessionHeaderId(path);
       const canResume =
         existing !== undefined
-        && fileStats.size >= existing.size
+        && fileStats.size > existing.size
         && existing.bytesScanned <= fileStats.size
         && existing.headerId === headerId;
 
       const startOffset = canResume ? existing.bytesScanned : 0;
       const base = canResume ? totalsOf(existing) : emptyUsageTotals();
-      const scan = await scanSessionUsage(path, startOffset);
+      const scan = await this.scan(path, startOffset);
       const totals = addUsageTotals(base, scan.totals);
 
       data.sessions[sessionId] = {
