@@ -428,6 +428,7 @@ export class PiWebUiApp extends LitElement {
   @state() private statisticsReport: ProjectUsageResponse | undefined;
   @state() private statisticsLoading = false;
   @state() private statisticsError: string | undefined;
+  private statisticsRequestGeneration = 0;
   private projectBrowserRestoreFocus: (() => void) | undefined;
   @state() private sessionBrowserOpen = false;
   private sessionBrowserRestoreFocus: (() => void) | undefined;
@@ -571,6 +572,7 @@ export class PiWebUiApp extends LitElement {
       || (this.systemPromptDialogOpen && this.state.selectedSession !== undefined)
       || this.state.actionPaletteOpen
       || this.projectBrowserOpen
+      || this.statisticsProject !== undefined
       || this.sessionBrowserOpen
       || this.state.projectDialogOpen
       || this.state.machineDialogOpen
@@ -1410,6 +1412,7 @@ export class PiWebUiApp extends LitElement {
 
   private handleMachineChange(previous: AppState, next: AppState): void {
     if ((previous.selectedMachine?.id ?? "local") === (next.selectedMachine?.id ?? "local")) return;
+    this.closeProjectStatistics();
     this.projectActivityOwnership.handleSelectedMachineChanged();
     const pendingMachineId = this.pendingRemoteRouteRestore?.machineId ?? "local";
     if (pendingMachineId !== (next.selectedMachine?.id ?? "local")) this.clearPendingRemoteRouteRestore();
@@ -3212,18 +3215,33 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async showProjectStatistics(project: Project): Promise<void> {
+    const requestGeneration = ++this.statisticsRequestGeneration;
+    const machineId = selectedMachineId(this.state);
+    const requestIsCurrent = () => requestGeneration === this.statisticsRequestGeneration
+      && selectedMachineId(this.state) === machineId;
     this.statisticsProject = project;
     this.statisticsReport = undefined;
     this.statisticsError = undefined;
     this.statisticsLoading = true;
     const liveCwds = (this.state.workspacesByProjectId[project.id] ?? []).map((workspace) => workspace.path);
     try {
-      this.statisticsReport = await projectsApi.projectUsage({ projectPath: project.path, liveCwds }, selectedMachineId(this.state));
+      const report = await projectsApi.projectUsage({ projectPath: project.path, liveCwds }, machineId);
+      if (!requestIsCurrent()) return;
+      this.statisticsReport = report;
     } catch (error: unknown) {
+      if (!requestIsCurrent()) return;
       this.statisticsError = error instanceof Error ? error.message : String(error);
     } finally {
-      this.statisticsLoading = false;
+      if (requestIsCurrent()) this.statisticsLoading = false;
     }
+  }
+
+  private closeProjectStatistics(): void {
+    this.statisticsRequestGeneration += 1;
+    this.statisticsProject = undefined;
+    this.statisticsReport = undefined;
+    this.statisticsError = undefined;
+    this.statisticsLoading = false;
   }
 
   private closeProjectBrowser(options: { restoreFocus?: boolean } = {}): void {
@@ -4291,7 +4309,7 @@ export class PiWebUiApp extends LitElement {
             .loading=${this.statisticsLoading}
             .errorMessage=${this.statisticsError}
             .sessionCount=${this.statisticsReport?.total.sessionCount}
-            .onClose=${() => { this.statisticsProject = undefined; }}
+            .onClose=${() => { this.closeProjectStatistics(); }}
           ></project-statistics-dialog>
         `}
         ${this.sessionBrowserOpen && state.selectedProject !== undefined ? html`<session-browser-dialog

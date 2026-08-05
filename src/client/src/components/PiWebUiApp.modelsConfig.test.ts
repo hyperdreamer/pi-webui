@@ -44,6 +44,14 @@ describe("PiWebUiApp navigation actions", () => {
     expect(templateStrings(projectBrowserDialogTemplate(app)).join("")).toContain("<project-browser-dialog");
   });
 
+  it("marks chat as obscured while project statistics are open", () => {
+    const app = createApp();
+    if (!Reflect.set(app, "statisticsProject", project)) throw new Error("Could not open project statistics");
+
+    expect(isChatObscured(app)).toBe(true);
+    expect(templateStrings(projectStatisticsDialogTemplate(app)).join("")).toContain("<project-statistics-dialog");
+  });
+
   it("opens a project-scoped session browser with the selected project's catalog", () => {
     const app = createApp();
     const projectSession = {
@@ -377,6 +385,12 @@ function renderApp(app: PiWebUiApp): TemplateResult {
 function projectBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
   const template = findTemplateContaining(renderApp(app), "<project-browser-dialog");
   if (template === undefined) throw new Error("PiWebUiApp did not render project-browser-dialog");
+  return template;
+}
+
+function projectStatisticsDialogTemplate(app: PiWebUiApp): TemplateResult {
+  const template = findTemplateContaining(renderApp(app), "<project-statistics-dialog");
+  if (template === undefined) throw new Error("PiWebUiApp did not render project-statistics-dialog");
   return template;
 }
 
