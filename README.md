@@ -59,6 +59,15 @@ Then open:
 http://localhost:8809
 ```
 
+## Important: configure your model settings first
+
+Before starting serious work, open **Settings → Model tiers** and **Settings → Utility models** for the machine where your sessions run. Treat both as core setup, not optional fine-tuning:
+
+- **Model tiers** control the model and thinking level used for session work. Configure the six-rung `economy` through `frontier` ladder so Tiered sessions can route to the models you intend to use.
+- **Utility models** are separate from session routing. They handle automatic titles, branch summaries, and context compaction, helping long-running work stay usable.
+
+See the [configuration reference](docs/config.md) for complete details and examples.
+
 ## Core model
 
 PI WEBUI organizes work like this:
