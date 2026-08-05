@@ -15,6 +15,14 @@ function candidateSource(overrides: Partial<ProjectUsageCandidateSource> = {}): 
   };
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("ProjectUsageService", () => {
   it("sums buckets and the project total", async () => {
     const service = new ProjectUsageService({
@@ -51,6 +59,58 @@ describe("ProjectUsageService", () => {
     expect(report.projectPath).toBe("/dev/app");
   });
 
+  it("waits for each session scan before starting the next", async () => {
+    const firstScan = deferred<UsageTotals>();
+    const firstScanStarted = deferred<undefined>();
+    const totalsFor = vi.fn((sessionId: string) => {
+      if (sessionId === "a") {
+        firstScanStarted.resolve(undefined);
+        return firstScan.promise;
+      }
+      return Promise.resolve(totals(20, 2));
+    });
+    const service = new ProjectUsageService({
+      candidates: candidateSource({
+        listAll: () => Promise.resolve([
+          { id: "a", path: "/store/a.jsonl", cwd: "/dev/app" },
+          { id: "b", path: "/store/b.jsonl", cwd: "/dev/app" },
+        ]),
+      }),
+      cache: { totalsFor, flush: () => Promise.resolve(undefined) },
+    });
+
+    const reportPromise = service.report({ projectPath: "/dev/app", liveCwds: [] });
+    await firstScanStarted.promise;
+    const scansStartedBeforeFirstSettled = totalsFor.mock.calls.length;
+    firstScan.resolve(totals(10, 1));
+    const report = await reportPromise;
+
+    expect(scansStartedBeforeFirstSettled).toBe(1);
+    expect(totalsFor).toHaveBeenNthCalledWith(2, "b", "/store/b.jsonl");
+    expect(report.total.input).toBe(30);
+    expect(report.total.cost).toBe(3);
+    expect(report.total.sessionCount).toBe(2);
+  });
+
+  it("queries every live cwd and includes sessions found only by the live source", async () => {
+    const liveCwds = ["/dev/app", "/dev/app/.worktrees/feature"];
+    const listForCwd = vi.fn((cwd: string) => Promise.resolve(
+      cwd === liveCwds[1]
+        ? [{ id: "live-only", path: "/store/live-only.jsonl", cwd }]
+        : [],
+    ));
+    const service = new ProjectUsageService({
+      candidates: candidateSource({ listForCwd }),
+      cache: { totalsFor: () => Promise.resolve(totals(7, 0.7)), flush: () => Promise.resolve(undefined) },
+    });
+
+    const report = await service.report({ projectPath: "/dev/app", liveCwds });
+
+    expect(listForCwd.mock.calls).toEqual([[liveCwds[0]], [liveCwds[1]]]);
+    expect(report.buckets.live).toEqual({ ...totals(7, 0.7), sessionCount: 1 });
+    expect(report.total).toEqual({ ...totals(7, 0.7), sessionCount: 1 });
+  });
+
   it("prefers the archive path for archived sessions", async () => {
     const totalsFor = vi.fn(() => Promise.resolve(totals(1, 0.01)));
     const service = new ProjectUsageService({
@@ -64,19 +124,25 @@ describe("ProjectUsageService", () => {
     expect(totalsFor).toHaveBeenCalledWith("arch1", "/archive/arch1.jsonl");
   });
 
-  it("counts a session once when it appears in both the store and the archive", async () => {
+  it("keeps archive classification and path when a session appears in every source", async () => {
+    const totalsFor = vi.fn(() => Promise.resolve(totals(5, 0.5)));
     const service = new ProjectUsageService({
       candidates: candidateSource({
-        listAll: () => Promise.resolve([{ id: "dup", path: "/store/dup.jsonl", cwd: "/dev/app" }]),
+        listForCwd: () => Promise.resolve([{ id: "dup", path: "/store/live-dup.jsonl", cwd: "/dev/app" }]),
+        listAll: () => Promise.resolve([{ id: "dup", path: "/store/history-dup.jsonl", cwd: "/dev/app" }]),
         listArchived: () => Promise.resolve([{ sessionId: "dup", cwd: "/dev/app", archivePath: "/archive/dup.jsonl" }]),
       }),
-      cache: { totalsFor: () => Promise.resolve(totals(5, 0.5)), flush: () => Promise.resolve(undefined) },
+      cache: { totalsFor, flush: () => Promise.resolve(undefined) },
     });
 
-    const report = await service.report({ projectPath: "/dev/app", liveCwds: [] });
-    expect(report.total.sessionCount).toBe(1);
-    expect(report.total.input).toBe(5);
-    expect(report.buckets.archived.sessionCount).toBe(1);
+    const report = await service.report({ projectPath: "/dev/app", liveCwds: ["/dev/app"] });
+
+    expect(totalsFor).toHaveBeenCalledTimes(1);
+    expect(totalsFor).toHaveBeenCalledWith("dup", "/archive/dup.jsonl");
+    expect(report.total).toEqual({ ...totals(5, 0.5), sessionCount: 1 });
+    expect(report.buckets.archived).toEqual({ ...totals(5, 0.5), sessionCount: 1 });
+    expect(report.buckets.live.sessionCount).toBe(0);
+    expect(report.buckets.retired.sessionCount).toBe(0);
   });
 
   it("returns zeroed buckets when no session belongs to the project", async () => {
@@ -89,21 +155,25 @@ describe("ProjectUsageService", () => {
     expect(report.total).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, sessionCount: 0 });
   });
 
-  it("shares one scan between concurrent requests for the same project", async () => {
+  it("shares concurrent scans but starts a fresh scan after they settle", async () => {
+    let currentTotals = totals(2, 0.2);
     const listAll = vi.fn(() => Promise.resolve([{ id: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]));
     const service = new ProjectUsageService({
       candidates: candidateSource({ listAll }),
-      cache: { totalsFor: () => Promise.resolve(totals(2, 0.2)), flush: () => Promise.resolve(undefined) },
+      cache: { totalsFor: () => Promise.resolve(currentTotals), flush: () => Promise.resolve(undefined) },
     });
 
     const [first, second] = await Promise.all([
       service.report({ projectPath: "/dev/app", liveCwds: [] }),
       service.report({ projectPath: "/dev/app", liveCwds: [] }),
     ]);
+    currentTotals = totals(3, 0.3);
+    const later = await service.report({ projectPath: "/dev/app", liveCwds: [] });
 
-    expect(listAll).toHaveBeenCalledTimes(1);
+    expect(listAll).toHaveBeenCalledTimes(2);
     expect(first.total.input).toBe(2);
     expect(second.total.input).toBe(2);
+    expect(later.total.input).toBe(3);
   });
 
   it("flushes the cache after a report", async () => {
@@ -115,6 +185,25 @@ describe("ProjectUsageService", () => {
 
     await service.report({ projectPath: "/dev/app", liveCwds: [] });
     expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a later report to retry after a failed scan", async () => {
+    let shouldFail = true;
+    const totalsFor = vi.fn(() => {
+      if (shouldFail) return Promise.reject(new Error("scan failed"));
+      return Promise.resolve(totals(4, 0.4));
+    });
+    const service = new ProjectUsageService({
+      candidates: candidateSource({ listAll: () => Promise.resolve([{ id: "a", path: "/store/a.jsonl", cwd: "/dev/app" }]) }),
+      cache: { totalsFor, flush: () => Promise.resolve(undefined) },
+    });
+
+    await expect(service.report({ projectPath: "/dev/app", liveCwds: [] })).rejects.toThrow("scan failed");
+    shouldFail = false;
+    const report = await service.report({ projectPath: "/dev/app", liveCwds: [] });
+
+    expect(totalsFor).toHaveBeenCalledTimes(2);
+    expect(report.total.input).toBe(4);
   });
 
   it("still flushes when a session scan throws", async () => {
