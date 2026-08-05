@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.2
+
+### Patch Changes
+
+- 8444457: Add a project Statistics view reporting total input, output, cache read, cache write, and cost for a project, including usage from archived sessions and removed worktrees.
+- 64a2ef4: Selecting a model in the Model tiers and Utility models settings panels now opens a searchable, provider-grouped dialog instead of a long dropdown. Thinking-level selection in those panels is unchanged.
+
 ## 1.11.1
 
 ### Patch Changes
