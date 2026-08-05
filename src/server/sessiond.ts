@@ -15,11 +15,14 @@ import { registerSkillsConfigRoutes } from "./skills/skillsConfigRoutes.js";
 import { PiSessionService } from "./sessions/piSessionService.js";
 import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGateway.js";
 import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
+import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
 import { SessionDefaultsService } from "./sessions/sessionDefaultsService.js";
 import { registerSessionDefaultsRoutes } from "./sessions/sessionDefaultsRoutes.js";
 import { StarterModelPolicyPreferenceStore } from "./sessions/starterModelPolicyPreferenceStore.js";
 import { createModelTierSettingsService } from "./sessions/modelTierSettingsService.js";
+import { createUtilityModelSettingsService } from "./sessions/utilityModelSettingsService.js";
 import { registerModelTierSettingsRoutes } from "./sessions/modelTierSettingsRoutes.js";
+import { registerUtilityModelSettingsRoutes } from "./sessions/utilityModelSettingsRoutes.js";
 import { SessionNotificationStore } from "./sessions/sessionNotificationStore.js";
 import { FileSessionUnreadPersistence, SessionUnreadStore } from "./sessions/sessionUnreadStore.js";
 import { ProjectScopedSpawnTargetResolver } from "./sessions/spawnTargetResolver.js";
@@ -31,11 +34,12 @@ import { TerminalService } from "./terminals/terminalService.js";
 import { registerTerminalRoutes } from "./terminals/terminalRoutes.js";
 import { getPiWebUiRuntimeComponent } from "./piWebUiStatus.js";
 import { SESSIOND_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
-import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes, replacePiWebUiModelTiers } from "../config.js";
+import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes, replacePiWebUiModelTiers, replacePiWebUiUtilityModels } from "../config.js";
 import { createActiveAgentProfileDescriptor } from "../sessiond/activeAgentProfile.js";
 import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
+import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
 
 const daemonEnvironment: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
 const { config } = effectivePiWebUiConfig({ env: daemonEnvironment });
@@ -44,7 +48,11 @@ const activeAgentProfile = createActiveAgentProfileDescriptor({
   dir: config.agent.dir,
   sessionDirEnvKeys: agentSessionDirEnvKeys(config.agent.command),
 });
-const app = Fastify({ logger: true, bodyLimit: maxUploadBytes(daemonEnvironment, config) });
+const app = Fastify({
+  logger: true,
+  ...sessionRouteFastifyOptions,
+  bodyLimit: maxUploadBytes(daemonEnvironment, config),
+});
 await app.register(fastifyWebsocket);
 
 await runSessionDaemonStartup({
@@ -67,6 +75,19 @@ await runSessionDaemonStartup({
       agentDir: activeAgentProfile.dir,
       ...(githubToken === undefined ? {} : { githubToken }),
     });
+    const loadUtilityModelConfig = () => {
+      const loaded = loadPiWebUiConfig({ env: daemonEnvironment });
+      return {
+        ...(loaded.config.utilityModels === undefined ? {} : { utilityModels: loaded.config.utilityModels }),
+        ...(loaded.utilityModelsError === undefined ? {} : { utilityModelsError: loaded.utilityModelsError }),
+      };
+    };
+    const utilityModelResolver = createUtilityModelResolver({
+      loadConfig: loadUtilityModelConfig,
+      modelRuntime: auth.runtime,
+      thinkingLevelsForModel: runtimeThinkingLevels,
+      logger: app.log,
+    });
     const spawnTargets = config.spawnSessions
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
       : undefined;
@@ -76,6 +97,7 @@ await runSessionDaemonStartup({
       agentDir: activeAgentProfile.dir,
       workspaceActivity,
       logger: app.log,
+      utilityModelResolver,
       ...(spawnTargets === undefined ? {} : { spawnTargets }),
       subsessionsEnabled: spawnTargets !== undefined && config.subsessions,
       notificationStore,
@@ -107,20 +129,29 @@ await runSessionDaemonStartup({
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
     });
+    const utilityModels = createUtilityModelSettingsService({
+      loadConfig: loadUtilityModelConfig,
+      saveConfig: ({ utilityModels: settings }) => {
+        replacePiWebUiUtilityModels(settings, { env: daemonEnvironment });
+      },
+      modelRuntime: auth.runtime,
+      thinkingLevelsForModel: runtimeThinkingLevels,
+    });
     const terminals = new TerminalService(eventHub, workspaceActivity);
     const runtimeComponent = Object.freeze({
       ...getPiWebUiRuntimeComponent("sessiond", SESSIOND_RUNTIME_CAPABILITIES),
       activeAgentProfile,
     });
-    return { eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, terminals, unreadStore, activeAgentProfile, runtimeComponent };
+    return { eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent };
   },
-  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, terminals, runtimeComponent }) {
+  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, defaults, modelTiers, utilityModels, terminals, runtimeComponent }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
     registerAuthRoutes(app, auth);
     registerModelsConfigRoutes(app, models);
     registerSkillsConfigRoutes(app, skills);
     registerSessionDefaultsRoutes(app, defaults);
     registerModelTierSettingsRoutes(app, modelTiers);
+    registerUtilityModelSettingsRoutes(app, utilityModels);
     registerSessionRoutes(app, sessions, eventHub);
     registerTerminalRoutes(app, terminals);
 

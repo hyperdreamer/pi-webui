@@ -1,12 +1,14 @@
-import { LitElement, css, html, svg, type PropertyValues } from "lit";
+import { LitElement, css, html, nothing, svg, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import type { SessionActivity, SessionInfo, SessionStatus, Workspace } from "../api";
+import type { SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace } from "../api";
 import { sessionActivityIndicators, sessionRowActivityKind } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
+import { eligibleSessionReorderGroup, moveSessionInGroup, sessionReorderEdgeScrollDelta, sessionReorderInsertionIndex, sessionReorderRequest, sessionReorderSubtreePaths, sessionReorderThresholdReached, type SessionReorderPeerRect } from "../sessionReorder";
 import { filterSessionRows, hasSessionSearchQuery } from "../sessionSearch";
 import { sessionRows, sessionRowsForCurrentTree, sessionRowsForSearch, type SessionRow, type SessionRowsOptions } from "../sessionTreeRows";
 import { isSessionActive } from "../../../shared/activity";
+import { SESSION_REORDER_LIMIT } from "../../../shared/apiTypes";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicators } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
@@ -24,6 +26,27 @@ export interface SessionListRowsOptions extends Omit<SessionRowsOptions, "folded
 
 type SessionSelectionScope = "current" | "archived";
 
+interface SessionPointerDrag {
+  pointerId: number;
+  pointerType: string;
+  originX: number;
+  originY: number;
+  clientX: number;
+  clientY: number;
+  handle: HTMLElement;
+  selected: SessionInfo;
+  group: SessionInfo[];
+  rows: readonly SessionRow[];
+  active: boolean;
+  insertionIndex?: number;
+}
+
+interface SessionReorderPeer {
+  rect: SessionReorderPeerRect;
+  beforeSessionPath: string;
+  afterSessionPath: string;
+}
+
 @customElement("session-list")
 export class SessionList extends LitElement implements KeyboardNavigableSection {
   @property({ attribute: false }) sessions: SessionInfo[] = [];
@@ -40,6 +63,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean }) canDeleteArchived = false;
   @property({ type: Boolean }) canReload = false;
   @property({ type: Boolean }) canCleanup = false;
+  @property({ type: Boolean }) canReorder = false;
   @property({ type: Boolean }) authoritativeSessionPersistence = false;
   @property({ type: String }) archivedDeleteUnavailableMessage = "Update and restart Pi-Web on this machine to delete archived sessions.";
   @property({ type: String }) cleanupUnavailableMessage = "Update and restart Pi-Web on this machine to clean up sessions.";
@@ -66,6 +90,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
   @property({ attribute: false }) onPin?: (session: SessionInfo) => void;
   @property({ attribute: false }) onUnpin?: (session: SessionInfo) => void;
+  @property({ attribute: false }) onReorder?: (session: SessionInfo, input: SessionReorderRequest) => void | Promise<void>;
   @property({ attribute: false }) onCleanup?: () => void;
 
   @state() private openMenuSessionId: string | undefined;
@@ -79,23 +104,60 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @query(".session-search-input") private searchInput?: HTMLInputElement;
   @state() private searchOpen = false;
   @state() private searchQuery = "";
+  @state() private reorderPending = false;
+
+  private sessionPointerDrag: SessionPointerDrag | undefined;
+  private sessionReorderFrame: number | undefined;
 
   private readonly onDocumentClick = (event: Event) => {
     if (isClickWithinActionMenu(event, this.renderRoot)) return;
     this.openMenuSessionId = undefined;
   };
 
+  private readonly onDocumentPointerMove = (event: PointerEvent) => { this.moveSessionReorder(event); };
+  private readonly onDocumentPointerUp = (event: PointerEvent) => { this.finishSessionReorder(event); };
+  private readonly onDocumentPointerCancel = (event: PointerEvent) => {
+    if (this.sessionPointerDrag?.pointerId === event.pointerId) this.cancelSessionReorder();
+  };
+  private readonly onDocumentKeydown = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || this.sessionPointerDrag === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.cancelSessionReorder();
+  };
+
   override connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener("click", this.onDocumentClick, true);
+    document.addEventListener("pointermove", this.onDocumentPointerMove);
+    document.addEventListener("pointerup", this.onDocumentPointerUp);
+    document.addEventListener("pointercancel", this.onDocumentPointerCancel);
+    document.addEventListener("keydown", this.onDocumentKeydown);
   }
 
   override disconnectedCallback(): void {
     document.removeEventListener("click", this.onDocumentClick, true);
+    document.removeEventListener("pointermove", this.onDocumentPointerMove);
+    document.removeEventListener("pointerup", this.onDocumentPointerUp);
+    document.removeEventListener("pointercancel", this.onDocumentPointerCancel);
+    document.removeEventListener("keydown", this.onDocumentKeydown);
+    this.cancelSessionReorder();
     super.disconnectedCallback();
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    const reorderInvalidated = changed.has("selected")
+      || changed.has("sessions")
+      || changed.has("projectSessions")
+      || changed.has("currentWorkspacePath")
+      || changed.has("workspaces")
+      || changed.has("collapsed")
+      || changed.has("canReorder")
+      || hasChangedProperty(changed, "searchOpen")
+      || hasChangedProperty(changed, "searchQuery")
+      || hasChangedProperty(changed, "selectionScopes")
+      || hasChangedProperty(changed, "renamingSessionId");
+    if (this.sessionPointerDrag !== undefined && reorderInvalidated) this.cancelSessionReorder();
     if (changed.has("sessions")) {
       if (this.openMenuSessionId !== undefined && !this.sessions.some((session) => session.id === this.openMenuSessionId)) this.openMenuSessionId = undefined;
       if (this.renamingSessionId !== undefined && !this.sessions.some((session) => session.id === this.renamingSessionId)) this.cancelSessionRename();
@@ -140,6 +202,10 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const { currentRows, archivedRows } = searchActive
       ? partitionSearchRows(searchRows)
       : { currentRows: normalCurrentRows, archivedRows: allArchivedRows };
+    const reorderMarkers = !this.searchOpen && !searchActive;
+    const reorderGroup = reorderMarkers && this.selected !== undefined
+      ? eligibleSessionReorderGroup(unfoldedCurrentRows, this.selected, this.currentWorkspacePath)
+      : [];
     const currentSelectableSessions = selectableCurrentSessions(currentRows);
     const unfilteredCurrentSelectableSessions = selectableCurrentSessions(normalCurrentRows);
     const archivedVisible = this.archivedExpanded || (searchActive && archivedRows.length > 0);
@@ -162,14 +228,42 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
           <div class="list-body">
             ${this.renderCurrentSelectionToolbar(currentSelectableSessions)}
             ${this.startingCount > 0 ? this.renderStartingSession() : null}
-            ${currentRowGroups.map((rows) => rows[0]?.hasChildren === true
-              ? html`<div class="session-family-frame">${rows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current", sessionTreeSessions))}</div>`
-              : rows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "current", sessionTreeSessions)))}
+            ${currentRowGroups.map((rows) => {
+              const root = rows[0];
+              const rootPath = root?.session.path;
+              const familySubject = reorderMarkers
+                && rootPath !== undefined
+                && root?.session.archived !== true
+                && root?.hasChildren === true
+                && rows.length > 1;
+              const renderedRows = rows.map((row) => this.renderSession(
+                row,
+                descendantCounts.get(row.session.id) ?? 0,
+                "current",
+                sessionTreeSessions,
+                reorderGroup,
+                currentRows,
+                reorderMarkers,
+                familySubject && row.session.path === rootPath,
+              ));
+              return root?.hasChildren === true
+                ? html`<div class="session-family-frame" data-session-reorder-path=${familySubject ? rootPath : nothing}>${renderedRows}</div>`
+                : renderedRows;
+            })}
             ${archivedRows.length > 0 ? html`
               ${this.renderArchivedHeading(archivedRows.map((row) => row.session), archivedVisible)}
               ${archivedVisible ? html`
                 ${this.renderArchivedSelectionToolbar(archivedRows.map((row) => row.session))}
-                ${archivedRows.map((row) => this.renderSession(row, descendantCounts.get(row.session.id) ?? 0, "archived", sessionTreeSessions))}
+                ${archivedRows.map((row) => this.renderSession(
+                  row,
+                  descendantCounts.get(row.session.id) ?? 0,
+                  "archived",
+                  sessionTreeSessions,
+                  [],
+                  currentRows,
+                  false,
+                  false,
+                ))}
               ` : null}
             ` : null}
             ${searchActive && currentRows.length === 0 && archivedRows.length === 0
@@ -249,6 +343,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private toggleSessionSearch(): void {
+    this.cancelSessionReorder();
     this.searchOpen = !this.searchOpen;
     if (!this.searchOpen) {
       this.searchQuery = "";
@@ -354,7 +449,16 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     `;
   }
 
-  private renderSession(row: SessionRow, descendantCount: number, scope: SessionSelectionScope, activitySessions: readonly SessionInfo[]) {
+  private renderSession(
+    row: SessionRow,
+    descendantCount: number,
+    scope: SessionSelectionScope,
+    activitySessions: readonly SessionInfo[],
+    reorderGroup: readonly SessionInfo[],
+    reorderRows: readonly SessionRow[],
+    reorderMarkers: boolean,
+    usesFamilySubject: boolean,
+  ) {
     const { session } = row;
     const cappedDepth = Math.min(row.depth, 2);
     const canBulkSelect = !row.external && sessionSelectionScope(session) === scope;
@@ -371,12 +475,17 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const canReloadSession = canArchive && this.canReload;
     const workspace = row.external ? this.workspaces.find((candidate) => candidate.path === session.cwd) : undefined;
     const externalWorkspaceLabel = workspace === undefined ? undefined : workspace.branch ?? workspace.label;
+    const currentReorderRow = scope === "current" && reorderMarkers;
+    const reorderSubject = currentReorderRow && session.archived !== true;
+    const canDrag = this.canDragSessionReorder(row, scope, reorderGroup, reorderMarkers);
     return html`
       <div
         class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${row.external ? "external-session" : ""} ${selectionActive ? "selecting" : ""} ${indicatorKind === "unread" ? "unread" : ""}"
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
+        data-session-row-path=${currentReorderRow ? session.path : nothing}
+        data-session-reorder-path=${reorderSubject && !usesFamilySubject ? session.path : nothing}
         @dblclick=${(event: MouseEvent) => { this.startSessionRename(event, session, scope, row.external); }}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.activateSessionRow(session, scope, row.external); }); }}
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session, scope, row.external); }}
@@ -389,9 +498,18 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
               : html`${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${!row.external && session.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin session" aria-label="Unpin session" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(session); }}>★</button> ` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${externalWorkspaceLabel === undefined ? null : html` <span class="badge external-workspace" title=${`Open ${externalWorkspaceLabel} workspace`}>${externalWorkspaceLabel} ↗</span>`}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>`}
           </span><small>${this.renderSessionMetaPrefix(session, status, activity)}${String(session.messageCount)} messages</small>
           ${this.renderActivity(session, activitySessions)}
+          ${canDrag ? html`
+            <span
+              class="session-reorder-grip"
+              title="Drag to reorder selected session"
+              data-session-reorder-handle=${session.path}
+              @pointerdown=${(event: PointerEvent) => { this.beginSessionReorder(event, session, reorderGroup, reorderRows); }}
+            >${svg`<svg class="session-reorder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1"></circle><circle cx="15" cy="6" r="1"></circle><circle cx="9" cy="12" r="1"></circle><circle cx="15" cy="12" r="1"></circle><circle cx="9" cy="18" r="1"></circle><circle cx="15" cy="18" r="1"></circle></svg>`}</span>
+          ` : null}
         </div>
         ${row.external ? null : html`
-          <div class="action-menu">
+          <div class="session-row-controls">
+            <div class="action-menu">
             <button class="action-menu-toggle" title="Session actions" @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(session.id, event.currentTarget); }}>⋯</button>
             ${this.openMenuSessionId === session.id ? html`
               <div class="action-menu-panel" style=${this.menuStyle}>
@@ -416,10 +534,295 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
                     `}
               </div>
             ` : null}
+            </div>
           </div>
         `}
       </div>
     `;
+  }
+
+  private canDragSessionReorder(
+    row: SessionRow,
+    scope: SessionSelectionScope,
+    group: readonly SessionInfo[],
+    reorderMarkers: boolean,
+  ): boolean {
+    const { session } = row;
+    if (!reorderMarkers
+      || !this.canReorder
+      || this.reorderPending
+      || scope !== "current"
+      || row.external
+      || row.hasMissingParent
+      || session.persisted !== true
+      || session.archived === true
+      || this.searchOpen
+      || hasSessionSearchQuery(this.searchQuery)
+      || this.selectionScopes.size > 0
+      || this.renamingSessionId !== undefined
+      || this.selected === undefined
+      || !sameSessionIdentity(this.selected, session)
+      || group.length <= 1
+      || group.length > SESSION_REORDER_LIMIT
+      || !group.some((candidate) => sameSessionIdentity(candidate, session))) return false;
+    return this.sessionReorderCatalogCwds(session, group).length <= SESSION_REORDER_LIMIT;
+  }
+
+  private beginSessionReorder(
+    event: PointerEvent,
+    selected: SessionInfo,
+    group: readonly SessionInfo[],
+    rows: readonly SessionRow[],
+  ): void {
+    const handle = event.currentTarget;
+    if (!(handle instanceof HTMLElement)
+      || this.sessionPointerDrag !== undefined
+      || this.reorderPending
+      || !this.canReorder
+      || this.selected === undefined
+      || !sameSessionIdentity(this.selected, selected)
+      || selected.persisted !== true
+      || selected.archived === true
+      || this.searchOpen
+      || hasSessionSearchQuery(this.searchQuery)
+      || this.selectionScopes.size > 0
+      || this.renamingSessionId !== undefined
+      || group.length <= 1
+      || group.length > SESSION_REORDER_LIMIT
+      || !group.some((candidate) => sameSessionIdentity(candidate, selected))
+      || this.sessionReorderCatalogCwds(selected, group).length > SESSION_REORDER_LIMIT
+      || !event.isPrimary
+      || (event.pointerType !== "mouse" && event.pointerType !== "touch")
+      || (event.pointerType === "mouse" && event.button !== 0)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.openMenuSessionId = undefined;
+    this.sessionPointerDrag = {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      originX: event.clientX,
+      originY: event.clientY,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      handle,
+      selected,
+      group: [...group],
+      rows: [...rows],
+      active: false,
+    };
+  }
+
+  private moveSessionReorder(event: PointerEvent): void {
+    const drag = this.sessionPointerDrag;
+    if (drag?.pointerId !== event.pointerId) return;
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    if (!drag.active) {
+      if (!sessionReorderThresholdReached(
+        { x: drag.originX, y: drag.originY },
+        { x: drag.clientX, y: drag.clientY },
+      )) return;
+      drag.active = true;
+      drag.handle.setPointerCapture(drag.pointerId);
+      this.sessionReorderSubject(drag.selected.path)?.classList.add("session-reorder-dragging");
+    }
+    event.preventDefault();
+    this.updateSessionReorderCandidate(drag);
+    this.scheduleSessionReorderEdgeScroll(drag);
+  }
+
+  private finishSessionReorder(event: PointerEvent): void {
+    const drag = this.sessionPointerDrag;
+    if (drag?.pointerId !== event.pointerId) return;
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    if (!drag.active || !this.sessionReorderPointerWithinList(drag)) {
+      this.cancelSessionReorder();
+      return;
+    }
+    event.preventDefault();
+    const insertionIndex = this.updateSessionReorderCandidate(drag);
+    const callback = this.onReorder;
+    if (insertionIndex === undefined || callback === undefined) {
+      this.cancelSessionReorder();
+      return;
+    }
+    const movedGroup = moveSessionInGroup(drag.group, drag.selected.id, insertionIndex);
+    if (sameSessionOrder(movedGroup, drag.group)) {
+      this.cancelSessionReorder();
+      return;
+    }
+    const selected = drag.selected;
+    const group = [...drag.group];
+    const catalogCwds = this.sessionReorderCatalogCwds(selected, group);
+    this.cancelSessionReorder();
+    this.reorderPending = true;
+    void this.submitSessionReorder(callback, selected, group, insertionIndex, catalogCwds);
+  }
+
+  private async submitSessionReorder(
+    callback: (session: SessionInfo, input: SessionReorderRequest) => void | Promise<void>,
+    selected: SessionInfo,
+    group: readonly SessionInfo[],
+    insertionIndex: number,
+    catalogCwds: readonly string[],
+  ): Promise<void> {
+    try {
+      const orderedGroup = moveSessionInGroup(group, selected.id, insertionIndex);
+      await callback(selected, sessionReorderRequest(selected, orderedGroup, catalogCwds));
+    } catch {
+      // The controller owns application error reporting and recovery for reorder requests.
+    } finally {
+      this.reorderPending = false;
+    }
+  }
+
+  private sessionReorderCatalogCwds(selected: SessionInfo, group: readonly SessionInfo[]): string[] {
+    return [...new Set([
+      ...this.workspaces.map((workspace) => workspace.path),
+      ...group.map((session) => session.cwd),
+      selected.cwd,
+    ])];
+  }
+
+  private updateSessionReorderCandidate(drag: SessionPointerDrag): number | undefined {
+    const peers = this.sessionReorderPeers(drag);
+    if (peers.length !== drag.group.length - 1) {
+      delete drag.insertionIndex;
+      this.clearSessionReorderMarkers();
+      return undefined;
+    }
+    const peerRects = peers.map((peer) => peer.rect);
+    const insertionIndex = sessionReorderInsertionIndex(drag.clientY, peerRects);
+    const boundary = insertionIndex === peers.length ? peers.at(-1) : peers[insertionIndex];
+    const markerPath = boundary === undefined
+      ? undefined
+      : insertionIndex === peers.length ? boundary.afterSessionPath : boundary.beforeSessionPath;
+    const element = markerPath === undefined ? undefined : this.sessionReorderSubject(markerPath);
+    if (element === undefined) {
+      delete drag.insertionIndex;
+      this.clearSessionReorderMarkers();
+      return undefined;
+    }
+    this.clearSessionReorderMarkers();
+    element.classList.add(insertionIndex === peerRects.length ? "session-drop-after" : "session-drop-before");
+    drag.insertionIndex = insertionIndex;
+    return insertionIndex;
+  }
+
+  private sessionReorderPeers(drag: SessionPointerDrag): SessionReorderPeer[] {
+    return drag.group.flatMap((session) => {
+      if (sameSessionIdentity(session, drag.selected)) return [];
+      const peer = this.sessionReorderPeer(session, drag.rows);
+      return peer === undefined ? [] : [peer];
+    });
+  }
+
+  private sessionReorderPeer(session: SessionInfo, rows: readonly SessionRow[]): SessionReorderPeer | undefined {
+    if (session.parentSessionPath === undefined) {
+      const subject = this.sessionReorderSubject(session.path);
+      if (subject === undefined) return undefined;
+      const rect = subject.getBoundingClientRect();
+      return {
+        rect: { sessionPath: session.path, top: rect.top, bottom: rect.bottom },
+        beforeSessionPath: session.path,
+        afterSessionPath: session.path,
+      };
+    }
+    const subtreePaths = sessionReorderSubtreePaths(rows, session.path);
+    const first = this.sessionReorderRow(session.path);
+    const lastPath = subtreePaths.at(-1);
+    const last = lastPath === undefined ? undefined : this.sessionReorderRow(lastPath);
+    if (first === undefined || lastPath === undefined || last === undefined) return undefined;
+    const firstRect = first.getBoundingClientRect();
+    const lastRect = last.getBoundingClientRect();
+    return {
+      rect: { sessionPath: session.path, top: firstRect.top, bottom: lastRect.bottom },
+      beforeSessionPath: session.path,
+      afterSessionPath: lastPath,
+    };
+  }
+
+  private sessionReorderRoot(): ParentNode | undefined {
+    return this.renderRoot;
+  }
+
+  private sessionReorderSubject(sessionPath: string): HTMLElement | undefined {
+    const root = this.sessionReorderRoot();
+    if (root === undefined) return undefined;
+    return [...root.querySelectorAll<HTMLElement>("[data-session-reorder-path]")]
+      .find((element) => element.getAttribute("data-session-reorder-path") === sessionPath);
+  }
+
+  private sessionReorderRow(sessionPath: string): HTMLElement | undefined {
+    const root = this.sessionReorderRoot();
+    if (root === undefined) return undefined;
+    return [...root.querySelectorAll<HTMLElement>("[data-session-row-path]")]
+      .find((element) => element.getAttribute("data-session-row-path") === sessionPath);
+  }
+
+  private clearSessionReorderMarkers(): void {
+    const root = this.sessionReorderRoot();
+    if (root === undefined) return;
+    for (const element of root.querySelectorAll<HTMLElement>("[data-session-reorder-path]")) {
+      element.classList.remove("session-drop-before", "session-drop-after");
+    }
+  }
+
+  private scheduleSessionReorderEdgeScroll(drag: SessionPointerDrag): void {
+    if (!drag.active || this.sessionReorderFrame !== undefined || typeof requestAnimationFrame !== "function") return;
+    const body = this.sessionReorderBody();
+    if (body === undefined) return;
+    const rect = body.getBoundingClientRect();
+    if (sessionReorderEdgeScrollDelta(drag.clientY, rect.top, rect.bottom) === 0) return;
+    this.sessionReorderFrame = requestAnimationFrame(() => {
+      this.sessionReorderFrame = undefined;
+      this.runSessionReorderEdgeScroll();
+    });
+  }
+
+  private runSessionReorderEdgeScroll(): void {
+    const drag = this.sessionPointerDrag;
+    const body = this.sessionReorderBody();
+    if (drag === undefined || !drag.active || body === undefined) return;
+    const rect = body.getBoundingClientRect();
+    const delta = sessionReorderEdgeScrollDelta(drag.clientY, rect.top, rect.bottom);
+    if (delta === 0) return;
+    const previousScrollTop = body.scrollTop;
+    body.scrollTop += delta;
+    this.updateSessionReorderCandidate(drag);
+    if (body.scrollTop !== previousScrollTop) this.scheduleSessionReorderEdgeScroll(drag);
+  }
+
+  private sessionReorderBody(): HTMLElement | undefined {
+    return this.sessionReorderRoot()?.querySelector<HTMLElement>(".list-body") ?? undefined;
+  }
+
+  private sessionReorderPointerWithinList(drag: SessionPointerDrag): boolean {
+    const body = this.sessionReorderBody();
+    if (body === undefined) return false;
+    const rect = body.getBoundingClientRect();
+    return drag.clientX >= rect.left
+      && drag.clientX <= rect.right
+      && drag.clientY >= rect.top
+      && drag.clientY <= rect.bottom;
+  }
+
+  private cancelSessionReorder(): void {
+    const drag = this.sessionPointerDrag;
+    this.sessionPointerDrag = undefined;
+    if (this.sessionReorderFrame !== undefined) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.sessionReorderFrame);
+      this.sessionReorderFrame = undefined;
+    }
+    this.clearSessionReorderMarkers();
+    if (drag === undefined) return;
+    this.sessionReorderSubject(drag.selected.path)?.classList.remove("session-reorder-dragging");
+    if (drag.active
+      && typeof drag.handle.hasPointerCapture === "function"
+      && drag.handle.hasPointerCapture(drag.pointerId)
+      && typeof drag.handle.releasePointerCapture === "function") drag.handle.releasePointerCapture(drag.pointerId);
   }
 
   private startSessionRename(event: MouseEvent, session: SessionInfo, scope: SessionSelectionScope, external: boolean): void {
@@ -441,6 +844,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private beginSessionRename(event: MouseEvent, session: SessionInfo): void {
+    this.cancelSessionReorder();
     this.onRenameStart?.(session);
     event.preventDefault();
     event.stopPropagation();
@@ -568,6 +972,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   }
 
   private startSelection(scope: SessionSelectionScope, visibleSessions: SessionInfo[]): void {
+    this.cancelSessionReorder();
     this.selectionScopes = new Set([...this.selectionScopes, scope]);
     const onlyVisibleSession = visibleSessions.length === 1 ? visibleSessions[0] : undefined;
     if (onlyVisibleSession !== undefined) this.selectedSessionIds = new Set([...this.selectedSessionIds, onlyVisibleSession.id]);
@@ -691,6 +1096,15 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     .bulk-row small { display: inline; min-width: 0; color: var(--pi-muted); }
     .action-name, .section-selected { text-align: start; unicode-bidi: plaintext; }
     .action-main { padding-right: 56px; }
+    .session-row-controls { flex: 0 0 auto; display: flex; align-items: stretch; }
+    .session-reorder-grip { position: absolute; right: 0; top: 50%; z-index: 2; box-sizing: border-box; display: grid; place-items: center; width: 24px; height: 24px; color: var(--pi-muted); cursor: grab; touch-action: none; transform: translateY(-50%); user-select: none; }
+    .session-reorder-grip:active { cursor: grabbing; }
+    .session-reorder-icon { width: 16px; height: 16px; fill: currentColor; }
+    .session-family-frame, .action-row { position: relative; }
+    .session-reorder-dragging { opacity: .45; }
+    .session-drop-before::before, .session-drop-after::after { content: ""; position: absolute; right: 0; left: 0; z-index: 4; height: 2px; background: var(--pi-accent); pointer-events: none; }
+    .session-drop-before::before { top: -4px; }
+    .session-drop-after::after { bottom: -4px; }
     .action-row.unread .action-name { color: var(--pi-text-bright); font-weight: 650; }
     .plain-heading { min-width: 0; }
     .action-name-line { min-width: 0; display: flex; align-items: flex-start; gap: 6px; }
@@ -765,6 +1179,24 @@ function partitionSearchRows(rows: readonly SessionRow[]): { currentRows: Sessio
 
 function hasStringValue(target: EventTarget | null): target is EventTarget & { value: string } {
   return target !== null && "value" in target && typeof target.value === "string";
+}
+
+function sameSessionIdentity(left: SessionInfo, right: SessionInfo): boolean {
+  return left.id === right.id && left.cwd === right.cwd && left.path === right.path;
+}
+
+function sameSessionOrder(left: readonly SessionInfo[], right: readonly SessionInfo[]): boolean {
+  return left.length === right.length && left.every((session, index) => {
+    const other = right[index];
+    return other !== undefined && sameSessionIdentity(session, other);
+  });
+}
+
+function hasChangedProperty(changed: Iterable<readonly [PropertyKey, unknown]>, property: PropertyKey): boolean {
+  for (const [changedProperty] of changed) {
+    if (changedProperty === property) return true;
+  }
+  return false;
 }
 
 function selectableCurrentSessions(rows: readonly SessionRow[]): SessionInfo[] {

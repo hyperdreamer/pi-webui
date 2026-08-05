@@ -1,8 +1,11 @@
 import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
+import type { SessionReorderRequest } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
+import { UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
+import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
@@ -34,6 +37,7 @@ import {
   parseModelDiscoveryResponse,
   parseModelSelectionResponse,
   parseModelTierSettingsResponse,
+  parseUtilityModelSettingsResponse,
   parseModelsConfigDocument,
   parseModelsConfigSaveResponse,
   parseSkillMutationResponse,
@@ -63,6 +67,7 @@ import {
   parseSessionInfo,
   parseSessionMessageForkResult,
   parseSessionModelPolicyResponse,
+  parseSessionReorderResponse,
   parseSessionNotificationInboxSnapshot,
   parseSessionStatus,
   parseSessionSystemPrompt,
@@ -196,6 +201,42 @@ export const modelTiersApi = {
   save: (ladder: ModelTierLadder, machineId = "local") => request(modelTiersPath(machineId), parseModelTierSettingsResponse, { method: "PUT", body: JSON.stringify({ ladder }) }),
 };
 
+function utilityModelsPath(machineId = "local"): string {
+  return `${machinePrefix(machineId)}/utility-models`;
+}
+
+function utilityModelSettingsForContract(
+  settings: UtilityModelSettingsUpdate,
+  contractVersion: UtilityModelSettingsResponse["contractVersion"],
+): UtilityModelSettingsUpdate {
+  if (contractVersion === 2) return settings;
+
+  const projected: UtilityModelSettingsUpdate = {};
+  for (const slot of UTILITY_MODEL_SLOTS) {
+    if (!Object.prototype.hasOwnProperty.call(settings, slot)) continue;
+    const binding = settings[slot];
+    if (binding === null) {
+      projected[slot] = null;
+    } else if (binding !== undefined) {
+      projected[slot] = { provider: binding.provider, id: binding.id };
+    }
+  }
+  return projected;
+}
+
+export const utilityModelsApi = {
+  settings: (machineId = "local") => request(utilityModelsPath(machineId), parseUtilityModelSettingsResponse),
+  save: (
+    settings: UtilityModelSettingsUpdate,
+    contractVersion: UtilityModelSettingsResponse["contractVersion"],
+    machineId = "local",
+  ): Promise<UtilityModelSettingsResponse> => request(
+    utilityModelsPath(machineId),
+    parseUtilityModelSettingsResponse,
+    { method: "PUT", body: JSON.stringify({ settings: utilityModelSettingsForContract(settings, contractVersion) }) },
+  ),
+};
+
 function skillsConfigPath(machineId = "local"): string {
   return `${machinePrefix(machineId)}/skills`;
 }
@@ -293,6 +334,10 @@ export const workspacesApi = {
 
 export const sessionsApi = {
   sessions: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo)),
+  reorder: (session: SessionRef, input: SessionReorderRequest, machineId = "local") => request(sessionPath(session, "reorder", machineId), parseSessionReorderResponse, {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
   unreadCatalog: (machineId = "local") => request(`${machinePrefix(machineId)}/sessions/unread`, parseSessionUnreadCatalogSnapshot, { cache: "no-store" }),
   acknowledgeUnread: (session: SessionRef, catalogId: string, throughCompletionOrder: number, machineId = "local") => {
     const body: SessionUnreadAcknowledgeRequest = { cwd: session.cwd, catalogId, throughCompletionOrder };
@@ -460,6 +505,7 @@ export const api = {
   ...machinesApi,
   ...memoryApi,
   ...modelTiersApi,
+  utilityModels: utilityModelsApi,
   ...configApi,
   ...pluginsApi,
   ...piPackagesApi,

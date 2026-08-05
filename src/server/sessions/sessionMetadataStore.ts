@@ -2,10 +2,41 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
+import type { SessionReorderScope } from "../../shared/apiTypes.js";
+
+export interface SessionOrderMetadata {
+  position: number;
+  scope: SessionReorderScope;
+  pinned: boolean;
+}
 
 export interface SessionMetadata {
   pinned?: boolean;
+  order?: SessionOrderMetadata;
 }
+
+export class SessionMetadataOrderConflictError extends Error {
+  constructor() {
+    super("Session pin state changed during reorder");
+    this.name = "SessionMetadataOrderConflictError";
+  }
+}
+
+export interface SessionMetadataFileSystem {
+  readFile(path: string, encoding: "utf8"): Promise<string>;
+  mkdir(path: string, options: { recursive: true }): Promise<unknown>;
+  writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+}
+
+const defaultFileSystem: SessionMetadataFileSystem = {
+  readFile,
+  mkdir,
+  writeFile,
+  rename,
+  unlink,
+};
 
 export function defaultSessionMetadataFilePath(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
   return join(piWebUiDataDir(env, cwd), "session-metadata.json");
@@ -14,19 +45,53 @@ export function defaultSessionMetadataFilePath(env: NodeJS.ProcessEnv = process.
 export class SessionMetadataStore {
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath = defaultSessionMetadataFilePath()) {}
+  constructor(
+    private readonly filePath = defaultSessionMetadataFilePath(),
+    private readonly fileSystem: SessionMetadataFileSystem = defaultFileSystem,
+  ) {}
 
   async get(sessionPath: string): Promise<SessionMetadata | undefined> {
     const data = await this.read();
     return data[sessionPath];
   }
 
+  async snapshot(): Promise<Record<string, SessionMetadata>> {
+    return await this.read();
+  }
+
   async pin(sessionPath: string): Promise<void> {
-    await this.update(sessionPath, { pinned: true });
+    await this.update(sessionPath, (existing) => ({ ...withoutOrder(existing), pinned: true }));
   }
 
   async unpin(sessionPath: string): Promise<void> {
-    await this.update(sessionPath, { pinned: false });
+    await this.update(sessionPath, (existing) => ({ ...withoutOrder(existing), pinned: false }));
+  }
+
+  async clearOrder(sessionPath: string): Promise<void> {
+    await this.update(sessionPath, withoutOrder);
+  }
+
+  /**
+   * Atomically normalize a complete sibling group into positions matching
+   * `sessionPaths` order. Rejects the whole batch if any member's current
+   * pin state no longer matches `pinned`, since that means the group the
+   * caller validated is now stale.
+   */
+  async replaceOrder(
+    sessionPaths: readonly string[],
+    scope: SessionReorderScope,
+    pinned: boolean,
+  ): Promise<void> {
+    await this.exclusive(async () => {
+      const data = await this.read();
+      if (sessionPaths.some((path) => (data[path]?.pinned === true) !== pinned)) {
+        throw new SessionMetadataOrderConflictError();
+      }
+      sessionPaths.forEach((path, position) => {
+        data[path] = { ...data[path], order: { position, scope, pinned } };
+      });
+      await this.write(data);
+    });
   }
 
   async pinnedPaths(): Promise<string[]> {
@@ -36,11 +101,13 @@ export class SessionMetadataStore {
       .map(([path]) => path);
   }
 
-  private async update(sessionPath: string, meta: SessionMetadata): Promise<void> {
+  private async update(
+    sessionPath: string,
+    mutate: (existing: SessionMetadata) => SessionMetadata,
+  ): Promise<void> {
     await this.exclusive(async () => {
       const data = await this.read();
-      const existing = data[sessionPath] ?? {};
-      data[sessionPath] = { ...existing, ...meta };
+      data[sessionPath] = mutate(data[sessionPath] ?? {});
       await this.write(data);
     });
   }
@@ -59,7 +126,7 @@ export class SessionMetadataStore {
 
   private async read(): Promise<Record<string, SessionMetadata>> {
     try {
-      const value: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
+      const value: unknown = JSON.parse(await this.fileSystem.readFile(this.filePath, "utf8"));
       return parseMetadataFile(value);
     } catch (error: unknown) {
       if (isNodeErrorWithCode(error, "ENOENT")) return {};
@@ -68,16 +135,22 @@ export class SessionMetadataStore {
   }
 
   private async write(data: Record<string, SessionMetadata>): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
+    await this.fileSystem.mkdir(dirname(this.filePath), { recursive: true });
     const tempPath = join(dirname(this.filePath), `.${basename(this.filePath)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
     try {
-      await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-      await rename(tempPath, this.filePath);
+      await this.fileSystem.writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+      await this.fileSystem.rename(tempPath, this.filePath);
     } catch (error: unknown) {
-      await unlink(tempPath).catch(() => undefined);
+      await this.fileSystem.unlink(tempPath).catch(() => undefined);
       throw error;
     }
   }
+}
+
+function withoutOrder(metadata: SessionMetadata): SessionMetadata {
+  const { order: _order, ...rest } = metadata;
+  void _order;
+  return rest;
 }
 
 function parseMetadataFile(value: unknown): Record<string, SessionMetadata> {
@@ -92,7 +165,52 @@ function parseMetadataFile(value: unknown): Record<string, SessionMetadata> {
 function parseMetadataEntry(value: unknown): SessionMetadata {
   if (!isRecord(value)) throw new Error("Invalid session metadata entry");
   const pinned = optionalBoolean(value, "pinned");
-  return { ...(pinned === undefined ? {} : { pinned }) };
+  const order = parseOptionalOrder(value["order"]);
+  return {
+    ...(pinned === undefined ? {} : { pinned }),
+    ...(order === undefined ? {} : { order }),
+  };
+}
+
+function parseOptionalOrder(value: unknown): SessionOrderMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("Invalid session metadata order");
+  const allowedKeys = new Set(["position", "scope", "pinned"]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) throw new Error("Invalid session metadata order");
+  }
+  const position = value["position"];
+  if (typeof position !== "number" || !Number.isInteger(position) || position < 0 || !Number.isSafeInteger(position)) {
+    throw new Error("Invalid session metadata order");
+  }
+  const scope = parseOrderScope(value["scope"]);
+  const pinned = value["pinned"];
+  if (typeof pinned !== "boolean") throw new Error("Invalid session metadata order");
+  return { position, scope, pinned };
+}
+
+function parseOrderScope(value: unknown): SessionReorderScope {
+  if (!isRecord(value)) throw new Error("Invalid session metadata order");
+  const kind = value["kind"];
+  if (kind === "root") {
+    const allowedKeys = new Set(["kind", "cwd"]);
+    for (const key of Object.keys(value)) {
+      if (!allowedKeys.has(key)) throw new Error("Invalid session metadata order");
+    }
+    const cwd = value["cwd"];
+    if (typeof cwd !== "string" || cwd === "") throw new Error("Invalid session metadata order");
+    return { kind: "root", cwd };
+  }
+  if (kind === "children") {
+    const allowedKeys = new Set(["kind", "parentSessionPath"]);
+    for (const key of Object.keys(value)) {
+      if (!allowedKeys.has(key)) throw new Error("Invalid session metadata order");
+    }
+    const parentSessionPath = value["parentSessionPath"];
+    if (typeof parentSessionPath !== "string" || parentSessionPath === "") throw new Error("Invalid session metadata order");
+    return { kind: "children", parentSessionPath };
+  }
+  throw new Error("Invalid session metadata order");
 }
 
 function optionalBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
@@ -103,7 +221,7 @@ function optionalBoolean(record: Record<string, unknown>, key: string): boolean 
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {

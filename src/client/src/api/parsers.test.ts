@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -602,6 +602,56 @@ describe("API parsers", () => {
       creationSource: "session-list-plus",
     });
     expect(() => parseSessionInfo({ id: "s1", path: "", cwd: "/repo", persisted: "yes", created: "now", modified: "now", messageCount: 0, firstMessage: "" })).toThrow("Expected optional boolean field: persisted");
+
+    expect(parseSessionInfo({
+      id: "s1",
+      path: "/sessions/s1.jsonl",
+      cwd: "/repo",
+      persisted: true,
+      created: "2026-01-01T00:00:00.000Z",
+      modified: "2026-01-01T00:01:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+      manualOrder: 3,
+    })).toMatchObject({ id: "s1", manualOrder: 3 });
+
+    for (const manualOrder of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => parseSessionInfo({
+        id: "s1",
+        path: "/sessions/s1.jsonl",
+        cwd: "/repo",
+        created: "now",
+        modified: "now",
+        messageCount: 0,
+        firstMessage: "",
+        manualOrder,
+      })).toThrow("Expected non-negative safe integer field: manualOrder");
+    }
+  });
+
+  it("parses strict normalized session reorder responses", () => {
+    expect(parseSessionReorderResponse({
+      orderedSessions: [
+        { id: "second", cwd: "/repo", manualOrder: 0 },
+        { id: "first", cwd: "/repo", manualOrder: 1 },
+      ],
+    })).toEqual({
+      orderedSessions: [
+        { id: "second", cwd: "/repo", manualOrder: 0 },
+        { id: "first", cwd: "/repo", manualOrder: 1 },
+      ],
+    });
+
+    for (const manualOrder of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "0"]) {
+      expect(() => parseSessionReorderResponse({
+        orderedSessions: [{ id: "first", cwd: "/repo", manualOrder }],
+      })).toThrow("Expected non-negative safe integer field: manualOrder");
+    }
+    expect(() => parseSessionReorderResponse({
+      orderedSessions: [{ id: "first", cwd: "/repo" }],
+    })).toThrow("Expected non-negative safe integer field: manualOrder");
+    expect(() => parseSessionReorderResponse({ orderedSessions: {} }))
+      .toThrow("Expected array response");
   });
 
   it("does not invent a creation source from a malformed optional field", () => {
@@ -1122,6 +1172,99 @@ describe("API parsers", () => {
     })).toThrow("Invalid notification clear reason");
   });
 
+  it("parses version 1 utility-model settings snapshots with exact model-only references", () => {
+    const wire = utilityModelSettingsWire();
+
+    expect(parseUtilityModelSettingsResponse(wire)).toEqual(wire);
+    expect(parseUtilityModelSettingsResponse(wire).settings.context).toEqual({
+      provider: "openai",
+      id: "org/gpt-5.6-luna/medium",
+    });
+  });
+
+  it("parses version 2 utility-model settings snapshots with explicit thinking levels", () => {
+    const wire = utilityModelSettingsV2Wire();
+
+    expect(parseUtilityModelSettingsResponse(wire)).toEqual(wire);
+    expect(parseUtilityModelSettingsResponse(wire).settings).toEqual({
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    });
+  });
+
+  it("accepts empty version 1 utility settings and preserves stale configured references", () => {
+    const empty = utilityModelSettingsWire({ settings: {}, models: [], slots: { lightweight: { valid: true }, context: { valid: true } } });
+    const stale = utilityModelSettingsWire({
+      settings: { lightweight: { provider: "openai", id: "retired" } },
+      slots: {
+        lightweight: { valid: false, reason: "lightweight utility model openai/retired is unavailable" },
+        context: { valid: true },
+      },
+      valid: false,
+    });
+
+    expect(parseUtilityModelSettingsResponse(empty)).toEqual(empty);
+    expect(parseUtilityModelSettingsResponse(stale)).toEqual(stale);
+  });
+
+  it("rejects malformed utility top-level fields, slot maps, and validation rows in both versions", () => {
+    for (const wire of [utilityModelSettingsWire({ unexpected: true }), utilityModelSettingsV2Wire({ unexpected: true })]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("field");
+    }
+    for (const wire of [
+      utilityModelSettingsWire({ slots: { lightweight: { valid: true } } }),
+      utilityModelSettingsV2Wire({ slots: { lightweight: { valid: true } } }),
+    ]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("slots");
+    }
+    for (const wire of [
+      utilityModelSettingsWire({ slots: { lightweight: { valid: "yes" }, context: { valid: true } } }),
+      utilityModelSettingsV2Wire({ slots: { lightweight: { valid: "yes" }, context: { valid: true } } }),
+    ]) {
+      expect(() => parseUtilityModelSettingsResponse(wire)).toThrow("valid");
+    }
+  });
+
+  it("rejects thinking fields and malformed references in version 1 utility settings", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      settings: { lightweight: { provider: "openai", id: "gpt", thinkingLevel: "max" } },
+    }))).toThrow("thinkingLevel");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off"] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({
+      settings: { lightweight: { provider: "", id: "gpt" } },
+    }))).toThrow("provider");
+  });
+
+  it("strictly parses version 2 utility thinking fields", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" } }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "gpt", thinkingLevel: "auto" } },
+    }))).toThrow("thinkingLevel");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "", thinkingLevel: "max" } },
+    }))).toThrow("id");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off", "unknown"] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off", 1] }],
+    }))).toThrow("thinkingLevels");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      settings: { lightweight: { provider: "openai", id: "gpt", unexpected: true } },
+    }))).toThrow("settings.lightweight");
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsV2Wire({
+      models: [{ model: { provider: "openai", id: "gpt" }, thinkingLevels: ["off"], unexpected: true }],
+    }))).toThrow("models");
+  });
+
+  it("rejects unsupported utility model contract versions", () => {
+    expect(() => parseUtilityModelSettingsResponse(utilityModelSettingsWire({ contractVersion: 3 }))).toThrow("contract version");
+  });
+
   it("parses model-tier settings snapshots with stale ladders and separate provider/model IDs", () => {
     const wire = modelTierSettingsWire();
 
@@ -1238,6 +1381,53 @@ function sessionModelPolicyResponseWire() {
         ladderValid: true,
       },
     },
+  };
+}
+
+function utilityModelSettingsWire(overrides: Record<string, unknown> = {}) {
+  return {
+    contractVersion: 1,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna" },
+      { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" } },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+    ...overrides,
+  };
+}
+
+function utilityModelSettingsV2Wire(overrides: Record<string, unknown> = {}) {
+  return {
+    contractVersion: 2,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      {
+        model: { provider: "openai", id: "gpt-5.6-luna" },
+        name: "Luna",
+        thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        model: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+        thinkingLevels: ["off", "max"],
+      },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+    ...overrides,
   };
 }
 

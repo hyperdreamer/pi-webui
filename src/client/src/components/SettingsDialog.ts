@@ -1,7 +1,7 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AppAction } from "../actions";
-import { configApi, modelTiersApi, piPackagesApi, pluginsApi, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse } from "../api";
+import { configApi, modelTiersApi, piPackagesApi, pluginsApi, utilityModelsApi, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
 import "./settings/SettingsSessiondPanel";
@@ -9,10 +9,11 @@ import "./settings/SettingsPackagesPanel";
 import "./settings/SettingsPluginsPanel";
 import "./settings/SettingsModelTiersPanel";
 import "./settings/SettingsShortcutsPanel";
+import "./settings/SettingsUtilityModelsPanel";
 import { friendlyPiPackageErrorMessage, isPiPackageManagementUnsupported, piPackageManagementSupport, piPackageManagementSupportKey, piPackageMutationFollowUpMessage, piPackageTargetLabel, shouldRefreshGatewayPluginsAfterPiPackageMutation, type PiPackageManagementSupport, type PiPackageOperationState, type PiPackageTargetContext } from "./settings/piPackageSettings";
 import { loadGatewaySettingsData, loadPiPackagesData } from "./settings/settingsDataLoading";
 import { mergeSelectedMachineAccessConfig } from "./settings/settingsMachineAccessConfig";
-import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, settingsMachineTarget, settingsMachineTargetLabel, type AgentProfileSettingsSupport, type SelectedMachineSettingsSupport, type SettingsMachineTarget } from "./settings/settingsMachineTarget";
+import { agentProfileSettingsSupport, friendlySelectedMachineSettingsErrorMessage, isAgentProfileSettingsSupported, isSelectedMachineSettingsUnsupported, modelTierSettingsSupport, selectedMachineSettingsSupport, selectedMachineSettingsSupportKey, settingsMachineTarget, settingsMachineTargetLabel, utilityModelSettingsSupport, type AgentProfileSettingsSupport, type SelectedMachineSettingsSupport, type SettingsMachineTarget, type UtilityModelSettingsSupport } from "./settings/settingsMachineTarget";
 import { mergeSelectedMachinePluginConfig, pluginEnabledConfigPatch } from "./settings/settingsPluginConfig";
 import { mergeSelectedMachineSessiondConfig } from "./settings/settingsSessiondConfig";
 
@@ -34,12 +35,14 @@ export class SettingsDialog extends LitElement {
   @state() private selectedPluginsResponse: PiWebUiPluginsResponse | undefined;
   @state() private packagesResponse: PiPackagesResponse | undefined;
   @state() private modelTiersConfigResponse: ModelTierSettingsResponse | undefined;
+  @state() private utilityModelsConfigResponse: UtilityModelSettingsResponse | undefined;
   @state() private loading = true;
   @state() private accessLoading = true;
   @state() private sessiondLoading = true;
   @state() private pluginLoading = true;
   @state() private packageLoading = true;
   @state() private modelTiersLoading = true;
+  @state() private utilityModelsLoading = true;
   @state() private saving = false;
   @state() private packageOperation: PiPackageOperationState | undefined;
   @state() private error = "";
@@ -48,6 +51,7 @@ export class SettingsDialog extends LitElement {
   @state() private pluginError = "";
   @state() private packageError = "";
   @state() private modelTiersError = "";
+  @state() private utilityModelsError = "";
   @state() private savedMessage = "";
   @state() private packageMessage = "";
   private savedMessageTimer: number | undefined;
@@ -58,6 +62,7 @@ export class SettingsDialog extends LitElement {
   private packageLoadRequestSeq = 0;
   private packageMutationSeq = 0;
   private modelTiersLoadRequestSeq = 0;
+  private utilityModelsLoadRequestSeq = 0;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -67,6 +72,7 @@ export class SettingsDialog extends LitElement {
     void this.loadPluginsForTarget();
     void this.loadPackagesForTarget();
     void this.loadModelTiersForTarget();
+    void this.loadUtilityModelsForTarget();
   }
 
   override disconnectedCallback(): void {
@@ -90,6 +96,8 @@ export class SettingsDialog extends LitElement {
         if (this.isConnected) void this.loadPackagesForTarget(currentTarget);
         this.resetModelTiersStateForTargetChange();
         if (this.isConnected) void this.loadModelTiersForTarget(currentTarget);
+        this.resetUtilityModelsStateForTargetChange();
+        if (this.isConnected) void this.loadUtilityModelsForTarget(currentTarget);
         return;
       }
     }
@@ -104,6 +112,10 @@ export class SettingsDialog extends LitElement {
       if (this.isConnected) void this.loadPluginsForTarget(currentTarget);
       this.resetModelTiersStateForTargetChange();
       if (this.isConnected) void this.loadModelTiersForTarget(currentTarget);
+    }
+    if (this.utilityModelSettingsSupportNeedsReload(changed.get("machineRuntime"), currentTarget)) {
+      this.resetUtilityModelsStateForTargetChange();
+      if (this.isConnected) void this.loadUtilityModelsForTarget(currentTarget);
     }
     if (!this.packageManagementSupportNeedsReload(changed.get("machineRuntime"), currentTarget)) return;
     this.resetPackageStateForTargetChange();
@@ -128,6 +140,7 @@ export class SettingsDialog extends LitElement {
               ${this.renderNavButton("packages", "Pi packages", "Selected machine")}
               ${this.renderNavButton("plugins", "PI WEBUI plugins", "Selected machine")}
               ${this.renderNavButton("modeltiers", "Model tiers", "Selected machine")}
+              ${this.renderNavButton("utilitymodels", "Utility models", "Selected machine")}
               ${this.renderNavButton("shortcuts", "Keyboard", "Gateway shortcuts")}
             </nav>
             <main class="settings-content">
@@ -203,6 +216,21 @@ export class SettingsDialog extends LitElement {
           .onReload=${() => this.loadModelTiersForTarget()}
           .onSave=${(ladder: ModelTierLadder) => this.saveModelTiers(ladder)}
         ></settings-model-tiers-panel>
+      `;
+    }
+    if (this.section === "utilitymodels") {
+      return html`
+        <settings-utility-models-panel
+          .response=${this.utilityModelsConfigResponse}
+          .loading=${this.utilityModelsLoading}
+          .saving=${this.saving}
+          .error=${this.utilityModelsError}
+          .savedMessage=${this.savedMessage}
+          .targetLabel=${settingsMachineTargetLabel(this.settingsTarget())}
+          .support=${this.utilityModelSettingsSupport()}
+          .onReload=${() => this.loadUtilityModelsForTarget()}
+          .onSave=${(update: UtilityModelSettingsUpdate) => this.saveUtilityModels(update)}
+        ></settings-utility-models-panel>
       `;
     }
     if (this.section === "plugins") {
@@ -396,6 +424,30 @@ export class SettingsDialog extends LitElement {
     }
   }
 
+  private async loadUtilityModelsForTarget(target = this.settingsTarget()): Promise<void> {
+    const requestSeq = ++this.utilityModelsLoadRequestSeq;
+    const support = this.utilityModelSettingsSupport(target);
+    if (isSelectedMachineSettingsUnsupported(support)) {
+      this.utilityModelsConfigResponse = undefined;
+      this.utilityModelsLoading = false;
+      this.utilityModelsError = support.message ?? `Selected-machine settings are not available on ${settingsMachineTargetLabel(target)}.`;
+      return;
+    }
+    this.utilityModelsLoading = true;
+    this.utilityModelsError = "";
+    try {
+      const response = await utilityModelsApi.settings(target.id);
+      if (!this.isCurrentUtilityModelsLoad(requestSeq, target)) return;
+      this.utilityModelsConfigResponse = response;
+    } catch (error) {
+      if (this.isCurrentUtilityModelsLoad(requestSeq, target)) {
+        this.utilityModelsError = `Failed to load utility model settings from ${settingsMachineTargetLabel(target)}: ${friendlySelectedMachineSettingsErrorMessage(errorMessage(error), target)}`;
+      }
+    } finally {
+      if (this.isCurrentUtilityModelsLoad(requestSeq, target)) this.utilityModelsLoading = false;
+    }
+  }
+
   private async togglePlugin(pluginId: string, enabled: boolean): Promise<void> {
     if (this.saving) return;
     const target = this.settingsTarget();
@@ -552,6 +604,51 @@ export class SettingsDialog extends LitElement {
     }
   }
 
+  private async saveUtilityModels(update: UtilityModelSettingsUpdate): Promise<void> {
+    if (this.saving) return;
+    const target = this.settingsTarget();
+    const loadedResponse = this.utilityModelsConfigResponse;
+    if (loadedResponse === undefined) {
+      this.utilityModelsError = "Utility model settings must be loaded before saving.";
+      return;
+    }
+    const support = this.utilityModelSettingsSupport(target);
+    if (isSelectedMachineSettingsUnsupported(support)) {
+      this.utilityModelsError = support.message ?? `Selected-machine settings are not available on ${settingsMachineTargetLabel(target)}.`;
+      return;
+    }
+    this.saving = true;
+    this.utilityModelsError = "";
+    this.savedMessage = "";
+    try {
+      const response = await utilityModelsApi.save(update, loadedResponse.contractVersion, target.id);
+      if (!this.isCurrentSettingsTarget(target)) return;
+      this.utilityModelsConfigResponse = response;
+      if (target.kind === "local" && this.configResponse !== undefined) {
+        const settings = response.settings;
+        this.configResponse = {
+          ...this.configResponse,
+          config: {
+            ...this.configResponse.config,
+            utilityModels: settings,
+          },
+          effectiveConfig: {
+            ...this.configResponse.effectiveConfig,
+            utilityModels: settings,
+          },
+        };
+        this.onConfigSaved?.(this.configResponse.effectiveConfig);
+      }
+      this.showSavedMessage();
+    } catch (error) {
+      if (this.isCurrentSettingsTarget(target)) {
+        this.utilityModelsError = `Failed to save utility model settings on ${settingsMachineTargetLabel(target)}: ${friendlySelectedMachineSettingsErrorMessage(errorMessage(error), target)}`;
+      }
+    } finally {
+      this.saving = false;
+    }
+  }
+
   private async installPiPackage(source: string): Promise<void> {
     const target = this.packageTarget();
     await this.runPiPackageMutation({ kind: "install", source }, "install Pi package", target, () => piPackagesApi.install(source, target.id));
@@ -639,9 +736,19 @@ export class SettingsDialog extends LitElement {
     return modelTierSettingsSupport(target, this.machineRuntime);
   }
 
+  private utilityModelSettingsSupport(target = this.settingsTarget()): UtilityModelSettingsSupport {
+    return utilityModelSettingsSupport(target, this.machineRuntime);
+  }
+
   private selectedMachineSettingsSupportNeedsReload(previousRuntime: MachineRuntime | undefined, target: SettingsMachineTarget): boolean {
     const previousSupport = selectedMachineSettingsSupport(target, previousRuntime);
     const currentSupport = this.selectedMachineSettingsSupport(target);
+    return selectedMachineSettingsSupportKey(previousSupport) !== selectedMachineSettingsSupportKey(currentSupport);
+  }
+
+  private utilityModelSettingsSupportNeedsReload(previousRuntime: MachineRuntime | undefined, target: SettingsMachineTarget): boolean {
+    const previousSupport = utilityModelSettingsSupport(target, previousRuntime);
+    const currentSupport = this.utilityModelSettingsSupport(target);
     return selectedMachineSettingsSupportKey(previousSupport) !== selectedMachineSettingsSupportKey(currentSupport);
   }
 
@@ -674,6 +781,10 @@ export class SettingsDialog extends LitElement {
 
   private isCurrentModelTiersLoad(requestSeq: number, target: SettingsMachineTarget): boolean {
     return requestSeq === this.modelTiersLoadRequestSeq && this.isCurrentSettingsTarget(target);
+  }
+
+  private isCurrentUtilityModelsLoad(requestSeq: number, target: SettingsMachineTarget): boolean {
+    return requestSeq === this.utilityModelsLoadRequestSeq && this.isCurrentSettingsTarget(target);
   }
 
   private isCurrentPackageLoad(requestSeq: number, target: PiPackageTargetContext): boolean {
@@ -737,6 +848,14 @@ export class SettingsDialog extends LitElement {
     this.savedMessage = "";
   }
 
+  private resetUtilityModelsStateForTargetChange(): void {
+    this.utilityModelsLoadRequestSeq += 1;
+    this.utilityModelsLoading = false;
+    this.utilityModelsError = "";
+    this.utilityModelsConfigResponse = undefined;
+    this.savedMessage = "";
+  }
+
   private showSavedMessage(): void {
     this.savedMessage = "Config saved.";
     if (this.savedMessageTimer !== undefined) window.clearTimeout(this.savedMessageTimer);
@@ -793,7 +912,8 @@ export type SettingsPanelTag =
   | "settings-packages-panel"
   | "settings-plugins-panel"
   | "settings-shortcuts-panel"
-  | "settings-model-tiers-panel";
+  | "settings-model-tiers-panel"
+  | "settings-utility-models-panel";
 
 /**
  * The single custom-element panel the settings dialog renders for a section.
@@ -815,6 +935,8 @@ export function activeSettingsPanelTag(section: SettingsSection): SettingsPanelT
       return "settings-shortcuts-panel";
     case "modeltiers":
       return "settings-model-tiers-panel";
+    case "utilitymodels":
+      return "settings-utility-models-panel";
     case "general":
       return "settings-general-panel";
   }

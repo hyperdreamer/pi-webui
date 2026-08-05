@@ -1,6 +1,6 @@
 import { LitElement, css, html, svg } from "lit";
 import { customElement, property, query } from "lit/decorators.js";
-import type { Machine, MachineHealth, Project, SessionActivity, SessionInfo, SessionStatus, Workspace, WorkspaceActivity } from "../../api";
+import type { Machine, MachineHealth, Project, SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace, WorkspaceActivity } from "../../api";
 import type { WorkspaceLabelItem } from "../../plugins/types";
 import type { NavigationSection } from "../../appShell/navigationState";
 import { NAVIGATION_SECTION_ORDER } from "../../appShell/navigationState";
@@ -54,6 +54,7 @@ export class AppNavigationPanel extends LitElement {
   @property({ type: Boolean }) canStartSession = false;
   @property({ type: Boolean }) canDeleteArchivedSessions = false;
   @property({ type: Boolean }) canReloadSessions = false;
+  @property({ type: Boolean }) canReorderSessions = false;
   @property({ type: Boolean }) canCleanupSessions = false;
   @property({ type: Boolean }) authoritativeSessionPersistence = false;
   @property({ type: String }) archivedDeleteUnavailableMessage = "Update and restart Pi-Web on this machine to delete archived sessions.";
@@ -88,6 +89,7 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onDeleteArchivedSessions?: (sessions: SessionInfo[]) => void | Promise<void>;
   @property({ attribute: false }) onDetachParentSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onReloadSession?: (session: SessionInfo) => void | Promise<void>;
+  @property({ attribute: false }) onReorderSession?: (session: SessionInfo, input: SessionReorderRequest) => void | Promise<void>;
   @property({ attribute: false }) onPinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onUnpinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onCleanupSessions?: () => void | Promise<void>;
@@ -195,6 +197,7 @@ export class AppNavigationPanel extends LitElement {
         .canStart=${this.canStartSession}
         .canDeleteArchived=${this.canDeleteArchivedSessions}
         .canReload=${this.canReloadSessions}
+        .canReorder=${this.canReorderSessions}
         .canCleanup=${this.canCleanupSessions}
         .authoritativeSessionPersistence=${this.authoritativeSessionPersistence}
         .archivedDeleteUnavailableMessage=${this.archivedDeleteUnavailableMessage}
@@ -217,6 +220,7 @@ export class AppNavigationPanel extends LitElement {
         .onDeleteArchivedMany=${(sessions: SessionInfo[]) => this.onDeleteArchivedSessions?.(sessions)}
         .onDetachParent=${(session: SessionInfo) => this.onDetachParentSession?.(session)}
         .onReload=${(session: SessionInfo) => this.onReloadSession?.(session)}
+        .onReorder=${this.onReorderSession}
         .onPin=${(session: SessionInfo) => this.onPinSession?.(session)}
         .onUnpin=${(session: SessionInfo) => this.onUnpinSession?.(session)}
         .onCleanup=${() => this.onCleanupSessions?.()}

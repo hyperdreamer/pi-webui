@@ -1,3 +1,5 @@
+import type { ThinkingLevel } from "./thinkingLevels.js";
+
 export type MachineKind = "local" | "remote";
 export type MachineStatus = "unknown" | "online" | "offline" | "error";
 
@@ -18,9 +20,11 @@ export const PI_WEBUI_CAPABILITIES = {
   selectedMachineSettings: "settings.selectedMachine",
   agentProfileConfig: "settings.agentProfile",
   modelTierSettings: "settings.modelTiers",
+  utilityModelSettings: "settings.utilityModels",
   sessionsModelPolicy: "sessions.modelPolicy",
   sessionsModelPolicyDefaults: "sessions.modelPolicyDefaults",
   sessionsModelPolicyStarterSelection: "sessions.modelPolicyStarterSelection",
+  sessionsReorder: "sessions.reorder",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
@@ -82,6 +86,61 @@ export interface TierModelRef {
   provider: string;
   id: string;
 }
+
+export const UTILITY_MODEL_SLOTS = ["lightweight", "context"] as const;
+export type UtilityModelSlot = (typeof UTILITY_MODEL_SLOTS)[number];
+
+export interface UtilityModelBinding extends TierModelRef {
+  thinkingLevel?: ThinkingLevel;
+}
+
+export interface UtilityModelSettings {
+  lightweight?: UtilityModelBinding;
+  context?: UtilityModelBinding;
+}
+
+export type UtilityModelSettingsUpdate = Partial<
+  Record<UtilityModelSlot, UtilityModelBinding | null>
+>;
+
+export interface UtilityModelOptionV1 {
+  model: TierModelRef;
+  name?: string;
+}
+
+export interface UtilityModelOptionV2 extends UtilityModelOptionV1 {
+  thinkingLevels: ThinkingLevel[];
+}
+
+export type UtilityModelOption = UtilityModelOptionV1 | UtilityModelOptionV2;
+
+export interface UtilityModelSlotValidation {
+  valid: boolean;
+  reason?: string;
+}
+
+interface UtilityModelSettingsResponseFields {
+  settings: UtilityModelSettings;
+  slots: Record<UtilityModelSlot, UtilityModelSlotValidation>;
+  valid: boolean;
+  configError?: string;
+}
+
+export interface UtilityModelSettingsResponseV1
+  extends UtilityModelSettingsResponseFields {
+  contractVersion: 1;
+  models: UtilityModelOptionV1[];
+}
+
+export interface UtilityModelSettingsResponseV2
+  extends UtilityModelSettingsResponseFields {
+  contractVersion: 2;
+  models: UtilityModelOptionV2[];
+}
+
+export type UtilityModelSettingsResponse =
+  | UtilityModelSettingsResponseV1
+  | UtilityModelSettingsResponseV2;
 
 export interface ModelTierEntry {
   model: TierModelRef;
@@ -200,6 +259,8 @@ export interface PiWebUiConfigValues {
   maxUploadBytes?: number;
   /** Machine-global exact model and thinking bindings for the six canonical tiers. */
   modelTiers?: ModelTierLadder;
+  /** Machine-global model bindings for utility operations outside active sessions. */
+  utilityModels?: UtilityModelSettings;
   /** When true, LLMs can start new sessions via the spawn_session tool. */
   spawnSessions?: boolean;
   /**
@@ -470,6 +531,32 @@ export interface SessionRef {
   cwd: string;
 }
 
+/** Identifies the sibling group a persisted manual order position belongs to. */
+export type SessionReorderScope =
+  | { kind: "root"; cwd: string }
+  | { kind: "children"; parentSessionPath: string };
+
+export const SESSION_REORDER_LIMIT = 1_000;
+export const SESSION_REORDER_SESSION_ID_MAX_LENGTH = 512;
+export const SESSION_REORDER_CWD_MAX_LENGTH = 32 * 1024;
+export const SESSION_REORDER_PARENT_PATH_MAX_LENGTH = 32 * 1024;
+
+export interface SessionReorderRequest {
+  cwd: string;
+  scope: SessionReorderScope;
+  pinned: boolean;
+  catalogCwds: string[];
+  orderedSessions: SessionRef[];
+}
+
+export interface SessionOrderEntry extends SessionRef {
+  manualOrder: number;
+}
+
+export interface SessionReorderResponse {
+  orderedSessions: SessionOrderEntry[];
+}
+
 export const SESSION_UNREAD_LIMIT = 1_000;
 export const SESSION_UNREAD_SESSION_ID_MAX_LENGTH = 512;
 export const SESSION_UNREAD_CWD_MAX_LENGTH = 32 * 1024;
@@ -614,6 +701,8 @@ export interface SessionInfo extends SessionRef {
   pinned?: boolean;
   /** Present only for a top-level root explicitly created by SESSIONS `+`. */
   creationSource?: SessionCreationSource;
+  /** Normalized durable position inside this session's sibling and pin group. */
+  manualOrder?: number;
 }
 
 export interface ArchiveSessionsResponse {

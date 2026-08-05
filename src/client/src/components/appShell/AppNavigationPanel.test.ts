@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Machine } from "../../api";
+import type { Machine, SessionInfo, SessionReorderRequest } from "../../api";
 import { templateText, templateValueAfterMarker, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { AppNavigationPanel, NAVIGATION_RESOURCE_UNDERBAR_ITEMS, navigationResourceUnderbarItemIsEnabled, shouldShowMachinesSection } from "./AppNavigationPanel";
 
@@ -105,6 +105,29 @@ describe("app-navigation-panel expanded session browser", () => {
   });
 });
 
+describe("app-navigation-panel session reorder wiring", () => {
+  // The Node test environment has no DOM harness, so inspect the custom-element
+  // callback boundary rather than testing Lit internals or layout.
+  it("forwards session reorder capability and requests to SessionList", async () => {
+    const panel = new AppNavigationPanel();
+    const pending = Promise.resolve();
+    const onReorderSession = vi.fn(() => pending);
+    panel.canReorderSessions = true;
+    panel.onReorderSession = onReorderSession;
+    const rendered = panel.render();
+
+    expect(templateValueAfterMarker(rendered, ".canReorder=")).toBe(true);
+    const callback = templateValueAfterMarker(rendered, ".onReorder=");
+    if (!isReorderCallback(callback)) throw new Error("Expected SessionList reorder callback");
+    const selected = sessionFixture("selected");
+    const request = reorderRequestFixture(selected);
+    expect(callback(selected, request)).toBe(pending);
+    await pending;
+
+    expect(onReorderSession).toHaveBeenCalledWith(selected, request);
+  });
+});
+
 describe("shouldShowMachinesSection", () => {
   it("hides machine navigation when there is no machine choice", () => {
     expect(shouldShowMachinesSection([])).toBe(false);
@@ -129,6 +152,33 @@ function isProjectBrowserOpenCallback(value: unknown): value is ProjectBrowserOp
 
 function isCallback(value: unknown): value is () => void {
   return typeof value === "function";
+}
+
+function isReorderCallback(value: unknown): value is (session: SessionInfo, input: SessionReorderRequest) => void | Promise<void> {
+  return typeof value === "function";
+}
+
+function sessionFixture(id: string): SessionInfo {
+  return {
+    id,
+    cwd: "/repo",
+    path: `/sessions/${id}.jsonl`,
+    persisted: true,
+    created: "now",
+    modified: "now",
+    messageCount: 0,
+    firstMessage: id,
+  };
+}
+
+function reorderRequestFixture(selected: SessionInfo): SessionReorderRequest {
+  return {
+    cwd: selected.cwd,
+    scope: { kind: "root", cwd: selected.cwd },
+    pinned: false,
+    catalogCwds: [selected.cwd],
+    orderedSessions: [{ id: selected.id, cwd: selected.cwd }],
+  };
 }
 
 function machine(id: string): Machine {

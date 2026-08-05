@@ -17,6 +17,30 @@ describe("PI WEBUI capabilities", () => {
     })).toEqual([PI_WEBUI_CAPABILITIES.piPackagesManage, PI_WEBUI_CAPABILITIES.selectedMachineSettings, PI_WEBUI_CAPABILITIES.agentProfileConfig]);
   });
 
+  it("requires web and session daemon support for utility model settings", () => {
+    const utilityModels = PI_WEBUI_CAPABILITIES.utilityModelSettings;
+    expect(utilityModels).toBe("settings.utilityModels");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(utilityModels);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(utilityModels);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: false, capabilities: [utilityModels] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: false, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [utilityModels] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(utilityModels);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [utilityModels] },
+      sessiond: { available: true, capabilities: [utilityModels] },
+    })).toContain(utilityModels);
+  });
+
   it("requires web and session daemon support for model-tier settings", () => {
     const modelTiers = PI_WEBUI_CAPABILITIES.modelTierSettings;
     expect(modelTiers).toBe("settings.modelTiers");
@@ -186,6 +210,21 @@ describe("PI WEBUI capabilities", () => {
       web: { available: true, capabilities: [unread] },
       sessiond: { available: true, capabilities: [unread] },
     })).toContain(unread);
+  });
+
+  it("requires web and session daemon support for session reordering", () => {
+    const reorder = PI_WEBUI_CAPABILITIES.sessionsReorder;
+    expect(reorder).toBe("sessions.reorder");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(reorder);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(reorder);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [reorder] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(reorder);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [reorder] },
+      sessiond: { available: true, capabilities: [reorder] },
+    })).toContain(reorder);
   });
 
   it("keeps only known string capabilities when parsing runtime data", () => {

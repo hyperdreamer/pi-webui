@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve } from "node:path";
-import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues } from "./shared/apiTypes.js";
+import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type TierModelRef, type UtilityModelBinding, type UtilityModelSettings } from "./shared/apiTypes.js";
 import { isPiCompanionCommand, usesPiCodingAgentStateCompatibility } from "./shared/activeAgentProfile.js";
 import { isPiWebUiPluginId, piWebUiPluginIdPattern } from "./shared/pluginIds.js";
+import { isKnownThinkingLevel } from "./shared/thinkingLevels.js";
 
 export { isPiCompanionCommand };
 
@@ -15,6 +16,8 @@ export interface LoadedPiWebUiConfig {
   config: PiWebUiConfig;
   /** A malformed external ladder is reported without blocking unrelated config use. */
   modelTiersError?: string;
+  /** Malformed external utility settings are reported without blocking unrelated config use. */
+  utilityModelsError?: string;
 }
 
 export interface EffectivePiWebUiConfig extends Omit<PiWebUiConfig, "uploads" | "spawnSessions" | "subsessions" | "agent"> {
@@ -131,12 +134,13 @@ export function loadPiWebUiConfig(options: LoadOptions = {}): LoadedPiWebUiConfi
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`PI WEBUI config must be a JSON object: ${path}`);
 
-  const parsedConfig = parsePiWebUiConfig(parsed, path, { allowInvalidModelTiers: true });
+  const parsedConfig = parsePiWebUiConfig(parsed, path, { allowInvalidModelTiers: true, allowInvalidUtilityModels: true });
   return {
     path,
     exists: true,
     config: parsedConfig.config,
     ...(parsedConfig.modelTiersError === undefined ? {} : { modelTiersError: parsedConfig.modelTiersError }),
+    ...(parsedConfig.utilityModelsError === undefined ? {} : { utilityModelsError: parsedConfig.utilityModelsError }),
   };
 }
 
@@ -189,6 +193,7 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
   delete existing["subsessions"];
   delete existing["agent"];
   if (normalized.modelTiers !== undefined) delete existing["modelTiers"];
+  if (normalized.utilityModels !== undefined) delete existing["utilityModels"];
   const merged = { ...existing, ...piWebUiConfigRecord(normalized) };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
@@ -198,6 +203,11 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
 export function replacePiWebUiModelTiers(modelTiers: ModelTierLadder, options: LoadOptions = {}): LoadedPiWebUiConfig {
   const loaded = loadPiWebUiConfig(options);
   return savePiWebUiConfig({ ...loaded.config, modelTiers }, options);
+}
+
+export function replacePiWebUiUtilityModels(utilityModels: UtilityModelSettings, options: LoadOptions = {}): LoadedPiWebUiConfig {
+  const loaded = loadPiWebUiConfig(options);
+  return savePiWebUiConfig({ ...loaded.config, utilityModels }, options);
 }
 
 function readExistingConfigObject(path: string): Record<string, unknown> {
@@ -210,6 +220,7 @@ function readExistingConfigObject(path: string): Record<string, unknown> {
 interface ParsedPiWebUiConfig {
   config: PiWebUiConfig;
   modelTiersError?: string;
+  utilityModelsError?: string;
 }
 
 function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
@@ -223,13 +234,14 @@ function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
     ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
     ...(config.maxUploadBytes !== undefined ? { maxUploadBytes: config.maxUploadBytes } : {}),
     ...(config.modelTiers !== undefined ? { modelTiers: config.modelTiers } : {}),
+    ...(config.utilityModels !== undefined ? { utilityModels: config.utilityModels } : {}),
     ...(config.spawnSessions !== undefined ? { spawnSessions: config.spawnSessions } : {}),
     ...(config.subsessions !== undefined ? { subsessions: config.subsessions } : {}),
     ...(config.agent !== undefined ? { agent: config.agent } : {}),
   };
 }
 
-function parsePiWebUiConfig(value: Record<string, unknown>, path: string, options: { allowInvalidModelTiers?: boolean } = {}): ParsedPiWebUiConfig {
+function parsePiWebUiConfig(value: Record<string, unknown>, path: string, options: { allowInvalidModelTiers?: boolean; allowInvalidUtilityModels?: boolean } = {}): ParsedPiWebUiConfig {
   let modelTiers: ModelTierLadder | undefined;
   let modelTiersError: string | undefined;
   if (value["modelTiers"] !== undefined) {
@@ -238,6 +250,17 @@ function parsePiWebUiConfig(value: Record<string, unknown>, path: string, option
     } catch (error) {
       if (options.allowInvalidModelTiers !== true) throw error;
       modelTiersError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  let utilityModels: UtilityModelSettings | undefined;
+  let utilityModelsError: string | undefined;
+  if (value["utilityModels"] !== undefined) {
+    try {
+      utilityModels = parseUtilityModelsConfig(value["utilityModels"], path);
+    } catch (error) {
+      if (options.allowInvalidUtilityModels !== true) throw error;
+      utilityModelsError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -252,11 +275,13 @@ function parsePiWebUiConfig(value: Record<string, unknown>, path: string, option
       ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
       ...(value["maxUploadBytes"] !== undefined ? { maxUploadBytes: parseMaxUploadBytes(value["maxUploadBytes"], "maxUploadBytes", path) } : {}),
       ...(modelTiers === undefined ? {} : { modelTiers }),
+      ...(utilityModels === undefined ? {} : { utilityModels }),
       ...(value["spawnSessions"] !== undefined ? { spawnSessions: parseSpawnSessions(value["spawnSessions"], path) } : {}),
       ...(value["subsessions"] !== undefined ? { subsessions: parseSubsessions(value["subsessions"], path) } : {}),
       ...(value["agent"] !== undefined ? { agent: parseAgentConfig(value["agent"], path) } : {}),
     },
     ...(modelTiersError === undefined ? {} : { modelTiersError }),
+    ...(utilityModelsError === undefined ? {} : { utilityModelsError }),
   };
 }
 
@@ -281,22 +306,81 @@ export function parseModelTiersConfig(value: unknown, path: string): ModelTierLa
   };
 }
 
+export function parseUtilityModelsConfig(value: unknown, path: string): UtilityModelSettings {
+  if (!isRecord(value)) {
+    throw new Error(`PI WEBUI config utilityModels must be an object: ${path}`);
+  }
+  const unknownKey = Object.keys(value).find(
+    (key) => key !== "lightweight" && key !== "context",
+  );
+  if (unknownKey !== undefined) {
+    throw new Error(
+      `PI WEBUI config utilityModels contains unknown key ${JSON.stringify(unknownKey)}: ${path}`,
+    );
+  }
+
+  return {
+    ...(value["lightweight"] !== undefined ? { lightweight: parseUtilityModelBinding(value["lightweight"], "utilityModels.lightweight", path) } : {}),
+    ...(value["context"] !== undefined ? { context: parseUtilityModelBinding(value["context"], "utilityModels.context", path) } : {}),
+  };
+}
+
+function parseUtilityModelBinding(
+  value: unknown,
+  key: string,
+  path: string,
+): UtilityModelBinding {
+  if (!isRecord(value)) {
+    throw new Error(`PI WEBUI config ${key} must be an object: ${path}`);
+  }
+  const unknownKey = Object.keys(value).find(
+    (entryKey) =>
+      entryKey !== "provider" &&
+      entryKey !== "id" &&
+      entryKey !== "thinkingLevel",
+  );
+  if (unknownKey !== undefined) {
+    throw new Error(
+      `PI WEBUI config ${key} contains unknown key ${JSON.stringify(unknownKey)}: ${path}`,
+    );
+  }
+
+  const thinkingLevel = value["thinkingLevel"];
+  if (
+    thinkingLevel !== undefined &&
+    (typeof thinkingLevel !== "string" || !isKnownThinkingLevel(thinkingLevel))
+  ) {
+    throw new Error(
+      `PI WEBUI config ${key}.thinkingLevel must be one of off, minimal, low, medium, high, xhigh, or max: ${path}`,
+    );
+  }
+
+  return {
+    provider: parseString(value["provider"], `${key}.provider`, path),
+    id: parseString(value["id"], `${key}.id`, path),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+  };
+}
+
 function parseModelTierEntry(value: unknown, key: string, path: string): ModelTierLadder[ModelTier] {
   if (!isRecord(value)) throw new Error(`PI WEBUI config ${key} must be an object: ${path}`);
   const unknownKey = Object.keys(value).find((entryKey) => entryKey !== "model" && entryKey !== "thinkingLevel");
   if (unknownKey !== undefined) throw new Error(`PI WEBUI config ${key} contains unknown key ${JSON.stringify(unknownKey)}: ${path}`);
-  if (!isRecord(value["model"])) throw new Error(`PI WEBUI config ${key}.model must be an object: ${path}`);
-  const model = value["model"];
-  const modelUnknownKey = Object.keys(model).find((modelKey) => modelKey !== "provider" && modelKey !== "id");
-  if (modelUnknownKey !== undefined) throw new Error(`PI WEBUI config ${key}.model contains unknown key ${JSON.stringify(modelUnknownKey)}: ${path}`);
   const thinkingLevel = value["thinkingLevel"];
   if (typeof thinkingLevel !== "string" || thinkingLevel === "") throw new Error(`PI WEBUI config ${key}.thinkingLevel must be a non-empty string: ${path}`);
   return {
-    model: {
-      provider: parseString(model["provider"], `${key}.model.provider`, path),
-      id: parseString(model["id"], `${key}.model.id`, path),
-    },
+    model: parseModelReference(value["model"], `${key}.model`, path),
     thinkingLevel,
+  };
+}
+
+function parseModelReference(value: unknown, key: string, path: string): TierModelRef {
+  if (!isRecord(value)) throw new Error(`PI WEBUI config ${key} must be an object: ${path}`);
+  const unknownKey = Object.keys(value).find((modelKey) => modelKey !== "provider" && modelKey !== "id");
+  if (unknownKey !== undefined) throw new Error(`PI WEBUI config ${key} contains unknown key ${JSON.stringify(unknownKey)}: ${path}`);
+  return {
+    provider: parseString(value["provider"], `${key}.provider`, path),
+    id: parseString(value["id"], `${key}.id`, path),
   };
 }
 

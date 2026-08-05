@@ -1,6 +1,6 @@
 import { LitElement, html } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, StarterModelPolicyPreference } from "../api";
@@ -204,6 +204,7 @@ export class PiWebUiApp extends LitElement {
     () => { this.updateUrl(); },
     new SessionStorageSessionSelectionMemory(),
     {
+      refreshProjectSessionCatalog: () => this.projectCatalog.refresh(),
       notifications: this.notifications,
       onSelectedSessionReady: ({ machineId, session }) => {
         void this.commitReadyChatAfterRender(machineId, session);
@@ -228,7 +229,7 @@ export class PiWebUiApp extends LitElement {
       },
     },
   );
-  private readonly projectCatalog = new ProjectCatalogController(
+  private readonly projectCatalog: ProjectCatalogController = new ProjectCatalogController(
     () => this.state,
     {
       workspaces: workspacesApi.workspaces,
@@ -1541,6 +1542,12 @@ export class PiWebUiApp extends LitElement {
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsReload);
   }
 
+  private canReorderSessions(): boolean {
+    const runtime = this.selectedMachineRuntime();
+    return runtime?.ok === true
+      && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsReorder);
+  }
+
   private canClearServerQueue(): boolean {
     const runtime = this.selectedMachineRuntime();
     return runtime?.ok === true && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsClearQueue);
@@ -2022,6 +2029,7 @@ export class PiWebUiApp extends LitElement {
         .canStartSession=${!!this.state.selectedWorkspace}
         .canDeleteArchivedSessions=${this.canDeleteArchivedSessions()}
         .canReloadSessions=${this.canReloadSessions()}
+        .canReorderSessions=${this.canReorderSessions()}
         .canCleanupSessions=${this.canCleanupSessions()}
         .authoritativeSessionPersistence=${this.hasAuthoritativeSessionPersistence()}
         .archivedDeleteUnavailableMessage=${this.archivedDeleteUnavailableMessage()}
@@ -2067,6 +2075,8 @@ export class PiWebUiApp extends LitElement {
         .onDeleteArchivedSessions=${(sessions: SessionInfo[]) => this.sessions.deleteArchivedSessions(sessions)}
         .onDetachParentSession=${(session: SessionInfo) => this.sessions.detachParent(session)}
         .onReloadSession=${(session: SessionInfo) => this.sessions.reloadSession(session)}
+        .onReorderSession=${(session: SessionInfo, input: SessionReorderRequest) =>
+          this.sessions.reorderSession(session, input)}
         .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
         .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}

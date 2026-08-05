@@ -56,7 +56,7 @@ import {
   type ArchivedSessionRecord,
   type ArchiveSessionInput,
 } from "./sessionArchiveStore.js";
-import { SessionMetadataStore } from "./sessionMetadataStore.js";
+import { SessionMetadataStore, SessionMetadataOrderConflictError, type SessionMetadata } from "./sessionMetadataStore.js";
 import {
   findArchiveCandidateByIdOrPrefix,
   planSessionArchiveTree,
@@ -98,10 +98,18 @@ import type {
   SessionModelPolicyUpdate,
   SessionStartOptions,
   StarterModelPolicyPreference,
+  SessionReorderRequest,
+  SessionReorderResponse,
+  SessionReorderScope,
   SessionUnreadAcknowledgeRequest,
   SessionUnreadCatalogSnapshot,
   SessionWarning,
 } from "../../shared/apiTypes.js";
+import {
+  assertSubmittedSessionsCurrent,
+  SessionReorderDomainError,
+  validateSessionReorder,
+} from "./sessionReorder.js";
 import type {
   SessionRouteLookup,
   SessionRouteRef,
@@ -166,6 +174,15 @@ import {
   type ModelTierRegistry,
   type ModelTier,
 } from "./modelTierRegistry.js";
+import {
+  createUtilityModelExtension,
+  type UtilityModelExtensionRuntimeRefs,
+} from "./utilityModelExtension.js";
+import {
+  createUtilityModelResolver,
+  runWithUtilityModelFallback,
+  type UtilityModelResolver,
+} from "./utilityModelResolver.js";
 import {
   inspectSessionModelPolicy,
   planSessionModelPolicyInitialization,
@@ -987,12 +1004,23 @@ export function createPiWebUiCustomToolDefinitions(
   ];
 }
 
-function createDefaultRuntimeFactory(
+interface PiWebUiAgentSessionSdk {
+  createServices: typeof createAgentSessionServices;
+  createFromServices: typeof createAgentSessionFromServices;
+}
+
+export function createDefaultRuntimeFactory(
   modelRuntime: ModelRuntime,
   sessionManagers: Pick<PiSessionManagerGateway, "open">,
+  utilityModelResolver: UtilityModelResolver<AgentModel>,
+  logger: PiSessionLogger,
   spawn?: SpawnSessionFn,
   subsessions?: SubsessionToolDeps,
-  modelPolicy?: ModelPolicyToolDeps
+  modelPolicy?: ModelPolicyToolDeps,
+  sdk: PiWebUiAgentSessionSdk = {
+    createServices: createAgentSessionServices,
+    createFromServices: createAgentSessionFromServices,
+  }
 ): PiWebUiCreateAgentSessionRuntimeFactory {
   return async ({
     cwd,
@@ -1003,11 +1031,25 @@ function createDefaultRuntimeFactory(
     initialThinkingLevel,
     delegationToolsEnabled,
   }) => {
-    const services = await createAgentSessionServices({
+    const runtimeRefs: UtilityModelExtensionRuntimeRefs = {};
+    const services = await sdk.createServices({
       cwd,
       agentDir,
       modelRuntime,
+      resourceLoaderOptions: {
+        extensionFactories: [
+          createUtilityModelExtension({
+            // Pi's ExtensionContext exposes Model<any>; production candidates still come from ModelRuntime's Model<Api> snapshot.
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            resolver: utilityModelResolver,
+            modelRuntime,
+            refs: runtimeRefs,
+            logger,
+          }),
+        ],
+      },
     });
+    runtimeRefs.settingsManager = services.settingsManager;
     const resolvedDelegationToolsEnabled =
       delegationToolsEnabled ??
       (await sessionAllowsDelegationTools(sessionManager, sessionManagers));
@@ -1018,7 +1060,7 @@ function createDefaultRuntimeFactory(
       subsessions,
       modelPolicy
     );
-    const result = await createAgentSessionFromServices({
+    const result = await sdk.createFromServices({
       services,
       sessionManager,
       customTools,
@@ -1028,6 +1070,7 @@ function createDefaultRuntimeFactory(
         ? {}
         : { thinkingLevel: initialThinkingLevel }),
     });
+    runtimeRefs.streamFunction = result.session.agent.streamFunction;
     return { ...result, services, diagnostics: services.diagnostics };
   };
 }
@@ -1081,6 +1124,8 @@ export interface PiSessionServiceDependencies {
   modelRuntime: ModelRuntime;
   /** Injectable typed tier resolver; production resolves the global config at dispatch time. */
   modelTierRegistry?: ModelTierRegistry<AgentModel>;
+  /** Injectable utility resolver; production resolves global config for each operation. */
+  utilityModelResolver?: UtilityModelResolver<AgentModel>;
   heartbeatIntervalMs?: number;
   workspaceActivity?: Pick<
     WorkspaceActivityService,
@@ -1116,6 +1161,7 @@ export interface PiSessionServiceDependencies {
   metadataStore?: SessionMetadataStore;
   /** Workspace starter-policy persistence shared with session defaults in production. */
   starterModelPolicyPreferenceStore?: Pick<StarterModelPolicyPreferenceStore, "replace">;
+  clearParentSession?: (sessionFile: string) => Promise<void>;
 }
 
 export class PiSessionService implements SessionRouteService {
@@ -1229,12 +1275,14 @@ export class PiSessionService implements SessionRouteService {
   private readonly subsessionNotifyArmed = new Map<string, boolean>();
   private readonly archiveStore: SessionArchiveRepository;
   private readonly metadataStore: SessionMetadataStore;
+  private readonly clearParentSessionFile: (sessionFile: string) => Promise<void>;
   private readonly agentDir: string;
   private readonly sessionManager: PiSessionManagerGateway;
   private readonly createRuntime: PiWebUiCreateAgentSessionRuntimeFactory;
   private readonly createAgentRuntime: CreateAgentRuntime;
   private readonly modelRuntime: ModelRuntime;
   private readonly modelTierRegistry: ModelTierRegistry<AgentModel>;
+  private readonly utilityModelResolver: UtilityModelResolver<AgentModel>;
   private readonly workspaceActivity:
     | Pick<
         WorkspaceActivityService,
@@ -1261,6 +1309,14 @@ export class PiSessionService implements SessionRouteService {
   private unreadPublicationRetryTimer: NodeJS.Timeout | undefined;
   private unreadPublicationRetryDelayMs: number;
   private unreadPublicationStopped = false;
+  /**
+   * Serializes reorder against every other mutation that can change sibling
+   * membership, pin state, or current/archive membership (pin, unpin,
+   * detach-parent, archive, archiveMany, archiveTree, restore, and cleanup),
+   * so no such mutation can interleave with a reorder's before/after catalog
+   * reads and its atomic metadata write.
+   */
+  private sessionOrderMutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly events: SessionEventHub,
@@ -1268,11 +1324,30 @@ export class PiSessionService implements SessionRouteService {
   ) {
     this.archiveStore = deps.archiveStore ?? new SessionArchiveStore();
     this.metadataStore = deps.metadataStore ?? new SessionMetadataStore();
+    this.clearParentSessionFile = deps.clearParentSession ?? clearParentSession;
     this.agentDir = deps.agentDir;
     this.sessionManager = deps.sessionManager;
     this.modelRuntime = deps.modelRuntime;
     this.spawnTargets = deps.spawnTargets;
     this.logger = deps.logger ?? noopLogger;
+    this.utilityModelResolver =
+      deps.utilityModelResolver ??
+      createUtilityModelResolver({
+        loadConfig: () => {
+          const loaded = loadPiWebUiConfig();
+          return {
+            ...(loaded.config.utilityModels === undefined
+              ? {}
+              : { utilityModels: loaded.config.utilityModels }),
+            ...(loaded.utilityModelsError === undefined
+              ? {}
+              : { utilityModelsError: loaded.utilityModelsError }),
+          };
+        },
+        modelRuntime: this.modelRuntime,
+        thinkingLevelsForModel: runtimeThinkingLevels,
+        logger: this.logger,
+      });
     this.now = deps.now ?? (() => new Date());
     this.notificationStore =
       deps.notificationStore ?? new SessionNotificationStore();
@@ -1291,6 +1366,8 @@ export class PiSessionService implements SessionRouteService {
       createDefaultRuntimeFactory(
         this.modelRuntime,
         this.sessionManager,
+        this.utilityModelResolver,
+        this.logger,
         this.spawnTargets === undefined
           ? undefined
           : (input) => this.spawnSession(input),
@@ -1467,65 +1544,67 @@ export class PiSessionService implements SessionRouteService {
   async cleanup(
     request: NormalizedSessionCleanupRequest
   ): Promise<ClientSessionCleanupExecuteResponse> {
-    const plan = await this.cleanupPlan(request);
-    if (
-      plan.deleteRecords.length > 0 &&
-      this.archiveStore.deleteArchived === undefined &&
-      this.archiveStore.deleteArchivedMany === undefined
-    )
-      throw new Error("Archive store does not support deletion");
-
-    const archiveInputs: ArchiveSessionInput[] = [];
-    const readyArchiveInputs: ArchiveSessionInput[] = [];
-    const deleteRecords: ArchivedSessionRecord[] = [];
-    const readyDeleteRecords: ArchivedSessionRecord[] = [];
-    const skippedBusySessionIds = new Set(plan.skippedBusySessionIds);
-
-    for (const input of plan.archiveInputs) {
-      if (this.activeSessionHasWork(input.sessionId)) {
-        skippedBusySessionIds.add(input.sessionId);
-        continue;
-      }
-      await this.closeActive(input.sessionId, {
-        kind: "clear",
-        reason: "archive",
-      });
-      readyArchiveInputs.push(input);
-    }
-    await this.archiveStoreArchiveMany(readyArchiveInputs);
-    archiveInputs.push(...readyArchiveInputs);
-    await this.forgetUnreadSessions(readyArchiveInputs);
-
-    for (const record of plan.deleteRecords) {
-      if (this.activeSessionHasWork(record.sessionId)) {
-        skippedBusySessionIds.add(record.sessionId);
-        continue;
-      }
-      await this.closeActive(record.sessionId, {
-        kind: "clear",
-        reason: "delete",
-      });
-      readyDeleteRecords.push(record);
-    }
-    await this.ensureArchivedRecordsMoved(readyDeleteRecords);
-    const deletedSessionIds = new Set(
-      await this.archiveStoreDeleteArchivedMany(
-        readyDeleteRecords.map((record) => record.sessionId)
+    return await this.runSessionOrderMutation(async () => {
+      const plan = await this.cleanupPlan(request);
+      if (
+        plan.deleteRecords.length > 0 &&
+        this.archiveStore.deleteArchived === undefined &&
+        this.archiveStore.deleteArchivedMany === undefined
       )
-    );
-    deleteRecords.push(
-      ...readyDeleteRecords.filter((record) =>
-        deletedSessionIds.has(record.sessionId)
-      )
-    );
-    await this.forgetUnreadSessions(deleteRecords);
+        throw new Error("Archive store does not support deletion");
 
-    return summarizeSessionCleanupExecution({
-      archiveInputs,
-      deleteRecords,
-      thresholds: plan.thresholds,
-      generatedAt: plan.generatedAt,
-      skippedBusySessionIds: [...skippedBusySessionIds],
+      const archiveInputs: ArchiveSessionInput[] = [];
+      const readyArchiveInputs: ArchiveSessionInput[] = [];
+      const deleteRecords: ArchivedSessionRecord[] = [];
+      const readyDeleteRecords: ArchivedSessionRecord[] = [];
+      const skippedBusySessionIds = new Set(plan.skippedBusySessionIds);
+
+      for (const input of plan.archiveInputs) {
+        if (this.activeSessionHasWork(input.sessionId)) {
+          skippedBusySessionIds.add(input.sessionId);
+          continue;
+        }
+        await this.closeActive(input.sessionId, {
+          kind: "clear",
+          reason: "archive",
+        });
+        readyArchiveInputs.push(input);
+      }
+      await this.archiveStoreArchiveMany(readyArchiveInputs);
+      archiveInputs.push(...readyArchiveInputs);
+      await this.forgetUnreadSessions(readyArchiveInputs);
+
+      for (const record of plan.deleteRecords) {
+        if (this.activeSessionHasWork(record.sessionId)) {
+          skippedBusySessionIds.add(record.sessionId);
+          continue;
+        }
+        await this.closeActive(record.sessionId, {
+          kind: "clear",
+          reason: "delete",
+        });
+        readyDeleteRecords.push(record);
+      }
+      await this.ensureArchivedRecordsMoved(readyDeleteRecords);
+      const deletedSessionIds = new Set(
+        await this.archiveStoreDeleteArchivedMany(
+          readyDeleteRecords.map((record) => record.sessionId)
+        )
+      );
+      deleteRecords.push(
+        ...readyDeleteRecords.filter((record) =>
+          deletedSessionIds.has(record.sessionId)
+        )
+      );
+      await this.forgetUnreadSessions(deleteRecords);
+
+      return summarizeSessionCleanupExecution({
+        archiveInputs,
+        deleteRecords,
+        thresholds: plan.thresholds,
+        generatedAt: plan.generatedAt,
+        skippedBusySessionIds: [...skippedBusySessionIds],
+      });
     });
   }
 
@@ -1619,12 +1698,80 @@ export class PiSessionService implements SessionRouteService {
   }
 
   async list(cwd: string): Promise<ClientSession[]> {
-    const [sessions, archivedRecords, pinnedPaths] = await Promise.all([
+    const [sessions, archivedRecords, metadata] = await Promise.all([
       this.sessionManager.list(cwd),
       this.archiveStore.list(),
-      this.metadataStore.pinnedPaths(),
+      this.metadataStore.snapshot(),
     ]);
-    const pinnedPathSet = new Set(pinnedPaths);
+    return this.listFromSnapshots(cwd, sessions, archivedRecords, metadata);
+  }
+
+  /**
+   * Run `operation` inside the exclusive ordering queue shared by every
+   * mutation that can change sibling membership, pin state, or
+   * current/archive membership, so reorder's before/after catalog reads
+   * never interleave with a concurrent pin, detach, archive, or restore.
+   */
+  private async runSessionOrderMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionOrderMutationQueue;
+    let release = (): void => undefined;
+    this.sessionOrderMutationQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async reorder(ref: SessionRouteRef, request: SessionReorderRequest): Promise<SessionReorderResponse> {
+    return await this.runSessionOrderMutation(async () => {
+      const target = { id: ref.id, cwd: canonicalizeStoredCwd(ref.cwd) };
+      const before = await this.listReorderCatalog(request.catalogCwds);
+      const validated = validateSessionReorder(target, request, uniqueSessionsByIdentity(before));
+      try {
+        await this.metadataStore.replaceOrder(validated.sessionPaths, request.scope, request.pinned);
+      } catch (error: unknown) {
+        if (error instanceof SessionMetadataOrderConflictError) {
+          throw new SessionReorderDomainError("conflict", error.message);
+        }
+        throw error;
+      }
+      const after = await this.listReorderCatalog(request.catalogCwds);
+      assertSubmittedSessionsCurrent(target, request, uniqueSessionsByIdentity(after));
+      return validated.response;
+    });
+  }
+
+  /**
+   * Read one coherent metadata/archive view across every requested CWD.
+   * Gateway session-list reads run in parallel per CWD, but the metadata and
+   * archive snapshots are each taken exactly once for the whole call, so the
+   * result is one atomic before/after catalog rather than one per CWD.
+   */
+  private async listReorderCatalog(cwds: readonly string[]): Promise<ClientSession[]> {
+    const metadataPromise = this.metadataStore.snapshot();
+    const archivePromise = this.archiveStore.list();
+    const sessionListsPromise = Promise.all(cwds.map((cwd) => this.sessionManager.list(cwd)));
+    const [metadata, archivedRecords, sessionLists] = await Promise.all([
+      metadataPromise,
+      archivePromise,
+      sessionListsPromise,
+    ]);
+    return (await Promise.all(cwds.map((cwd, index) => this.listFromSnapshots(
+      cwd,
+      sessionLists[index] ?? [],
+      archivedRecords,
+      metadata,
+    )))).flat();
+  }
+
+  private async listFromSnapshots(
+    cwd: string,
+    sessions: readonly PiSessionListEntry[],
+    archivedRecords: readonly ArchivedSessionRecord[],
+    metadata: Readonly<Record<string, SessionMetadata>>
+  ): Promise<ClientSession[]> {
     const sessionsById = new Map(
       sessions.map((session) => [session.id, session])
     );
@@ -1652,7 +1799,7 @@ export class PiSessionService implements SessionRouteService {
     const unarchivedSessions = sessions
       .filter((session) => !archivedById.has(session.id))
       .map((entry) =>
-        mergeSessionMetadata(clientSessionFromListEntry(entry), pinnedPathSet)
+        mergeSessionMetadata(clientSessionFromListEntry(entry), metadata)
       );
     const reconcilableSessionIds = this.reconcilableSessionIds(
       cwd,
@@ -1678,7 +1825,7 @@ export class PiSessionService implements SessionRouteService {
         )
       )
       .filter(isDefined)
-      .map((session) => mergeSessionMetadata(session, pinnedPathSet));
+      .map((session) => mergeSessionMetadata(session, metadata));
     return [...unarchivedSessions, ...archivedSessions];
   }
 
@@ -3224,218 +3371,226 @@ export class PiSessionService implements SessionRouteService {
   }
 
   async archive(ref: PiSessionLookup): Promise<void> {
-    const session = await this.getOrOpen(ref);
-    if (this.hasActiveWork(session))
-      throw new Error("Stop current session activity before archiving");
-    await this.runTreeExclusiveOperation(
-      [{ sessionId: session.sessionId, session }],
-      "Stop current session activity before archiving",
-      async () => {
-        const archiveInput = await this.archiveInputForSession(session);
-        await this.closeActive(session.sessionId, {
-          kind: "clear",
-          reason: "archive",
-        });
-        await this.archiveStore.archive(archiveInput);
-        await this.forgetUnreadSessions([archiveInput]);
-      }
-    );
+    await this.runSessionOrderMutation(async () => {
+      const session = await this.getOrOpen(ref);
+      if (this.hasActiveWork(session))
+        throw new Error("Stop current session activity before archiving");
+      await this.runTreeExclusiveOperation(
+        [{ sessionId: session.sessionId, session }],
+        "Stop current session activity before archiving",
+        async () => {
+          const archiveInput = await this.archiveInputForSession(session);
+          await this.closeActive(session.sessionId, {
+            kind: "clear",
+            reason: "archive",
+          });
+          await this.archiveStore.archive(archiveInput);
+          await this.forgetUnreadSessions([archiveInput]);
+        }
+      );
+    });
   }
 
   async archiveMany(
     refs: readonly SessionBulkMutationRef[]
   ): Promise<SessionBulkArchiveResponse> {
-    const uniqueRefs = uniqueBulkSessionRefs(refs);
-    const [archivedRecords, sessionContext] = await Promise.all([
-      this.archiveStore.list(),
-      this.bulkSessionLookupContext(uniqueRefs),
-    ]);
-    const failures: SessionBulkFailure[] = [];
-    const alreadyArchivedSessionIds: string[] = [];
-    const unreadArchivedIdentities: { sessionId: string; cwd: string }[] = [];
-    const planItems: BulkArchivePlanItem[] = [];
+    return await this.runSessionOrderMutation(async () => {
+      const uniqueRefs = uniqueBulkSessionRefs(refs);
+      const [archivedRecords, sessionContext] = await Promise.all([
+        this.archiveStore.list(),
+        this.bulkSessionLookupContext(uniqueRefs),
+      ]);
+      const failures: SessionBulkFailure[] = [];
+      const alreadyArchivedSessionIds: string[] = [];
+      const unreadArchivedIdentities: { sessionId: string; cwd: string }[] = [];
+      const planItems: BulkArchivePlanItem[] = [];
 
-    for (const ref of uniqueRefs) {
-      const archived = findArchivedRecordForBulkRef(archivedRecords, ref);
-      if (archived !== undefined) {
-        this.publishNotificationMutations(
-          this.notificationStore.clearSession(archived.sessionId, "archive")
-        );
-        alreadyArchivedSessionIds.push(archived.sessionId);
-        unreadArchivedIdentities.push(archived);
-        continue;
-      }
-
-      const active = this.activeForLookup(bulkRefToLookup(ref));
-      const listed = findListedSessionForBulkRef(sessionContext, ref);
-      const resolvedSessionId =
-        active?.runtime.session.sessionId ?? listed?.id ?? ref.id;
-      if (active !== undefined && this.hasActiveWork(active.runtime.session)) {
-        failures.push({
-          sessionId: resolvedSessionId,
-          error: "Stop current session activity before archiving",
-        });
-        continue;
-      }
-
-      try {
-        if (listed !== undefined) {
-          planItems.push({ input: archiveInputFromListEntry(listed) });
-        } else if (active !== undefined) {
-          planItems.push({
-            input: archiveInputFromActiveSession(active.runtime.session),
-          });
-        } else {
-          failures.push({ sessionId: ref.id, error: "Session not found" });
+      for (const ref of uniqueRefs) {
+        const archived = findArchivedRecordForBulkRef(archivedRecords, ref);
+        if (archived !== undefined) {
+          this.publishNotificationMutations(
+            this.notificationStore.clearSession(archived.sessionId, "archive")
+          );
+          alreadyArchivedSessionIds.push(archived.sessionId);
+          unreadArchivedIdentities.push(archived);
+          continue;
         }
-      } catch (error: unknown) {
-        failures.push({
-          sessionId: resolvedSessionId,
-          error: errorMessage(error),
-        });
-      }
-    }
 
-    const readyPlanItems: {
-      input: ArchiveSessionInput;
-      active?: ActiveSession<PiSessionRuntime>;
-    }[] = [];
-    for (const item of planItems) {
-      const active = this.activeForLookup({
-        id: item.input.sessionId,
-        cwd: item.input.cwd,
-      });
-      if (active !== undefined && this.hasActiveWork(active.runtime.session)) {
-        failures.push({
-          sessionId: item.input.sessionId,
-          error: "Stop current session activity before archiving",
-        });
-        continue;
-      }
-      readyPlanItems.push(active === undefined ? item : { ...item, active });
-    }
-
-    const readyInputs: ArchiveSessionInput[] = [];
-    const archivedSessionIds = [...alreadyArchivedSessionIds];
-    await this.runTreeExclusiveOperation(
-      readyPlanItems.map(({ input, active }) => ({
-        sessionId: input.sessionId,
-        ...(active === undefined
-          ? {}
-          : { session: active.runtime.session, runtime: active.runtime }),
-      })),
-      "Stop current session activity before archiving",
-      async () => {
-        for (const item of readyPlanItems) {
-          try {
-            await this.closeActive(item.input.sessionId, {
-              kind: "clear",
-              reason: "archive",
-            });
-            readyInputs.push(item.input);
-          } catch (error: unknown) {
-            failures.push({
-              sessionId: item.input.sessionId,
-              error: errorMessage(error),
-            });
-          }
+        const active = this.activeForLookup(bulkRefToLookup(ref));
+        const listed = findListedSessionForBulkRef(sessionContext, ref);
+        const resolvedSessionId =
+          active?.runtime.session.sessionId ?? listed?.id ?? ref.id;
+        if (active !== undefined && this.hasActiveWork(active.runtime.session)) {
+          failures.push({
+            sessionId: resolvedSessionId,
+            error: "Stop current session activity before archiving",
+          });
+          continue;
         }
 
         try {
-          const archived = await this.archiveStoreArchiveMany(readyInputs);
-          archivedSessionIds.push(
-            ...archived.map((record) => record.sessionId)
-          );
-          unreadArchivedIdentities.push(...archived);
-        } catch (error: unknown) {
-          for (const input of readyInputs)
-            failures.push({
-              sessionId: input.sessionId,
-              error: errorMessage(error),
+          if (listed !== undefined) {
+            planItems.push({ input: archiveInputFromListEntry(listed) });
+          } else if (active !== undefined) {
+            planItems.push({
+              input: archiveInputFromActiveSession(active.runtime.session),
             });
+          } else {
+            failures.push({ sessionId: ref.id, error: "Session not found" });
+          }
+        } catch (error: unknown) {
+          failures.push({
+            sessionId: resolvedSessionId,
+            error: errorMessage(error),
+          });
         }
       }
-    );
-    await this.forgetUnreadSessions(unreadArchivedIdentities);
 
-    return {
-      archived: true,
-      archivedSessionIds: uniqueStrings(archivedSessionIds),
-      failures,
-      generatedAt: new Date().toISOString(),
-    };
+      const readyPlanItems: {
+        input: ArchiveSessionInput;
+        active?: ActiveSession<PiSessionRuntime>;
+      }[] = [];
+      for (const item of planItems) {
+        const active = this.activeForLookup({
+          id: item.input.sessionId,
+          cwd: item.input.cwd,
+        });
+        if (active !== undefined && this.hasActiveWork(active.runtime.session)) {
+          failures.push({
+            sessionId: item.input.sessionId,
+            error: "Stop current session activity before archiving",
+          });
+          continue;
+        }
+        readyPlanItems.push(active === undefined ? item : { ...item, active });
+      }
+
+      const readyInputs: ArchiveSessionInput[] = [];
+      const archivedSessionIds = [...alreadyArchivedSessionIds];
+      await this.runTreeExclusiveOperation(
+        readyPlanItems.map(({ input, active }) => ({
+          sessionId: input.sessionId,
+          ...(active === undefined
+            ? {}
+            : { session: active.runtime.session, runtime: active.runtime }),
+        })),
+        "Stop current session activity before archiving",
+        async () => {
+          for (const item of readyPlanItems) {
+            try {
+              await this.closeActive(item.input.sessionId, {
+                kind: "clear",
+                reason: "archive",
+              });
+              readyInputs.push(item.input);
+            } catch (error: unknown) {
+              failures.push({
+                sessionId: item.input.sessionId,
+                error: errorMessage(error),
+              });
+            }
+          }
+
+          try {
+            const archived = await this.archiveStoreArchiveMany(readyInputs);
+            archivedSessionIds.push(
+              ...archived.map((record) => record.sessionId)
+            );
+            unreadArchivedIdentities.push(...archived);
+          } catch (error: unknown) {
+            for (const input of readyInputs)
+              failures.push({
+                sessionId: input.sessionId,
+                error: errorMessage(error),
+              });
+          }
+        }
+      );
+      await this.forgetUnreadSessions(unreadArchivedIdentities);
+
+      return {
+        archived: true,
+        archivedSessionIds: uniqueStrings(archivedSessionIds),
+        failures,
+        generatedAt: new Date().toISOString(),
+      };
+    });
   }
 
   async archiveTree(
     ref: PiSessionLookup
   ): Promise<ClientArchiveSessionsResponse> {
-    const session = await this.getOrOpen(ref);
-    const catalog = await this.workspaceArchiveCandidates(
-      session.sessionManager.getCwd()
-    );
-    const root =
-      findArchiveCandidateByIdOrPrefix(catalog, session.sessionId) ??
-      archiveCandidateFromActiveSession(session, false);
-    const plan = planSessionArchiveTree(root, catalog);
-    const busy = plan.targets
-      .map((target) => target.activeSession)
-      .find((target) => target !== undefined && this.hasActiveWork(target));
-    if (busy !== undefined)
-      throw new Error(
+    return await this.runSessionOrderMutation(async () => {
+      const session = await this.getOrOpen(ref);
+      const catalog = await this.workspaceArchiveCandidates(
+        session.sessionManager.getCwd()
+      );
+      const root =
+        findArchiveCandidateByIdOrPrefix(catalog, session.sessionId) ??
+        archiveCandidateFromActiveSession(session, false);
+      const plan = planSessionArchiveTree(root, catalog);
+      const busy = plan.targets
+        .map((target) => target.activeSession)
+        .find((target) => target !== undefined && this.hasActiveWork(target));
+      if (busy !== undefined)
+        throw new Error(
+          `Stop current session activity before archiving ${sessionDisplayName(
+            busy
+          )}`
+        );
+
+      const archiveInputs = plan.unarchivedTargets.map((target) =>
+        archiveInputFromCandidate(target)
+      );
+      await this.runTreeExclusiveOperation(
+        plan.unarchivedTargets.map((target) => ({
+          sessionId: target.id,
+          ...(target.activeSession === undefined
+            ? {}
+            : { session: target.activeSession }),
+        })),
         `Stop current session activity before archiving ${sessionDisplayName(
-          busy
-        )}`
+          session
+        )}`,
+        async () => {
+          for (const target of plan.targets) {
+            if (target.archived)
+              this.publishNotificationMutations(
+                this.notificationStore.clearSession(target.id, "archive")
+              );
+          }
+          for (const input of archiveInputs)
+            await this.closeActive(input.sessionId, {
+              kind: "clear",
+              reason: "archive",
+            });
+          await this.archiveStoreArchiveMany(archiveInputs);
+        }
+      );
+      await this.forgetUnreadSessions(
+        plan.targets.map((target) => ({ sessionId: target.id, cwd: target.cwd }))
       );
 
-    const archiveInputs = plan.unarchivedTargets.map((target) =>
-      archiveInputFromCandidate(target)
-    );
-    await this.runTreeExclusiveOperation(
-      plan.unarchivedTargets.map((target) => ({
-        sessionId: target.id,
-        ...(target.activeSession === undefined
-          ? {}
-          : { session: target.activeSession }),
-      })),
-      `Stop current session activity before archiving ${sessionDisplayName(
-        session
-      )}`,
-      async () => {
-        for (const target of plan.targets) {
-          if (target.archived)
-            this.publishNotificationMutations(
-              this.notificationStore.clearSession(target.id, "archive")
-            );
-        }
-        for (const input of archiveInputs)
-          await this.closeActive(input.sessionId, {
-            kind: "clear",
-            reason: "archive",
-          });
-        await this.archiveStoreArchiveMany(archiveInputs);
-      }
-    );
-    await this.forgetUnreadSessions(
-      plan.targets.map((target) => ({ sessionId: target.id, cwd: target.cwd }))
-    );
-
-    return {
-      archived: true,
-      sessionIds: archiveInputs.map((input) => input.sessionId),
-      archivedCount: archiveInputs.length,
-      skippedAlreadyArchivedCount: plan.skippedAlreadyArchivedCount,
-    };
+      return {
+        archived: true,
+        sessionIds: archiveInputs.map((input) => input.sessionId),
+        archivedCount: archiveInputs.length,
+        skippedAlreadyArchivedCount: plan.skippedAlreadyArchivedCount,
+      };
+    });
   }
 
   async restore(ref: PiSessionLookup): Promise<void> {
-    const archived = await this.getArchived(ref);
-    if (archived === undefined) throw new Error("Session not found");
-    await this.closeActive(archived.sessionId, {
-      kind: "clear",
-      reason: "restore",
+    await this.runSessionOrderMutation(async () => {
+      const archived = await this.getArchived(ref);
+      if (archived === undefined) throw new Error("Session not found");
+      await this.closeActive(archived.sessionId, {
+        kind: "clear",
+        reason: "restore",
+      });
+      await this.archiveStore.restore(archived.sessionId);
+      await this.forgetUnreadSessions([archived]);
     });
-    await this.archiveStore.restore(archived.sessionId);
-    await this.forgetUnreadSessions([archived]);
   }
 
   async deleteArchived(ref: PiSessionLookup): Promise<void> {
@@ -3594,34 +3749,41 @@ export class PiSessionService implements SessionRouteService {
   }
 
   async detachParent(ref: PiSessionLookup): Promise<void> {
-    const session = await this.getOrOpen(ref);
-    const sessionFile = session.sessionFile;
-    if (sessionFile === undefined || sessionFile === "")
-      throw new Error("Session is not persisted");
-    await clearParentSession(sessionFile);
-    clearParentSessionHeader(session.sessionManager);
-    this.unregisterSubsession(session.sessionId);
-    await this.forgetUnreadSessions([
-      { sessionId: session.sessionId, cwd: session.sessionManager.getCwd() },
-    ]);
+    await this.runSessionOrderMutation(async () => {
+      const session = await this.getOrOpen(ref);
+      const sessionFile = session.sessionFile;
+      if (sessionFile === undefined || sessionFile === "")
+        throw new Error("Session is not persisted");
+      await this.clearParentSessionFile(sessionFile);
+      clearParentSessionHeader(session.sessionManager);
+      await this.metadataStore.clearOrder(sessionFile);
+      this.unregisterSubsession(session.sessionId);
+      await this.forgetUnreadSessions([
+        { sessionId: session.sessionId, cwd: session.sessionManager.getCwd() },
+      ]);
+    });
   }
 
   async pin(ref: PiSessionLookup): Promise<ClientSession> {
-    const session = await this.getOrOpen(ref);
-    const sessionFile = session.sessionFile;
-    if (sessionFile === undefined || sessionFile === "")
-      throw new Error("Session is not persisted");
-    await this.metadataStore.pin(sessionFile);
-    return this.sessionInfoFromActive(session, { pinned: true });
+    return await this.runSessionOrderMutation(async () => {
+      const session = await this.getOrOpen(ref);
+      const sessionFile = session.sessionFile;
+      if (sessionFile === undefined || sessionFile === "")
+        throw new Error("Session is not persisted");
+      await this.metadataStore.pin(sessionFile);
+      return this.sessionInfoFromActive(session, { pinned: true });
+    });
   }
 
   async unpin(ref: PiSessionLookup): Promise<ClientSession> {
-    const session = await this.getOrOpen(ref);
-    const sessionFile = session.sessionFile;
-    if (sessionFile === undefined || sessionFile === "")
-      throw new Error("Session is not persisted");
-    await this.metadataStore.unpin(sessionFile);
-    return this.sessionInfoFromActive(session, { pinned: false });
+    return await this.runSessionOrderMutation(async () => {
+      const session = await this.getOrOpen(ref);
+      const sessionFile = session.sessionFile;
+      if (sessionFile === undefined || sessionFile === "")
+        throw new Error("Session is not persisted");
+      await this.metadataStore.unpin(sessionFile);
+      return this.sessionInfoFromActive(session, { pinned: false });
+    });
   }
 
   private sessionInfoFromActive(
@@ -4874,10 +5036,28 @@ export class PiSessionService implements SessionRouteService {
     const model = session.model;
     if (model === undefined) return;
 
-    void generateShortSessionName(
-      session.agent.streamFunction,
-      model,
-      firstMessage
+    void runWithUtilityModelFallback(
+      this.utilityModelResolver,
+      "lightweight",
+      { model, thinkingLevel: "minimal" },
+      (attempt) =>
+        generateShortSessionName(
+          session.agent.streamFunction,
+          attempt.model,
+          firstMessage,
+          attempt.thinkingLevel,
+        ),
+      (attempt, error) => {
+        this.logger.info(
+          {
+            provider: attempt.model.provider,
+            modelId: attempt.model.id,
+            thinkingLevel: attempt.thinkingLevel,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "utility title model failed"
+        );
+      }
     )
       .then((name) => {
         this.applyGeneratedSessionName(
@@ -4885,10 +5065,13 @@ export class PiSessionService implements SessionRouteService {
           name ?? fallbackSessionName(firstMessage)
         );
       })
-      .catch(() => {
-        this.applyGeneratedSessionName(
-          session,
-          fallbackSessionName(firstMessage)
+      .catch((error: unknown) => {
+        this.logger.info(
+          {
+            sessionId: session.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "failed to apply generated session name"
         );
       });
   }
@@ -6212,6 +6395,20 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
+/**
+ * Reconcile duplicate catalog entries by canonical CWD + id, matching the
+ * last-writer-wins convention other catalog reconciliation helpers use. The
+ * reorder loader can read the same session more than once when overlapping
+ * catalog CWDs are requested (e.g. a cross-workspace children scope).
+ */
+function uniqueSessionsByIdentity(sessions: readonly ClientSession[]): ClientSession[] {
+  const byIdentity = new Map<string, ClientSession>();
+  for (const session of sessions) {
+    byIdentity.set(JSON.stringify([canonicalizeStoredCwd(session.cwd), session.id]), session);
+  }
+  return [...byIdentity.values()];
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -6465,10 +6662,29 @@ function isDefined<T>(value: T | undefined): value is T {
 
 function mergeSessionMetadata(
   session: ClientSession,
-  pinnedPaths: ReadonlySet<string>
+  metadata: Readonly<Record<string, SessionMetadata>>
 ): ClientSession {
-  if (!pinnedPaths.has(session.path)) return session;
-  return { ...session, pinned: true };
+  const entry = metadata[session.path];
+  const pinned = entry?.pinned === true;
+  const scope: SessionReorderScope = session.parentSessionPath === undefined
+    ? { kind: "root", cwd: canonicalizeStoredCwd(session.cwd) }
+    : { kind: "children", parentSessionPath: session.parentSessionPath };
+  const order = entry?.order;
+  const manualOrder = session.archived !== true
+    && order?.pinned === pinned
+    && sessionReorderScopesEqual(order.scope, scope)
+    ? order.position
+    : undefined;
+  return {
+    ...session,
+    ...(pinned ? { pinned: true } : {}),
+    ...(manualOrder === undefined ? {} : { manualOrder }),
+  };
+}
+
+function sessionReorderScopesEqual(a: SessionReorderScope, b: SessionReorderScope): boolean {
+  if (a.kind === "root") return b.kind === "root" && a.cwd === b.cwd;
+  return b.kind === "children" && a.parentSessionPath === b.parentSessionPath;
 }
 
 interface TrackedSubsessionSessionIdentity {

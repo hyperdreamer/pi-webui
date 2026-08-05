@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, Workspace } from "../../../shared/apiTypes";
-import { configApi, filesApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
+import type { ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
+import { configApi, filesApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, sessionsApi, skillsConfigApi, terminalsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -182,6 +182,60 @@ describe("Models configuration API", () => {
     expect(url).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/models-config/discover");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(requestBody(init))).toEqual(input);
+  });
+});
+
+describe("Utility model settings API", () => {
+  it("uses an encoded application-relative machine route and preserves version 2 thinking bindings", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = utilityModelSettingsV2Response();
+    const update = {
+      lightweight: { provider: "openai", id: "gpt-small", thinkingLevel: "xhigh" },
+      context: null,
+    } satisfies UtilityModelSettingsUpdate;
+    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response)]);
+
+    await expect(utilityModelsApi.settings("remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(update, 2, "remote /?")).resolves.toEqual(response);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+    ]);
+    expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
+    expect(requestBody(fetchCall(fetchMock, 1)[1])).toBe(JSON.stringify({ settings: update }));
+  });
+
+  it("accepts version 1 responses and projects explicit thinking bindings before saving", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = utilityModelSettingsResponse();
+    const update = {
+      lightweight: { provider: "openai", id: "gpt-small", thinkingLevel: "xhigh" },
+      context: null,
+    } satisfies UtilityModelSettingsUpdate;
+    const partialUpdate = { lightweight: update.lightweight } satisfies UtilityModelSettingsUpdate;
+    const fetchMock = stubSequenceFetch([jsonResponse(response), jsonResponse(response), jsonResponse(response)]);
+
+    await expect(utilityModelsApi.settings("remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(update, 1, "remote /?")).resolves.toEqual(response);
+    await expect(utilityModelsApi.save(partialUpdate, 1, "remote /?")).resolves.toEqual(response);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/utility-models",
+    ]);
+    expect(requestBody(fetchCall(fetchMock, 1)[1])).toBe(JSON.stringify({
+      settings: {
+        lightweight: { provider: "openai", id: "gpt-small" },
+        context: null,
+      },
+    }));
+    expect(requestBody(fetchCall(fetchMock, 2)[1])).toBe(JSON.stringify({
+      settings: { lightweight: { provider: "openai", id: "gpt-small" } },
+    }));
   });
 });
 
@@ -559,6 +613,26 @@ describe("session API compatibility", () => {
     expect(fetchCall(fetchMock, 1)[0]).toBe("https://pi.example.test/api/machines/remote%20a/sessions/cleanup");
     expect(fetchCall(fetchMock, 1)[1]?.method).toBe("POST");
     expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual({ archiveIdleDays: 7, projectCwds: ["/repo"] });
+  });
+
+  it("posts a complete reorder through the selected machine", async () => {
+    const response = { orderedSessions: [{ id: "s /?", cwd: "/repo", manualOrder: 0 }] };
+    const fetchMock = stubJsonFetch(response);
+    const input = {
+      cwd: "/repo",
+      scope: { kind: "root" as const, cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: "s /?", cwd: "/repo" }],
+    };
+
+    await expect(sessionsApi.reorder({ id: "s /?", cwd: "/repo" }, input, "remote /?"))
+      .resolves.toEqual(response);
+
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/sessions/s%20%2F%3F/reorder");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(requestBody(init))).toEqual(input);
   });
 
   it("posts bulk session mutation requests through the selected machine", async () => {
@@ -987,6 +1061,47 @@ function piWebUiPluginsResponse() {
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function utilityModelSettingsResponse() {
+  return {
+    contractVersion: 1 as const,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      { model: { provider: "openai", id: "gpt-5.6-luna" }, name: "Luna" },
+      { model: { provider: "openai", id: "org/gpt-5.6-luna/medium" } },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+  };
+}
+
+function utilityModelSettingsV2Response() {
+  return {
+    contractVersion: 2 as const,
+    settings: {
+      lightweight: { provider: "openai", id: "gpt-5.6-luna", thinkingLevel: "max" },
+      context: { provider: "openai", id: "org/gpt-5.6-luna/medium" },
+    },
+    models: [
+      {
+        model: { provider: "openai", id: "gpt-5.6-luna" },
+        name: "Luna",
+        thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      },
+    ],
+    slots: {
+      lightweight: { valid: true },
+      context: { valid: true },
+    },
+    valid: true,
+  };
 }
 
 function modelTierSettingsResponse() {

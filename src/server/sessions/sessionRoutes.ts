@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import {
   MODEL_TIERS,
+  SESSION_REORDER_CWD_MAX_LENGTH,
+  SESSION_REORDER_LIMIT,
+  SESSION_REORDER_PARENT_PATH_MAX_LENGTH,
+  SESSION_REORDER_SESSION_ID_MAX_LENGTH,
   SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH,
   SESSION_UNREAD_CATALOG_ID_MAX_LENGTH,
   SESSION_UNREAD_CWD_MAX_LENGTH,
@@ -13,6 +17,8 @@ import {
   type SessionModelPolicyUpdate,
   type SessionStartOptions,
   type StarterModelPolicyPreference,
+  type SessionReorderRequest,
+  type SessionReorderScope,
   type SessionTreeNavigateRequest,
   type SessionTreeSummaryChoice,
   type SessionUnreadAcknowledgeRequest,
@@ -23,6 +29,7 @@ import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
 import { RememberCurrentModelPolicyConflictError } from "./rememberCurrentModelPolicy.js";
 import { normalizeSessionCleanupRequest } from "./sessionCleanup.js";
+import { SessionReorderDomainError } from "./sessionReorder.js";
 
 type SessionLookup = SessionRouteLookup;
 
@@ -524,6 +531,32 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
+  app.post<{ Params: { sessionId: string }; Body: unknown }>(`${prefix}/sessions/:sessionId/reorder`, async (request, reply) => {
+    let parsed: SessionReorderRequest;
+    let sessionId: string;
+    try {
+      sessionId = requireNonEmptyBoundedString(
+        request.params.sessionId,
+        "sessionId",
+        SESSION_REORDER_SESSION_ID_MAX_LENGTH,
+      );
+      parsed = sessionReorderRequestFromUnknown(request.body);
+      if (!parsed.orderedSessions.some((entry) => (
+        entry.id === sessionId && entry.cwd === parsed.cwd
+      ))) throw new Error("orderedSessions must contain the URL target");
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+    try {
+      return await sessions.reorder(
+        { id: sessionId, cwd: parsed.cwd },
+        parsed,
+      );
+    } catch (error) {
+      return reply.code(sessionReorderErrorStatus(error)).send({ error: errorMessage(error) });
+    }
+  });
+
   app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
     // Only the id matters for event subscription; cwd is intentionally ignored
     // so a malformed value cannot throw inside the websocket handler.
@@ -571,6 +604,113 @@ function notificationRef(id: string, cwd: string): { id: string; cwd: string } {
     id: requireNonEmptyBoundedString(id, "sessionId", MAX_NOTIFICATION_SESSION_ID_LENGTH),
     cwd: normalizeRequestCwd(cwd),
   };
+}
+
+function sessionReorderRequestFromUnknown(value: unknown): SessionReorderRequest {
+  const record = requirePlainRecord(value, "session reorder");
+  requireExactFields(record, ["cwd", "scope", "pinned", "catalogCwds", "orderedSessions"], "session reorder");
+
+  const cwd = normalizeRequestCwd(requireNonEmptyBoundedString(
+    record["cwd"],
+    "cwd",
+    SESSION_REORDER_CWD_MAX_LENGTH,
+  ));
+  const scope = sessionReorderScopeFromUnknown(record["scope"]);
+  const pinned = record["pinned"];
+  if (typeof pinned !== "boolean") throw new Error("pinned field must be a boolean");
+
+  const catalogCwds = normalizedReorderCatalogCwds(record["catalogCwds"]);
+  const catalogCwdSet = new Set(catalogCwds);
+  if (!catalogCwdSet.has(cwd)) throw new Error("cwd must be included in catalogCwds");
+  if (scope.kind === "root" && !catalogCwdSet.has(scope.cwd)) {
+    throw new Error("scope.cwd must be included in catalogCwds");
+  }
+
+  const orderedSessions = reorderSessionRefsFromUnknown(record["orderedSessions"]);
+  for (const session of orderedSessions) {
+    if (!catalogCwdSet.has(session.cwd)) {
+      throw new Error("orderedSessions CWD must be included in catalogCwds");
+    }
+  }
+
+  return { cwd, scope, pinned, catalogCwds, orderedSessions };
+}
+
+function sessionReorderScopeFromUnknown(value: unknown): SessionReorderScope {
+  const record = requirePlainRecord(value, "scope");
+  const kind = record["kind"];
+  if (kind === "root") {
+    requireExactFields(record, ["kind", "cwd"], "scope");
+    return {
+      kind,
+      cwd: normalizeRequestCwd(requireNonEmptyBoundedString(
+        record["cwd"],
+        "scope.cwd",
+        SESSION_REORDER_CWD_MAX_LENGTH,
+      )),
+    };
+  }
+  if (kind === "children") {
+    requireExactFields(record, ["kind", "parentSessionPath"], "scope");
+    return {
+      kind,
+      parentSessionPath: requireNonEmptyBoundedString(
+        record["parentSessionPath"],
+        "scope.parentSessionPath",
+        SESSION_REORDER_PARENT_PATH_MAX_LENGTH,
+      ),
+    };
+  }
+  throw new Error("scope.kind field is invalid");
+}
+
+function normalizedReorderCatalogCwds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("catalogCwds field must be an array");
+  if (value.length === 0) throw new Error("catalogCwds field must not be empty");
+  if (value.length > SESSION_REORDER_LIMIT) {
+    throw new Error(`catalogCwds field must contain at most ${String(SESSION_REORDER_LIMIT)} entries`);
+  }
+
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const cwd = normalizeRequestCwd(requireNonEmptyBoundedString(
+      entry,
+      `catalogCwds[${String(index)}]`,
+      SESSION_REORDER_CWD_MAX_LENGTH,
+    ));
+    if (seen.has(cwd)) throw new Error("catalogCwds field contains duplicate CWDs");
+    seen.add(cwd);
+    return cwd;
+  });
+}
+
+function reorderSessionRefsFromUnknown(value: unknown): { id: string; cwd: string }[] {
+  if (!Array.isArray(value)) throw new Error("orderedSessions field must be an array");
+  if (value.length === 0) throw new Error("orderedSessions field must not be empty");
+  if (value.length > SESSION_REORDER_LIMIT) {
+    throw new Error(`orderedSessions field must contain at most ${String(SESSION_REORDER_LIMIT)} entries`);
+  }
+
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const label = `orderedSessions[${String(index)}]`;
+    const record = requirePlainRecord(entry, label);
+    requireExactFields(record, ["id", "cwd"], label);
+    const id = requireNonEmptyBoundedString(
+      record["id"],
+      `${label}.id`,
+      SESSION_REORDER_SESSION_ID_MAX_LENGTH,
+    );
+    const cwd = normalizeRequestCwd(requireNonEmptyBoundedString(
+      record["cwd"],
+      `${label}.cwd`,
+      SESSION_REORDER_CWD_MAX_LENGTH,
+    ));
+    const identity = JSON.stringify([cwd, id]);
+    if (seen.has(identity)) throw new Error("orderedSessions field contains duplicate session references");
+    seen.add(identity);
+    return { id, cwd };
+  });
 }
 
 function sessionStartRequestFromUnknown(value: unknown): { cwd: string; options?: SessionStartOptions } {
@@ -815,6 +955,13 @@ function optionalNumber(value: string | undefined): number | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sessionReorderErrorStatus(error: unknown): 400 | 404 | 409 | 500 {
+  if (!(error instanceof SessionReorderDomainError)) return 500;
+  if (error.kind === "invalid") return 400;
+  if (error.kind === "not-found") return 404;
+  return 409;
 }
 
 function mutationErrorStatus(error: unknown): 400 | 404 {

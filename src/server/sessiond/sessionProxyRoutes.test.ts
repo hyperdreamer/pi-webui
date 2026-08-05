@@ -66,6 +66,25 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("forwards utility-model reads and updates through the session daemon", async () => {
+    const read = await app.inject({ method: "GET", url: "/api/machines/local/utility-models" });
+    const update = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/utility-models",
+      payload: { settings: { lightweight: null, context: { provider: "acme", id: "large" } } },
+    });
+
+    expect([read.statusCode, update.statusCode]).toEqual([200, 200]);
+    expect(daemon.requests).toEqual([
+      { method: "GET", path: "/utility-models", body: undefined },
+      {
+        method: "PUT",
+        path: "/utility-models",
+        body: { settings: { lightweight: null, context: { provider: "acme", id: "large" } } },
+      },
+    ]);
+  });
+
   it("forwards model-tier reads and complete-ladder replacements", async () => {
     const ladder = {
       economy: { model: { provider: "acme", id: "small" }, thinkingLevel: "low" },
@@ -123,6 +142,32 @@ describe("machine-scoped session proxy routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(status);
     expect(daemon.requests).toEqual([{ method: "POST", path: "/sessions/session-1/queue/clear", body: { cwd: "/repo" } }]);
+  });
+
+  it("forwards session reorder bodies unchanged through the session daemon", async () => {
+    const body = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [
+        { id: "s-2", cwd: "/repo" },
+        { id: "s-1", cwd: "/repo" },
+      ],
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/machines/local/sessions/s-1/reorder",
+      payload: body,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(daemon.requests).toEqual([{
+      method: "POST",
+      path: "/sessions/s-1/reorder",
+      body,
+    }]);
   });
 
   it("forwards unread snapshots and acknowledgement cutoffs unchanged", async () => {

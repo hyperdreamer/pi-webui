@@ -100,6 +100,7 @@
             <a href="#manual-uploads">Manual uploads</a>
             <a href="#agent-runtime">Agent profile and companion CLI</a>
             <a href="#models-and-skills">Models and skills</a>
+            <a href="#utility-models">Utility models</a>
             <a href="#model-tiers">Model tiers</a>
             <a href="#session-tools">Session tools</a>
             <a href="#completion-tools">Completion tools</a>
@@ -116,7 +117,7 @@
               <p>
                 Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected
                 machine for config that affects work running there: the Pi-compatible agent profile and companion CLI,
-                session daemon tools, model tier routing ladder, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
+                session daemon tools, model tier routing ladder, utility model routing, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
                 keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers
                 that do not advertise selected-machine settings support report those settings as unavailable instead of
                 silently falling back to the gateway.
@@ -175,6 +176,7 @@
                 <li><code>maxUploadBytes</code>: restart both the web/API process and the session daemon on that machine.</li>
                 <li><code>agent.command</code> / <code>agent.dir</code> / <code>spawnSessions</code> / <code>subsessions</code>: restart the session daemon on that machine.</li>
                 <li><code>modelTiers</code>: saved settings apply immediately in <strong>Settings → Model tiers</strong>; validates all six ladder rows atomically.</li>
+                <li><code>utilityModels</code>: saved settings apply immediately in <strong>Settings → Utility models</strong>; existing sessions use updated values on their next utility operation.</li>
                 <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
                 <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
                 <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
@@ -187,7 +189,7 @@
               <h2>Global config example</h2>
               <p>
                 <code>pi-webui install</code> creates the initial file. You can also save PI WEBUI config settings from
-                <strong>Settings → General</strong>, <strong>Settings → Model tiers</strong>,
+                <strong>Settings → General</strong>, <strong>Settings → Model tiers</strong>, <strong>Settings → Utility models</strong>,
                 <strong>Settings → PI WEBUI plugins</strong>, <strong>Settings → Keyboard</strong>, and
                 <strong>Settings → Session daemon</strong>. Machine-affecting Settings fields target the selected machine;
                 gateway host/port/allowed-hosts and keyboard shortcuts stay local. Pi package operations live separately under
@@ -219,6 +221,17 @@
     "advanced": { "provider": "openai", "modelId": "gpt-4o", "thinkingLevel": "off" },
     "capable": { "provider": "anthropic", "modelId": "claude-3-7-sonnet-20250219", "thinkingLevel": "high" },
     "frontier": { "provider": "openai", "modelId": "o3-mini", "thinkingLevel": "high" }
+  },
+  "utilityModels": {
+    "lightweight": {
+      "provider": "anthropic",
+      "id": "claude-haiku",
+      "thinkingLevel": "low"
+    },
+    "context": {
+      "provider": "anthropic",
+      "id": "claude-sonnet"
+    }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -280,7 +293,7 @@
                 <code>—</code> are runtime-only environment variables, not config-file keys. <code>Global</code> means
                 machine-global. In Settings, selected-machine-safe global keys (<code>pathAccess</code>, <code>uploads</code>,
                 <code>maxUploadBytes</code>, <code>agent</code>, <code>spawnSessions</code>, <code>subsessions</code>,
-                <code>modelTiers</code>, and <code>plugins</code>) are edited for the selected machine; gateway host/port/allowed-hosts,
+                <code>modelTiers</code>, <code>utilityModels</code>, and <code>plugins</code>) are edited for the selected machine; gateway host/port/allowed-hosts,
                 keyboard shortcuts, and machine registry/tokens stay local.
               </p>
               <div class="table-scroll" role="region" aria-label="PI WEBUI configuration matrix" tabindex="0">
@@ -384,6 +397,14 @@
                       <td>Global</td>
                       <td>Not supported locally</td>
                       <td>Saved settings apply immediately on save; requires remote peer capability <code>settings.modelTiers</code></td>
+                    </tr>
+                    <tr>
+                      <td>Utility model routing</td>
+                      <td><code>utilityModels</code></td>
+                      <td>—</td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Saved settings apply immediately on the next utility operation; requires remote peer capability <code>settings.utilityModels</code></td>
                     </tr>
                     <tr>
                       <td>PI WEBUI plugin enablement/settings</td>
@@ -637,6 +658,29 @@
                 them. After changing, installing, or updating a skill, use <code>/reload</code> in each idle session that
                 should pick up the changed resource.
               </p>
+            </section>
+
+            <section id="utility-models">
+              <h2>Utility models</h2>
+              <p>
+                <code>utilityModels</code> is a machine-global setting stored in <code>$PI_WEBUI_CONFIG</code> or
+                <code>~/.config/pi-webui/config.json</code>. In <strong>Settings → Utility models</strong>, configure
+                models and thinking levels for utility work on the selected machine. This is separate from <strong>Settings → Model tiers</strong>,
+                which controls session model routing.
+              </p>
+              <ul>
+                <li><code>lightweight</code> handles automatic titles and requested branch summaries. <code>context</code> handles compaction.</li>
+                <li>Each row selects one model and one thinking level for every operation routed through that row.</li>
+                <li>The UI displays the automatic choice as lowercase <code>auto</code>; it is represented by an omitted <code>thinkingLevel</code> in config rather than a literal <code>auto</code> value.</li>
+                <li><code>auto</code> uses <code>minimal</code> when the exact selected model supports it, otherwise <code>off</code>.</li>
+                <li>Explicit options are derived from the selected model's supported levels and may include <code>off</code>, <code>minimal</code>, <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, and <code>max</code>.</li>
+                <li>Changing a model resets that row to <code>auto</code>. A saved explicit level that the model no longer supports remains visible, blocks save, and causes only that utility slot to be skipped until repaired.</li>
+                <li>Title generation and branch summaries try <code>lightweight</code>, then the active session model. Compaction tries <code>context</code>, then <code>lightweight</code>, then the active session model; the Context-to-Lightweight fallback uses each row's own configured level.</li>
+                <li>When both settings are unset, existing active-session behavior is preserved. An unset, malformed, unavailable, unauthenticated, authentication-failing, or call-failing candidate advances to the next fallback in its order. The active-session fallback keeps its existing behavior.</li>
+                <li>Utility calls never change the selected session model, its thinking level, or Pi's remembered default.</li>
+                <li>Version 1 remotes remain model-configurable but require an upgraded runtime for explicit thinking levels.</li>
+                <li>Settings target the selected machine. Existing sessions read saved changes on their next utility operation; remote editing requires the additive <code>settings.utilityModels</code> capability.</li>
+              </ul>
             </section>
 
             <section id="model-tiers">

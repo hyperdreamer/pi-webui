@@ -3,12 +3,18 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  SESSION_REORDER_CWD_MAX_LENGTH,
+  SESSION_REORDER_LIMIT,
+  SESSION_REORDER_PARENT_PATH_MAX_LENGTH,
+  SESSION_REORDER_SESSION_ID_MAX_LENGTH,
   SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH,
   SESSION_UNREAD_CATALOG_ID_MAX_LENGTH,
   type SessionModelPolicyResponse,
   type SessionModelPolicyUpdate,
   type SessionStartOptions,
   type StarterModelPolicyPreference,
+  type SessionReorderRequest,
+  type SessionReorderResponse,
 } from "../../shared/apiTypes.js";
 import type {
   MessagePage,
@@ -31,10 +37,12 @@ import type {
   SessionTreeNavigateResult,
 } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
+import { SessionReorderDomainError } from "./sessionReorder.js";
 import { PiSessionService, type PiSessionManagerGateway } from "./piSessionService.js";
 import { testModelRuntime } from "./piSessionService.testSupport.js";
 import { SessionNotificationStore } from "./sessionNotificationStore.js";
-import type { SessionRouteLookup, SessionRouteService } from "./sessionService.js";
+import { sessionRouteFastifyOptions } from "./sessionRouteFastifyOptions.js";
+import type { SessionRouteLookup, SessionRouteRef, SessionRouteService } from "./sessionService.js";
 import { registerSessionRoutes } from "./sessionRoutes.js";
 import { RememberCurrentModelPolicyConflictError } from "./rememberCurrentModelPolicy.js";
 import type { NormalizedSessionCleanupRequest } from "./sessionCleanup.js";
@@ -1029,6 +1037,189 @@ describe("session routes", () => {
     }
   });
 
+  it("admits a maximum-length reorder session ID and sends an oversized ID to typed validation", async () => {
+    const routeApp = Fastify({ logger: false, ...sessionRouteFastifyOptions });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const maximumId = "x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH);
+    const reorderBody = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: maximumId, cwd: "/repo" }],
+    };
+
+    try {
+      const accepted = await routeApp.inject({
+        method: "POST",
+        url: `/sessions/${maximumId}/reorder`,
+        payload: reorderBody,
+      });
+      const rejected = await routeApp.inject({
+        method: "POST",
+        url: `/sessions/${"x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH + 1)}/reorder`,
+        payload: reorderBody,
+      });
+
+      expect(accepted.statusCode).toBe(200);
+      expect(routeService.reorderCalls).toEqual([{
+        ref: { id: maximumId, cwd: resolve("/repo") },
+        request: {
+          cwd: resolve("/repo"),
+          scope: { kind: "root", cwd: resolve("/repo") },
+          pinned: false,
+          catalogCwds: [resolve("/repo")],
+          orderedSessions: [{ id: maximumId, cwd: resolve("/repo") }],
+        },
+      }]);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.body).toContain("sessionId field is too long");
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("rejects malformed reorder requests before calling the service", async () => {
+    const routeApp = Fastify({ logger: false, ...sessionRouteFastifyOptions });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    try {
+      const validReorderBody = {
+        cwd: "/repo",
+        scope: { kind: "root", cwd: "/repo" },
+        pinned: false,
+        catalogCwds: ["/repo"],
+        orderedSessions: [
+          { id: "s-1", cwd: "/repo" },
+          { id: "s-2", cwd: "/repo" },
+        ],
+      };
+      const oversizedId = "x".repeat(SESSION_REORDER_SESSION_ID_MAX_LENGTH + 1);
+      const oversizedPath = `/${"x".repeat(SESSION_REORDER_CWD_MAX_LENGTH)}`;
+      const oversizedParentPath = `/${"x".repeat(SESSION_REORDER_PARENT_PATH_MAX_LENGTH)}`;
+      const malformed: {
+        name: string;
+        url: string;
+        body: Record<string, unknown>;
+        expectedError?: string;
+      }[] = [
+        { name: "empty catalogs", url: "/sessions/s-1/reorder", body: { ...validReorderBody, catalogCwds: [] } },
+        { name: "empty order", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [] } },
+        { name: "request property", url: "/sessions/s-1/reorder", body: { ...validReorderBody, extra: true } },
+        { name: "scope property", url: "/sessions/s-1/reorder", body: { ...validReorderBody, scope: { kind: "root", cwd: "/repo", extra: true } } },
+        { name: "ref property", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-1", cwd: "/repo", extra: true }] } },
+        { name: "pin type", url: "/sessions/s-1/reorder", body: { ...validReorderBody, pinned: "false" } },
+        { name: "catalog entry type", url: "/sessions/s-1/reorder", body: { ...validReorderBody, catalogCwds: [1] } },
+        { name: "empty ref id", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "", cwd: "/repo" }] } },
+        { name: "scope kind", url: "/sessions/s-1/reorder", body: { ...validReorderBody, scope: { kind: "future", cwd: "/repo" } } },
+        { name: "empty parent path", url: "/sessions/s-1/reorder", body: { ...validReorderBody, scope: { kind: "children", parentSessionPath: "" } } },
+        { name: "normalized catalog duplicate", url: "/sessions/s-1/reorder", body: { ...validReorderBody, catalogCwds: ["/repo", "/repo/."] } },
+        { name: "ref duplicate", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-1", cwd: "/repo" }, { id: "s-1", cwd: "/repo" }] } },
+        { name: "ref outside catalog", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-1", cwd: "/other" }] } },
+        { name: "target omitted", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-2", cwd: "/repo" }] } },
+        { name: "catalog limit", url: "/sessions/s-1/reorder", body: { ...validReorderBody, catalogCwds: ["/repo", ...Array.from({ length: SESSION_REORDER_LIMIT }, (_, index) => `/catalog-${String(index)}`)] } },
+        { name: "order limit", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-1", cwd: "/repo" }, ...Array.from({ length: SESSION_REORDER_LIMIT }, (_, index) => ({ id: `extra-${String(index)}`, cwd: "/repo" }))] } },
+        { name: "URL id bound", url: `/sessions/${oversizedId}/reorder`, body: validReorderBody, expectedError: "sessionId field is too long" },
+        { name: "top-level CWD bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, cwd: oversizedPath }, expectedError: "cwd field is too long" },
+        { name: "root-scope CWD bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, scope: { kind: "root", cwd: oversizedPath } }, expectedError: "scope.cwd field is too long" },
+        { name: "catalog CWD bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, catalogCwds: [oversizedPath] }, expectedError: "catalogCwds[0] field is too long" },
+        { name: "ref id bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: oversizedId, cwd: "/repo" }] }, expectedError: "orderedSessions[0].id field is too long" },
+        { name: "ref CWD bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, orderedSessions: [{ id: "s-1", cwd: oversizedPath }] }, expectedError: "orderedSessions[0].cwd field is too long" },
+        { name: "parent path bound", url: "/sessions/s-1/reorder", body: { ...validReorderBody, scope: { kind: "children", parentSessionPath: oversizedParentPath } }, expectedError: "scope.parentSessionPath field is too long" },
+      ];
+
+      for (const request of malformed) {
+        const response = await routeApp.inject({ method: "POST", url: request.url, payload: request.body });
+        expect(response.statusCode, request.name).toBe(400);
+        if (request.expectedError !== undefined) expect(response.body).toContain(request.expectedError);
+      }
+      expect(routeService.reorderCalls).toEqual([]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("maps reorder domain and write errors to their typed status families", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    const body = {
+      cwd: "/repo",
+      scope: { kind: "root", cwd: "/repo" },
+      pinned: false,
+      catalogCwds: ["/repo"],
+      orderedSessions: [{ id: "s-1", cwd: "/repo" }],
+    };
+    const failures: [unknown, number][] = [
+      [new SessionReorderDomainError("invalid", "invalid reorder"), 400],
+      [new SessionReorderDomainError("not-found", "missing session"), 404],
+      [new SessionReorderDomainError("conflict", "stale reorder"), 409],
+      [new Error("write failed"), 500],
+    ];
+    try {
+      for (const [error, statusCode] of failures) {
+        routeService.reorderError = error;
+        const response = await routeApp.inject({ method: "POST", url: "/sessions/s-1/reorder", payload: body });
+        expect(response.statusCode).toBe(statusCode);
+        expect(response.json()).toEqual({ error: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
+  it("normalizes a canonical child reorder request and forwards it once", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const eventHub = new SessionEventHub();
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, eventHub);
+    try {
+      const response = await routeApp.inject({
+        method: "POST",
+        url: "/sessions/s-1/reorder",
+        payload: {
+          cwd: "/repo/./",
+          scope: { kind: "children", parentSessionPath: "/sessions/parent.jsonl" },
+          pinned: false,
+          catalogCwds: ["/repo/./", "/feature/"],
+          orderedSessions: [
+            { id: "s-2", cwd: "/feature/" },
+            { id: "s-1", cwd: "/repo/./" },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(routeService.reorderCalls).toEqual([{
+        ref: { id: "s-1", cwd: resolve("/repo") },
+        request: {
+          cwd: resolve("/repo"),
+          scope: { kind: "children", parentSessionPath: "/sessions/parent.jsonl" },
+          pinned: false,
+          catalogCwds: [resolve("/repo"), resolve("/feature")],
+          orderedSessions: [
+            { id: "s-2", cwd: resolve("/feature") },
+            { id: "s-1", cwd: resolve("/repo") },
+          ],
+        },
+      }]);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("rejects malformed bulk mutation bodies before calling the service", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
@@ -1072,6 +1263,8 @@ class CapturingRouteSessionService implements SessionRouteService {
   readonly navigateTreeCalls: { lookup: SessionRouteLookup; request: SessionTreeNavigateRequest }[] = [];
   readonly editFromHereCalls: { lookup: SessionRouteLookup; entryId: string }[] = [];
   readonly forkFromHereCalls: { lookup: SessionRouteLookup; entryId: string }[] = [];
+  readonly reorderCalls: { ref: SessionRouteRef; request: SessionReorderRequest }[] = [];
+  reorderError: unknown = undefined;
   readonly historyExportCalls: SessionRouteLookup[] = [];
   reloadError: Error | undefined;
   clearQueueError: Error | undefined;
@@ -1293,6 +1486,20 @@ class CapturingRouteSessionService implements SessionRouteService {
   restore(): never { throw unusedRouteMethod("restore"); }
   deleteArchived(): never { throw unusedRouteMethod("deleteArchived"); }
 
+
+  reorder(ref: SessionRouteRef, request: SessionReorderRequest): Promise<SessionReorderResponse> {
+    this.reorderCalls.push({ ref, request });
+    if (this.reorderError !== undefined) {
+      const error = this.reorderError;
+      return Promise.reject(error instanceof Error ? error : new Error("Unknown reorder test error"));
+    }
+    return Promise.resolve({
+      orderedSessions: request.orderedSessions.map((entry, manualOrder) => ({
+        ...entry,
+        manualOrder,
+      })),
+    });
+  }
 
   detachParent(): never { throw unusedRouteMethod("detachParent"); }
 

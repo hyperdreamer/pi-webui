@@ -1,4 +1,10 @@
-import { ModelRuntime, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  ModelRuntime,
+  SettingsManager,
+  type AgentSessionServices,
+  type ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, type Credential, type CredentialStore } from "@earendil-works/pi-ai";
 import type { GlobalSessionEvent, SessionNotificationSummaryEvent, SessionUiEvent } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
@@ -108,6 +114,30 @@ export function createTestModelRuntime(credentials: CredentialStore = new InMemo
  * and `PiSessionService` constructions can inject it synchronously.
  */
 export const testModelRuntime = await createTestModelRuntime();
+
+export function fakeAgentSessionServices(
+  settingsManager = SettingsManager.inMemory(),
+): AgentSessionServices {
+  const cwd = process.cwd();
+  const agentDir = "/tmp/pi-webui-test-agent";
+  return {
+    cwd,
+    agentDir,
+    modelRuntime: testModelRuntime,
+    settingsManager,
+    resourceLoader: new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    }),
+    diagnostics: [],
+  };
+}
 
 const testExtensionUiContext: ExtensionUIContext = {
   select: () => Promise.resolve(undefined),

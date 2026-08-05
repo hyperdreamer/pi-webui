@@ -51,8 +51,7 @@ export function sessionRows(sessions: SessionInfo[], options: SessionRowsOptions
     return parentPath === undefined || !byPath.has(parentPath);
   });
 
-  // Pinned sessions sort before unpinned, preserving existing order within each group.
-  roots.sort(compareSessionPinnedFirst);
+  const orderedRoots = orderedRootSessions(roots);
 
   const rows: SessionRow[] = [];
   const visit = (session: SessionInfo, depth: number, stack: Set<string>) => {
@@ -71,10 +70,10 @@ export function sessionRows(sessions: SessionInfo[], options: SessionRowsOptions
     if (folded) return;
     const nextStack = new Set(stack);
     nextStack.add(session.path);
-    children.sort(compareSessionPinnedFirst);
-    for (const child of children) visit(child, depth + 1, nextStack);
+    const orderedChildren = orderedSiblingGroup(children);
+    for (const child of orderedChildren) visit(child, depth + 1, nextStack);
   };
-  for (const root of roots) visit(root, 0, new Set());
+  for (const root of orderedRoots) visit(root, 0, new Set());
   return rows;
 }
 
@@ -128,10 +127,47 @@ function unarchivedPathsWithAncestors(relatedPaths: ReadonlySet<string>, byPath:
   return visiblePaths;
 }
 
-function compareSessionPinnedFirst(a: SessionInfo, b: SessionInfo): number {
-  const aPinned = a.pinned === true;
-  const bPinned = b.pinned === true;
-  if (aPinned && !bPinned) return -1;
-  if (!aPinned && bPinned) return 1;
-  return 0;
+function orderedSessionCohort(
+  sessions: readonly SessionInfo[],
+  manualOrderFor: (session: SessionInfo) => number | undefined = (session) => session.manualOrder,
+): SessionInfo[] {
+  return sessions
+    .map((session, sourceIndex) => ({ session, sourceIndex }))
+    .sort((a, b) => {
+      const aOrder = manualOrderFor(a.session);
+      const bOrder = manualOrderFor(b.session);
+      if (aOrder === undefined && bOrder !== undefined) return -1;
+      if (aOrder !== undefined && bOrder === undefined) return 1;
+      if (aOrder !== undefined && bOrder !== undefined && aOrder !== bOrder) return aOrder - bOrder;
+      return a.sourceIndex - b.sourceIndex;
+    })
+    .map(({ session }) => session);
+}
+
+function orderedSiblingGroup(sessions: readonly SessionInfo[]): SessionInfo[] {
+  return [
+    ...orderedSessionCohort(sessions.filter((session) => session.pinned === true)),
+    ...orderedSessionCohort(sessions.filter((session) => session.pinned !== true)),
+  ];
+}
+
+function orderedRootSessions(roots: readonly SessionInfo[]): SessionInfo[] {
+  const orderPinCohort = (cohort: readonly SessionInfo[]): SessionInfo[] => {
+    const rootsByCwd = new Map<string, SessionInfo[]>();
+    for (const root of cohort) {
+      const workspaceRoots = rootsByCwd.get(root.cwd) ?? [];
+      workspaceRoots.push(root);
+      rootsByCwd.set(root.cwd, workspaceRoots);
+    }
+    return [...rootsByCwd.values()].flatMap((workspaceRoots) => (
+      orderedSessionCohort(
+        workspaceRoots,
+        (root) => root.parentSessionPath === undefined ? root.manualOrder : undefined,
+      )
+    ));
+  };
+  return [
+    ...orderPinCohort(roots.filter((session) => session.pinned === true)),
+    ...orderPinCohort(roots.filter((session) => session.pinned !== true)),
+  ];
 }

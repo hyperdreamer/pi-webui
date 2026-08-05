@@ -15,6 +15,7 @@ import { normalizeRequestCwd } from "./workingDirectory.js";
 import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
 import { registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
+import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
 import { registerWorkspaceExplorerRoutes } from "./workspaceExplorerRoutes.js";
 import { registerGitRoutes } from "./gitRoutes.js";
 import { registerTerminalProxyRoutes } from "./terminalProxyRoutes.js";
@@ -161,7 +162,11 @@ function isApiPath(requestUrl: string): boolean {
 }
 
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: deps.logger ?? true, ...(deps.bodyLimit === undefined ? {} : { bodyLimit: deps.bodyLimit }) });
+  const app = Fastify({
+    logger: deps.logger ?? true,
+    ...sessionRouteFastifyOptions,
+    ...(deps.bodyLimit === undefined ? {} : { bodyLimit: deps.bodyLimit }),
+  });
   // Vite proxies development API requests here, while production and machine-scoped
   // API requests already terminate here, so this is the shared HTTP edge.
   await app.register(fastifyCompress, {
