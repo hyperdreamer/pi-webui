@@ -20,6 +20,8 @@ Measured against the author's own store, a single project accounts for roughly $
 
 A **Statistics** entry is added to the project row action menu, next to the existing **Close** entry. Choosing it opens a dialog that reports usage for the whole project.
 
+The entry is added to **both** project action menus, which currently each contain only **Close**: the sidebar project list and the expanded project browser dialog. Adding it to only one would make the feature silently absent from the other surface.
+
 The dialog reports five totals (input, output, cache read, cache write, cost) for the project, broken into four buckets that sum to the project total:
 
 - **Live workspaces**: sessions for working directories that currently exist as project workspaces.
@@ -134,9 +136,35 @@ Add a runtime capability for project usage statistics to the daemon capability s
 
 ## UI
 
-The project row action menu gains a **Statistics** entry beside **Close**. Selecting it opens a dialog following existing dialog component conventions.
+The **Statistics** entry is added beside **Close** in both project action menus: the sidebar project list and the expanded project browser dialog. Selecting it opens a dialog following existing dialog component conventions.
 
-The dialog shows the four buckets and the project total, with each of the five measures per bucket. Token counts use the existing compact and full number formatting helpers, and cost uses the existing precise cost formatter, so the numbers read consistently with the per-session usage display.
+### Layout
+
+The dialog leads with a headline followed by a full measure table.
+
+The headline shows the project cost in large type with a single supporting line: session count and the largest token measures. This answers the question the user opened the dialog to ask without requiring them to read a table.
+
+Beneath it, a table has one row per bucket and one column per measure, with a totals row at the bottom. Every measure is visible without interaction, because the bucket comparison is the part that makes the total believable; hiding token measures behind row expansion would defeat that.
+
+Each bucket row shows its session count next to the bucket name. This is what explains a distribution such as 602 retired sessions against 9 live ones.
+
+The deleted-sessions exclusion is a row inside the table rather than a footnote, so the absence appears where a reader would look for it.
+
+### Number presentation
+
+Numeric columns are right-aligned with wide gutters achieved through cell padding rather than centered text, so digits stay flush right while columns remain visually separated. Figures are tabular so digits align vertically within a column.
+
+Small values render as exact counts and large values render compactly. Exact digits in every cell would widen the columns beyond the available space; compact formatting everywhere would erase meaningful precision in low-usage buckets. Both formatters already exist alongside the per-session usage display, and cost uses the existing precise cost formatter, so numbers read consistently with the session usage badge.
+
+### Narrow widths
+
+Six columns do not fit on a phone. Below the width at which this repository's dialogs already reflow, each bucket becomes a stacked block: bucket name and cost on one line, with the four token measures as label and value pairs beneath. The same data is present with no horizontal scrolling.
+
+### Where results live
+
+The report is assembled on demand per project, per request. No project-level total is persisted, because the bucket assignment depends on scope resolved at request time, such as which worktrees currently exist and which sessions are archived now. A stored project total would be stale as soon as a worktree is removed.
+
+The only persisted artifact is the per-session usage cache in `$PI_WEBUI_DATA_DIR`, which is derived state and may be deleted at any time to force a rebuild. It is not a report, is not user-editable, and is not exported.
 
 ## Deferred: retired usage ledger
 
@@ -151,6 +179,8 @@ Follow the repository testing guide. Coverage should include:
 - Scanner parity with Pi's `getSessionStats` accounting on a fixture containing assistant, `toolResult`, `branch_summary`, and `compaction` usage.
 - Incremental update: appending to a scanned file adds only the new usage, and a shrunk or id-mismatched file triggers a full rescan.
 - Bucket assignment: a session under a live workspace, a session under a path that no longer exists, and an archived session each land in exactly one bucket, with UUID deduplication across the Pi store and the archive.
+- Bucket totals sum to the reported project total.
+- Both project action menus expose the entry, and both hide it when the connected daemon does not advertise the capability.
 - Single-flight: two concurrent requests for the same project produce one scan and identical results.
 - Atomic persistence: an interrupted cache write leaves a readable file.
 - An event-loop lag assertion during a scan over a synthetic large-session fixture, failing above a threshold well under one frame. This pins the streaming property directly rather than trusting that streaming was used.

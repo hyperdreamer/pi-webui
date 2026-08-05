@@ -20,3 +20,6 @@ dist/
 
 # Isolated local feature worktrees.
 .worktrees/
+
+# Local brainstorming mockups.
+.superpowers/
