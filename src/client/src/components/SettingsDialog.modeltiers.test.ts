@@ -155,6 +155,80 @@ describe("settings-dialog model tiers machine targeting", () => {
     );
   });
 
+  it("reports successful remote model-tier saves through onModelTiersSaved", async () => {
+    stubWindowTimers();
+    const ladder = sampleResponse.ladder;
+    expect(ladder).toBeDefined();
+    if (ladder === undefined) return;
+    const savedResponse: ModelTierSettingsResponse = { ...sampleResponse };
+    vi.spyOn(modelTiersApi, "save").mockResolvedValue(savedResponse);
+    const onModelTiersSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.machine = remoteMachine;
+    dialog.onModelTiersSaved = onModelTiersSaved;
+
+    await callDialogPromise(dialog, "saveModelTiers", ladder);
+
+    expect(onModelTiersSaved).toHaveBeenCalledTimes(1);
+    expect(onModelTiersSaved).toHaveBeenCalledWith("remote-a", savedResponse);
+  });
+
+  it("reports successful local model-tier saves through onModelTiersSaved and still calls onConfigSaved", async () => {
+    stubWindowTimers();
+    const ladder = sampleResponse.ladder;
+    expect(ladder).toBeDefined();
+    if (ladder === undefined) return;
+    const initialConfig = configResponse({ host: "127.0.0.1" });
+    const savedResponse: ModelTierSettingsResponse = { ...sampleResponse };
+    vi.spyOn(modelTiersApi, "save").mockResolvedValue(savedResponse);
+    const onConfigSaved = vi.fn();
+    const onModelTiersSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.onConfigSaved = onConfigSaved;
+    dialog.onModelTiersSaved = onModelTiersSaved;
+    setDialogProperty(dialog, "configResponse", initialConfig);
+
+    await callDialogPromise(dialog, "saveModelTiers", ladder);
+
+    expect(onModelTiersSaved).toHaveBeenCalledTimes(1);
+    expect(onModelTiersSaved).toHaveBeenCalledWith("local", savedResponse);
+    expect(onConfigSaved).toHaveBeenCalledWith(expect.objectContaining({ host: "127.0.0.1", modelTiers: ladder }));
+  });
+
+  it("does not report model-tier saves when the save fails", async () => {
+    vi.spyOn(modelTiersApi, "save").mockRejectedValue(new Error("Server error"));
+    const onModelTiersSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.machine = remoteMachine;
+    dialog.onModelTiersSaved = onModelTiersSaved;
+    const ladder = sampleResponse.ladder;
+    expect(ladder).toBeDefined();
+    if (ladder === undefined) return;
+
+    await callDialogPromise(dialog, "saveModelTiers", ladder);
+
+    expect(onModelTiersSaved).not.toHaveBeenCalled();
+  });
+
+  it("does not report model-tier saves when the selected machine changes mid-flight", async () => {
+    const save = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "save").mockReturnValue(save.promise);
+    const onModelTiersSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.machine = remoteMachine;
+    dialog.onModelTiersSaved = onModelTiersSaved;
+    const ladder = sampleResponse.ladder;
+    expect(ladder).toBeDefined();
+    if (ladder === undefined) return;
+
+    const savePromise = callDialogPromise(dialog, "saveModelTiers", ladder);
+    dialog.machine = secondRemoteMachine;
+    save.resolve({ ...sampleResponse });
+    await savePromise;
+
+    expect(onModelTiersSaved).not.toHaveBeenCalled();
+  });
+
   it("treats remote machine advertising settings.selectedMachine without settings.modelTiers as unsupported", async () => {
     const settingsSpy = vi.spyOn(modelTiersApi, "settings");
     const dialog = new SettingsDialog();

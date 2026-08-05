@@ -646,6 +646,103 @@ describe("PiWebUiApp model tier catalog stale guards", () => {
   });
 });
 
+describe("PiWebUiApp model tier catalog save publish", () => {
+  it("publishes a selected-machine ladder save as the app catalog and clears the catalog error", () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    setModelTierCatalogError(app, "stale catalog failure");
+
+    const savedCatalog: ModelTierSettingsResponse = { ...validCatalog(), valid: false, configError: "saved ladder" };
+    invokeModelTiersSaved(app, "local", savedCatalog);
+
+    expect(modelTierCatalog(app)).toEqual(savedCatalog);
+    expect(modelTierCatalogError(app)).toBe("");
+  });
+
+  it("lets an in-flight earlier load lose to the saved catalog and serves the saved catalog from ensure", async () => {
+    const app = createApp();
+    const stale = deferred<ModelTierSettingsResponse>();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockReturnValue(stale.promise);
+    setAppState(app, starterState());
+
+    const pendingLoad = loadModelTierCatalog(app, "local");
+
+    const savedCatalog: ModelTierSettingsResponse = { ...validCatalog(), valid: false, configError: "saved ladder" };
+    invokeModelTiersSaved(app, "local", savedCatalog);
+
+    stale.resolve({ ...validCatalog(), valid: false, configError: "stale read" });
+    await pendingLoad;
+    await flush();
+
+    expect(modelTierCatalog(app)).toEqual(savedCatalog);
+    expect(modelTierCatalogLoading(app)).toBe(false);
+    expect(settings).toHaveBeenCalledTimes(1);
+
+    await ensureModelTierCatalog(app, "local");
+    expect(modelTierCatalog(app)).toEqual(savedCatalog);
+    expect(settings).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the selected machine's catalog untouched by a save for another machine", () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    const otherCatalog: ModelTierSettingsResponse = { ...validCatalog(), valid: false, configError: "other machine ladder" };
+    invokeModelTiersSaved(app, remoteMachine.id, otherCatalog);
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(modelTierCatalogError(app)).toBe("");
+  });
+
+  it("re-reads the active session policy once after publishing a selected-machine save", () => {
+    const app = policyCapableActiveApp();
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+
+    invokeModelTiersSaved(app, remoteMachine.id, validCatalog());
+
+    expect(loadModelPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read the session policy when no active policy is in play", () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+
+    invokeModelTiersSaved(app, "local", validCatalog());
+
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+  });
+
+  it("completes a starter draft waiting on a catalog from a selected-machine ladder save", async () => {
+    const app = createApp();
+    const pendingCatalog = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings").mockReturnValue(pendingCatalog.promise);
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2WithoutResolvedModel());
+    setAppState(app, fullPreferenceCapableStarterState());
+
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    // These V2 defaults carry no resolved model, so the seeded starter draft
+    // holds an empty Exact branch until a catalog can resolve it.
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+    });
+
+    invokeModelTiersSaved(app, "local", validCatalog());
+
+    // The pending catalog read has not resolved, so only the save's publish
+    // path can complete the draft, resolving its Exact branch from Standard.
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+  });
+});
+
 describe("PiWebUiApp starter defaults capability ordering", () => {
   it("reloads V2 after capability discovery and drops the earlier unversioned response", async () => {
     const app = createApp();
@@ -2627,6 +2724,28 @@ function loadModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void>
   const result: unknown = Reflect.apply(method, app, [machineId]);
   if (!isPromise(result)) throw new Error("PiWebUiApp.loadModelTierCatalog did not return a promise");
   return result;
+}
+
+function ensureModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
+  const method: unknown = Reflect.get(app, "ensureModelTierCatalog");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.ensureModelTierCatalog is not callable");
+  const result: unknown = Reflect.apply(method, app, [machineId]);
+  if (!isPromise(result)) throw new Error("PiWebUiApp.ensureModelTierCatalog did not return a promise");
+  return result;
+}
+
+/**
+ * Open settings and invoke the `.onModelTiersSaved=` handler bound on
+ * `<settings-dialog>`, so these tests exercise the real render wiring rather
+ * than the private publish method alone.
+ */
+function invokeModelTiersSaved(app: PiWebUiApp, machineId: string, response: ModelTierSettingsResponse): void {
+  if (!Reflect.set(app, "settingsSection", "modeltiers")) throw new Error("Could not open settings");
+  const dialog = findTemplateContaining(renderApp(app), "<settings-dialog");
+  if (dialog === undefined) throw new Error("PiWebUiApp did not render settings-dialog");
+  const callback: unknown = templateValueAfterMarker(dialog, ".onModelTiersSaved=");
+  if (typeof callback !== "function") throw new Error("settings-dialog did not bind onModelTiersSaved");
+  Reflect.apply(callback, undefined, [machineId, response]);
 }
 
 function loadStarterSessionDefaults(app: PiWebUiApp, workspace: Workspace): Promise<void> {

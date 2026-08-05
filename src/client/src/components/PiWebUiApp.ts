@@ -1809,6 +1809,30 @@ export class PiWebUiApp extends LitElement {
     this.modelTierCatalogError = "";
   }
 
+  /**
+   * Publish a successful ladder save as the selected machine's catalog so the
+   * composer's tier choices update without a reload. The save supersedes any
+   * load still in flight: the sequence bump retires it (it can no longer
+   * publish, and its `finally` skips the loading flag, which is why the flag is
+   * cleared here) and the shared load handle is dropped. A save for a machine
+   * the user is not viewing is ignored because the catalog is a per-machine
+   * projection.
+   */
+  private handleModelTiersSaved(machineId: string, response: ModelTierSettingsResponse): void {
+    if (selectedMachineId(this.state) !== machineId) return;
+    this.modelTierCatalogMachineId = machineId;
+    this.modelTierCatalog = response;
+    this.modelTierCatalogError = "";
+    this.modelTierCatalogSeq += 1;
+    this.modelTierCatalogLoad = undefined;
+    this.modelTierCatalogLoading = false;
+    this.completeStarterModelPolicyFromActiveTier();
+    // `ladderValid` and `blockedReason` in the published session status are
+    // computed server-side and stale after a ladder change, so re-read the
+    // active policy only when the composer is actually showing it.
+    if (activePolicyComposerScope(this.state) !== undefined) void this.sessions.loadModelPolicy();
+  }
+
   private completeStarterModelPolicyFromActiveTier(): void {
     const defaults = this.starterSessionDefaults;
     const draft = this.starterModelPolicy;
@@ -4276,7 +4300,7 @@ export class PiWebUiApp extends LitElement {
         ${activeActivity === undefined ? null : html`<plugin-activity-dialog .activity=${activeActivity.activity} .context=${activeActivity.context} .onClose=${() => { this.closeActivityRailItem(activeActivity.activity.id, activeActivity.generation); }} .onReportError=${this.reportActivityRailError}></plugin-activity-dialog>`}
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
-        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
+        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
     `;
   }

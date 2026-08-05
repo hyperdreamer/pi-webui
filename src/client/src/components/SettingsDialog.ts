@@ -27,6 +27,7 @@ export class SettingsDialog extends LitElement {
   @property({ attribute: false }) onClose?: () => void;
   @property({ attribute: false }) onConfigSaved?: (config: PiWebUiConfigValues) => void;
   @property({ attribute: false }) onRefreshMachineRuntime?: (machineId: string) => void | Promise<void>;
+  @property({ attribute: false }) onModelTiersSaved?: (machineId: string, response: ModelTierSettingsResponse) => void;
   @state() private configResponse: PiWebUiConfigResponse | undefined;
   @state() private accessConfigResponse: PiWebUiConfigResponse | undefined;
   @state() private sessiondConfigResponse: PiWebUiConfigResponse | undefined;
@@ -594,6 +595,9 @@ export class SettingsDialog extends LitElement {
         };
         this.onConfigSaved?.(this.configResponse.effectiveConfig);
       }
+      // Report the successful save only once the response is current for the
+      // target the save targeted; local and remote saves both notify here.
+      this.onModelTiersSaved?.(target.id, response);
       this.showSavedMessage();
     } catch (error) {
       if (this.isCurrentSettingsTarget(target)) {
