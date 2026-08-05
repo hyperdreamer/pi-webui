@@ -19,13 +19,20 @@ export class CommandPicker extends LitElement {
     const options = this.filteredOptions();
     return html`
       <div class="backdrop" @mousedown=${() => this.onCancel?.()}>
-        <section @mousedown=${(event: MouseEvent) => { event.stopPropagation(); }}>
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="command-picker-title"
+          tabindex="-1"
+          @mousedown=${(event: MouseEvent) => { event.stopPropagation(); }}
+          @keydown=${(event: KeyboardEvent) => { this.handleDialogKeyDown(event); }}
+        >
           <header>
-            <strong>${this.title}</strong>
-            <button @click=${() => this.onCancel?.()}>×</button>
+            <strong id="command-picker-title">${this.title}</strong>
+            <button type="button" aria-label=${`Close ${this.title}`} @click=${() => this.onCancel?.()}>×</button>
           </header>
-          ${this.searchable ? html`<input placeholder="Search" .value=${this.query} @input=${(event: Event) => { this.handleSearchInput(event); }} @keydown=${(event: KeyboardEvent) => { this.handleKeyDown(event); }}>` : null}
-          <div class="options" @keydown=${(event: KeyboardEvent) => { this.handleKeyDown(event); }} tabindex="0">
+          ${this.searchable ? html`<input aria-label="Search options" placeholder="Search" .value=${this.query} @input=${(event: Event) => { this.handleSearchInput(event); }}>` : null}
+          <div class="options" tabindex="0">
             ${options.length === 0 ? html`<div class="empty">No matching options</div>` : this.renderGroupedOptions(options)}
           </div>
         </section>
@@ -84,12 +91,46 @@ export class CommandPicker extends LitElement {
     });
   }
 
-  private handleKeyDown(event: KeyboardEvent) {
-    const options = this.filteredOptions();
+  private handleDialogKeyDown(event: KeyboardEvent): void {
+    if (event.key === "Tab") {
+      event.stopPropagation();
+      this.trapTabFocus(event);
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       this.onCancel?.();
-    } else if (event.key === "ArrowDown") {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) && !(target instanceof Element && target.closest(".options") !== null)) {
+      return;
+    }
+    this.handleOptionKeyDown(event);
+  }
+
+  private trapTabFocus(event: KeyboardEvent): void {
+    const focusable = [...this.renderRoot.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), input:not(:disabled), [tabindex='0']",
+    )];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      this.renderRoot.querySelector<HTMLElement>("section[role='dialog']")?.focus();
+      return;
+    }
+    const activeIndex = focusable.findIndex((element) => element === this.shadowRoot?.activeElement);
+    const movingPastEnd = !event.shiftKey && activeIndex === focusable.length - 1;
+    const movingBeforeStart = event.shiftKey && activeIndex <= 0;
+    const focusIsOutside = activeIndex < 0;
+    if (!movingPastEnd && !movingBeforeStart && !focusIsOutside) return;
+    event.preventDefault();
+    (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus();
+  }
+
+  private handleOptionKeyDown(event: KeyboardEvent): void {
+    const options = this.filteredOptions();
+    if (event.key === "ArrowDown") {
       event.preventDefault();
       if (options.length > 0) this.selectedIndex = (this.selectedIndex + 1) % options.length;
     } else if (event.key === "ArrowUp") {

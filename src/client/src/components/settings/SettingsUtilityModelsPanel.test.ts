@@ -8,6 +8,8 @@ import type {
   UtilityModelSettingsResponseV1,
   UtilityModelSettingsResponseV2,
 } from "../../../../shared/apiTypes";
+import { CommandPicker } from "../CommandPicker";
+import { SettingsModelPickerField } from "./SettingsModelPickerField";
 import { SettingsPanelFrame } from "./SettingsPanelFrame";
 import { SettingsUtilityModelsPanel } from "./SettingsUtilityModelsPanel";
 
@@ -100,15 +102,84 @@ describe("SettingsUtilityModelsPanel", () => {
     expect(root.querySelectorAll(".field-row")).toHaveLength(2);
 
     for (const slot of ["lightweight", "context"] as const) {
-      const model = modelSelect(panel, slot);
+      const model = modelPicker(panel, slot);
       const thinking = thinkingSelect(panel, slot);
-      expect(model.id).toBe(`select-utility-model-${slot}`);
+      expect(model.triggerId).toBe(`select-utility-model-${slot}`);
       expect(thinking.id).toBe(`select-utility-thinking-${slot}`);
-      expect(model.getAttribute("aria-label")).toBe(`${slot} utility model`);
+      expect(model.accessibleLabel).toBe(`${slot} utility model`);
       expect(thinking.getAttribute("aria-label")).toBe(`${slot} utility thinking`);
-      expect(labelFor(panel, model.id).textContent.trim()).toBe("Model");
+      expect(modelLabel(panel, slot).textContent.trim()).toBe("Model");
+      expect(modelLabel(panel, slot).hasAttribute("for")).toBe(false);
       expect(labelFor(panel, thinking.id).textContent.trim()).toBe("Thinking");
     }
+  });
+
+  it("opens the corresponding picker when its rendered Model label is clicked", async () => {
+    const panel = await mountPanel((element) => {
+      element.response = responseV2();
+    });
+    const lightweight = modelPicker(panel, "lightweight");
+    const context = modelPicker(panel, "context");
+
+    modelLabel(panel, "lightweight").click();
+    await lightweight.updateComplete;
+
+    expect(lightweight.isPickerOpen).toBe(true);
+    expect(context.isPickerOpen).toBe(false);
+  });
+
+  it("selects a model through the searchable picker dialog and offers the inherit entry", async () => {
+    const panel = await mountPanel((element) => {
+      element.response = responseV2();
+    });
+
+    const picker = modelPicker(panel, "lightweight");
+    expect(triggerText(picker)).toBe("openai/gpt-small");
+
+    await openPicker(picker);
+    expect(pickerOptionLabels(picker)).toEqual([
+      "Use active session model",
+      "claude-context",
+      "gpt-small",
+    ]);
+
+    await searchPicker(picker, "context");
+    expect(pickerOptionLabels(picker)).toEqual(["claude-context"]);
+
+    await clickPickerOption(picker, "claude-context");
+    await panel.updateComplete;
+
+    expect(picker.isPickerOpen).toBe(false);
+    expect(triggerText(modelPicker(panel, "lightweight"))).toBe("anthropic/claude-context");
+    expect(panel.draft.lightweight).toEqual({ ...contextModel });
+  });
+
+  it("clears a slot back to inheritance from the picker dialog", async () => {
+    const onSave = vi.fn();
+    const panel = await mountPanel((element) => {
+      element.response = responseV2();
+      element.onSave = onSave;
+    });
+
+    await selectModel(panel, "context", "Use lightweight, then active session model");
+
+    expect(triggerText(modelPicker(panel, "context"))).toBe("Use lightweight, then active session model");
+    saveButton(panel).click();
+    expect(onSave).toHaveBeenCalledWith({
+      lightweight: { ...smallModel, thinkingLevel: "high" },
+      context: null,
+    });
+  });
+
+  it("shows a configured model that is no longer available as unavailable", async () => {
+    const panel = await mountPanel((element) => {
+      element.response = responseV2({
+        settings: { lightweight: { ...staleModel }, context: { ...contextModel, thinkingLevel: "medium" } },
+      });
+    });
+
+    expect(triggerText(modelPicker(panel, "lightweight"))).toBe("retired/model (unavailable)");
+    expect(modelPicker(panel, "lightweight").invalid).toBe(true);
   });
 
   it("renders selected-model thinking options in canonical order", async () => {
@@ -147,8 +218,7 @@ describe("SettingsUtilityModelsPanel", () => {
       element.onSave = onSave;
     });
 
-    selectValue(modelSelect(panel, "lightweight"), modelKey(contextModel));
-    await panel.updateComplete;
+    await selectModel(panel, "lightweight", contextModel.id);
 
     expect(thinkingSelect(panel, "lightweight").value).toBe("auto");
     saveButton(panel).click();
@@ -225,8 +295,8 @@ describe("SettingsUtilityModelsPanel", () => {
       settings: { lightweight: { ...staleModel }, context: { ...contextModel, thinkingLevel: "medium" } },
     });
     await panel.updateComplete;
-    expect(modelSelect(panel, "lightweight").disabled).toBe(false);
-    expect(modelSelect(panel, "context").disabled).toBe(false);
+    expect(modelPicker(panel, "lightweight").disabled).toBe(false);
+    expect(modelPicker(panel, "context").disabled).toBe(false);
     expect(thinkingSelect(panel, "lightweight").disabled).toBe(true);
     expect(thinkingSelect(panel, "context").disabled).toBe(false);
     expect(saveButton(panel).disabled).toBe(true);
@@ -261,14 +331,12 @@ describe("SettingsUtilityModelsPanel", () => {
       type: "info",
       content: "Explicit thinking levels require a newer PI WEBUI runtime on Lab Mac (remote machine). Model routing remains available.",
     });
-    expect(modelSelect(panel, "lightweight").disabled).toBe(false);
+    expect(modelPicker(panel, "lightweight").disabled).toBe(false);
     expect(thinkingSelect(panel, "lightweight").disabled).toBe(true);
     expect(optionValues(thinkingSelect(panel, "lightweight"))).toEqual(["auto"]);
 
-    selectValue(modelSelect(panel, "lightweight"), modelKey(contextModel));
-    await panel.updateComplete;
-    selectValue(modelSelect(panel, "context"), "");
-    await panel.updateComplete;
+    await selectModel(panel, "lightweight", contextModel.id);
+    await selectModel(panel, "context", "Use lightweight, then active session model");
     expect(saveButton(panel).disabled).toBe(false);
     saveButton(panel).click();
     expect(onSave).toHaveBeenCalledWith({ lightweight: { ...contextModel }, context: null });
@@ -303,8 +371,71 @@ async function mountPanel(configure: (panel: SettingsUtilityModelsPanel) => void
   return panel;
 }
 
-function modelSelect(panel: SettingsUtilityModelsPanel, slot: "lightweight" | "context"): HTMLSelectElement {
-  return selectById(panel, `select-utility-model-${slot}`);
+function modelPicker(panel: SettingsUtilityModelsPanel, slot: "lightweight" | "context"): SettingsModelPickerField {
+  const triggerId = `select-utility-model-${slot}`;
+  const fields = [...requireShadowRoot(panel).querySelectorAll<SettingsModelPickerField>("settings-model-picker-field")];
+  const field = fields.find((candidate) => candidate.triggerId === triggerId);
+  if (field === undefined) throw new Error(`Expected the ${slot} model picker field`);
+  return field;
+}
+
+function pickerRoot(field: SettingsModelPickerField): ShadowRoot {
+  return requireShadowRoot(field);
+}
+
+function triggerText(field: SettingsModelPickerField): string {
+  const trigger = pickerRoot(field).querySelector(".model-trigger .model-summary");
+  if (trigger === null) throw new Error("Expected the model picker trigger summary");
+  return trigger.textContent.trim();
+}
+
+async function openPicker(field: SettingsModelPickerField): Promise<void> {
+  const trigger = pickerRoot(field).querySelector<HTMLButtonElement>(".model-trigger");
+  if (trigger === null) throw new Error("Expected the model picker trigger");
+  trigger.click();
+  await field.updateComplete;
+  await commandPicker(field).updateComplete;
+}
+
+function commandPicker(field: SettingsModelPickerField): CommandPicker {
+  const picker = pickerRoot(field).querySelector<CommandPicker>("command-picker");
+  if (picker === null) throw new Error("Expected the searchable model dialog");
+  return picker;
+}
+
+function pickerOptionLabels(field: SettingsModelPickerField): string[] {
+  return [...requireShadowRoot(commandPicker(field)).querySelectorAll(".options button span")]
+    .map((option) => option.textContent.trim());
+}
+
+async function searchPicker(field: SettingsModelPickerField, query: string): Promise<void> {
+  const picker = commandPicker(field);
+  const input = requireShadowRoot(picker).querySelector<HTMLInputElement>("input");
+  if (input === null) throw new Error("Expected the model dialog search input");
+  input.value = query;
+  input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  await picker.updateComplete;
+}
+
+async function clickPickerOption(field: SettingsModelPickerField, label: string): Promise<void> {
+  const picker = commandPicker(field);
+  const option = [...requireShadowRoot(picker).querySelectorAll<HTMLButtonElement>(".options button")]
+    .find((button) => button.querySelector("span")?.textContent.trim() === label);
+  if (option === undefined) throw new Error(`Expected model dialog option ${label}`);
+  option.click();
+  await picker.updateComplete;
+  await field.updateComplete;
+}
+
+async function selectModel(
+  panel: SettingsUtilityModelsPanel,
+  slot: "lightweight" | "context",
+  label: string,
+): Promise<void> {
+  const field = modelPicker(panel, slot);
+  await openPicker(field);
+  await clickPickerOption(field, label);
+  await panel.updateComplete;
 }
 
 function thinkingSelect(panel: SettingsUtilityModelsPanel, slot: "lightweight" | "context"): HTMLSelectElement {
@@ -315,6 +446,15 @@ function selectById(panel: SettingsUtilityModelsPanel, id: string): HTMLSelectEl
   const select = requireShadowRoot(panel).querySelector<HTMLSelectElement>(`#${id}`);
   if (select === null) throw new Error(`Expected select #${id}`);
   return select;
+}
+
+function modelLabel(
+  panel: SettingsUtilityModelsPanel,
+  slot: "lightweight" | "context",
+): HTMLLabelElement {
+  const label = requireShadowRoot(panel).querySelector<HTMLLabelElement>(`[data-slot="${slot}"] .field-control .field-label`);
+  if (label === null) throw new Error(`Expected the ${slot} model label`);
+  return label;
 }
 
 function labelFor(panel: SettingsUtilityModelsPanel, id: string): HTMLLabelElement {
@@ -346,10 +486,6 @@ function selectValue(select: HTMLSelectElement, value: string): void {
   select.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
 }
 
-function modelKey(model: TierModelRef): string {
-  return JSON.stringify([model.provider, model.id]);
-}
-
 function optionValues(select: HTMLSelectElement): string[] {
   return [...select.options].map((option) => option.value);
 }
@@ -365,7 +501,7 @@ function expectControlState(
   expected: { model: boolean; thinking: boolean; save: boolean },
 ): void {
   for (const slot of ["lightweight", "context"] as const) {
-    expect(modelSelect(panel, slot).disabled).toBe(expected.model);
+    expect(modelPicker(panel, slot).disabled).toBe(expected.model);
     expect(thinkingSelect(panel, slot).disabled).toBe(expected.thinking);
   }
   expect(saveButton(panel).disabled).toBe(expected.save);
