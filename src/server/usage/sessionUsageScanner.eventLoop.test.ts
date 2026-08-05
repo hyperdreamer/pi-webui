@@ -19,7 +19,12 @@ async function writeLargeSession(): Promise<{ path: string; expectedInput: numbe
   const dir = await mkdtemp(join(tmpdir(), "usage-lag-"));
   const path = join(dir, "session.jsonl");
   const header = JSON.stringify({ type: "session", id: "lag", cwd: "/repo" });
-  const lineCount = 20_000;
+  // ~22 MB of JSON. This is the smallest fixture whose whole-file mutant
+  // blocks the event loop decisively past LAG_BUDGET_MS (~105-130 ms measured
+  // against this test); the original 20k-line fixture's mutant lagged only
+  // ~46-57 ms and could pass. The streaming scanner keeps each turn short at
+  // any size.
+  const lineCount = 40_000;
   const lines = [header];
   for (let index = 0; index < lineCount; index += 1) lines.push(assistantLine(1));
   await writeFile(path, `${lines.join("\n")}\n`, "utf8");
