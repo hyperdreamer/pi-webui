@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelTierLadder, ModelTierModelOption, ModelTierSettingsResponse, TierModelRef } from "../../../../shared/apiTypes";
-import { templateText } from "../../templateInspection.testSupport";
+import { templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { SettingsModelTiersPanel } from "./SettingsModelTiersPanel";
 
 const smallModel: TierModelRef = { provider: "openai", id: "gpt-small" };
@@ -68,19 +68,34 @@ describe("SettingsModelTiersPanel", () => {
     expect(styles).toMatch(/\.tier-row\s*\{[^}]*grid-template-areas:\s*"step tier model thinking";/);
   });
 
-  it("populates model options and thinking levels for valid response", () => {
+  it("hands the full model catalog and each tier's selection to the searchable picker field", () => {
     const panel = new SettingsModelTiersPanel();
     panel.response = validResponse();
     callWillUpdate(panel);
 
     const template = panel.render();
-    const rendered = templateText(template);
-
-    expect(rendered).toContain("Small (openai/gpt-small)");
-    expect(rendered).toContain("Large (openai/org/gpt-large/model)");
+    expect(templateValuesAfterMarker(template, ".choices=")).toEqual(
+      Array.from({ length: 6 }, () => models),
+    );
+    expect(templateValuesAfterMarker(template, ".selected=")).toEqual([
+      smallModel,
+      smallModel,
+      largeModel,
+      largeModel,
+      largeModel,
+      largeModel,
+    ]);
+    expect(templateValuesAfterMarker(template, ".accessibleLabel=")).toEqual([
+      "Economy tier model",
+      "Fast tier model",
+      "Standard tier model",
+      "Advanced tier model",
+      "Capable tier model",
+      "Frontier tier model",
+    ]);
   });
 
-  it("shows an unavailable configured model as selected stale value with invalid state", () => {
+  it("marks an unavailable configured model invalid on its picker while keeping it selected", () => {
     const panel = new SettingsModelTiersPanel();
     const ladder = validLadder();
     ladder.economy = { model: staleModel, thinkingLevel: "off" };
@@ -90,9 +105,10 @@ describe("SettingsModelTiersPanel", () => {
     };
     callWillUpdate(panel);
 
-    const rendered = templateText(panel.render());
-    expect(rendered).toContain("missing-provider/org/stale/model (unavailable)");
-    expect(rendered).toContain("tier economy names unavailable model missing-provider/org/stale/model");
+    const template = panel.render();
+    expect(templateValuesAfterMarker(template, ".selected=")[0]).toEqual(staleModel);
+    expect(templateValuesAfterMarker(template, ".invalid=")[0]).toBe(true);
+    expect(templateText(template)).toContain("tier economy names unavailable model missing-provider/org/stale/model");
 
     expect(panel.canSave).toBe(false);
   });

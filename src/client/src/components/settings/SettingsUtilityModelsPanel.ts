@@ -8,6 +8,7 @@ import type {
   UtilityModelSlot,
 } from "../../../../shared/apiTypes";
 import { isKnownThinkingLevel } from "../../../../shared/thinkingLevels";
+import "./SettingsModelPickerField";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import type { UtilityModelSettingsSupport } from "./settingsMachineTarget";
@@ -185,27 +186,19 @@ export class SettingsUtilityModelsPanel extends LitElement {
         </div>
         <div class="field-control">
           <label class="field-label" for=${modelId}>Model</label>
-          <select
-            id=${modelId}
-            aria-label=${`${slot} utility model`}
-            aria-invalid=${String(!validation.valid)}
-            ?disabled=${this.editingDisabled}
-            .value=${binding === undefined ? "" : modelKey(binding)}
-            @change=${(event: Event) => {
-              this.onModelSelectChange(slot, event);
+          <settings-model-picker-field
+            .triggerId=${modelId}
+            .accessibleLabel=${`${slot} utility model`}
+            .dialogTitle=${`Select ${detail.label} utility model`}
+            .choices=${response.models}
+            .selected=${binding === undefined ? undefined : { provider: binding.provider, id: binding.id }}
+            .inheritedLabel=${detail.emptyLabel}
+            .disabled=${this.editingDisabled}
+            .invalid=${!validation.valid}
+            .onSelect=${(model: TierModelRef | undefined) => {
+              this.onModelPicked(slot, model);
             }}
-            title=${binding === undefined ? detail.emptyLabel : describeModel(binding)}
-          >
-            <option value="" ?selected=${binding === undefined}>${detail.emptyLabel}</option>
-            ${binding !== undefined && selectedOption === undefined
-              ? html`<option value=${modelKey(binding)} disabled selected>${describeModel(binding)} (unavailable)</option>`
-              : null}
-            ${response.models.map((option) => html`
-              <option value=${modelKey(option.model)} ?selected=${binding !== undefined && sameModel(option.model, binding)}>
-                ${describeOption(option)}
-              </option>
-            `)}
-          </select>
+          ></settings-model-picker-field>
         </div>
         <div class="field-control">
           <label class="field-label" for=${thinkingId}>Thinking</label>
@@ -233,10 +226,13 @@ export class SettingsUtilityModelsPanel extends LitElement {
     `;
   }
 
-  private onModelSelectChange(slot: UtilityModelSlot, event: Event): void {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const selectedKey = event.target.value;
-    const option = this.response?.models.find((candidate) => modelKey(candidate.model) === selectedKey);
+  private onModelPicked(slot: UtilityModelSlot, model: TierModelRef | undefined): void {
+    if (model === undefined) {
+      this.handleModelChange(slot, undefined);
+      return;
+    }
+    const option = this.response?.models.find((candidate) => sameModel(candidate.model, model));
+    if (option === undefined) return;
     this.handleModelChange(slot, option);
   }
 
@@ -280,18 +276,6 @@ function sameModel(left: TierModelRef, right: TierModelRef): boolean {
   return left.provider === right.provider && left.id === right.id;
 }
 
-function modelKey(model: TierModelRef): string {
-  return JSON.stringify([model.provider, model.id]);
-}
-
-function describeModel(model: TierModelRef): string {
-  return `${model.provider}/${model.id}`;
-}
-
-function describeOption(option: UtilityModelOption): string {
-  const model = describeModel(option.model);
-  return option.name === undefined || option.name === "" ? model : `${option.name} (${model})`;
-}
 
 declare global {
   interface HTMLElementTagNameMap {

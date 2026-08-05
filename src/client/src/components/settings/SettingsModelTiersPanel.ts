@@ -8,6 +8,7 @@ import {
   type ModelTierSettingsResponse,
   type TierModelRef,
 } from "../../../../shared/apiTypes";
+import "./SettingsModelPickerField";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import {
@@ -81,11 +82,9 @@ export class SettingsModelTiersPanel extends LitElement {
     this.draft = updateTierThinkingLevel(this.draft, tier, thinkingLevel);
   }
 
-  private onModelSelectChange(tier: ModelTier, event: Event): void {
-    if (!(event.target instanceof HTMLSelectElement)) return;
-    const selectedKey = event.target.value;
-    const models = this.response?.models ?? [];
-    const option = models.find((m) => modelKey(m.model) === selectedKey);
+  private onModelPicked(tier: ModelTier, model: TierModelRef | undefined): void {
+    if (model === undefined) return;
+    const option = (this.response?.models ?? []).find((m) => sameModel(m.model, model));
     if (option !== undefined) {
       this.handleModelChange(tier, option);
     }
@@ -201,7 +200,6 @@ export class SettingsModelTiersPanel extends LitElement {
     const rowValidation = validation.rows[tier];
     const selectedRef = row.model;
 
-    const isKnown = selectedRef !== undefined && models.some((m) => sameModel(m.model, selectedRef));
     const selectedOption = selectedRef ? models.find((m) => sameModel(m.model, selectedRef)) : undefined;
 
     return html`
@@ -212,34 +210,18 @@ export class SettingsModelTiersPanel extends LitElement {
         </div>
 
         <div class="model-col">
-          <label class="sr-only" for=${`select-model-${tier}`}>${meta.label} tier model</label>
-          <select
-            id=${`select-model-${tier}`}
-            aria-invalid=${String(!rowValidation.valid)}
-            ?disabled=${disabled}
-            .value=${selectedRef ? modelKey(selectedRef) : ""}
-            @change=${(e: Event) => {
-              this.onModelSelectChange(tier, e);
+          <settings-model-picker-field
+            .triggerId=${`select-model-${tier}`}
+            .accessibleLabel=${`${meta.label} tier model`}
+            .dialogTitle=${`Select ${meta.label} tier model`}
+            .choices=${models}
+            .selected=${selectedRef}
+            .disabled=${disabled}
+            .invalid=${!rowValidation.valid}
+            .onSelect=${(model: TierModelRef | undefined) => {
+              this.onModelPicked(tier, model);
             }}
-            title=${selectedRef ? describeModel(selectedRef) : "Select model"}
-          >
-            ${selectedRef === undefined
-              ? html`<option value="" disabled ?selected=${true}>Select a model…</option>`
-              : null}
-            ${selectedRef !== undefined && !isKnown
-              ? html`<option value=${modelKey(selectedRef)} disabled selected>
-                  ${describeModel(selectedRef)} (unavailable)
-                </option>`
-              : null}
-            ${models.map((opt) => {
-              const isSelected = selectedRef !== undefined && sameModel(opt.model, selectedRef);
-              const label =
-                opt.name !== undefined && opt.name !== ""
-                  ? `${opt.name} (${describeModel(opt.model)})`
-                  : describeModel(opt.model);
-              return html`<option value=${modelKey(opt.model)} ?selected=${isSelected}>${label}</option>`;
-            })}
-          </select>
+          ></settings-model-picker-field>
         </div>
 
         <div class="thinking-col">
@@ -458,13 +440,6 @@ function sameModel(left: TierModelRef, right: TierModelRef): boolean {
   return left.provider === right.provider && left.id === right.id;
 }
 
-function modelKey(model: TierModelRef): string {
-  return `${model.provider}:${model.id}`;
-}
-
-function describeModel(model: TierModelRef): string {
-  return `${model.provider}/${model.id}`;
-}
 
 declare global {
   interface HTMLElementTagNameMap {
