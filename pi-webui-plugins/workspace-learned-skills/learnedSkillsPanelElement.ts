@@ -60,6 +60,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
   private selectedSkillId: string | undefined;
   private showMobileDetail = false;
   private pointerInteraction: PointerInteraction | undefined;
+  private resizeObserver: ResizeObserver | undefined;
   private connected = false;
   public listWidth: number;
   private readonly root: ShadowRoot;
@@ -96,10 +97,16 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
       window.addEventListener("pointercancel", this.handlePointerCancel);
     }
     this.render();
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(this.handleObservedResize);
+      this.resizeObserver.observe(this);
+    }
   }
 
   disconnectedCallback(): void {
     this.finishPointerInteraction(false);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
     if (this.connected && typeof window !== "undefined") {
       window.removeEventListener("resize", this.handleWindowResize);
       window.removeEventListener("pointermove", this.handlePointerMove);
@@ -108,6 +115,10 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
     }
     this.connected = false;
   }
+
+  private readonly handleObservedResize: ResizeObserverCallback = () => {
+    if (this.connected) this.handleWindowResize();
+  };
 
   private readonly handleWindowResize = (): void => {
     if (this.pointerInteraction === undefined) this.applyListWidth(this.listWidth);

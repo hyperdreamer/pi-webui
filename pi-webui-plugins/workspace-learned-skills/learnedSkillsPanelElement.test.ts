@@ -42,6 +42,7 @@ describe("learned skills panel element", () => {
   afterEach(() => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("defines the custom element only once", () => {
@@ -162,6 +163,38 @@ describe("learned skills panel element", () => {
     expect(separator.getAttribute("aria-valuemin")).toBe(String(MIN_LIST_WIDTH));
     expect(separator.getAttribute("aria-valuemax")).toBe(String(MAX_LIST_WIDTH));
     expect(separator.getAttribute("aria-valuenow")).toBe("280");
+  });
+
+  it("reclamps a persisted width when the host becomes measurable after connection", () => {
+    const resizeObserver = installResizeObserverHarness();
+    window.localStorage.setItem(
+      LEARNED_SKILLS_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ version: 1, listWidth: 440 }),
+    );
+    let containerWidth = 0;
+    const element = document.createElement(learnedSkillsPanelTagName);
+    // The tag is defined above, so this assertion narrows its public property contract.
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    const panel = element as LearnedSkillsPanelTestElement;
+    vi.spyOn(panel, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 0, containerWidth, 640),
+    );
+    panel.learnedSkillsState = dataState({ globalSkills: [globalSkill] });
+    document.body.append(panel);
+
+    expect(panel.style.getPropertyValue("--learned-skills-list-width")).toBe("440px");
+
+    containerWidth = 700;
+    resizeObserver.notify();
+
+    const separator = requireElement(shadow(panel), '[role="separator"]');
+    expect(panel.style.getPropertyValue("--learned-skills-list-width")).toBe("372px");
+    expect(separator.getAttribute("aria-valuemax")).toBe("372");
+    expect(separator.getAttribute("aria-valuenow")).toBe("372");
+    expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
+
+    panel.remove();
+    expect(resizeObserver.disconnect).toHaveBeenCalledOnce();
   });
 
   it("pointer drag captures input, clamps both ends, updates width, and persists on pointerup", () => {
@@ -346,6 +379,47 @@ function pointerEvent(type: string, pointerId: number, clientX: number, button?:
     button: { value: button ?? 0 },
   });
   return event;
+}
+
+function installResizeObserverHarness(): {
+  notify: () => void;
+  disconnect: ReturnType<typeof vi.fn>;
+} {
+  const observers: TestResizeObserver[] = [];
+  const disconnect = vi.fn();
+
+  class TestResizeObserver {
+    private observing = false;
+
+    public constructor(private readonly callback: ResizeObserverCallback) {
+      observers.push(this);
+    }
+
+    public observe(): void {
+      this.observing = true;
+    }
+
+    public unobserve(): void {
+      this.observing = false;
+    }
+
+    public disconnect(): void {
+      this.observing = false;
+      disconnect();
+    }
+
+    public notify(): void {
+      if (!this.observing) return;
+      // No entry data is needed: the panel deliberately measures its own host.
+      this.callback([], this);
+    }
+  }
+
+  vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  return {
+    notify: () => { for (const observer of observers) observer.notify(); },
+    disconnect,
+  };
 }
 
 function requireStoredLayout(): string {
