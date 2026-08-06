@@ -62,13 +62,15 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
   private pointerInteraction: PointerInteraction | undefined;
   private resizeObserver: ResizeObserver | undefined;
   private connected = false;
+  private preferredListWidth: number;
   public listWidth: number;
   private readonly root: ShadowRoot;
 
   constructor() {
     super();
     this.root = this.attachShadow({ mode: "open" });
-    this.listWidth = readLearnedSkillsListWidth();
+    this.preferredListWidth = readLearnedSkillsListWidth();
+    this.listWidth = this.preferredListWidth;
   }
 
   set context(_value: ActivityRailContext | undefined) {
@@ -121,7 +123,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
   };
 
   private readonly handleWindowResize = (): void => {
-    if (this.pointerInteraction === undefined) this.applyListWidth(this.listWidth);
+    if (this.pointerInteraction === undefined) this.applyPreferredListWidth();
     else this.updateSeparator();
   };
 
@@ -146,7 +148,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
     const interaction = this.pointerInteraction;
     if (interaction?.pointerId !== event.pointerId) return;
     event.preventDefault();
-    this.applyListWidth(interaction.startWidth + event.clientX - interaction.startX);
+    this.updatePreferredListWidth(interaction.startWidth + event.clientX - interaction.startX);
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
@@ -161,7 +163,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
 
   private render(): void {
     this.finishPointerInteraction(false);
-    this.applyListWidth(this.listWidth);
+    this.applyPreferredListWidth();
     this.root.innerHTML = `${panelStyles()}${renderPanelState(this.state, this.selectedSkillId, this.showMobileDetail)}`;
     this.attachEventListeners();
     this.updateSeparator();
@@ -199,7 +201,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
     if (nextWidth === undefined) return;
 
     event.preventDefault();
-    this.applyListWidth(nextWidth, true);
+    this.updatePreferredListWidth(nextWidth, true);
   };
 
   private selectSkill(key: string): void {
@@ -215,12 +217,21 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
     this.showMobileDetail = false;
   }
 
-  private applyListWidth(width: number, persist = false): void {
+  private applyPreferredListWidth(): void {
+    this.applyEffectiveListWidth(this.preferredListWidth);
+  }
+
+  private applyEffectiveListWidth(width: number): void {
     const containerWidth = this.isNarrowViewport() ? undefined : this.knownContainerWidth();
     this.listWidth = clampLearnedSkillsListWidth(width, containerWidth);
     this.style.setProperty("--learned-skills-list-width", `${String(this.listWidth)}px`);
     this.updateSeparator();
-    if (persist) writeLearnedSkillsListWidth(this.listWidth);
+  }
+
+  private updatePreferredListWidth(width: number, persist = false): void {
+    this.applyEffectiveListWidth(width);
+    this.preferredListWidth = this.listWidth;
+    if (persist) writeLearnedSkillsListWidth(this.preferredListWidth);
   }
 
   private updateSeparator(): void {
@@ -261,7 +272,7 @@ class PiWebUiLearnedSkillsPanel extends BaseElement {
     this.pointerInteraction = undefined;
     interaction.divider.classList.remove("dragging");
     callPointerMethod(interaction.divider, "releasePointerCapture", interaction.pointerId);
-    if (persist) writeLearnedSkillsListWidth(this.listWidth);
+    if (persist) writeLearnedSkillsListWidth(this.preferredListWidth);
   }
 }
 

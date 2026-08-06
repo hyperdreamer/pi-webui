@@ -217,8 +217,65 @@ describe("learned skills panel element", () => {
     expect(separator.getAttribute("aria-valuenow")).toBe("372");
     expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
 
+    containerWidth = 900;
+    resizeObserver.notify();
+
+    expect(panel.style.getPropertyValue("--learned-skills-list-width")).toBe("440px");
+    expect(separator.getAttribute("aria-valuenow")).toBe("440");
+    expect(separator.getAttribute("aria-valuemax")).toBe("440");
+    expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
+
     panel.remove();
     expect(resizeObserver.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("restores a retained desktop width after a mobile viewport pass", () => {
+    const resizeObserver = installResizeObserverHarness();
+    window.localStorage.setItem(
+      LEARNED_SKILLS_LAYOUT_STORAGE_KEY,
+      JSON.stringify({ version: 1, listWidth: 440 }),
+    );
+    let containerWidth = 900;
+    const element = document.createElement(learnedSkillsPanelTagName);
+    // The tag is defined above, so this assertion narrows its public property contract.
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    const panel = element as LearnedSkillsPanelTestElement;
+    vi.spyOn(panel, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 0, containerWidth, 640),
+    );
+    panel.learnedSkillsState = dataState({ globalSkills: [globalSkill] });
+    document.body.append(panel);
+    requireElement(shadow(panel), 'button[data-skill-key="global:global"]').click();
+
+    // Desktop host constrained to 700px clamps the effective width but keeps the preference.
+    containerWidth = 700;
+    resizeObserver.notify();
+
+    const separator = requireElement(shadow(panel), '[role="separator"]');
+    expect(panel.style.getPropertyValue("--learned-skills-list-width")).toBe("372px");
+    expect(separator.getAttribute("aria-valuenow")).toBe("372");
+    expect(separator.getAttribute("aria-valuemax")).toBe("372");
+    expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
+    expect(requireElement(shadow(panel), ".skill-detail").textContent).toContain("Global skill");
+
+    // Mobile ignores the desktop width but retains the stored preference.
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    containerWidth = 390;
+    resizeObserver.notify();
+
+    expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
+    expect(requireElement(shadow(panel), ".skill-detail").textContent).toContain("Global skill");
+
+    // Desktop returns: the retained preference is reapplied at the now roomier host.
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1040 });
+    containerWidth = 900;
+    resizeObserver.notify();
+
+    expect(panel.style.getPropertyValue("--learned-skills-list-width")).toBe("440px");
+    expect(separator.getAttribute("aria-valuenow")).toBe("440");
+    expect(separator.getAttribute("aria-valuemax")).toBe("440");
+    expect(JSON.parse(requireStoredLayout())).toEqual({ version: 1, listWidth: 440 });
+    expect(requireElement(shadow(panel), ".skill-detail").textContent).toContain("Global skill");
   });
 
   it("pointer drag captures input, clamps both ends, updates width, and persists on pointerup", () => {
