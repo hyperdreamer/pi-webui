@@ -1,5 +1,5 @@
 import type { AuthProviderOption, CommandOption, CommandResult, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PiWebUiStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace, WorkspaceActivity } from "./api";
-import type { MemoryEntry, SessionModelPolicyResponse } from "../../shared/apiTypes";
+import type { LearnedSkill, MemoryEntry, SessionModelPolicyResponse } from "../../shared/apiTypes";
 import type { ChatLine } from "./components/shared";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
@@ -75,11 +75,24 @@ export interface AppState {
   selectedStagedDiff: GitDiffResponse | undefined;
   gitStale: boolean;
   memory: MemoryWorkspaceState;
+  learnedSkills: LearnedSkillsWorkspaceState;
   activeTerminalCount: number;
   selectedTerminalId: string | undefined;
   piWebUiStatus: PiWebUiStatusResponse | undefined;
   error: string;
 }
+
+export type LearnedSkillsWorkspaceState =
+  | { kind: "loading" }
+  | { kind: "unavailable" }
+  | {
+      kind: "data";
+      globalSkills: LearnedSkill[];
+      projectSkills: LearnedSkill[];
+      projectUnavailableMessage?: string;
+      refreshError?: string;
+    }
+  | { kind: "error"; message: string };
 
 export type MemoryWorkspaceState =
   | { kind: "loading" }
@@ -119,6 +132,7 @@ export type WorkspaceScopedStateReset = Pick<AppState,
   | "selectedStagedDiff"
   | "gitStale"
   | "memory"
+  | "learnedSkills"
   | "selectedTerminalId"
   | "error"
 >;
@@ -143,6 +157,7 @@ export function resetWorkspaceScopedState(): WorkspaceScopedStateReset {
     selectedStagedDiff: undefined,
     gitStale: false,
     memory: { kind: "loading" },
+    learnedSkills: { kind: "loading" },
     selectedTerminalId: undefined,
     error: "",
   };
@@ -210,6 +225,7 @@ export function initialAppState(): AppState {
     selectedStagedDiff: undefined,
     gitStale: false,
     memory: { kind: "loading" },
+    learnedSkills: { kind: "loading" },
     activeTerminalCount: 0,
     selectedTerminalId: undefined,
     piWebUiStatus: undefined,
