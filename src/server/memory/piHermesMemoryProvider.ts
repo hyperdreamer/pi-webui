@@ -85,13 +85,13 @@ export class PiHermesMemoryProvider implements MemoryProvider {
   private async projectScope(projectPath: string | undefined): Promise<ProjectScope> {
     if (projectPath === undefined) return { rootAvailable: false };
 
-    const projectName = await this.resolveProjectName(projectPath);
-    if (projectName === undefined || isUnsafeProjectName(projectName)) {
-      return { rootAvailable: false, unavailableMessage: PROJECT_UNAVAILABLE_MESSAGE };
-    }
-
-    const rootPath = join(this.agentDir, "projects-memory", projectName);
     try {
+      const projectName = await this.resolveProjectName(projectPath);
+      if (projectName === undefined || isUnsafeProjectName(projectName)) {
+        return { rootAvailable: false, unavailableMessage: PROJECT_UNAVAILABLE_MESSAGE };
+      }
+
+      const rootPath = join(this.agentDir, "projects-memory", projectName);
       return {
         rootAvailable: await this.directoryExists(rootPath),
         memoryFilePath: join(rootPath, "MEMORY.md"),

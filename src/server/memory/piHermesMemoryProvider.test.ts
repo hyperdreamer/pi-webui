@@ -69,6 +69,62 @@ describe("PiHermesMemoryProvider", () => {
     });
   });
 
+  it("keeps global memory when the project identity resolver fails", async () => {
+    const globalRootPath = join(agentDir, "pi-hermes-memory");
+    const globalMemoryPath = join(globalRootPath, "MEMORY.md");
+    const failuresPath = join(globalRootPath, "failures.md");
+    const provider = new PiHermesMemoryProvider(
+      agentDir,
+      {
+        readFile: (path) => {
+          if (path === globalMemoryPath) return Promise.resolve("[insight] Global entry");
+          if (path === failuresPath) return Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+          return Promise.reject(new Error(`Unexpected file read: ${path}`));
+        },
+        isDirectory: (path) => path === globalRootPath
+          ? Promise.resolve(true)
+          : Promise.reject(new Error(`Unexpected directory probe: ${path}`)),
+      },
+      () => Promise.reject(Object.assign(new Error("identity denied"), { code: "EACCES" })),
+    );
+
+    await expect(provider.read({ projectPath: "/work/repo" })).resolves.toMatchObject({
+      kind: "data",
+      globalEntries: [{ content: "[insight] Global entry" }],
+      projectEntries: [],
+      projectUnavailableMessage: "Project-specific memory could not be loaded.",
+    });
+  });
+
+  it("rejects a failing project identity resolver when the global root is absent", async () => {
+    const globalRootPath = join(agentDir, "pi-hermes-memory");
+    const provider = new PiHermesMemoryProvider(
+      agentDir,
+      {
+        readFile: () => Promise.reject(new Error("Memory files must not be read after a failed availability probe")),
+        isDirectory: (path) => path === globalRootPath
+          ? Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }))
+          : Promise.reject(new Error(`Unexpected directory probe: ${path}`)),
+      },
+      () => Promise.reject(Object.assign(new Error("identity denied"), { code: "EACCES" })),
+    );
+
+    await expect(provider.read({ projectPath: "/work/repo" })).rejects.toThrow("identity denied");
+  });
+
+  it("returns no project entries when the project identity resolver fails", async () => {
+    const provider = new PiHermesMemoryProvider(
+      agentDir,
+      {
+        readFile: () => Promise.reject(new Error("Unexpected file read")),
+        isDirectory: () => Promise.reject(new Error("Unexpected directory probe")),
+      },
+      () => Promise.reject(Object.assign(new Error("identity denied"), { code: "EACCES" })),
+    );
+
+    await expect(provider.readProjectEntries("/work/repo")).resolves.toEqual([]);
+  });
+
   it("reports an empty Hermes root as available without inventing entries", async () => {
     await mkdir(join(agentDir, "pi-hermes-memory"));
 
