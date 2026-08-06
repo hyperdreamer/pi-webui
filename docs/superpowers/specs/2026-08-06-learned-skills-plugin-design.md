@@ -51,7 +51,9 @@ providers, separate availability, separate polling, separate Rail activity. A us
 skill-generating package without hermes memory, or the reverse, so independent availability is
 what keeps each Rail control's visibility rule honest.
 
-### Server: `src/server/learnedSkills/`
+### Server domains
+
+New module `src/server/learnedSkills/`, mirroring the core shape of `src/server/memory/`:
 
 | File | Responsibility |
 | --- | --- |
@@ -59,8 +61,10 @@ what keeps each Rail control's visibility rule honest.
 | `learnedSkillCatalog.ts` | Fans out over providers, namespaces ids, aggregates availability. |
 | `piHermesLearnedSkillProvider.ts` | Adapter for `pi-hermes-memory` directory layout. |
 | `skillDocumentParser.ts` | Parses one `SKILL.md` into structured fields. |
-| `piHermesProjectIdentity.ts` | Shared project-name resolution for hermes-backed adapters. |
 | `learnedSkillsRoutes.ts` | Registers the snapshot endpoint. |
+
+Shared hermes adapter support lives at `src/server/piHermes/projectIdentity.ts`; it is not part of
+the learned-skills provider abstraction and is consumed only by hermes-backed adapters.
 
 Provider result shape, matching `MemoryProviderResult`:
 
@@ -79,9 +83,11 @@ export type LearnedSkillProviderResult =
 only when every provider does; one available provider is enough to show the Rail control. Skill
 ids are namespaced `<providerId>:<slug>` so two providers cannot collide.
 
-The hermes adapter determines availability by probing whether its global skills directory exists,
-matching how `PiHermesMemoryProvider` probes its own root. A `SKILL.md` that is unreadable or
-missing `name`/`description` is skipped rather than failing the whole snapshot.
+The hermes adapter probes both its global skills root and the selected project's skills root, as
+`PiHermesMemoryProvider` does for memory. It reports the capability unavailable only when neither
+root exists. This preserves project-only data, while a normally initialized hermes installation
+still remains available with zero generated skills. A `SKILL.md` that is unreadable or missing
+`name`/`description` is skipped rather than failing the whole snapshot.
 
 ### Project identity, and the memory fix
 
@@ -98,9 +104,9 @@ feeds it the selected workspace path. In a linked worktree those disagree: herme
 nothing. Given this project's one-worktree-per-writer convention, that is the common case, so
 project memory currently reads as empty during most feature work.
 
-`piHermesProjectIdentity.ts` ports that resolution with injected filesystem access, and **both**
-`PiHermesLearnedSkillProvider` and `PiHermesMemoryProvider` use it. The existing unsafe-name guard
-and `projectUnavailableMessage` behavior in the memory provider are preserved.
+`src/server/piHermes/projectIdentity.ts` ports that resolution with injected filesystem access,
+and **both** `PiHermesLearnedSkillProvider` and `PiHermesMemoryProvider` use it. The existing
+unsafe-name guard and `projectUnavailableMessage` behavior in the memory provider are preserved.
 
 The filename is deliberately hermes-flavored. Every consumer is an adapter for the same upstream
 package, so the coupling stays contained in the adapter layer; the catalog, route, controller, and
@@ -235,10 +241,12 @@ nonzero total, so it is absent while loading, on error, and at zero.
 #### Layout
 
 Sidebar list-detail, matching the existing Skills dialog. The left column is a scrollable list
-with `PROJECT` and `GLOBAL` group headers each showing a count; an empty group is omitted. The
-right pane shows the selected skill: scope badge, file path, name, description, and `version` /
-`created` / `updated` when present. Nothing is selected initially, so the detail pane opens on a
-"Select a skill" empty state. No toggle, no editing, no delete.
+with `PROJECT` and `GLOBAL` group headers each showing a count. A successfully loaded empty group
+is omitted unless both scopes are empty, in which case the panel shows "No learned skills yet";
+a project group with `projectUnavailableMessage` remains visible so its scoped notice is not
+lost. The right pane shows the selected skill: scope badge, file path, name, description, and
+`version` / `created` / `updated` when present. Nothing is selected initially, so the detail pane
+opens on a "Select a skill" empty state. No toggle, no editing, no delete.
 
 On desktop, an 8px vertical resize handle separates the columns. It uses `role="separator"`,
 `aria-orientation="vertical"`, current/min/max value attributes, pointer capture for drag, and
@@ -272,14 +280,14 @@ Each mirrors an existing memory state.
 
 Per `.agents/skills/testing-guide/SKILL.md`, using the smallest layer that proves each behavior.
 
-**Pure helpers.** `piHermesProjectIdentity.test.ts` is the highest-value file, since it is ported
-logic with subtle rules: repo root from a plain `.git` directory; repo root from a linked
-worktree's `gitdir:` to `commondir` chain; the older worktree layout without `commondir`; fallback
-to path basename outside git; the migration bridge where an existing `projects-memory/<cwdName>`
-beats a newly derived repo name; and unsafe names (`.`, `..`, path separators). Injected
-filesystem, no real git. `skillDocumentParser.test.ts` covers frontmatter extraction, quoted
-values, a missing `name` or `description` causing the file to be skipped, absent optional
-metadata, and malformed frontmatter.
+**Pure helpers.** `src/server/piHermes/projectIdentity.test.ts` is the highest-value file, since
+it is ported logic with subtle rules: repo root from a plain `.git` directory; repo root from a
+linked worktree's `gitdir:` to `commondir` chain; the older worktree layout without `commondir`;
+fallback to path basename outside git; the migration bridge where an existing
+`projects-memory/<cwdName>` beats a newly derived repo name; and unsafe names (`.`, `..`, path
+separators). Injected filesystem, no real git. `skillDocumentParser.test.ts` covers frontmatter
+extraction, quoted values, a missing `name` or `description` causing the file to be skipped,
+absent optional metadata, and malformed frontmatter.
 
 **Provider and catalog.** `piHermesLearnedSkillProvider.test.ts`: unavailable when the global root
 is absent; data with global skills only; project root resolved through repo identity; an
