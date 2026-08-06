@@ -521,7 +521,7 @@ export const api = {
   ...piWebUiApi,
   ...machinesApi,
   ...memoryApi,
-  ...learnedSkillsApi,
+  learnedSkills: learnedSkillsApi,
   ...modelTiersApi,
   utilityModels: utilityModelsApi,
   ...configApi,

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
-import { configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, utilityModelsApi, workspacesApi } from "./clients";
+import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -131,6 +131,38 @@ describe("learned skills snapshot API", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchCall(fetchMock, 0)[0]).toBe("https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/agent-skills/snapshot?projectPath=%2Frepo+with+spaces%2F%3F");
     expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
+  });
+
+  it("keeps the aggregate memory snapshot entry and exposes learned skills without collision", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const memoryResponse = {
+      kind: "data",
+      globalEntries: [{ id: "memory:global", content: "Global memory" }],
+      projectEntries: [],
+    };
+    const skillsResponse = {
+      kind: "data",
+      globalSkills: [{
+        id: "pi-hermes-memory:global",
+        name: "global",
+        description: "Global skill",
+        filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+        version: 2,
+      }],
+      projectSkills: [],
+    };
+    const fetchMock = stubSequenceFetch([jsonResponse(memoryResponse), jsonResponse(skillsResponse)]);
+
+    await expect(api.snapshot("/repo with spaces/?", "remote /?")).resolves.toEqual(memoryResponse);
+    await expect(api.learnedSkills.snapshot("/repo with spaces/?", "remote /?")).resolves.toEqual(skillsResponse);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/agent-memory/snapshot?projectPath=%2Frepo+with+spaces%2F%3F",
+      "https://pi.example.test/nested/pi-webui/api/machines/remote%20%2F%3F/agent-skills/snapshot?projectPath=%2Frepo+with+spaces%2F%3F",
+    ]);
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
+    expect(fetchCall(fetchMock, 1)[1]?.cache).toBe("no-store");
   });
 });
 
