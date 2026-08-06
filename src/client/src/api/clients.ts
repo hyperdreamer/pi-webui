@@ -7,6 +7,7 @@ import type { ModelTierLadder } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
 import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
+import type { LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
 import { request } from "./http";
@@ -31,6 +32,7 @@ import {
   parseMachineHealth,
   parseMachineRuntime,
   parseMemorySnapshotResponse,
+  parseLearnedSkillsSnapshotResponse,
   parseMachinesResponse,
   parseMessagePage,
   parseModelConnectionTestResponse,
@@ -164,6 +166,15 @@ function memorySnapshotPath(projectPath: string, machineId = "local"): string {
 
 export const memoryApi = {
   snapshot: (projectPath: string, machineId = "local"): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse, { cache: "no-store" }),
+};
+
+function learnedSkillsSnapshotPath(projectPath: string, machineId = "local"): string {
+  const params = new URLSearchParams({ projectPath });
+  return `${machinePrefix(machineId)}/agent-skills/snapshot?${params.toString()}`;
+}
+
+export const learnedSkillsApi = {
+  snapshot: (projectPath: string, machineId = "local"): Promise<LearnedSkillsSnapshotResponse> => request(learnedSkillsSnapshotPath(projectPath, machineId), parseLearnedSkillsSnapshotResponse, { cache: "no-store" }),
 };
 
 function configPath(machineId?: string): string {
@@ -510,6 +521,7 @@ export const api = {
   ...piWebUiApi,
   ...machinesApi,
   ...memoryApi,
+  ...learnedSkillsApi,
   ...modelTiersApi,
   utilityModels: utilityModelsApi,
   ...configApi,

@@ -4,6 +4,7 @@ import type { LegacyStarterModelPolicyPreference, SessionDefaultsResponse, Sessi
 import type { SessionOrderEntry, SessionReorderResponse } from "../../../shared/apiTypes";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
+import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { MODEL_TIERS, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
@@ -89,6 +90,43 @@ function parseMemoryEntries(value: unknown): MemoryEntry[] {
       ...(typeof entry["failureReason"] === "string" ? { failureReason: entry["failureReason"] } : {}),
     };
   });
+}
+
+export function parseLearnedSkillsSnapshotResponse(value: unknown): LearnedSkillsSnapshotResponse {
+  if (!isRecord(value) || typeof value["kind"] !== "string") throw new Error("Invalid learned skills snapshot response");
+  if (value["kind"] === "unavailable") return { kind: "unavailable" };
+  if (value["kind"] !== "data") throw new Error("Invalid learned skills snapshot response");
+  const projectUnavailableMessage = value["projectUnavailableMessage"];
+  if (projectUnavailableMessage !== undefined && typeof projectUnavailableMessage !== "string") {
+    throw new Error("Invalid learned skills snapshot response");
+  }
+  return {
+    kind: "data",
+    globalSkills: parseLearnedSkills(value["globalSkills"]),
+    projectSkills: parseLearnedSkills(value["projectSkills"]),
+    ...(projectUnavailableMessage === undefined ? {} : { projectUnavailableMessage }),
+  };
+}
+
+function parseLearnedSkills(value: unknown): LearnedSkill[] {
+  if (!Array.isArray(value)) throw new Error("Invalid learned skills snapshot response");
+  return value.map(parseLearnedSkill);
+}
+
+function parseLearnedSkill(value: unknown): LearnedSkill {
+  const record = requireRecord(value);
+  const version = optionalNumber(record, "version");
+  const created = optionalString(record, "created");
+  const updated = optionalString(record, "updated");
+  return {
+    id: requireString(record, "id"),
+    name: requireString(record, "name"),
+    description: requireString(record, "description"),
+    filePath: requireString(record, "filePath"),
+    ...(version === undefined ? {} : { version }),
+    ...(created === undefined ? {} : { created }),
+    ...(updated === undefined ? {} : { updated }),
+  };
 }
 
 export function parseMessagePage(value: unknown): MessagePage {

@@ -28,6 +28,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/utility-models" },
   { method: "PUT", path: "/utility-models" },
   { method: "GET", path: "/agent-memory/snapshot" },
+  { method: "GET", path: "/agent-skills/snapshot" },
   { method: "GET", path: "/skills" },
   { method: "PATCH", path: "/skills" },
   { method: "POST", path: "/skills/search", timeoutMs: SKILLS_OPERATION_PROXY_TIMEOUT_MS },

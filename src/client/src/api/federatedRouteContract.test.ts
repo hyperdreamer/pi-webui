@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS, type FederatedHttpRouteSpec } from "../../../shared/federatedRoutes";
-import { activityApi, configApi, filesApi, gitApi, memoryApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
+import { activityApi, configApi, filesApi, gitApi, learnedSkillsApi, memoryApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 import { globalSessionEvents, realtimeEvents, sessionEvents, terminalSocket } from "./sockets";
 import { workspaceImagePreviewUrl } from "./urls";
 
@@ -88,6 +88,10 @@ describe("federated route contract", () => {
     expect(FEDERATED_HTTP_ROUTES).toContainEqual({ method: "GET", path: "/agent-memory/snapshot" });
   });
 
+  it("allowlists read-only learned-skill snapshots for remote machines", () => {
+    expect(FEDERATED_HTTP_ROUTES).toContainEqual({ method: "GET", path: "/agent-skills/snapshot" });
+  });
+
   it("covers machine-scoped client HTTP calls with remote proxy routes", async () => {
     vi.stubEnv("BASE_URL", "./");
     vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
@@ -100,6 +104,7 @@ describe("federated route contract", () => {
       ignoreParseFailure(piWebUiApi.systemInfo(machineId)),
       ignoreParseFailure(piWebUiApi.systemMetrics(machineId)),
       ignoreParseFailure(memoryApi.snapshot(workspace.path, machineId)),
+      ignoreParseFailure(learnedSkillsApi.snapshot(workspace.path, machineId)),
       ignoreParseFailure(configApi.config(machineId)),
       ignoreParseFailure(configApi.saveConfig({ spawnSessions: true }, machineId)),
       ignoreParseFailure(modelsConfigApi.discover({ providerName: "custom", provider: { api: "openai-completions", baseUrl: "https://models.example.test/v1", apiKey: "$MODEL_API_KEY" } }, machineId)),

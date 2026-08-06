@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("parses dynamic memory and network metrics", () => {
@@ -48,6 +48,94 @@ describe("API parsers", () => {
       globalEntries: [{ id: "valid", content: "Valid entry" }, { id: "missing-content" }],
       projectEntries: [],
     })).toThrow("Invalid memory snapshot response");
+  });
+
+  it("parses typed learned-skill snapshots and preserves optional metadata", () => {
+    expect(parseLearnedSkillsSnapshotResponse({
+      kind: "data",
+      globalSkills: [{
+        id: "pi-hermes-memory:global",
+        name: "global",
+        description: "Global skill",
+        filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+        version: 2,
+      }],
+      projectSkills: [],
+    })).toEqual({
+      kind: "data",
+      globalSkills: [{
+        id: "pi-hermes-memory:global",
+        name: "global",
+        description: "Global skill",
+        filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+        version: 2,
+      }],
+      projectSkills: [],
+    });
+    expect(parseLearnedSkillsSnapshotResponse({
+      kind: "data",
+      globalSkills: [{
+        id: "pi-hermes-memory:global",
+        name: "global",
+        description: "Global skill",
+        filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+        created: "2026-08-01",
+        updated: "2026-08-05",
+      }],
+      projectSkills: [],
+      projectUnavailableMessage: "Project-specific learned skills could not be loaded.",
+    })).toEqual({
+      kind: "data",
+      globalSkills: [{
+        id: "pi-hermes-memory:global",
+        name: "global",
+        description: "Global skill",
+        filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+        created: "2026-08-01",
+        updated: "2026-08-05",
+      }],
+      projectSkills: [],
+      projectUnavailableMessage: "Project-specific learned skills could not be loaded.",
+    });
+    expect(parseLearnedSkillsSnapshotResponse({ kind: "unavailable" })).toEqual({ kind: "unavailable" });
+  });
+
+  it("rejects malformed learned-skill snapshots", () => {
+    const base = { kind: "data", globalSkills: [], projectSkills: [] };
+    const skill = {
+      id: "pi-hermes-memory:global",
+      name: "global",
+      description: "Global skill",
+      filePath: "/agent/pi-hermes-memory/skills/global/SKILL.md",
+    };
+
+    expect(() => parseLearnedSkillsSnapshotResponse({ globalSkills: [], projectSkills: [] })).toThrow("Invalid learned skills snapshot response");
+    expect(() => parseLearnedSkillsSnapshotResponse({ ...base, kind: "stream" })).toThrow("Invalid learned skills snapshot response");
+    expect(() => parseLearnedSkillsSnapshotResponse({ ...base, globalSkills: "not-an-array" })).toThrow("Invalid learned skills snapshot response");
+    expect(() => parseLearnedSkillsSnapshotResponse({ ...base, projectSkills: null })).toThrow("Invalid learned skills snapshot response");
+
+    for (const field of ["id", "name", "description", "filePath"] as const) {
+      expect(() => parseLearnedSkillsSnapshotResponse({
+        ...base,
+        globalSkills: [{ ...skill, [field]: 42 }],
+      })).toThrow(`Expected string field: ${field}`);
+    }
+    expect(() => parseLearnedSkillsSnapshotResponse({
+      ...base,
+      globalSkills: [{ ...skill, version: "2" }],
+    })).toThrow("Expected optional number field: version");
+    expect(() => parseLearnedSkillsSnapshotResponse({
+      ...base,
+      globalSkills: [{ ...skill, created: 20260801 }],
+    })).toThrow("Expected optional string field: created");
+    expect(() => parseLearnedSkillsSnapshotResponse({
+      ...base,
+      globalSkills: [{ ...skill, updated: null }],
+    })).toThrow("Expected optional string field: updated");
+    expect(() => parseLearnedSkillsSnapshotResponse({
+      ...base,
+      projectUnavailableMessage: 7,
+    })).toThrow("Invalid learned skills snapshot response");
   });
 
   it("parses optional network transfer speeds from system info", () => {

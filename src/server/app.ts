@@ -37,6 +37,7 @@ import {
 } from "./activeAgentProfileProvider.js";
 import { MachineService } from "./machines/machineService.js";
 import { registerMemoryRoutes } from "./memory/memoryRoutes.js";
+import { registerLearnedSkillsRoutes } from "./learnedSkills/learnedSkillsRoutes.js";
 import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
@@ -234,6 +235,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerMemoryRoutes(app, agentProfileProvider, "/api");
   registerMemoryRoutes(app, agentProfileProvider, "/api/machines/local");
+
+  registerLearnedSkillsRoutes(app, agentProfileProvider, "/api");
+  registerLearnedSkillsRoutes(app, agentProfileProvider, "/api/machines/local");
 
   registerMachineRoutes(app, machines);
   registerMachinePluginProxyRoutes(app, machines);
