@@ -118,6 +118,30 @@ describe("learned skills panel element", () => {
     expect(groups[1]?.textContent).toContain("Global skill");
   });
 
+  it("keeps generated skill names on one ellipsized line", () => {
+    const panel = createPanel();
+    const longName = "generated-learned-skill-name-".repeat(16);
+    panel.learnedSkillsState = dataState({
+      globalSkills: [skill("long", longName, "/global/long/SKILL.md")],
+    });
+
+    const name = requireElement(shadow(panel), ".skill-row-name");
+    expect(name.textContent).toBe(longName);
+
+    const panelStyle = shadow(panel).querySelector("style")?.textContent;
+    if (panelStyle === undefined) throw new Error("Expected panel styles");
+    const parsedStyle = document.createElement("style");
+    parsedStyle.textContent = panelStyle;
+    document.body.append(parsedStyle);
+    const nameRule = [...(parsedStyle.sheet?.cssRules ?? [])]
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
+      .find((rule) => rule.selectorText === ".skill-row-name");
+
+    expect(nameRule?.style.overflow).toBe("hidden");
+    expect(nameRule?.style.textOverflow).toBe("ellipsis");
+    expect(nameRule?.style.whiteSpace).toBe("nowrap");
+  });
+
   it("starts with a Select a skill detail state", () => {
     const panel = createPanel();
     panel.learnedSkillsState = dataState({ globalSkills: [globalSkill] });

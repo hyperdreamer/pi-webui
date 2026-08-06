@@ -395,7 +395,7 @@ function panelStyles(): string {
     .skill-row:hover { background: var(--pi-surface-hover); }
     .skill-row:focus-visible, .mobile-back:focus-visible, .skill-divider:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
     .skill-row.selected { border-color: var(--pi-accent-border); background: var(--pi-selection-bg); }
-    .skill-row-name { display: block; overflow-wrap: anywhere; font-weight: 600; }
+    .skill-row-name { display: block; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .skill-row-description { display: block; margin-top: 3px; overflow: hidden; color: var(--pi-muted); font-size: 12px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
     .skill-divider { position: relative; min-width: 8px; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
     .skill-divider::before { position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--pi-border); content: ""; }
