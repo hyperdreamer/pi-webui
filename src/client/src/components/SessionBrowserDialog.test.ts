@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
-import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText } from "../templateInspection.testSupport";
+import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { sessionLabel } from "../sessionLabels";
 import { SessionBrowserDialog } from "./SessionBrowserDialog";
 
@@ -217,14 +217,18 @@ describe("session browser pin controls", () => {
     dialog.onSelect = onSelect;
     const event = new Event("click");
     const stopPropagation = vi.spyOn(event, "stopPropagation");
+    const rendered = dialog.render();
 
     // The star's title is an interpolated value, so anchor its handler to the
     // interpolated aria-label that precedes the @click binding (repo pattern).
-    templateEventHandlerAfterValue(dialog.render(), `Pin ${sessionLabel(target)}`, "@click=")(event);
+    templateEventHandlerAfterValue(rendered, `Pin ${sessionLabel(target)}`, "@click=")(event);
 
     expect(onPinSession).toHaveBeenCalledWith(target);
     expect(onSelect).not.toHaveBeenCalled();
     expect(stopPropagation).toHaveBeenCalledOnce();
+    // Pin the star's visible and accessibility state: unpinned means aria-pressed="false" and ☆.
+    expect(templateValueAfterMarker(rendered, "aria-pressed=")).toBe("false");
+    expect(templateText(rendered)).toContain("☆");
   });
 
   it("unpins a pinned session from its row star", () => {
@@ -233,10 +237,14 @@ describe("session browser pin controls", () => {
     dialog.sessions = [target];
     const onUnpinSession = vi.fn();
     dialog.onUnpinSession = onUnpinSession;
+    const rendered = dialog.render();
 
-    templateEventHandlerAfterValue(dialog.render(), `Unpin ${sessionLabel(target)}`, "@click=")(new Event("click"));
+    templateEventHandlerAfterValue(rendered, `Unpin ${sessionLabel(target)}`, "@click=")(new Event("click"));
 
     expect(onUnpinSession).toHaveBeenCalledWith(target);
+    // Pin the star's visible and accessibility state: pinned means aria-pressed="true" and ★.
+    expect(templateValueAfterMarker(rendered, "aria-pressed=")).toBe("true");
+    expect(templateText(rendered)).toContain("★");
   });
 });
 
