@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Project, Workspace } from "./types.js";
@@ -8,6 +8,13 @@ import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
 
 registerAppTestHooks();
+
+class FailingKnownProjectStore extends ProjectStore {
+  override async setPinned(id: string, pinned: boolean): Promise<Project[] | undefined> {
+    if (id === "known-id") throw new Error("Simulated project registry write failure");
+    return await super.setPinned(id, pinned);
+  }
+}
 
 describe("buildApp project routes", () => {
   it("adds, lists, and closes projects through the HTTP contract", async () => {
@@ -161,10 +168,8 @@ describe("buildApp project routes", () => {
     expect(unpinResponse.json()).toEqual({ error: "Project not found" });
   });
 
-  it.skipIf(process.platform === "win32")("answers 500 when a project store write fails while unknown ids still answer 404", async () => {
-    const storeDir = join(appTestContext.tempDir, "readonly-store");
-    await mkdir(storeDir, { recursive: true });
-    const storePath = join(storeDir, "projects.json");
+  it("preserves genuine project errors while unknown ids still answer 404", async () => {
+    const storePath = join(appTestContext.tempDir, "projects-with-failing-writes.json");
     await writeFile(storePath, `${JSON.stringify({
       projects: [{
         id: "known-id",
@@ -173,12 +178,9 @@ describe("buildApp project routes", () => {
         createdAt: "2026-05-25T00:00:00.000Z",
       }],
     }, null, 2)}\n`, "utf8");
-    // Readable but not writable, so store reads still resolve projects (404
-    // for unknown ids) while the pin write itself fails with a non-ProjectNotFoundError.
-    await chmod(storeDir, 0o500);
 
     const app = await buildApp({
-      projects: new ProjectService(new ProjectStore(storePath)),
+      projects: new ProjectService(new FailingKnownProjectStore(storePath)),
       clientDist: false,
       logger: false,
     });
@@ -186,7 +188,7 @@ describe("buildApp project routes", () => {
     try {
       const pinResponse = await app.inject({ method: "POST", url: "/api/projects/known-id/pin" });
       expect(pinResponse.statusCode).toBe(500);
-      expect(pinResponse.json()).toHaveProperty("error");
+      expect(pinResponse.json()).toEqual({ error: "Simulated project registry write failure" });
 
       const unknownResponses = await Promise.all([
         app.inject({ method: "DELETE", url: "/api/projects/does-not-exist" }),
@@ -200,7 +202,6 @@ describe("buildApp project routes", () => {
       }
     } finally {
       await app.close();
-      await chmod(storeDir, 0o700).catch(() => undefined);
     }
   });
 

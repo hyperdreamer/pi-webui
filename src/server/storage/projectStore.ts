@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
 import { randomUUID } from "node:crypto";
@@ -8,8 +8,55 @@ interface ProjectFile {
   projects: Project[];
 }
 
+interface ResolvedWriteTarget {
+  path: string;
+  mode?: number;
+}
+
 function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+async function resolveWriteTarget(filePath: string): Promise<ResolvedWriteTarget> {
+  try {
+    const effectivePath = await realpath(filePath);
+    const metadata = await stat(effectivePath);
+    return {
+      path: effectivePath,
+      ...(process.platform === "win32" ? {} : { mode: metadata.mode & 0o777 }),
+    };
+  } catch (error: unknown) {
+    if (!isNodeErrorWithCode(error, "ENOENT")) throw error;
+    return await resolveMissingWriteTarget(filePath);
+  }
+}
+
+async function resolveMissingWriteTarget(filePath: string): Promise<ResolvedWriteTarget> {
+  let candidate = filePath;
+  const visited = new Set<string>();
+
+  for (;;) {
+    const normalizedCandidate = resolve(candidate);
+    if (visited.has(normalizedCandidate)) throw new Error("Cannot resolve project registry path because of a symbolic-link cycle");
+    visited.add(normalizedCandidate);
+
+    let metadata;
+    try {
+      metadata = await lstat(candidate);
+    } catch (error: unknown) {
+      if (isNodeErrorWithCode(error, "ENOENT")) return { path: candidate };
+      throw error;
+    }
+
+    if (!metadata.isSymbolicLink()) {
+      return {
+        path: candidate,
+        ...(process.platform === "win32" ? {} : { mode: metadata.mode & 0o777 }),
+      };
+    }
+
+    candidate = resolve(dirname(candidate), await readlink(candidate));
+  }
 }
 
 function parseProjectFile(value: unknown): ProjectFile {
@@ -134,14 +181,20 @@ export class ProjectStore {
 
   private async write(data: ProjectFile): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    // Writing to a temp file in the same directory and renaming it over the
-    // target is what makes a reader see either the old or the new file, never a
-    // partial one. The `exclusive` queue remains necessary because it prevents
-    // lost updates rather than torn files.
-    const tempPath = join(dirname(this.filePath), `.${basename(this.filePath)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
+    const target = await resolveWriteTarget(this.filePath);
+    // Keep the temp file beside the effective target so rename is atomic even
+    // when the configured path is a symlink. The `exclusive` queue remains
+    // necessary because it prevents lost updates rather than torn files.
+    const tempPath = join(dirname(target.path), `.${basename(target.path)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
     try {
-      await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-      await rename(tempPath, this.filePath);
+      const content = `${JSON.stringify(data, null, 2)}\n`;
+      if (target.mode === undefined) {
+        await writeFile(tempPath, content, "utf8");
+      } else {
+        await writeFile(tempPath, content, { encoding: "utf8", mode: target.mode });
+        await chmod(tempPath, target.mode);
+      }
+      await rename(tempPath, target.path);
     } catch (error: unknown) {
       await unlink(tempPath).catch(() => undefined);
       throw error;

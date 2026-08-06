@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -119,6 +119,34 @@ describe("ProjectStore durable writes", () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves a configured symlink and writes through to its target", async () => {
+    const targetDir = join(tempDir, "registry");
+    const targetPath = join(targetDir, "projects.json");
+    await mkdir(targetDir);
+    await writeFile(targetPath, `${JSON.stringify({ projects: [] }, null, 2)}\n`, "utf8");
+    await symlink(targetPath, filePath);
+    const store = new ProjectStore(filePath);
+
+    const project = await store.add({ path: "/work/alpha" });
+
+    expect((await lstat(filePath)).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual({ projects: [project] });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves restrictive permissions when replacing an existing registry", async () => {
+    await writeFile(filePath, `${JSON.stringify({ projects: [] }, null, 2)}\n`, "utf8");
+    await chmod(filePath, 0o600);
+    const previousUmask = process.umask(0o022);
+
+    try {
+      await new ProjectStore(filePath).add({ path: "/work/alpha" });
+
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
   it("leaves no temp file behind after a completed mutation", async () => {
