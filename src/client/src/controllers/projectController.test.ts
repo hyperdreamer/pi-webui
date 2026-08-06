@@ -12,6 +12,31 @@ function workspace(projectId: string, path: string): Workspace {
   return { id: path, projectId, path, label: path, isMain: true, isGitRepo: true, isGitWorktree: true };
 }
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolveDeferred: ((value: T) => void) | undefined;
+  let rejectDeferred: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveDeferred = resolve;
+    rejectDeferred = reject;
+  });
+  if (resolveDeferred === undefined || rejectDeferred === undefined) throw new Error("Deferred promise was not initialized");
+  return { promise, resolve: resolveDeferred, reject: rejectDeferred };
+}
+
+const remoteMachine: NonNullable<AppState["selectedMachine"]> = {
+  id: "remote",
+  name: "Remote",
+  kind: "remote",
+  createdAt: "now",
+  updatedAt: "now",
+};
+
 describe("ProjectController", () => {
   it("provisions ~/workspace and selects it when the project list is empty", async () => {
     const defaultProject = project("workspace", "/home/tester/workspace");
@@ -275,5 +300,73 @@ describe("ProjectController", () => {
 
     expect(state.projects).toEqual([alpha]);
     expect(state.error).toContain("Project not found");
+  });
+
+  it("ignores a stale pin response after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const pending = deferred<Project[]>();
+    const pinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const pin = controller.pinProject(beta.id);
+    expect(pinProject).toHaveBeenCalledWith(beta.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.resolve([{ ...beta, pinned: true }, alpha]);
+    await pin;
+
+    expect(state.projects).toEqual([alpha, beta]);
+    expect(state.error).toBe("");
+  });
+
+  it("ignores a stale unpin response after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const pending = deferred<Project[]>();
+    const unpinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    const unpin = controller.unpinProject(beta.id);
+    expect(unpinProject).toHaveBeenCalledWith(beta.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.resolve([project("beta", "/beta"), alpha]);
+    await unpin;
+
+    expect(state.projects).toEqual([beta, alpha]);
+    expect(state.error).toBe("");
+  });
+
+  it("ignores a stale pin failure after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    let state: AppState = { ...initialAppState(), projects: [alpha], error: "earlier error" };
+    const pending = deferred<Project[]>();
+    const pinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const pin = controller.pinProject(alpha.id);
+    expect(pinProject).toHaveBeenCalledWith(alpha.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.reject(new Error("Project not found"));
+    await pin;
+
+    expect(state.projects).toEqual([alpha]);
+    expect(state.error).toBe("earlier error");
   });
 });
