@@ -15,6 +15,7 @@ import { ActivityController } from "../controllers/activityController";
 import { AuthController } from "../controllers/authController";
 import { FileExplorerController } from "../controllers/fileExplorerController";
 import { GitController } from "../controllers/gitController";
+import { LearnedSkillsController } from "../controllers/learnedSkillsController";
 import { MemoryController } from "../controllers/memoryController";
 import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
@@ -116,6 +117,9 @@ const TERMINAL_ROUTE_NAMESPACE = queryNamespace("core:workspace.terminal");
 const MEMORY_ACTIVITY_RAIL_PLUGIN_ID: PluginId = "workspace-memory";
 const MEMORY_ACTIVITY_RAIL_LOCAL_ID: LocalContributionId = "workspace.memory";
 const MEMORY_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-memory:workspace.memory";
+const LEARNED_SKILLS_ACTIVITY_RAIL_PLUGIN_ID: PluginId = "workspace-learned-skills";
+const LEARNED_SKILLS_ACTIVITY_RAIL_LOCAL_ID: LocalContributionId = "workspace.learned-skills";
+const LEARNED_SKILLS_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-learned-skills:workspace.learned-skills";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -159,6 +163,7 @@ interface TerminalModalPointerEvent {
 
 interface InternalActivityRailContext extends ActivityRailContext {
   onRefreshMemory: () => void;
+  onRefreshLearnedSkills: () => void;
 }
 
 interface ResolvedActivityRailItem {
@@ -304,6 +309,10 @@ export class PiWebUiApp extends LitElement {
     () => { this.updateUrl(); },
   );
   private readonly memory = new MemoryController(
+    () => this.state,
+    (patch) => { this.setState(patch); },
+  );
+  private readonly learnedSkills = new LearnedSkillsController(
     () => this.state,
     (patch) => { this.setState(patch); },
   );
@@ -631,6 +640,7 @@ export class PiWebUiApp extends LitElement {
     this.closeMachineActivitySockets();
     this.git.dispose();
     this.memory.dispose();
+    this.learnedSkills.dispose();
     if (this.piWebUiStatusTimer !== undefined) window.clearInterval(this.piWebUiStatusTimer);
     this.piWebUiStatusTimer = undefined;
     this.clearScheduledPiWebUiStatusRefresh();
@@ -1177,9 +1187,12 @@ export class PiWebUiApp extends LitElement {
   }
 
   private handleWorkspaceChange(previous: AppState, next: AppState) {
-    const memoryScopeChanged = memoryPollingScopeChanged(previous, next);
+    const scopeChanged = workspaceScopeChanged(previous, next);
     if (previous.selectedWorkspace?.id === next.selectedWorkspace?.id) {
-      if (memoryScopeChanged) this.synchronizeMemoryPollingForSelectedWorkspace();
+      if (scopeChanged) {
+        this.synchronizeMemoryPollingForSelectedWorkspace();
+        this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
+      }
       return;
     }
     this.starterSessionDefaults = undefined;
@@ -1194,6 +1207,7 @@ export class PiWebUiApp extends LitElement {
     }
     if (next.selectedWorkspace === undefined) {
       this.synchronizeMemoryPollingForSelectedWorkspace();
+      this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
       return;
     }
     void this.refreshActiveTerminals(next.selectedWorkspace);
@@ -1201,6 +1215,7 @@ export class PiWebUiApp extends LitElement {
     this.refreshSelectedWorkspaceTool(next.workspaceTool);
     this.git.updatePolling();
     this.synchronizeMemoryPollingForSelectedWorkspace();
+    this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
   }
 
   private async loadStarterSessionDefaults(
@@ -2359,6 +2374,28 @@ export class PiWebUiApp extends LitElement {
     this.memory.updatePolling(observed);
   }
 
+  private synchronizeLearnedSkillsPollingForSelectedWorkspace(
+    activities: readonly QualifiedActivityRailContribution[] = this.plugins.getActivityRailItems(),
+  ): void {
+    if (this.state.selectedWorkspace === undefined) {
+      this.learnedSkills.updatePolling(false);
+      return;
+    }
+    this.synchronizeLearnedSkillsPolling(activities);
+  }
+
+  private synchronizeLearnedSkillsPolling(
+    activities: readonly QualifiedActivityRailContribution[],
+  ): void {
+    const observed = activities.some((activity) => isLearnedSkillsActivityRailItem(activity)
+      && isActivityRailItemVisible(
+        activity,
+        this.createActivityRailContext(activity.id),
+        this.reportActivityRailError,
+      ));
+    this.learnedSkills.updatePolling(observed);
+  }
+
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
     const hiddenTools = this.hiddenWorkspacePanelTools();
     return this.workspacePanels().filter((panel) => !hiddenTools.includes(panel.id));
@@ -2943,6 +2980,7 @@ export class PiWebUiApp extends LitElement {
         }
       }
       this.synchronizeMemoryPollingForSelectedWorkspace();
+      this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
       this.applyPreferredTheme(false);
       this.requestUpdate();
       return true;
@@ -3045,6 +3083,7 @@ export class PiWebUiApp extends LitElement {
         },
       },
       onRefreshMemory: () => { void this.memory.refresh(); },
+      onRefreshLearnedSkills: () => { void this.learnedSkills.refresh(); },
     }, createContext);
     return createContext("core");
   }
@@ -3052,6 +3091,7 @@ export class PiWebUiApp extends LitElement {
   private activityRailItems(): ActivityRailDisplayItem[] {
     const activities = this.plugins.getActivityRailItems();
     this.synchronizeMemoryPollingForSelectedWorkspace(activities);
+    this.synchronizeLearnedSkillsPollingForSelectedWorkspace(activities);
     return activities.flatMap((activity) => this.projectActivityRailItems(
       [activity],
       this.createActivityRailContext(activity.id),
@@ -4469,7 +4509,13 @@ function isMemoryActivityRailItem(activity: QualifiedActivityRailContribution): 
     || (activity.sourcePluginId === MEMORY_ACTIVITY_RAIL_PLUGIN_ID && activity.localId === MEMORY_ACTIVITY_RAIL_LOCAL_ID);
 }
 
-function memoryPollingScopeChanged(previous: AppState, next: AppState): boolean {
+function isLearnedSkillsActivityRailItem(activity: QualifiedActivityRailContribution): boolean {
+  return activity.id === LEARNED_SKILLS_ACTIVITY_RAIL_ID
+    || (activity.sourcePluginId === LEARNED_SKILLS_ACTIVITY_RAIL_PLUGIN_ID
+      && activity.localId === LEARNED_SKILLS_ACTIVITY_RAIL_LOCAL_ID);
+}
+
+function workspaceScopeChanged(previous: AppState, next: AppState): boolean {
   return selectedMachineId(previous) !== selectedMachineId(next)
     || previous.selectedProject?.id !== next.selectedProject?.id
     || previous.selectedWorkspace?.id !== next.selectedWorkspace?.id
