@@ -43,7 +43,7 @@ This satisfies the requirement that an unpinned project appears first in the unp
 `ProjectStore` (`src/server/storage/projectStore.ts`):
 
 - `parseProject` accepts an optional boolean `pinned` and preserves it. Values of the wrong type still throw.
-- `setPinned(id: string, pinned: boolean): Promise<Project | undefined>` sets the flag and moves the entry to the front of the array in one write. Returns the updated project, or `undefined` for an unknown id.
+- `setPinned(id: string, pinned: boolean): Promise<Project[] | undefined>` sets the flag and moves the entry to the front of the array in one write. Resolves to the full reordered list, or `undefined` for an unknown id, so the routes can return the new order without a second read.
 - A promise-chain lock serializes `add`, `remove`, and `setPinned`. `write` is a plain `writeFile` with no temp-file rename and no queue, unlike `SessionArchiveStore`; pin adds a second mutation path, so overlapping read-modify-write cycles could otherwise lose an update.
 
 `ProjectService` gains `pin(id)` and `unpin(id)`, delegating to `setPinned` and throwing `Error("Project not found")` on a miss, mirroring `close(id)`.
