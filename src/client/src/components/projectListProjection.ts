@@ -21,11 +21,22 @@ export function prioritizeActiveProjects(
   return [...activeProjects, ...inactiveProjects];
 }
 
+/**
+ * Order projects for display: pinned above unpinned, and within each cohort
+ * running above idle. Source order is preserved inside each of the four
+ * resulting groups, so a project moved to the front of `projects.json` by a
+ * pin or unpin lands at the top of whichever group it belongs to.
+ */
 export function displayedProjects(
   projects: readonly Project[],
   queryText: string,
   workspacesByProjectId: Record<string, Workspace[]>,
   activities: Record<string, WorkspaceActivity>,
 ): Project[] {
-  return prioritizeActiveProjects(filterProjects(projects, queryText), workspacesByProjectId, activities);
+  const visible = filterProjects(projects, queryText);
+  const prioritizeCohort = (cohort: readonly Project[]): Project[] => prioritizeActiveProjects(cohort, workspacesByProjectId, activities);
+  return [
+    ...prioritizeCohort(visible.filter((project) => project.pinned === true)),
+    ...prioritizeCohort(visible.filter((project) => project.pinned !== true)),
+  ];
 }
