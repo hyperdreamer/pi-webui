@@ -1,0 +1,9 @@
+{
+  "name": "@pi-webui/workspace-learned-skills-plugin",
+  "private": true,
+  "piWebUi": {
+    "plugins": [
+      { "id": "workspace-learned-skills", "module": "pi-webui-plugin.js" }
+    ]
+  }
+}
