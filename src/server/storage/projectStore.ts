@@ -17,6 +17,16 @@ function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.Errn
   return error instanceof Error && "code" in error && error.code === code;
 }
 
+/**
+ * A trailing separator marks a directory reference, never a file leaf.
+ * `sep` gives the native separator; `/` is additionally accepted on every
+ * platform so Windows-target paths behave like POSIX ones, while backslash
+ * stays a plain filename character on POSIX.
+ */
+function hasTerminalPathSeparator(candidate: string): boolean {
+  return candidate.endsWith(sep) || candidate.endsWith("/");
+}
+
 async function resolveWriteTarget(filePath: string): Promise<ResolvedWriteTarget> {
   try {
     const effectivePath = await realpath(filePath);
@@ -41,6 +51,14 @@ async function resolveMissingWriteTarget(filePath: string): Promise<ResolvedWrit
       metadata = await lstat(candidate);
     } catch (error: unknown) {
       if (isNodeErrorWithCode(error, "ENOENT")) {
+        if (hasTerminalPathSeparator(candidate)) {
+          const directoryTarget: NodeJS.ErrnoException = Object.assign(new Error(`Project registry path must resolve to a file: ${filePath}`), {
+            code: "EISDIR",
+            syscall: "open",
+            path: filePath,
+          });
+          throw directoryTarget;
+        }
         const physicalParent = await realpath(dirname(candidate));
         return { path: join(physicalParent, basename(candidate)) };
       }

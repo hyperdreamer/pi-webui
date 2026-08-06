@@ -4,6 +4,15 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ProjectStore, projectStorePath } from "./projectStore.js";
 
+async function captureRejection(operation: Promise<unknown>): Promise<unknown> {
+  try {
+    await operation;
+  } catch (error: unknown) {
+    return error;
+  }
+  throw new Error("expected the operation to reject");
+}
+
 describe("projectStorePath", () => {
   it("uses PI_WEBUI_DATA_DIR by default", () => {
     expect(projectStorePath({ PI_WEBUI_DATA_DIR: "demo-data" }, "/tmp/pi-webui")).toBe(resolve("/tmp/pi-webui", "demo-data", "projects.json"));
@@ -186,6 +195,28 @@ describe("ProjectStore durable writes", () => {
     await expect(readFile(lexicalAlternativePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await store.list()).toEqual([project]);
     expect(await readdir(intendedRegistryDir)).toEqual(["projects.json"]);
+  });
+
+  const posixProjectStoreIt = it.skipIf(process.platform === "win32");
+
+  posixProjectStoreIt.each([
+    { label: "relative", name: "registry-relative", isAbsolute: false },
+    { label: "absolute", name: "registry-absolute", isAbsolute: true },
+  ])("rejects a dangling symlink whose raw target names a missing directory ($label)", async ({ label, name, isAbsolute }) => {
+    const target = isAbsolute ? `${join(tempDir, name)}/` : `${name}/`;
+    const strippedTarget = join(tempDir, name);
+    const configuredPath = join(tempDir, `projects-${label}.json`);
+    await symlink(target, configuredPath);
+
+    const directError = await captureRejection(writeFile(configuredPath, "x", "utf8"));
+    expect(directError).toMatchObject({ code: "EISDIR" });
+
+    const storeError = await captureRejection(new ProjectStore(configuredPath).add({ path: "/work/alpha" }));
+    expect(storeError).toMatchObject({ code: "EISDIR" });
+
+    expect((await lstat(configuredPath)).isSymbolicLink()).toBe(true);
+    await expect(stat(strippedTarget)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readdir(tempDir)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
   });
 
   it.skipIf(process.platform === "win32")("preserves restrictive permissions when replacing an existing registry", async () => {
