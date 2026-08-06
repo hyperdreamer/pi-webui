@@ -82,7 +82,8 @@ export class PiHermesLearnedSkillProvider implements LearnedSkillProvider {
         globalSkills,
         projectSkills: await this.listSkills(project.skillsRoot),
       };
-    } catch {
+    } catch (error) {
+      if (!globalRootAvailable) throw error;
       return {
         kind: "data",
         globalSkills,

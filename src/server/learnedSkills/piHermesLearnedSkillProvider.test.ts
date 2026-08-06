@@ -264,6 +264,27 @@ describe("PiHermesLearnedSkillProvider", () => {
     });
   });
 
+  it("rejects a failing project listing when the global root is absent", async () => {
+    const globalRootPath = join(agentDir, "pi-hermes-memory", "skills");
+    const projectRootPath = join(agentDir, "projects-memory", "repo", "skills");
+    const provider = new PiHermesLearnedSkillProvider(agentDir, {
+      fileAccess: {
+        readFile: () => Promise.reject(new Error("Skill files must not be read")),
+        isDirectory: (path) => {
+          if (path === globalRootPath) return Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
+          if (path === projectRootPath) return Promise.resolve(true);
+          return Promise.reject(new Error(`Unexpected directory probe: ${path}`));
+        },
+        listDirectories: (path) => {
+          if (path === projectRootPath) return Promise.reject(Object.assign(new Error("listing denied"), { code: "EACCES" }));
+          return Promise.reject(new Error(`Unexpected directory listing: ${path}`));
+        },
+      },
+    });
+
+    await expect(provider.read({ projectPath: "/work/repo" })).rejects.toThrow("listing denied");
+  });
+
   it("rejects a global skills-root listing failure", async () => {
     const globalRootPath = join(agentDir, "pi-hermes-memory", "skills");
     const provider = new PiHermesLearnedSkillProvider(agentDir, {
