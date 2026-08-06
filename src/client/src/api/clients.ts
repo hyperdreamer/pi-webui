@@ -298,6 +298,8 @@ export const projectsApi = {
   projects: (machineId = "local") => request(`${machinePrefix(machineId)}/projects`, arrayOf(parseProject)),
   addProject: (path: string, name?: string, create?: boolean, machineId = "local") => request(`${machinePrefix(machineId)}/projects`, parseProject, { method: "POST", body: JSON.stringify({ path, name, create }) }),
   closeProject: (projectId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}`, parseClosed, { method: "DELETE" }),
+  pinProject: (projectId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/pin`, arrayOf(parseProject), { method: "POST" }),
+  unpinProject: (projectId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/unpin`, arrayOf(parseProject), { method: "POST" }),
   projectDirectories: (query: string, machineId = "local") => request(`${machinePrefix(machineId)}/project-directories?q=${encodeURIComponent(query)}`, arrayOf(parseFileSuggestion)),
   projectUsageCount: (input: ProjectUsageCountRequest, machineId = "local"): Promise<ProjectUsageCountResponse> =>
     request(`${machinePrefix(machineId)}/sessions/project-usage/count`, parseProjectUsageCountResponse, { method: "POST", body: JSON.stringify(input) }),

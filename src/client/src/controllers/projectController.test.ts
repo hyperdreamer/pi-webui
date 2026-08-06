@@ -27,6 +27,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([]),
           addProject,
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
       },
     );
@@ -65,6 +67,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([currentProject]),
           addProject: vi.fn(),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -109,6 +113,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([replacementProject]),
           addProject: vi.fn(),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -147,6 +153,8 @@ describe("ProjectController", () => {
           projects: vi.fn(),
           addProject: vi.fn().mockResolvedValue(addedProject),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -195,6 +203,8 @@ describe("ProjectController", () => {
           projects: vi.fn(),
           addProject: vi.fn(),
           closeProject: vi.fn().mockResolvedValue(undefined),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -205,5 +215,65 @@ describe("ProjectController", () => {
     expect(events).toEqual(["forget", "applied", "clear"]);
     expect(onProjectsApplied).toHaveBeenCalledOnce();
     expect(clearSelection).toHaveBeenCalledOnce();
+  });
+
+  it("replaces the project list with the order returned by pinning", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const pinProject = vi.fn().mockResolvedValue([{ ...beta, pinned: true }, alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    await controller.pinProject(beta.id);
+
+    expect(pinProject).toHaveBeenCalledWith(beta.id, "local");
+    expect(state.projects).toEqual([{ ...beta, pinned: true }, alpha]);
+  });
+
+  it("replaces the project list with the order returned by unpinning", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const unpinProject = vi.fn().mockResolvedValue([project("beta", "/beta"), alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    await controller.unpinProject(beta.id);
+
+    expect(unpinProject).toHaveBeenCalledWith(beta.id, "local");
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+  });
+
+  it("reports a failed pin through app state without changing the project list", async () => {
+    const alpha = project("alpha", "/alpha");
+    let state: AppState = { ...initialAppState(), projects: [alpha] };
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects: vi.fn(),
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn().mockRejectedValue(new Error("Project not found")),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    await controller.pinProject(alpha.id);
+
+    expect(state.projects).toEqual([alpha]);
+    expect(state.error).toContain("Project not found");
   });
 });

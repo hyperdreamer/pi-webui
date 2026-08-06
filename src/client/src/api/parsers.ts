@@ -165,7 +165,14 @@ function optionalMachineStatus(record: Record<string, unknown>, key: string): Ma
 
 export function parseProject(value: unknown): Project {
   const record = requireRecord(value);
-  return { id: requireString(record, "id"), name: requireString(record, "name"), path: requireString(record, "path"), createdAt: requireString(record, "createdAt") };
+  const pinned = parseOptionalBoolean(record["pinned"], "pinned");
+  return {
+    id: requireString(record, "id"),
+    name: requireString(record, "name"),
+    path: requireString(record, "path"),
+    createdAt: requireString(record, "createdAt"),
+    ...(pinned === undefined ? {} : { pinned }),
+  };
 }
 
 export function parseWorkspace(value: unknown): Workspace {

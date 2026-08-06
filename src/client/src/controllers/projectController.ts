@@ -1,16 +1,17 @@
 import { api as defaultApi } from "../api";
+import type { Project } from "../api";
 import { selectedMachineId, type GetState, type SetState } from "./types";
 import type { WorkspaceController } from "./workspaceController";
 
 const DEFAULT_PROJECT_PATH = "~/workspace";
 
 export interface ProjectControllerDependencies {
-  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject">;
+  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
   onProjectsApplied?: (machineId: string) => void;
 }
 
 export class ProjectController {
-  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject">;
+  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
   private readonly onProjectsApplied: ((machineId: string) => void) | undefined;
 
   constructor(
@@ -76,6 +77,30 @@ export class ProjectController {
       this.setState({ projects: state.projects.filter((p) => p.id !== projectId) });
       this.onProjectsApplied?.(machineId);
       if (state.selectedProject?.id === projectId) this.workspaces.clearSelection();
+    } catch (error) {
+      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+    }
+  }
+
+  async pinProject(projectId: string): Promise<void> {
+    await this.applyPinChange(projectId, (machineId) => this.api.pinProject(projectId, machineId));
+  }
+
+  async unpinProject(projectId: string): Promise<void> {
+    await this.applyPinChange(projectId, (machineId) => this.api.unpinProject(projectId, machineId));
+  }
+
+  /**
+   * The server owns project order, so the whole returned list replaces state.
+   * `onProjectsApplied` is deliberately not called: the project set is
+   * unchanged, so activity ownership does not need to re-resolve.
+   */
+  private async applyPinChange(projectId: string, mutate: (machineId: string) => Promise<Project[]>): Promise<void> {
+    const machineId = selectedMachineId(this.getState());
+    try {
+      const projects = await mutate(machineId);
+      if (selectedMachineId(this.getState()) !== machineId) return;
+      this.setState({ projects });
     } catch (error) {
       if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
     }
