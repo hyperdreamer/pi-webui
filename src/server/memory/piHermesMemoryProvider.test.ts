@@ -93,6 +93,24 @@ describe("PiHermesMemoryProvider", () => {
     });
   });
 
+  it("reads a linked worktree's project memory through its shared repo root", async () => {
+    const mainPath = join(agentDir, "main");
+    const worktreeGitDir = join(mainPath, ".git", "worktrees", "feature");
+    await mkdir(worktreeGitDir, { recursive: true });
+    await writeFile(join(worktreeGitDir, "commondir"), "../..\n", "utf-8");
+
+    const featurePath = join(agentDir, "feature");
+    await mkdir(featurePath, { recursive: true });
+    await writeFile(join(featurePath, ".git"), `gitdir: ${worktreeGitDir}\n`, "utf-8");
+
+    await writeMemoryFile("projects-memory/main/MEMORY.md", "Worktree-shared project memory");
+
+    await expect(new PiHermesMemoryProvider(agentDir).read({ projectPath: featurePath })).resolves.toMatchObject({
+      kind: "data",
+      projectEntries: [{ content: "Worktree-shared project memory" }],
+    });
+  });
+
   it("reports a project-only Hermes root as available", async () => {
     await writeMemoryFile("projects-memory/repo/MEMORY.md", "[project] Project entry");
 

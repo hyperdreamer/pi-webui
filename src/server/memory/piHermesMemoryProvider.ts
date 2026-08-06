@@ -1,7 +1,11 @@
 import { readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { parseMemoryFile, type ParsedMemoryEntry } from "./memoryFileParser.js";
 import type { MemoryProvider, MemoryProviderInput, MemoryProviderResult } from "./memoryProvider.js";
+import {
+  resolvePiHermesProjectName,
+  type PiHermesProjectNameResolver,
+} from "../piHermes/projectIdentity.js";
 
 const PROJECT_UNAVAILABLE_MESSAGE = "Project-specific memory could not be loaded.";
 
@@ -21,6 +25,8 @@ export class PiHermesMemoryProvider implements MemoryProvider {
   constructor(
     private readonly agentDir: string,
     private readonly fileAccess: MemoryFileAccess = nodeFileAccess,
+    private readonly resolveProjectName: PiHermesProjectNameResolver = (projectPath) =>
+      resolvePiHermesProjectName({ agentDir, projectPath }),
   ) {}
 
   async read(input: MemoryProviderInput): Promise<MemoryProviderResult> {
@@ -79,8 +85,8 @@ export class PiHermesMemoryProvider implements MemoryProvider {
   private async projectScope(projectPath: string | undefined): Promise<ProjectScope> {
     if (projectPath === undefined) return { rootAvailable: false };
 
-    const projectName = basename(projectPath);
-    if (isUnsafeProjectName(projectName)) {
+    const projectName = await this.resolveProjectName(projectPath);
+    if (projectName === undefined || isUnsafeProjectName(projectName)) {
       return { rootAvailable: false, unavailableMessage: PROJECT_UNAVAILABLE_MESSAGE };
     }
 
