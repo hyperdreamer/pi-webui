@@ -1,5 +1,5 @@
 import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
 import { randomUUID } from "node:crypto";
 import type { Project } from "../types.js";
@@ -36,28 +36,33 @@ async function resolveMissingWriteTarget(filePath: string): Promise<ResolvedWrit
   const visited = new Set<string>();
 
   for (;;) {
-    const normalizedCandidate = resolve(candidate);
-    if (visited.has(normalizedCandidate)) throw new Error("Cannot resolve project registry path because of a symbolic-link cycle");
-    visited.add(normalizedCandidate);
-
     let metadata;
     try {
       metadata = await lstat(candidate);
     } catch (error: unknown) {
-      if (isNodeErrorWithCode(error, "ENOENT")) return { path: candidate };
+      if (isNodeErrorWithCode(error, "ENOENT")) {
+        const physicalParent = await realpath(dirname(candidate));
+        return { path: join(physicalParent, basename(candidate)) };
+      }
       throw error;
     }
 
     if (!metadata.isSymbolicLink()) {
       return {
-        path: candidate,
+        path: await realpath(candidate),
         ...(process.platform === "win32" ? {} : { mode: metadata.mode & 0o777 }),
       };
     }
 
-    const target = await readlink(candidate);
     const physicalParent = await realpath(dirname(candidate));
-    candidate = resolve(physicalParent, target);
+    const physicalCandidate = join(physicalParent, basename(candidate));
+    if (visited.has(physicalCandidate)) throw new Error("Cannot resolve project registry path because of a symbolic-link cycle");
+    visited.add(physicalCandidate);
+
+    const target = await readlink(physicalCandidate);
+    // Preserve component order until the filesystem has traversed any symlink
+    // before `..`; path.join/resolve would collapse those components too soon.
+    candidate = isAbsolute(target) ? target : `${physicalParent}${physicalParent.endsWith(sep) ? "" : sep}${target}`;
   }
 }
 
