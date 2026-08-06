@@ -2140,6 +2140,8 @@ export class PiWebUiApp extends LitElement {
         .onToggleSessions=${() => { this.navigationSections.toggle("sessions"); }}
         .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project))}
         .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+        .onPinProject=${(project: Project) => this.projects.pinProject(project.id)}
+        .onUnpinProject=${(project: Project) => this.projects.unpinProject(project.id)}
         .onSelectWorkspace=${(workspace: Workspace) => this.selectNavigationItem("workspaces", "sessions", () => this.workspaces.selectWorkspace(workspace))}
         .onDeleteWorkspace=${(workspace: Workspace) => { void this.deleteWorkspace(workspace); }}
         .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
