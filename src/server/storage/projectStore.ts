@@ -55,7 +55,9 @@ async function resolveMissingWriteTarget(filePath: string): Promise<ResolvedWrit
       };
     }
 
-    candidate = resolve(dirname(candidate), await readlink(candidate));
+    const target = await readlink(candidate);
+    const physicalParent = await realpath(dirname(candidate));
+    candidate = resolve(physicalParent, target);
   }
 }
 

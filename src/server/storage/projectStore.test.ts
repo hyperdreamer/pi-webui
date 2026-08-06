@@ -135,6 +135,32 @@ describe("ProjectStore durable writes", () => {
     expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual({ projects: [project] });
   });
 
+  it.skipIf(process.platform === "win32")("resolves a relative dangling symlink from its physical parent", async () => {
+    const physicalRoot = join(tempDir, "physical");
+    const physicalNestedDir = join(physicalRoot, "nested");
+    const intendedRegistryDir = join(physicalRoot, "registry");
+    const lexicalRegistryDir = join(tempDir, "registry");
+    const logicalDir = join(tempDir, "logical");
+    await mkdir(physicalNestedDir, { recursive: true });
+    await mkdir(intendedRegistryDir);
+    await mkdir(lexicalRegistryDir);
+    await symlink(physicalNestedDir, logicalDir);
+
+    const configuredPath = join(logicalDir, "projects.json");
+    const intendedPath = join(intendedRegistryDir, "projects.json");
+    const lexicalAlternativePath = join(lexicalRegistryDir, "projects.json");
+    await symlink("../registry/projects.json", configuredPath);
+    const store = new ProjectStore(configuredPath);
+
+    const project = await store.add({ path: "/work/alpha" });
+
+    expect((await lstat(configuredPath)).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(await readFile(intendedPath, "utf8"))).toEqual({ projects: [project] });
+    await expect(readFile(lexicalAlternativePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await store.list()).toEqual([project]);
+    expect(await readdir(intendedRegistryDir)).toEqual(["projects.json"]);
+  });
+
   it.skipIf(process.platform === "win32")("preserves restrictive permissions when replacing an existing registry", async () => {
     await writeFile(filePath, `${JSON.stringify({ projects: [] }, null, 2)}\n`, "utf8");
     await chmod(filePath, 0o600);
