@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import type { Machine, Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
-import type { ActivityRailDisplayItem } from "../plugins/activityRail";
+import type { ActivityRailDisplayItem, ReportActivityRailError } from "../plugins/activityRail";
 import { PluginRegistry } from "../plugins/registry";
 import type { ActivityRailContext, PiWebUiPluginRegistration, QualifiedContributionId } from "../plugins/types";
 import { PiWebUiApp } from "./PiWebUiApp";
@@ -77,6 +77,23 @@ describe("PiWebUiApp Learned Skills activity-Rail lifecycle wiring", () => {
     expect(updatePolling).toHaveBeenCalledWith(false);
   });
 
+  it("deactivates Learned Skills polling after a visible activity is removed during enumeration", () => {
+    const app = createApp();
+    registerLearnedSkillsActivityRail(app);
+    const next = selectedWorkspaceState();
+    setAppState(app, next);
+    setRouteRestoreInProgress(app);
+    stubWorkspaceChangeSideEffects(app);
+    const updatePolling = vi.spyOn(learnedSkillsController(app), "updatePolling").mockImplementation(() => undefined);
+
+    handleWorkspaceChange(app, initialAppState(), next);
+    setPluginRegistry(app, new PluginRegistry());
+    activityRailItems(app);
+
+    expect(updatePolling).toHaveBeenNthCalledWith(1, true);
+    expect(updatePolling).toHaveBeenNthCalledWith(2, false);
+  });
+
   it("stops polling and hides Learned Skills after confirmed unavailability", () => {
     const app = createApp();
     registerLearnedSkillsActivityRail(app);
@@ -124,6 +141,26 @@ describe("PiWebUiApp Learned Skills activity-Rail lifecycle wiring", () => {
     expect(visible).toHaveBeenCalledOnce();
     expect(badge).not.toHaveBeenCalled();
     expect(updatePolling).toHaveBeenCalledWith(true);
+  });
+
+  it("reports throwing Learned Skills visibility as hidden without evaluating its badge", () => {
+    const app = createApp();
+    const visibilityError = new Error("visibility failed");
+    const visible = vi.fn<LearnedSkillsActivityVisibility>(() => { throw visibilityError; });
+    const badge = vi.fn<LearnedSkillsActivityBadge>(() => 2);
+    registerLearnedSkillsActivityRail(app, false, visible, badge);
+    setAppState(app, selectedWorkspaceState());
+    const updatePolling = vi.spyOn(learnedSkillsController(app), "updatePolling").mockImplementation(() => undefined);
+    const reportError = vi.fn<ReportActivityRailError>();
+    setActivityRailErrorReporter(app, reportError);
+
+    expect(() => {
+      synchronizeLearnedSkillsPollingForSelectedWorkspace(app);
+    }).not.toThrow();
+
+    expect(reportError).toHaveBeenCalledWith("visible", learnedSkillsActivityId, visibilityError);
+    expect(updatePolling).toHaveBeenCalledWith(false);
+    expect(badge).not.toHaveBeenCalled();
   });
 
   it("observes the selected remote machine activity instead of the gateway copy", () => {
@@ -284,6 +321,14 @@ function pluginRegistry(app: PiWebUiApp): PluginRegistry {
   const value: unknown = Reflect.get(app, "plugins");
   if (!(value instanceof PluginRegistry)) throw new Error("PiWebUiApp plugin registry is unavailable");
   return value;
+}
+
+function setPluginRegistry(app: PiWebUiApp, registry: PluginRegistry): void {
+  if (!Reflect.set(app, "plugins", registry)) throw new Error("Could not replace PiWebUiApp plugin registry");
+}
+
+function setActivityRailErrorReporter(app: PiWebUiApp, reporter: ReportActivityRailError): void {
+  if (!Reflect.set(app, "reportActivityRailError", reporter)) throw new Error("Could not replace Activity Rail error reporter");
 }
 
 function setAppState(app: PiWebUiApp, state: AppState): void {
