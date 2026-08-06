@@ -1,8 +1,11 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Project, Workspace } from "./types.js";
 import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
+import { buildApp } from "./app.js";
+import { ProjectService } from "./projects/projectService.js";
+import { ProjectStore } from "./storage/projectStore.js";
 
 registerAppTestHooks();
 
@@ -156,6 +159,49 @@ describe("buildApp project routes", () => {
     expect(pinResponse.json()).toEqual({ error: "Project not found" });
     expect(unpinResponse.statusCode).toBe(404);
     expect(unpinResponse.json()).toEqual({ error: "Project not found" });
+  });
+
+  it.skipIf(process.platform === "win32")("answers 500 when a project store write fails while unknown ids still answer 404", async () => {
+    const storeDir = join(appTestContext.tempDir, "readonly-store");
+    await mkdir(storeDir, { recursive: true });
+    const storePath = join(storeDir, "projects.json");
+    await writeFile(storePath, `${JSON.stringify({
+      projects: [{
+        id: "known-id",
+        name: "Known",
+        path: join(appTestContext.tempDir, "known"),
+        createdAt: "2026-05-25T00:00:00.000Z",
+      }],
+    }, null, 2)}\n`, "utf8");
+    // Readable but not writable, so store reads still resolve projects (404
+    // for unknown ids) while the pin write itself fails with a non-ProjectNotFoundError.
+    await chmod(storeDir, 0o500);
+
+    const app = await buildApp({
+      projects: new ProjectService(new ProjectStore(storePath)),
+      clientDist: false,
+      logger: false,
+    });
+
+    try {
+      const pinResponse = await app.inject({ method: "POST", url: "/api/projects/known-id/pin" });
+      expect(pinResponse.statusCode).toBe(500);
+      expect(pinResponse.json()).toHaveProperty("error");
+
+      const unknownResponses = await Promise.all([
+        app.inject({ method: "DELETE", url: "/api/projects/does-not-exist" }),
+        app.inject({ method: "POST", url: "/api/projects/does-not-exist/pin" }),
+        app.inject({ method: "POST", url: "/api/projects/does-not-exist/unpin" }),
+        app.inject({ method: "GET", url: "/api/projects/does-not-exist/workspaces" }),
+      ]);
+      for (const response of unknownResponses) {
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toEqual({ error: "Project not found" });
+      }
+    } finally {
+      await app.close();
+      await chmod(storeDir, 0o700).catch(() => undefined);
+    }
   });
 
   it("serves pin and unpin under the local machine prefix", async () => {

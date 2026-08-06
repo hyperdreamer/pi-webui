@@ -6,7 +6,7 @@ import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import { ProjectStore } from "./storage/projectStore.js";
-import { ProjectService } from "./projects/projectService.js";
+import { ProjectNotFoundError, ProjectService } from "./projects/projectService.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import { isAbsoluteishFileSuggestionQuery, listFileSuggestions, listPathSuggestions } from "./workspaces/fileSuggestions.js";
 import { pathAccessForCwd } from "./workspaces/effectivePathAccess.js";
@@ -79,7 +79,7 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
       await projects.close(request.params.projectId);
       return { closed: true };
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendProjectRouteError(reply, error);
     }
   });
 
@@ -87,7 +87,7 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
     try {
       return await projects.pin(request.params.projectId);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendProjectRouteError(reply, error);
     }
   });
 
@@ -95,7 +95,7 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
     try {
       return await projects.unpin(request.params.projectId);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendProjectRouteError(reply, error);
     }
   });
 
@@ -112,9 +112,19 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
       const project = await projects.requireProject(request.params.projectId);
       return await listWorkspacesWithEffectiveConfig(project, workspaces, options.config);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendProjectRouteError(reply, error);
     }
   });
+}
+
+function sendProjectRouteError(reply: FastifyReply, error: unknown): FastifyReply {
+  // Only unknown project ids answer 404. Genuine store or workspace failures
+  // (git, filesystem) answer 500 so clients can distinguish them. The wider
+  // resolveWorkspaceContext consumers (git, workspace explorer, terminal, and
+  // workspace deletion routes) deliberately keep their own catch-all mapping
+  // instead of this instanceof split, so the asymmetry is not an oversight.
+  const status = error instanceof ProjectNotFoundError ? 404 : 500;
+  return reply.code(status).send({ error: error instanceof Error ? error.message : String(error) });
 }
 
 async function listWorkspacesWithEffectiveConfig(project: Project, workspaces: WorkspaceService, config?: Pick<PiWebUiConfigService, "read">): Promise<Workspace[]> {
