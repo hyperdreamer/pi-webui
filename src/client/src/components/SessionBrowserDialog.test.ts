@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
-import { templateClickHandlerForText, templateText } from "../templateInspection.testSupport";
+import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText } from "../templateInspection.testSupport";
+import { sessionLabel } from "../sessionLabels";
 import { SessionBrowserDialog } from "./SessionBrowserDialog";
 
 const session = (id: string, patch: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -157,7 +158,9 @@ describe("SessionBrowserDialog", () => {
     const onSelect = vi.fn();
     dialog.onSelect = onSelect;
 
-    templateClickHandlerForText(dialog.render(), "Open me")(new Event("click"));
+    // The row's click target is the row itself, not the star toggle, whose aria-label
+    // embeds the same session label; anchor to the row's unique path instead.
+    templateClickHandlerForText(dialog.render(), target.path)(new Event("click"));
 
     expect(onSelect).toHaveBeenCalledWith(target);
   });
@@ -200,6 +203,40 @@ describe("SessionBrowserDialog", () => {
     expect(rendered.indexOf("First session")).toBeLessThan(rendered.indexOf("Later session"));
     expect(rendered).not.toContain("session-reorder-grip");
     expect("onReorder" in dialog).toBe(false);
+  });
+});
+
+describe("session browser pin controls", () => {
+  it("pins an unpinned session from its row star without selecting the row", () => {
+    const dialog = new SessionBrowserDialog();
+    const target = session("plain");
+    dialog.sessions = [target];
+    const onPinSession = vi.fn();
+    const onSelect = vi.fn();
+    dialog.onPinSession = onPinSession;
+    dialog.onSelect = onSelect;
+    const event = new Event("click");
+    const stopPropagation = vi.spyOn(event, "stopPropagation");
+
+    // The star's title is an interpolated value, so anchor its handler to the
+    // interpolated aria-label that precedes the @click binding (repo pattern).
+    templateEventHandlerAfterValue(dialog.render(), `Pin ${sessionLabel(target)}`, "@click=")(event);
+
+    expect(onPinSession).toHaveBeenCalledWith(target);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+  });
+
+  it("unpins a pinned session from its row star", () => {
+    const dialog = new SessionBrowserDialog();
+    const target = session("starred", { pinned: true });
+    dialog.sessions = [target];
+    const onUnpinSession = vi.fn();
+    dialog.onUnpinSession = onUnpinSession;
+
+    templateEventHandlerAfterValue(dialog.render(), `Unpin ${sessionLabel(target)}`, "@click=")(new Event("click"));
+
+    expect(onUnpinSession).toHaveBeenCalledWith(target);
   });
 });
 

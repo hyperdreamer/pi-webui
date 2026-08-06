@@ -4363,6 +4363,8 @@ export class PiWebUiApp extends LitElement {
           .unreadSessionIds=${this.unreadSessionIds}
           .selected=${state.selectedSession}
           .onSelect=${(session: SessionInfo) => { this.selectSessionFromBrowser(session); }}
+          .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
+          .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
           .onClose=${() => { this.closeSessionBrowser({ restoreFocus: true }); }}
         ></session-browser-dialog>` : null}
         ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}
