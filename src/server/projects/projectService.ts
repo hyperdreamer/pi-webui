@@ -28,4 +28,18 @@ export class ProjectService {
     if (!project) throw new Error("Project not found");
     return project;
   }
+
+  async pin(id: string): Promise<Project[]> {
+    return await this.setPinned(id, true);
+  }
+
+  async unpin(id: string): Promise<Project[]> {
+    return await this.setPinned(id, false);
+  }
+
+  private async setPinned(id: string, pinned: boolean): Promise<Project[]> {
+    const projects = await this.store.setPinned(id, pinned);
+    if (projects === undefined) throw new Error("Project not found");
+    return projects;
+  }
 }

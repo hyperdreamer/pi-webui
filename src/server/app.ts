@@ -83,6 +83,22 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
     }
   });
 
+  app.post<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId/pin`, async (request, reply) => {
+    try {
+      return await projects.pin(request.params.projectId);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId/unpin`, async (request, reply) => {
+    try {
+      return await projects.unpin(request.params.projectId);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get<{ Querystring: { q?: string } }>(`${prefix}/project-directories`, async (request, reply) => {
     try {
       return await listDirectorySuggestions(request.query.q ?? "");

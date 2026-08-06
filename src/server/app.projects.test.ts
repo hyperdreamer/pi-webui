@@ -109,4 +109,66 @@ describe("buildApp project routes", () => {
       }),
     ]);
   });
+
+  it("pins a project, returning the reordered list", async () => {
+    const first = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "First", path: join(appTestContext.tempDir, "first"), create: true },
+    })).json<Project>();
+    const second = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Second", path: join(appTestContext.tempDir, "second"), create: true },
+    })).json<Project>();
+
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/projects/${second.id}/pin` });
+
+    expect(pinResponse.statusCode).toBe(200);
+    expect(pinResponse.json<Project[]>()).toEqual([{ ...second, pinned: true }, first]);
+    expect((await appTestContext.app.inject({ method: "GET", url: "/api/projects" })).json<Project[]>()).toEqual([{ ...second, pinned: true }, first]);
+  });
+
+  it("unpins a project and moves it to the front of the list", async () => {
+    const first = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "First", path: join(appTestContext.tempDir, "first"), create: true },
+    })).json<Project>();
+    const second = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Second", path: join(appTestContext.tempDir, "second"), create: true },
+    })).json<Project>();
+    await appTestContext.app.inject({ method: "POST", url: `/api/projects/${first.id}/pin` });
+
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/projects/${second.id}/unpin` });
+
+    expect(unpinResponse.statusCode).toBe(200);
+    expect(unpinResponse.json<Project[]>()).toEqual([second, { ...first, pinned: true }]);
+  });
+
+  it("returns 404 when pinning or unpinning an unknown project", async () => {
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: "/api/projects/does-not-exist/pin" });
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: "/api/projects/does-not-exist/unpin" });
+
+    expect(pinResponse.statusCode).toBe(404);
+    expect(pinResponse.json()).toEqual({ error: "Project not found" });
+    expect(unpinResponse.statusCode).toBe(404);
+    expect(unpinResponse.json()).toEqual({ error: "Project not found" });
+  });
+
+  it("serves pin and unpin under the local machine prefix", async () => {
+    const project = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Local", path: appTestContext.projectDir, create: true },
+    })).json<Project>();
+
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/machines/local/projects/${project.id}/pin` });
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/machines/local/projects/${project.id}/unpin` });
+
+    expect(pinResponse.json<Project[]>()).toEqual([{ ...project, pinned: true }]);
+    expect(unpinResponse.json<Project[]>()).toEqual([project]);
+  });
 });
