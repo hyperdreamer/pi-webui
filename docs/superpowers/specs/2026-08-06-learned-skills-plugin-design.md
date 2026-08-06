@@ -205,7 +205,8 @@ the error-state retry affordance, mirroring `onRefreshMemory`.
 
 New bundled plugin `pi-webui-plugins/workspace-learned-skills/`, laid out like
 `workspace-memory`: `package.json` (id `workspace-learned-skills`), `pi-webui-plugin.ts`,
-`learnedSkillsPanelElement.ts`, and `learnedSkillsData.ts` declaring the consumed state shape
+`learnedSkillsPanelElement.ts`, `learnedSkillsPanelLayout.ts` for split-pane sizing and durable
+browser preference handling, and `learnedSkillsData.ts` declaring the consumed state shape
 locally so the plugin stays inside the public plugin API boundary. Bundled plugins are discovered
 from `dist/pi-webui-plugins`, so no install step is required.
 
@@ -239,10 +240,20 @@ right pane shows the selected skill: scope badge, file path, name, description, 
 `created` / `updated` when present. Nothing is selected initially, so the detail pane opens on a
 "Select a skill" empty state. No toggle, no editing, no delete.
 
+On desktop, an 8px vertical resize handle separates the columns. It uses `role="separator"`,
+`aria-orientation="vertical"`, current/min/max value attributes, pointer capture for drag, and
+keyboard resizing with Left/Right plus Home/End. The list width defaults to 280px, has a hard
+minimum of 190px and hard maximum of 440px, and is further constrained at runtime to preserve at
+least 320px for the detail pane. The chosen width is persisted under the versioned browser key
+`pi-webui:workspace-learned-skills:layout:v1`; unavailable, invalid, quota-limited, or
+privacy-blocked storage falls back silently to the in-tab/default width. This behavior stays
+inside the bundled plugin and does not import core app-shell resize internals.
+
 `PluginActivityDialog` sizes the panel `min(1040px, 100%)` by `min(780px, 100%)` and goes
 full-screen below 760px, where a two-column split would squeeze both halves. Below that
 breakpoint the panel becomes single-column: the list fills the dialog and selecting a skill
-replaces it with the detail view plus a back control.
+replaces it with the detail view plus a back icon control. The desktop width preference remains
+stored but is ignored at narrow widths, then applies again when the viewport becomes wide.
 
 #### States
 
@@ -294,13 +305,18 @@ after settle; `unavailable` stops polling; refresh error preserves prior data th
 
 **Parser and plugin.** `parsers.test.ts` additions for the strict snapshot parser including
 rejection cases. Pure-function tests for `learnedSkillsBadge` and `isLearnedSkillsPanelVisible`,
-and DOM tests on the panel element for the state matrix and list/detail selection. The panel is a
-plain custom element with a shadow root, as the memory panel is, so real DOM interaction is
+and DOM tests on the panel element for the state matrix, list/detail selection, pointer resizing,
+keyboard resizing, ARIA separator values, runtime min/max constraints, and returning from mobile
+detail to list. `learnedSkillsPanelLayout.test.ts` covers stored-width parsing, version rejection,
+static and container-aware clamping, persistence, and unavailable/throwing storage. The panel is
+a plain custom element with a shadow root, as the memory panel is, so real DOM interaction is
 practical and no TemplateResult handler extraction is needed.
 
-**Narrow-viewport layout.** jsdom cannot compute the 760px collapse, so it is verified with the
-Chromium CDP procedure in the `probe-narrow-lit-layout-with-chromium-cdp` skill rather than
-asserted in a unit test.
+**Narrow-viewport layout.** jsdom cannot compute the 760px collapse or prove that dynamic content
+does not overlap the splitter, so desktop and narrow layouts are verified with the Chromium CDP
+procedure in the `probe-narrow-lit-layout-with-chromium-cdp` skill. The probe measures both sides
+of the breakpoint, drags the divider to both limits, confirms the detail pane remains at least
+320px on desktop, and verifies list-to-detail-to-list navigation at narrow width.
 
 **Verification.** `npm run verify` before handoff, since this touches shared types, the federated
 route table, and existing memory behavior.
