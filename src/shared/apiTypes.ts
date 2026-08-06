@@ -1563,6 +1563,25 @@ export interface MemoryEntriesResponse {
   entries: MemoryEntry[];
 }
 
+export interface LearnedSkill {
+  id: string;
+  name: string;
+  description: string;
+  filePath: string;
+  version?: number;
+  created?: string;
+  updated?: string;
+}
+
+export type LearnedSkillsSnapshotResponse =
+  | { kind: "unavailable" }
+  | {
+      kind: "data";
+      globalSkills: LearnedSkill[];
+      projectSkills: LearnedSkill[];
+      projectUnavailableMessage?: string;
+    };
+
 export interface SystemInfoResponse {
   generatedAt: string;
   os: SystemOsInfo;
