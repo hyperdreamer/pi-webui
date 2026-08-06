@@ -508,6 +508,8 @@ export interface Project {
   name: string;
   path: string;
   createdAt: string;
+  /** True when the user has pinned this project so it sorts above unpinned projects. */
+  pinned?: boolean;
 }
 
 export interface ProjectUsageTotals {

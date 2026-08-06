@@ -23,8 +23,10 @@ function parseProject(value: unknown): Project {
   const name = value["name"];
   const path = value["path"];
   const createdAt = value["createdAt"];
+  const pinned = value["pinned"];
   if (typeof id !== "string" || typeof name !== "string" || typeof path !== "string" || typeof createdAt !== "string") throw new Error("Invalid project");
-  return { id, name, path, createdAt };
+  if (pinned !== undefined && typeof pinned !== "boolean") throw new Error("Invalid project");
+  return { id, name, path, createdAt, ...(pinned === true ? { pinned: true } : {}) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +44,8 @@ export function projectStorePath(env: NodeJS.ProcessEnv = process.env, cwd = pro
 }
 
 export class ProjectStore {
+  private operationQueue: Promise<void> = Promise.resolve();
+
   constructor(private readonly filePath = projectStorePath()) {}
 
   async list(): Promise<Project[]> {
@@ -49,22 +53,24 @@ export class ProjectStore {
   }
 
   async add(input: { name?: string; path: string }): Promise<Project> {
-    const data = await this.read();
-    const path = input.path;
-    const existing = data.projects.find((p) => p.path === path);
-    if (existing) return existing;
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      const path = input.path;
+      const existing = data.projects.find((p) => p.path === path);
+      if (existing) return existing;
 
-    const trimmedName = input.name?.trim();
-    const leafName = path.split("/").filter((part) => part !== "").at(-1);
-    const project: Project = {
-      id: randomUUID(),
-      name: trimmedName !== undefined && trimmedName !== "" ? trimmedName : leafName ?? path,
-      path,
-      createdAt: new Date().toISOString(),
-    };
-    data.projects.push(project);
-    await this.write(data);
-    return project;
+      const trimmedName = input.name?.trim();
+      const leafName = path.split("/").filter((part) => part !== "").at(-1);
+      const project: Project = {
+        id: randomUUID(),
+        name: trimmedName !== undefined && trimmedName !== "" ? trimmedName : leafName ?? path,
+        path,
+        createdAt: new Date().toISOString(),
+      };
+      data.projects.push(project);
+      await this.write(data);
+      return project;
+    });
   }
 
   async get(id: string): Promise<Project | undefined> {
@@ -72,11 +78,36 @@ export class ProjectStore {
   }
 
   async remove(id: string): Promise<boolean> {
-    const data = await this.read();
-    const projects = data.projects.filter((p) => p.id !== id);
-    if (projects.length === data.projects.length) return false;
-    await this.write({ projects });
-    return true;
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      const projects = data.projects.filter((p) => p.id !== id);
+      if (projects.length === data.projects.length) return false;
+      await this.write({ projects });
+      return true;
+    });
+  }
+
+  /**
+   * Set pin state and move the project to the front of the list in one write.
+   * Front-of-array placement is what makes a pinned or unpinned project appear
+   * at the top of its display group, so ordering needs no separate order field.
+   */
+  async setPinned(id: string, pinned: boolean): Promise<Project[] | undefined> {
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      const target = data.projects.find((p) => p.id === id);
+      if (target === undefined) return undefined;
+      const updated: Project = {
+        id: target.id,
+        name: target.name,
+        path: target.path,
+        createdAt: target.createdAt,
+        ...(pinned ? { pinned: true } : {}),
+      };
+      const projects = [updated, ...data.projects.filter((p) => p.id !== id)];
+      await this.write({ projects });
+      return projects;
+    });
   }
 
   private async read(): Promise<ProjectFile> {
@@ -86,6 +117,18 @@ export class ProjectStore {
     } catch (error: unknown) {
       if (isNodeErrorWithCode(error, "ENOENT")) return { projects: [] };
       throw error;
+    }
+  }
+
+  private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationQueue;
+    let release = (): void => undefined;
+    this.operationQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
     }
   }
 
