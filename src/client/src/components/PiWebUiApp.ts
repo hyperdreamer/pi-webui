@@ -4341,6 +4341,8 @@ export class PiWebUiApp extends LitElement {
           .onClose=${() => { this.closeProjectBrowser({ restoreFocus: true }); }}
           .onAdd=${() => { this.addProjectFromBrowser(); }}
           .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+          .onPinProject=${(project: Project) => this.projects.pinProject(project.id)}
+          .onUnpinProject=${(project: Project) => this.projects.unpinProject(project.id)}
         ></project-browser-dialog>` : null}
         ${this.statisticsProject === undefined ? null : html`
           <project-statistics-dialog
