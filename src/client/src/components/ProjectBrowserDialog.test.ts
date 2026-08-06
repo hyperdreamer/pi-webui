@@ -1,7 +1,7 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerNearMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 
 afterEach(() => {
@@ -366,13 +366,16 @@ describe("project browser pin controls", () => {
     dialog.onSelect = onSelect;
     const event = new Event("click");
     const stopPropagation = vi.spyOn(event, "stopPropagation");
+    const row = projectRowsRepeatDirective(dialog).render(unpinned);
 
-    // The row star's aria-label is interpolated, so anchor to its static aria-label attribute inside the row template.
-    templateEventHandlerAfterMarker(projectRowsRepeatDirective(dialog).render(unpinned), "aria-label=")(event);
+    // Anchor the star's handler to its exact interpolated aria-label value, then pin down its visible state.
+    templateEventHandlerAfterValue(row, `Pin ${unpinned.name}`, "@click=")(event);
 
     expect(onPinProject).toHaveBeenCalledWith(unpinned);
     expect(onSelect).not.toHaveBeenCalled();
     expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(templateValueAfterMarker(row, "aria-pressed=")).toBe("false");
+    expect(templateText(row)).toContain("☆");
   });
 
   it("unpins a pinned project from its row star", () => {
@@ -380,11 +383,14 @@ describe("project browser pin controls", () => {
     dialog.projects = [pinned];
     const onUnpinProject = vi.fn();
     dialog.onUnpinProject = onUnpinProject;
+    const row = projectRowsRepeatDirective(dialog).render(pinned);
 
-    // The row star's aria-label is interpolated, so anchor to its static aria-label attribute inside the row template.
-    templateEventHandlerAfterMarker(projectRowsRepeatDirective(dialog).render(pinned), "aria-label=")(new Event("click"));
+    // Anchor the star's handler to its exact interpolated aria-label value, then pin down its visible state.
+    templateEventHandlerAfterValue(row, `Unpin ${pinned.name}`, "@click=")(new Event("click"));
 
     expect(onUnpinProject).toHaveBeenCalledWith(pinned);
+    expect(templateValueAfterMarker(row, "aria-pressed=")).toBe("true");
+    expect(templateText(row)).toContain("★");
   });
 
   it("offers Pin and Unpin in the row action menu", () => {
