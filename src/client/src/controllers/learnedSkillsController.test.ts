@@ -15,6 +15,13 @@ const workspace: Workspace = {
   isGitWorktree: false,
 };
 
+const lateResultScopeCases: { name: string; patch: Partial<AppState> }[] = [
+  { name: "selected machine id", patch: { selectedMachine: { id: "remote-a", name: "Remote A", kind: "remote", createdAt: "now", updatedAt: "now" } } },
+  { name: "selected project id", patch: { selectedProject: { ...project, id: "project-b" }, selectedWorkspace: { ...workspace, projectId: "project-b" } } },
+  { name: "selected workspace id", patch: { selectedWorkspace: { ...workspace, id: "workspace-b" } } },
+  { name: "selected workspace path", patch: { selectedWorkspace: { ...workspace, path: "/work/project-b" } } },
+];
+
 describe("LearnedSkillsController", () => {
   it("loads immediately and schedules the next poll only after the request settles", async () => {
     const snapshot = vi.fn().mockResolvedValue({ kind: "data", globalSkills: [skill("g")], projectSkills: [skill("p")] });
@@ -101,6 +108,24 @@ describe("LearnedSkillsController", () => {
     expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "b" }] });
     expect(timers.delays).toEqual([30_000]);
     expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
+  it.each(lateResultScopeCases)("discards a late in-flight result when the live $name changes before updatePolling", async ({ patch }) => {
+    const pending = deferred<LearnedSkillsSnapshotResponse>();
+    const snapshot = vi.fn().mockReturnValue(pending.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledOnce(); });
+
+    harness.apply(patch);
+    pending.resolve(dataSnapshot("stale"));
+    await pending.promise;
+    await Promise.resolve();
+
+    expect(harness.state.learnedSkills).toEqual({ kind: "loading" });
+    expect(timers.pendingCallbacks()).toHaveLength(0);
   });
 
   it("stops polling after a confirmed unavailable snapshot", async () => {
@@ -290,6 +315,22 @@ describe("LearnedSkillsController", () => {
     await vi.waitFor(() => { expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "changed-path" }] }); });
     expect(snapshot).toHaveBeenNthCalledWith(1, "/work/project-a", "local");
     expect(snapshot).toHaveBeenNthCalledWith(2, "/work/project-a-renamed", "local");
+  });
+
+  it("treats a changed workspace id as a new scope when machine, project, and path stay fixed", async () => {
+    const snapshot = vi.fn()
+      .mockResolvedValueOnce(dataSnapshot("original-id"))
+      .mockResolvedValueOnce(dataSnapshot("changed-id"));
+    const harness = controllerFor({ snapshot, timers: fakeTimers() });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "original-id" }] }); });
+    harness.apply({ selectedWorkspace: { ...workspace, id: "workspace-b" } });
+    harness.controller.updatePolling();
+
+    await vi.waitFor(() => { expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "changed-id" }] }); });
+    expect(snapshot).toHaveBeenNthCalledWith(1, "/work/project-a", "local");
+    expect(snapshot).toHaveBeenNthCalledWith(2, "/work/project-a", "local");
   });
 
   it("treats selected machine and project ids as scope changes", async () => {
