@@ -45,6 +45,8 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/projects" },
   { method: "POST", path: "/projects" },
   { method: "DELETE", path: "/projects/:projectId" },
+  { method: "POST", path: "/projects/:projectId/pin" },
+  { method: "POST", path: "/projects/:projectId/unpin" },
   { method: "GET", path: "/project-directories" },
   { method: "GET", path: "/projects/:projectId/workspaces" },
   { method: "DELETE", path: "/projects/:projectId/workspaces/:workspaceId" },

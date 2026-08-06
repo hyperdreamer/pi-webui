@@ -16,6 +16,8 @@ export class ProjectBrowserDialog extends LitElement {
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onPinProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onUnpinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onShowProjectStatistics?: (project: Project) => void | Promise<void>;
   @property({ type: Boolean }) statisticsAvailable = false;
   @property({ attribute: false }) onAdd?: () => void;
@@ -139,7 +141,7 @@ export class ProjectBrowserDialog extends LitElement {
             @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
           >
             <div class="project-main">
-              <span class="project-name">${project.name}</span>
+              <span class="project-name">${this.renderPinToggle(project)}${project.name}</span>
               <span class="project-path">${project.path}</span>
               ${this.renderActivity(project)}
             </div>
@@ -150,6 +152,9 @@ export class ProjectBrowserDialog extends LitElement {
               ${this.openMenuProjectId === project.id ? html`
                 <div class="action-menu-panel" style=${this.menuStyle}>
                   ${this.statisticsAvailable ? html`<button type="button" title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
+                  ${project.pinned === true
+                    ? html`<button type="button" title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; void this.onUnpinProject?.(project); }}>Unpin</button>`
+                    : html`<button type="button" title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; void this.onPinProject?.(project); }}>Pin</button>`}
                   <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
                 </div>
               ` : null}
@@ -229,6 +234,22 @@ export class ProjectBrowserDialog extends LitElement {
     void this.onShowProjectStatistics?.(project);
   }
 
+  private renderPinToggle(project: Project): TemplateResult {
+    const isPinned = project.pinned === true;
+    const label = `${isPinned ? "Unpin" : "Pin"} ${project.name}`;
+    return html`<button
+      class=${`pin-toggle ${isPinned ? "pinned" : ""}`}
+      type="button"
+      title=${isPinned ? "Click to unpin project" : "Click to pin project"}
+      aria-label=${label}
+      aria-pressed=${String(isPinned)}
+      @click=${(event: MouseEvent) => {
+        event.stopPropagation();
+        void (isPinned ? this.onUnpinProject?.(project) : this.onPinProject?.(project));
+      }}
+    >${isPinned ? "★" : "☆"}</button> `;
+  }
+
   private renderActivity(project: Project): TemplateResult | undefined {
     const kind = projectActivityIndicator(project, this.workspacesByProjectId[project.id] ?? [], this.activities);
     return renderActionActivityIndicator(kind, kind === "terminal" ? "Project terminal active" : "Project active");
@@ -265,6 +286,10 @@ export class ProjectBrowserDialog extends LitElement {
     .project-row:hover .project-main { background: var(--pi-surface-hover); }
     .project-row.selected .project-main, .project-row.selected .action-menu-toggle { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .project-name { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+    .pin-toggle { flex: 0 0 auto; border: 0; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+    .pin-toggle.pinned { color: #d4a017; }
+    .pin-toggle:hover { border-radius: 4px; background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); transform: scale(1.25); }
+    .pin-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; border-radius: 2px; }
     .project-path { min-width: 0; white-space: normal; overflow-wrap: anywhere; color: var(--pi-muted); font-size: 12px; line-height: 1.35; }
     .action-activity { position: absolute; top: 6px; right: 7px; display: grid; place-items: center; width: 10px; height: 10px; }
     .action-activity .activity-indicator { margin: 0; }

@@ -3,8 +3,18 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Project, Workspace } from "./types.js";
 import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
+import { buildApp } from "./app.js";
+import { ProjectService } from "./projects/projectService.js";
+import { ProjectStore } from "./storage/projectStore.js";
 
 registerAppTestHooks();
+
+class FailingKnownProjectStore extends ProjectStore {
+  override async setPinned(id: string, pinned: boolean): Promise<Project[] | undefined> {
+    if (id === "known-id") throw new Error("Simulated project registry write failure");
+    return await super.setPinned(id, pinned);
+  }
+}
 
 describe("buildApp project routes", () => {
   it("adds, lists, and closes projects through the HTTP contract", async () => {
@@ -108,5 +118,104 @@ describe("buildApp project routes", () => {
         effectiveConfig: { uploads: { defaultFolder: "project-uploads" } },
       }),
     ]);
+  });
+
+  it("pins a project, returning the reordered list", async () => {
+    const first = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "First", path: join(appTestContext.tempDir, "first"), create: true },
+    })).json<Project>();
+    const second = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Second", path: join(appTestContext.tempDir, "second"), create: true },
+    })).json<Project>();
+
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/projects/${second.id}/pin` });
+
+    expect(pinResponse.statusCode).toBe(200);
+    expect(pinResponse.json<Project[]>()).toEqual([{ ...second, pinned: true }, first]);
+    expect((await appTestContext.app.inject({ method: "GET", url: "/api/projects" })).json<Project[]>()).toEqual([{ ...second, pinned: true }, first]);
+  });
+
+  it("unpins a project and moves it to the front of the list", async () => {
+    const first = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "First", path: join(appTestContext.tempDir, "first"), create: true },
+    })).json<Project>();
+    const second = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Second", path: join(appTestContext.tempDir, "second"), create: true },
+    })).json<Project>();
+    await appTestContext.app.inject({ method: "POST", url: `/api/projects/${first.id}/pin` });
+
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/projects/${second.id}/unpin` });
+
+    expect(unpinResponse.statusCode).toBe(200);
+    expect(unpinResponse.json<Project[]>()).toEqual([second, { ...first, pinned: true }]);
+  });
+
+  it("returns 404 when pinning or unpinning an unknown project", async () => {
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: "/api/projects/does-not-exist/pin" });
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: "/api/projects/does-not-exist/unpin" });
+
+    expect(pinResponse.statusCode).toBe(404);
+    expect(pinResponse.json()).toEqual({ error: "Project not found" });
+    expect(unpinResponse.statusCode).toBe(404);
+    expect(unpinResponse.json()).toEqual({ error: "Project not found" });
+  });
+
+  it("preserves genuine project errors while unknown ids still answer 404", async () => {
+    const storePath = join(appTestContext.tempDir, "projects-with-failing-writes.json");
+    await writeFile(storePath, `${JSON.stringify({
+      projects: [{
+        id: "known-id",
+        name: "Known",
+        path: join(appTestContext.tempDir, "known"),
+        createdAt: "2026-05-25T00:00:00.000Z",
+      }],
+    }, null, 2)}\n`, "utf8");
+
+    const app = await buildApp({
+      projects: new ProjectService(new FailingKnownProjectStore(storePath)),
+      clientDist: false,
+      logger: false,
+    });
+
+    try {
+      const pinResponse = await app.inject({ method: "POST", url: "/api/projects/known-id/pin" });
+      expect(pinResponse.statusCode).toBe(500);
+      expect(pinResponse.json()).toEqual({ error: "Simulated project registry write failure" });
+
+      const unknownResponses = await Promise.all([
+        app.inject({ method: "DELETE", url: "/api/projects/does-not-exist" }),
+        app.inject({ method: "POST", url: "/api/projects/does-not-exist/pin" }),
+        app.inject({ method: "POST", url: "/api/projects/does-not-exist/unpin" }),
+        app.inject({ method: "GET", url: "/api/projects/does-not-exist/workspaces" }),
+      ]);
+      for (const response of unknownResponses) {
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toEqual({ error: "Project not found" });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves pin and unpin under the local machine prefix", async () => {
+    const project = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Local", path: appTestContext.projectDir, create: true },
+    })).json<Project>();
+
+    const pinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/machines/local/projects/${project.id}/pin` });
+    const unpinResponse = await appTestContext.app.inject({ method: "POST", url: `/api/machines/local/projects/${project.id}/unpin` });
+
+    expect(pinResponse.json<Project[]>()).toEqual([{ ...project, pinned: true }]);
+    expect(unpinResponse.json<Project[]>()).toEqual([project]);
   });
 });

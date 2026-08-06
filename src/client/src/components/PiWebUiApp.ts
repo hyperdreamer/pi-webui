@@ -2155,6 +2155,8 @@ export class PiWebUiApp extends LitElement {
         .onToggleSessions=${() => { this.navigationSections.toggle("sessions"); }}
         .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project))}
         .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+        .onPinProject=${(project: Project) => this.projects.pinProject(project.id)}
+        .onUnpinProject=${(project: Project) => this.projects.unpinProject(project.id)}
         .onSelectWorkspace=${(workspace: Workspace) => this.selectNavigationItem("workspaces", "sessions", () => this.workspaces.selectWorkspace(workspace))}
         .onDeleteWorkspace=${(workspace: Workspace) => { void this.deleteWorkspace(workspace); }}
         .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
@@ -4379,6 +4381,8 @@ export class PiWebUiApp extends LitElement {
           .onClose=${() => { this.closeProjectBrowser({ restoreFocus: true }); }}
           .onAdd=${() => { this.addProjectFromBrowser(); }}
           .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+          .onPinProject=${(project: Project) => this.projects.pinProject(project.id)}
+          .onUnpinProject=${(project: Project) => this.projects.unpinProject(project.id)}
         ></project-browser-dialog>` : null}
         ${this.statisticsProject === undefined ? null : html`
           <project-statistics-dialog
@@ -4399,6 +4403,8 @@ export class PiWebUiApp extends LitElement {
           .unreadSessionIds=${this.unreadSessionIds}
           .selected=${state.selectedSession}
           .onSelect=${(session: SessionInfo) => { this.selectSessionFromBrowser(session); }}
+          .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
+          .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
           .onClose=${() => { this.closeSessionBrowser({ restoreFocus: true }); }}
         ></session-browser-dialog>` : null}
         ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}

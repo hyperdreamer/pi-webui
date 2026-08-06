@@ -20,6 +20,8 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean, reflect: true }) collapsed = false;
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onClose?: (project: Project) => void;
+  @property({ attribute: false }) onPin?: (project: Project) => void;
+  @property({ attribute: false }) onUnpin?: (project: Project) => void;
   @property({ attribute: false }) onShowStatistics?: (project: Project) => void;
   @property({ type: Boolean }) statisticsAvailable = false;
   @property({ attribute: false }) onAdd?: () => void;
@@ -81,33 +83,46 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         ${this.collapsed ? null : html`
           ${this.searchOpen ? this.renderSearchInput() : null}
           <div class="list-body">
-            ${repeat(projects, (project) => project.id, (project) => html`
-              <div
-                class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
-                tabindex="0"
-                title=${project.path}
-                @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(project)); }}
-                @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
-              >
-                <div class="action-main">
-                  <span class="workspace-primary"><span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
-                  ${this.renderActivity(project)}
-                </div>
-                <div class="action-menu">
-                  <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
-                  ${this.openMenuProjectId === project.id ? html`
-                    <div class="action-menu-panel" style=${this.menuStyle}>
-                      ${this.statisticsAvailable ? html`<button title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
-                      <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
-                    </div>
-                  ` : null}
-                </div>
-              </div>
-            `)}
+            ${repeat(projects, (project) => project.id, (project) => this.renderProjectRow(project))}
             ${projects.length === 0 && this.searchQuery.trim() !== "" ? html`<p class="project-search-empty">No matching projects.</p>` : null}
           </div>
         `}
       </section>
+    `;
+  }
+
+  /**
+   * Renders one project row. Kept as a private method so the action-menu and
+   * pinned-star wiring stays testable through the shared TemplateResult
+   * inspection helpers, which cannot descend into the `repeat` directive's
+   * results.
+   */
+  private renderProjectRow(project: Project) {
+    return html`
+      <div
+        class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
+        tabindex="0"
+        title=${project.path}
+        @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(project)); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
+      >
+        <div class="action-main">
+          <span class="workspace-primary">${project.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin project" aria-label=${`Unpin ${project.name}`} aria-pressed="true" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(project); }}>★</button> ` : null}<span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
+          ${this.renderActivity(project)}
+        </div>
+        <div class="action-menu">
+          <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
+          ${this.openMenuProjectId === project.id ? html`
+            <div class="action-menu-panel" style=${this.menuStyle}>
+              ${this.statisticsAvailable ? html`<button title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
+              ${project.pinned === true
+                ? html`<button title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; this.onUnpin?.(project); }}>Unpin</button>`
+                : html`<button title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; this.onPin?.(project); }}>Pin</button>`}
+              <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
+            </div>
+          ` : null}
+        </div>
+      </div>
     `;
   }
 
@@ -214,6 +229,9 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       .project-search-input { box-sizing: border-box; width: 100%; border: 1px solid var(--pi-border); border-radius: 7px; background: var(--pi-surface); color: var(--pi-text); padding: 6px 8px; font: inherit; }
       .project-search-input:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
       .project-search-empty { margin: 6px 0; color: var(--pi-muted); }
+      .pinned-star { flex: 0 0 auto; border: 0; background: transparent; color: #d4a017; padding: 0; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+      .pinned-star:hover { border-radius: 4px; background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); transform: scale(1.25); }
+      .pinned-star:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; border-radius: 2px; }
     `,
   ];
 }

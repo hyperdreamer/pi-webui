@@ -1,17 +1,21 @@
 import { api as defaultApi } from "../api";
+import type { Project } from "../api";
 import { selectedMachineId, type GetState, type SetState } from "./types";
 import type { WorkspaceController } from "./workspaceController";
 
 const DEFAULT_PROJECT_PATH = "~/workspace";
 
 export interface ProjectControllerDependencies {
-  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject">;
+  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
   onProjectsApplied?: (machineId: string) => void;
 }
 
 export class ProjectController {
-  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject">;
+  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
   private readonly onProjectsApplied: ((machineId: string) => void) | undefined;
+  private projectCatalogOperationSequence = 0;
+  private readonly pinMutationQueueByMachine = new Map<string, Promise<void>>();
+  private readonly latestPinMutationOrderByMachine = new Map<string, number>();
 
   constructor(
     private readonly getState: GetState,
@@ -25,14 +29,15 @@ export class ProjectController {
 
   async loadProjects() {
     const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
     this.setState({ error: "", isLoadingProjects: true });
     try {
       let projects = await this.api.projects(machineId);
-      if (selectedMachineId(this.getState()) !== machineId) return;
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return;
       let defaultProject: typeof projects[number] | undefined;
       if (projects.length === 0) {
         defaultProject = await this.api.addProject(DEFAULT_PROJECT_PATH, undefined, true, machineId);
-        if (selectedMachineId(this.getState()) !== machineId) return;
+        if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return;
         projects = [defaultProject];
       }
       const projectIds = new Set(projects.map((project) => project.id));
@@ -45,9 +50,9 @@ export class ProjectController {
       this.onProjectsApplied?.(machineId);
       if (defaultProject !== undefined) await this.workspaces.selectProject(defaultProject);
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     } finally {
-      if (selectedMachineId(this.getState()) === machineId) this.setState({ isLoadingProjects: false });
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ isLoadingProjects: false });
     }
   }
 
@@ -78,6 +83,80 @@ export class ProjectController {
       if (state.selectedProject?.id === projectId) this.workspaces.clearSelection();
     } catch (error) {
       if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+    }
+  }
+
+  async pinProject(projectId: string): Promise<void> {
+    await this.applyPinChange(projectId, (machineId) => this.api.pinProject(projectId, machineId));
+  }
+
+  async unpinProject(projectId: string): Promise<void> {
+    await this.applyPinChange(projectId, (machineId) => this.api.unpinProject(projectId, machineId));
+  }
+
+  /**
+   * The server owns project order, so the whole returned list replaces state.
+   * `onProjectsApplied` is deliberately not called: the project set is
+   * unchanged, so activity ownership does not need to re-resolve.
+   */
+  private async applyPinChange(projectId: string, mutate: (machineId: string) => Promise<Project[]>): Promise<void> {
+    const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The intent supersedes any in-flight load, so its finalizer no longer clears loading.
+    this.setState({ isLoadingProjects: false });
+    const mutationOrder = (this.latestPinMutationOrderByMachine.get(machineId) ?? 0) + 1;
+    this.latestPinMutationOrderByMachine.set(machineId, mutationOrder);
+    const previous = this.pinMutationQueueByMachine.get(machineId);
+    const operation = previous === undefined
+      ? this.runPinChange(machineId, sequence, mutationOrder, mutate)
+      : previous.catch(() => undefined).then(async () => {
+        await this.runPinChange(machineId, sequence, mutationOrder, mutate);
+      });
+    this.pinMutationQueueByMachine.set(machineId, operation);
+
+    try {
+      await operation;
+    } finally {
+      this.cleanupPinMutationQueue(machineId, mutationOrder, operation);
+    }
+  }
+
+  private async runPinChange(
+    machineId: string,
+    sequence: number,
+    mutationOrder: number,
+    mutate: (machineId: string) => Promise<Project[]>,
+  ): Promise<void> {
+    try {
+      const projects = await mutate(machineId);
+      if (!this.isLatestPinMutation(machineId, mutationOrder)) return;
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        this.setState({ projects });
+      } else if (selectedMachineId(this.getState()) === machineId) {
+        await this.loadProjects();
+      }
+    } catch (error) {
+      if (this.isCurrentPinMutation(machineId, sequence, mutationOrder)) this.setState({ error: String(error) });
+    }
+  }
+
+  private isCurrentProjectCatalogOperation(machineId: string, sequence: number): boolean {
+    return selectedMachineId(this.getState()) === machineId && this.projectCatalogOperationSequence === sequence;
+  }
+
+  private isLatestPinMutation(machineId: string, mutationOrder: number): boolean {
+    return this.latestPinMutationOrderByMachine.get(machineId) === mutationOrder;
+  }
+
+  private isCurrentPinMutation(machineId: string, sequence: number, mutationOrder: number): boolean {
+    return this.isCurrentProjectCatalogOperation(machineId, sequence) && this.isLatestPinMutation(machineId, mutationOrder);
+  }
+
+  private cleanupPinMutationQueue(machineId: string, mutationOrder: number, operation: Promise<void>): void {
+    if (this.pinMutationQueueByMachine.get(machineId) !== operation) return;
+    this.pinMutationQueueByMachine.delete(machineId);
+    if (this.latestPinMutationOrderByMachine.get(machineId) === mutationOrder) {
+      this.latestPinMutationOrderByMachine.delete(machineId);
     }
   }
 }

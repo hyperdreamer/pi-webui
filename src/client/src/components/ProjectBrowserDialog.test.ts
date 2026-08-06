@@ -1,7 +1,7 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 
 afterEach(() => {
@@ -104,7 +104,8 @@ describe("ProjectBrowserDialog", () => {
     const onSelect = vi.fn();
     dialog.onSelect = onSelect;
 
-    templateClickHandlerForText(projectRowsRepeatDirective(dialog).render(clientProject), "Client App")(clickEvent([]));
+    // Anchor on the row's path: the pin toggle's interpolated aria-label also contains the project name.
+    templateClickHandlerForText(projectRowsRepeatDirective(dialog).render(clientProject), clientProject.path)(clickEvent([]));
 
     expect(onSelect).toHaveBeenCalledWith(clientProject);
   });
@@ -349,5 +350,69 @@ describe("ProjectBrowserDialog", () => {
     templateEventHandlerAfterMarker(dialog.render(), '<div class="result-area"')(new Event("scroll"));
 
     expect(Reflect.get(dialog, "openMenuProjectId")).toBeUndefined();
+  });
+});
+
+describe("project browser pin controls", () => {
+  const pinned: Project = { id: "client", name: "Client App", path: "/work/client-app", createdAt: "2026-08-06T00:00:00.000Z", pinned: true };
+  const unpinned: Project = { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-08-06T00:00:00.000Z" };
+
+  it("pins an unpinned project from its row star without selecting the row", () => {
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = [unpinned];
+    const onPinProject = vi.fn();
+    const onSelect = vi.fn();
+    dialog.onPinProject = onPinProject;
+    dialog.onSelect = onSelect;
+    const event = new Event("click");
+    const stopPropagation = vi.spyOn(event, "stopPropagation");
+    const row = projectRowsRepeatDirective(dialog).render(unpinned);
+
+    // Anchor the star's handler to its exact interpolated aria-label value, then pin down its visible state.
+    templateEventHandlerAfterValue(row, `Pin ${unpinned.name}`, "@click=")(event);
+
+    expect(onPinProject).toHaveBeenCalledWith(unpinned);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(templateValueAfterMarker(row, "aria-pressed=")).toBe("false");
+    expect(templateText(row)).toContain("☆");
+  });
+
+  it("unpins a pinned project from its row star", () => {
+    const dialog = new ProjectBrowserDialog();
+    dialog.projects = [pinned];
+    const onUnpinProject = vi.fn();
+    dialog.onUnpinProject = onUnpinProject;
+    const row = projectRowsRepeatDirective(dialog).render(pinned);
+
+    // Anchor the star's handler to its exact interpolated aria-label value, then pin down its visible state.
+    templateEventHandlerAfterValue(row, `Unpin ${pinned.name}`, "@click=")(new Event("click"));
+
+    expect(onUnpinProject).toHaveBeenCalledWith(pinned);
+    expect(templateValueAfterMarker(row, "aria-pressed=")).toBe("true");
+    expect(templateText(row)).toContain("★");
+  });
+
+  it("offers Pin and Unpin in the row action menu", () => {
+    const pinDialog = new ProjectBrowserDialog();
+    pinDialog.projects = [unpinned];
+    Reflect.set(pinDialog, "openMenuProjectId", unpinned.id);
+    const onPinProject = vi.fn();
+    pinDialog.onPinProject = onPinProject;
+
+    templateEventHandlerNearMarker(projectRowsRepeatDirective(pinDialog).render(unpinned), 'title="Pin project to keep it at the top of the list"')(new Event("click"));
+
+    expect(onPinProject).toHaveBeenCalledWith(unpinned);
+    expect(Reflect.get(pinDialog, "openMenuProjectId")).toBeUndefined();
+
+    const unpinDialog = new ProjectBrowserDialog();
+    unpinDialog.projects = [pinned];
+    Reflect.set(unpinDialog, "openMenuProjectId", pinned.id);
+    const onUnpinProject = vi.fn();
+    unpinDialog.onUnpinProject = onUnpinProject;
+
+    templateEventHandlerNearMarker(projectRowsRepeatDirective(unpinDialog).render(pinned), 'title="Unpin project"')(new Event("click"));
+
+    expect(onUnpinProject).toHaveBeenCalledWith(pinned);
   });
 });

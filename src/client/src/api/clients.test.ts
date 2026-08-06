@@ -182,6 +182,28 @@ describe("project usage API", () => {
   });
 });
 
+describe("project pin API", () => {
+  it("posts pin and unpin to encoded selected-machine routes", async () => {
+    const pinned = [{ id: "p 1", name: "Repo", path: "/repo", createdAt: "2026-08-06T00:00:00.000Z", pinned: true }];
+    const pinFetch = stubJsonFetch(pinned);
+
+    await expect(projectsApi.pinProject("p 1", "remote /?")).resolves.toEqual(pinned);
+
+    const [pinUrl, pinInit] = fetchCall(pinFetch, 0);
+    expect(pinUrl).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/projects/p%201/pin");
+    expect(pinInit?.method).toBe("POST");
+
+    const unpinned = [{ id: "p 1", name: "Repo", path: "/repo", createdAt: "2026-08-06T00:00:00.000Z" }];
+    const unpinFetch = stubJsonFetch(unpinned);
+
+    await expect(projectsApi.unpinProject("p 1", "remote /?")).resolves.toEqual(unpinned);
+
+    const [unpinUrl, unpinInit] = fetchCall(unpinFetch, 0);
+    expect(unpinUrl).toBe("https://pi.example.test/api/machines/remote%20%2F%3F/projects/p%201/unpin");
+    expect(unpinInit?.method).toBe("POST");
+  });
+});
+
 describe("settings config and plugin APIs", () => {
   it("preserves gateway config and plugin routes by default", async () => {
     const fetchMock = stubSequenceFetch([

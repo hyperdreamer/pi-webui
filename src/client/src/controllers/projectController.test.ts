@@ -12,6 +12,39 @@ function workspace(projectId: string, path: string): Workspace {
   return { id: path, projectId, path, label: path, isMain: true, isGitRepo: true, isGitWorktree: true };
 }
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolveDeferred: ((value: T) => void) | undefined;
+  let rejectDeferred: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveDeferred = resolve;
+    rejectDeferred = reject;
+  });
+  if (resolveDeferred === undefined || rejectDeferred === undefined) throw new Error("Deferred promise was not initialized");
+  return { promise, resolve: resolveDeferred, reject: rejectDeferred };
+}
+
+const remoteMachine: NonNullable<AppState["selectedMachine"]> = {
+  id: "remote",
+  name: "Remote",
+  kind: "remote",
+  createdAt: "now",
+  updatedAt: "now",
+};
+
+const localMachine: NonNullable<AppState["selectedMachine"]> = {
+  id: "local",
+  name: "Local",
+  kind: "local",
+  createdAt: "now",
+  updatedAt: "now",
+};
+
 describe("ProjectController", () => {
   it("provisions ~/workspace and selects it when the project list is empty", async () => {
     const defaultProject = project("workspace", "/home/tester/workspace");
@@ -27,6 +60,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([]),
           addProject,
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
       },
     );
@@ -65,6 +100,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([currentProject]),
           addProject: vi.fn(),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -109,6 +146,8 @@ describe("ProjectController", () => {
           projects: vi.fn().mockResolvedValue([replacementProject]),
           addProject: vi.fn(),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -147,6 +186,8 @@ describe("ProjectController", () => {
           projects: vi.fn(),
           addProject: vi.fn().mockResolvedValue(addedProject),
           closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -195,6 +236,8 @@ describe("ProjectController", () => {
           projects: vi.fn(),
           addProject: vi.fn(),
           closeProject: vi.fn().mockResolvedValue(undefined),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -205,5 +248,452 @@ describe("ProjectController", () => {
     expect(events).toEqual(["forget", "applied", "clear"]);
     expect(onProjectsApplied).toHaveBeenCalledOnce();
     expect(clearSelection).toHaveBeenCalledOnce();
+  });
+
+  it("replaces the project list with the order returned by pinning", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const pinProject = vi.fn().mockResolvedValue([{ ...beta, pinned: true }, alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    await controller.pinProject(beta.id);
+
+    expect(pinProject).toHaveBeenCalledWith(beta.id, "local");
+    expect(state.projects).toEqual([{ ...beta, pinned: true }, alpha]);
+  });
+
+  it("replaces the project list with the order returned by unpinning", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const unpinProject = vi.fn().mockResolvedValue([project("beta", "/beta"), alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    await controller.unpinProject(beta.id);
+
+    expect(unpinProject).toHaveBeenCalledWith(beta.id, "local");
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+  });
+
+  it("reports a failed pin through app state without changing the project list", async () => {
+    const alpha = project("alpha", "/alpha");
+    let state: AppState = { ...initialAppState(), projects: [alpha] };
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects: vi.fn(),
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn().mockRejectedValue(new Error("Project not found")),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    await controller.pinProject(alpha.id);
+
+    expect(state.projects).toEqual([alpha]);
+    expect(state.error).toContain("Project not found");
+  });
+
+  it("serializes same-machine pin changes and publishes only the latest response", async () => {
+    const alpha = project("alpha", "/alpha");
+    const pinnedBeta = { ...project("beta", "/beta"), pinned: true };
+    const firstResponse = [{ ...alpha, pinned: true }, pinnedBeta];
+    const secondResponse = [project("beta", "/beta"), { ...alpha, pinned: true }];
+    let state: AppState = { ...initialAppState(), projects: [pinnedBeta, alpha] };
+    const first = deferred<Project[]>();
+    const second = deferred<Project[]>();
+    const mutationCalls: string[] = [];
+    const pinProject = vi.fn(() => {
+      mutationCalls.push("pin alpha");
+      return first.promise;
+    });
+    const unpinProject = vi.fn(() => {
+      mutationCalls.push("unpin beta");
+      return second.promise;
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject } },
+    );
+
+    const firstMutation = controller.pinProject(alpha.id);
+    const secondMutation = controller.unpinProject(pinnedBeta.id);
+
+    expect(mutationCalls).toEqual(["pin alpha"]);
+    expect(unpinProject).not.toHaveBeenCalled();
+
+    first.resolve(firstResponse);
+    await firstMutation;
+    await Promise.resolve();
+
+    expect(mutationCalls).toEqual(["pin alpha", "unpin beta"]);
+    expect(state.projects).toEqual([pinnedBeta, alpha]);
+
+    second.resolve(secondResponse);
+    await secondMutation;
+
+    expect(state.projects).toEqual(secondResponse);
+  });
+
+  it("keeps pin mutation queues independent between machines", async () => {
+    const localProject = project("local-project", "/local");
+    const remoteProject = project("remote-project", "/remote");
+    const localResponse = [{ ...localProject, pinned: true }];
+    const remoteResponse = [{ ...remoteProject, pinned: true }];
+    let state: AppState = { ...initialAppState(), selectedMachine: localMachine, projects: [localProject] };
+    const pendingLocalPin = deferred<Project[]>();
+    const pendingRemotePin = deferred<Project[]>();
+    const pinProject = vi.fn((_projectId: string, machineId?: string) => (
+      machineId === "local" ? pendingLocalPin.promise : pendingRemotePin.promise
+    ));
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const localMutation = controller.pinProject(localProject.id);
+    state = { ...state, selectedMachine: remoteMachine, projects: [remoteProject] };
+    const remoteMutation = controller.pinProject(remoteProject.id);
+
+    expect(pinProject.mock.calls).toEqual([
+      [localProject.id, "local"],
+      [remoteProject.id, "remote"],
+    ]);
+
+    pendingRemotePin.resolve(remoteResponse);
+    await remoteMutation;
+    expect(state.projects).toEqual(remoteResponse);
+
+    pendingLocalPin.resolve(localResponse);
+    await localMutation;
+    expect(state.projects).toEqual(remoteResponse);
+  });
+
+  it("continues a same-machine pin queue after an earlier rejection", async () => {
+    const alpha = project("alpha", "/alpha");
+    const pinnedBeta = { ...project("beta", "/beta"), pinned: true };
+    const secondResponse = [project("beta", "/beta"), alpha];
+    let state: AppState = { ...initialAppState(), projects: [pinnedBeta, alpha] };
+    const first = deferred<Project[]>();
+    const second = deferred<Project[]>();
+    const pinProject = vi.fn(() => first.promise);
+    const unpinProject = vi.fn(() => second.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject } },
+    );
+
+    const firstMutation = controller.pinProject(alpha.id);
+    const secondMutation = controller.unpinProject(pinnedBeta.id);
+
+    first.reject(new Error("pin failed"));
+    await firstMutation;
+    await Promise.resolve();
+
+    expect(unpinProject).toHaveBeenCalledWith(pinnedBeta.id, "local");
+    expect(state.error).toBe("");
+
+    second.resolve(secondResponse);
+    await secondMutation;
+
+    expect(state.projects).toEqual(secondResponse);
+  });
+
+  it("keeps an older same-id load from surviving a machine-selection ABA", async () => {
+    const initialLocalProjects = [project("initial-local", "/initial-local")];
+    const staleLocalProjects = [project("stale-local", "/stale-local")];
+    const remoteProjects = [project("remote", "/remote")];
+    const freshLocalProjects = [project("fresh-local", "/fresh-local")];
+    let state: AppState = { ...initialAppState(), selectedMachine: localMachine, projects: initialLocalProjects };
+    const publishedProjectLists: Project[][] = [];
+    const pendingStaleLocalLoad = deferred<Project[]>();
+    const pendingFreshLocalLoad = deferred<Project[]>();
+    const projects = vi.fn()
+      .mockReturnValueOnce(pendingStaleLocalLoad.promise)
+      .mockResolvedValueOnce(remoteProjects)
+      .mockReturnValueOnce(pendingFreshLocalLoad.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    const staleLocalLoad = controller.loadProjects();
+    state = { ...state, selectedMachine: remoteMachine };
+    await controller.loadProjects();
+    state = { ...state, selectedMachine: localMachine };
+    const freshLocalLoad = controller.loadProjects();
+
+    pendingStaleLocalLoad.resolve(staleLocalProjects);
+    await staleLocalLoad;
+
+    expect(projects.mock.calls).toEqual([["local"], ["remote"], ["local"]]);
+    expect(publishedProjectLists).toEqual([remoteProjects]);
+    expect(state.projects).toEqual(remoteProjects);
+    expect(state.isLoadingProjects).toBe(true);
+
+    pendingFreshLocalLoad.resolve(freshLocalProjects);
+    await freshLocalLoad;
+
+    expect(publishedProjectLists).toEqual([remoteProjects, freshLocalProjects]);
+    expect(state.projects).toEqual(freshLocalProjects);
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("reconciles a stale pin success after machine selection returns to the same id", async () => {
+    const initialLocalProject = project("initial-local", "/initial-local");
+    const initialLocalProjects = [initialLocalProject];
+    const remoteProjects = [project("remote", "/remote")];
+    const freshLocalProjects = [project("fresh-local", "/fresh-local")];
+    const stalePinProjects = [project("stale-pin", "/stale-pin")];
+    const reconciledLocalProjects = [project("reconciled-local", "/reconciled-local")];
+    let state: AppState = { ...initialAppState(), selectedMachine: localMachine, projects: initialLocalProjects };
+    const publishedProjectLists: Project[][] = [];
+    const pendingPin = deferred<Project[]>();
+    const projects = vi.fn()
+      .mockResolvedValueOnce(remoteProjects)
+      .mockResolvedValueOnce(freshLocalProjects)
+      .mockResolvedValueOnce(reconciledLocalProjects);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn().mockReturnValue(pendingPin.promise),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    const pin = controller.pinProject(initialLocalProject.id);
+    state = { ...state, selectedMachine: remoteMachine };
+    await controller.loadProjects();
+    state = { ...state, selectedMachine: localMachine };
+    await controller.loadProjects();
+
+    pendingPin.resolve(stalePinProjects);
+    await pin;
+
+    expect(projects).toHaveBeenNthCalledWith(1, "remote");
+    expect(projects).toHaveBeenNthCalledWith(2, "local");
+    expect(projects).toHaveBeenNthCalledWith(3, "local");
+    expect(publishedProjectLists).toEqual([remoteProjects, freshLocalProjects, reconciledLocalProjects]);
+    expect(state.projects).toEqual(reconciledLocalProjects);
+  });
+
+  it("ignores a stale pin failure after machine selection returns to the same id", async () => {
+    const initialLocalProject = project("initial-local", "/initial-local");
+    const initialLocalProjects = [initialLocalProject];
+    const remoteProjects = [project("remote", "/remote")];
+    const freshLocalProjects = [project("fresh-local", "/fresh-local")];
+    let state: AppState = { ...initialAppState(), selectedMachine: localMachine, projects: initialLocalProjects };
+    const pendingPin = deferred<Project[]>();
+    const projects = vi.fn()
+      .mockResolvedValueOnce(remoteProjects)
+      .mockResolvedValueOnce(freshLocalProjects);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn().mockReturnValue(pendingPin.promise),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    const pin = controller.pinProject(initialLocalProject.id);
+    state = { ...state, selectedMachine: remoteMachine };
+    await controller.loadProjects();
+    state = { ...state, selectedMachine: localMachine };
+    await controller.loadProjects();
+    state = { ...state, error: "current error" };
+
+    pendingPin.reject(new Error("stale pin failure"));
+    await pin;
+
+    expect(state.projects).toEqual(freshLocalProjects);
+    expect(state.error).toBe("current error");
+  });
+
+  it("ignores a stale pin response after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const pending = deferred<Project[]>();
+    const pinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const pin = controller.pinProject(beta.id);
+    expect(pinProject).toHaveBeenCalledWith(beta.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.resolve([{ ...beta, pinned: true }, alpha]);
+    await pin;
+
+    expect(state.projects).toEqual([alpha, beta]);
+    expect(state.error).toBe("");
+  });
+
+  it("ignores a stale unpin response after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const pending = deferred<Project[]>();
+    const unpinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    const unpin = controller.unpinProject(beta.id);
+    expect(unpinProject).toHaveBeenCalledWith(beta.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.resolve([project("beta", "/beta"), alpha]);
+    await unpin;
+
+    expect(state.projects).toEqual([beta, alpha]);
+    expect(state.error).toBe("");
+  });
+
+  it("ignores a stale pin failure after the selected machine changed", async () => {
+    const alpha = project("alpha", "/alpha");
+    let state: AppState = { ...initialAppState(), projects: [alpha], error: "earlier error" };
+    const pending = deferred<Project[]>();
+    const pinProject = vi.fn().mockReturnValue(pending.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const pin = controller.pinProject(alpha.id);
+    expect(pinProject).toHaveBeenCalledWith(alpha.id, "local");
+    state = { ...state, selectedMachine: remoteMachine };
+    pending.reject(new Error("Project not found"));
+    await pin;
+
+    expect(state.projects).toEqual([alpha]);
+    expect(state.error).toBe("earlier error");
+  });
+
+  it("does not let an older load overwrite a newer pin result", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    const pinnedBeta = { ...beta, pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const pinProject = vi.fn().mockResolvedValue([pinnedBeta, alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.pinProject(beta.id);
+
+    expect(publishedProjectLists).toEqual([[pinnedBeta, alpha]]);
+    expect(state.projects).toEqual([pinnedBeta, alpha]);
+    expect(state.isLoadingProjects).toBe(false);
+
+    pendingOldLoad.resolve([alpha, beta]);
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[pinnedBeta, alpha]]);
+    expect(state.projects).toEqual([pinnedBeta, alpha]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("does not publish an older load failure after a newer unpin result", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const unpinProject = vi.fn().mockResolvedValue([project("beta", "/beta"), alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.unpinProject(beta.id);
+
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+    expect(state.isLoadingProjects).toBe(false);
+
+    pendingOldLoad.reject(new Error("older load failure"));
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[project("beta", "/beta"), alpha]]);
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
   });
 });

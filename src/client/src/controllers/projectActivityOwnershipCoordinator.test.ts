@@ -901,6 +901,8 @@ describe("ProjectActivityOwnershipCoordinator", () => {
             projects: vi.fn().mockResolvedValue([candidate]),
             addProject: vi.fn(),
             closeProject: vi.fn(),
+            pinProject: vi.fn(),
+            unpinProject: vi.fn(),
           },
           onProjectsApplied: (machineId) => { ownershipTasks.push(coordinator.handleProjectsApplied(machineId)); },
         },

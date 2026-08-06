@@ -20,6 +20,8 @@ export class SessionBrowserDialog extends LitElement {
   @property({ attribute: false }) unreadSessionIds: ReadonlySet<string> = new Set();
   @property({ attribute: false }) selected?: SessionInfo;
   @property({ attribute: false }) onSelect?: (session: SessionInfo) => void;
+  @property({ attribute: false }) onPinSession?: (session: SessionInfo) => void | Promise<void>;
+  @property({ attribute: false }) onUnpinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onClose?: () => void;
 
   @state() private searchQuery = "";
@@ -114,7 +116,7 @@ export class SessionBrowserDialog extends LitElement {
         @keydown=${(event: KeyboardEvent) => { this.handleSessionKeydown(event, session); }}
       >
         <div class="action-main">
-          <span class="action-name-line">${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span></span>
+          <span class="action-name-line">${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${this.renderPinToggle(session)}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span></span>
           <small>${session.cwd} · ${String(session.messageCount)} messages</small>
           ${renderActionActivityIndicators(indicators)}
         </div>
@@ -127,6 +129,21 @@ export class SessionBrowserDialog extends LitElement {
     const { folded } = row;
     const action = folded ? "Expand" : "Collapse";
     return html`<button class="session-group-toggle" type="button" title=${`${action} ${sessionLabel(row.session)}`} aria-label=${`${action} ${sessionLabel(row.session)}`} aria-expanded=${String(!folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleSessionGroup(row.session.path, folded); }}>${folded ? "▸" : "▾"}</button>`;
+  }
+
+  private renderPinToggle(session: SessionInfo): TemplateResult {
+    const isPinned = session.pinned === true;
+    return html`<button
+      class=${`pin-toggle ${isPinned ? "pinned" : ""}`}
+      type="button"
+      title=${isPinned ? "Click to unpin session" : "Click to pin session"}
+      aria-label=${`${isPinned ? "Unpin" : "Pin"} ${sessionLabel(session)}`}
+      aria-pressed=${String(isPinned)}
+      @click=${(event: MouseEvent) => {
+        event.stopPropagation();
+        void (isPinned ? this.onUnpinSession?.(session) : this.onPinSession?.(session));
+      }}
+    >${isPinned ? "★" : "☆"}</button> `;
   }
 
   private toggleSessionGroup(path: string, folded: boolean): void {
@@ -215,6 +232,10 @@ export class SessionBrowserDialog extends LitElement {
     .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0 5px 0 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; vertical-align: text-bottom; cursor: pointer; }
     .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); transform: scale(1.25); }
     .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
+    .pin-toggle { flex: 0 0 auto; border: 0; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+    .pin-toggle.pinned { color: #d4a017; }
+    .pin-toggle:hover { border-radius: 4px; background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); transform: scale(1.25); }
+    .pin-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; border-radius: 2px; }
     .empty-state { margin: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
 
     @media (max-width: 760px) {
