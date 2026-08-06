@@ -628,4 +628,72 @@ describe("ProjectController", () => {
     expect(state.projects).toEqual([alpha]);
     expect(state.error).toBe("earlier error");
   });
+
+  it("does not let an older load overwrite a newer pin result", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = project("beta", "/beta");
+    const pinnedBeta = { ...beta, pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [alpha, beta] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const pinProject = vi.fn().mockResolvedValue([pinnedBeta, alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.pinProject(beta.id);
+
+    expect(publishedProjectLists).toEqual([[pinnedBeta, alpha]]);
+    expect(state.projects).toEqual([pinnedBeta, alpha]);
+    expect(state.isLoadingProjects).toBe(false);
+
+    pendingOldLoad.resolve([alpha, beta]);
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[pinnedBeta, alpha]]);
+    expect(state.projects).toEqual([pinnedBeta, alpha]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("does not publish an older load failure after a newer unpin result", async () => {
+    const alpha = project("alpha", "/alpha");
+    const beta = { ...project("beta", "/beta"), pinned: true };
+    let state: AppState = { ...initialAppState(), projects: [beta, alpha] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const unpinProject = vi.fn().mockResolvedValue([project("beta", "/beta"), alpha]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.unpinProject(beta.id);
+
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+    expect(state.isLoadingProjects).toBe(false);
+
+    pendingOldLoad.reject(new Error("older load failure"));
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[project("beta", "/beta"), alpha]]);
+    expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
 });
