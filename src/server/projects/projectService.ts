@@ -3,6 +3,14 @@ import type { ProjectStore } from "../storage/projectStore.js";
 import type { Project } from "../types.js";
 import { expandUserPath } from "./directorySuggestions.js";
 
+/** Thrown when a project id does not resolve, so routes can answer 404 without swallowing real failures. */
+export class ProjectNotFoundError extends Error {
+  constructor() {
+    super("Project not found");
+    this.name = "ProjectNotFoundError";
+  }
+}
+
 export class ProjectService {
   constructor(private readonly store: ProjectStore) {}
 
@@ -20,12 +28,12 @@ export class ProjectService {
   }
 
   async close(id: string): Promise<void> {
-    if (!(await this.store.remove(id))) throw new Error("Project not found");
+    if (!(await this.store.remove(id))) throw new ProjectNotFoundError();
   }
 
   async requireProject(id: string): Promise<Project> {
     const project = await this.store.get(id);
-    if (!project) throw new Error("Project not found");
+    if (!project) throw new ProjectNotFoundError();
     return project;
   }
 
@@ -39,7 +47,7 @@ export class ProjectService {
 
   private async setPinned(id: string, pinned: boolean): Promise<Project[]> {
     const projects = await this.store.setPinned(id, pinned);
-    if (projects === undefined) throw new Error("Project not found");
+    if (projects === undefined) throw new ProjectNotFoundError();
     return projects;
   }
 }
