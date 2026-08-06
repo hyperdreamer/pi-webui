@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -105,5 +105,46 @@ describe("ProjectStore pin state", () => {
     expect(persisted).toEqual({ projects: await store.list() });
     expect(await store.list()).toHaveLength(2);
     expect((await store.list()).every((project) => project.pinned === true)).toBe(true);
+  });
+});
+
+describe("ProjectStore durable writes", () => {
+  let tempDir = "";
+  let filePath = "";
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "pi-webui-project-store-"));
+    filePath = join(tempDir, "projects.json");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("leaves no temp file behind after a completed mutation", async () => {
+    const store = new ProjectStore(filePath);
+    const project = await store.add({ path: "/work/alpha" });
+    await store.setPinned(project.id, true);
+
+    const entries = await readdir(tempDir);
+    expect(entries).toContain("projects.json");
+    expect(entries.filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("ignores an unrelated pre-existing temp file when reading", async () => {
+    await writeFile(join(tempDir, ".projects.json.stale.tmp"), "not json", "utf8");
+    const store = new ProjectStore(filePath);
+    await store.add({ path: "/work/alpha" });
+
+    expect(await store.list()).toEqual([expect.objectContaining({ path: "/work/alpha" })]);
+  });
+
+  it("writes a complete parseable file after a mutation", async () => {
+    const store = new ProjectStore(filePath);
+    const project = await store.add({ path: "/work/alpha" });
+    await store.setPinned(project.id, true);
+
+    const persisted: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    expect(persisted).toEqual({ projects: await store.list() });
   });
 });

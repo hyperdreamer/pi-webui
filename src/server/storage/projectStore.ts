@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
 import { randomUUID } from "node:crypto";
 import type { Project } from "../types.js";
@@ -134,6 +134,17 @@ export class ProjectStore {
 
   private async write(data: ProjectFile): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    // Writing to a temp file in the same directory and renaming it over the
+    // target is what makes a reader see either the old or the new file, never a
+    // partial one. The `exclusive` queue remains necessary because it prevents
+    // lost updates rather than torn files.
+    const tempPath = join(dirname(this.filePath), `.${basename(this.filePath)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
+    try {
+      await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+      await rename(tempPath, this.filePath);
+    } catch (error: unknown) {
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
   }
 }
