@@ -5,7 +5,7 @@ import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
-import { projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
+import { projectSubtreeIds, projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
 import { visibleProjectsFromRows } from "./ProjectList";
 import { activateSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 
@@ -17,6 +17,7 @@ export class ProjectBrowserDialog extends LitElement {
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onCloseProjectTree?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onPinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onUnpinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onShowProjectStatistics?: (project: Project) => void | Promise<void>;
@@ -201,6 +202,7 @@ export class ProjectBrowserDialog extends LitElement {
                 ? html`<button type="button" title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; void this.onUnpinProject?.(project); }}>Unpin</button>`
                 : html`<button type="button" title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; void this.onPinProject?.(project); }}>Pin</button>`}
               <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
+              ${this.renderCloseTreeEntry(project)}
             </div>
           ` : null}
         </div>
@@ -283,6 +285,21 @@ export class ProjectBrowserDialog extends LitElement {
     if (!this.hasProject(project.id)) return;
     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEBUI; it will not change the project folder.`)) {
       void this.onCloseProject?.(project);
+    }
+  }
+
+  private renderCloseTreeEntry(project: Project): TemplateResult | null {
+    const descendantCount = projectSubtreeIds(this.projects, project.id).length - 1;
+    if (descendantCount < 1) return null;
+    return html`<button type="button" title="Close this project and its subprojects" @click=${() => { this.closeProjectTree(project, descendantCount); }}>Close with subprojects (${descendantCount})</button>`;
+  }
+
+  private closeProjectTree(project: Project, descendantCount: number): void {
+    this.openMenuProjectId = undefined;
+    if (!this.hasProject(project.id)) return;
+    const noun = descendantCount === 1 ? "subproject" : "subprojects";
+    if (confirm(`Close ${project.name} and ${String(descendantCount)} ${noun}?\n\nThis only removes them from PI WEBUI; it will not change the project folders.`)) {
+      void this.onCloseProjectTree?.(project);
     }
   }
 

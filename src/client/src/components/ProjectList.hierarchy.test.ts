@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PropertyValues, TemplateResult } from "lit";
 import type { Project } from "../api";
-import { templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectList } from "./ProjectList";
 import { projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
 
@@ -69,6 +69,68 @@ function projectListStyles(): string {
 function isUpdatedMethod(value: unknown): value is (this: ProjectList, changed: PropertyValues<ProjectList>) => void {
   return typeof value === "function";
 }
+
+describe("close with subprojects", () => {
+  it("offers the entry with a descendant count for a parent", () => {
+    const list = new ProjectList();
+    list.projects = family;
+    Reflect.set(list, "openMenuProjectId", "root");
+
+    expect(templateText(renderRow(list, rowFor(family, "root")))).toContain("Close with subprojects (1)");
+  });
+
+  it("counts descendants at every depth from the full catalog while folded", () => {
+    const deep: Project[] = [
+      { id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "child", name: "Child", path: "/work/app1", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "grandchild", name: "Grandchild", path: "/work/app1/nested", createdAt: "2026-08-07T00:00:00.000Z" },
+    ];
+    const list = new ProjectList();
+    list.projects = deep;
+    Reflect.set(list, "openMenuProjectId", "root");
+
+    expect(templateText(renderRow(list, rowFor(deep, "root")))).toContain("Close with subprojects (2)");
+  });
+
+  it("does not offer the entry for a project without descendants", () => {
+    const list = new ProjectList();
+    list.projects = family;
+    Reflect.set(list, "openMenuProjectId", "standalone");
+
+    expect(templateText(renderRow(list, rowFor(family, "standalone")))).not.toContain("Close with subprojects");
+  });
+
+  it("closes the family after confirmation", () => {
+    const list = new ProjectList();
+    list.projects = family;
+    Reflect.set(list, "openMenuProjectId", "root");
+    const onCloseTree = vi.fn();
+    list.onCloseTree = onCloseTree;
+    const confirmSpy = vi.fn<(message?: string) => boolean>(() => true);
+    vi.stubGlobal("confirm", confirmSpy);
+
+    templateClickHandlerForText(renderRow(list, rowFor(family, "root")), "Close with subprojects (1)")(new Event("click"));
+
+    expect(confirmSpy).toHaveBeenCalledOnce();
+    expect(String(confirmSpy.mock.calls[0]?.[0])).toContain("Root");
+    expect(String(confirmSpy.mock.calls[0]?.[0])).toContain("will not change");
+    expect(onCloseTree).toHaveBeenCalledWith(family[0]);
+  });
+
+  it("issues no request when confirmation is declined", () => {
+    const list = new ProjectList();
+    list.projects = family;
+    Reflect.set(list, "openMenuProjectId", "root");
+    const onCloseTree = vi.fn();
+    list.onCloseTree = onCloseTree;
+    const confirmSpy = vi.fn<(message?: string) => boolean>(() => false);
+    vi.stubGlobal("confirm", confirmSpy);
+
+    templateClickHandlerForText(renderRow(list, rowFor(family, "root")), "Close with subprojects (1)")(new Event("click"));
+
+    expect(onCloseTree).not.toHaveBeenCalled();
+  });
+});
 
 describe("project list hierarchy rendering", () => {
   it("renders a disclosure control that reports collapsed state for a parent", () => {

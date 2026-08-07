@@ -1,7 +1,7 @@
 import type { CSSResult, TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
-import { isTemplateResult, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectList } from "./ProjectList";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import type { ProjectTreeRow } from "./projectListProjection";
@@ -182,5 +182,47 @@ describe("expanded project browser hierarchy", () => {
     expect(rendered).toContain("--depth:1");
     expect(rendered).toContain("--depth:2");
     expect(rendered).not.toContain("--depth:3");
+  });
+});
+
+describe("expanded browser close with subprojects", () => {
+  it("offers the entry with a descendant count", () => {
+    const dialog = dialogWith(family);
+    Reflect.set(dialog, "openMenuProjectId", "root");
+
+    expect(templateText(renderRootGroup(dialog))).toContain("Close with subprojects (1)");
+  });
+
+  it("does not offer the entry for a project without descendants", () => {
+    const dialog = dialogWith(family);
+    Reflect.set(dialog, "openMenuProjectId", "standalone");
+
+    expect(dialogResultsText(dialog)).not.toContain("Close with subprojects");
+  });
+
+  it("closes the family after confirmation", () => {
+    const dialog = dialogWith(family);
+    Reflect.set(dialog, "openMenuProjectId", "root");
+    const onCloseProjectTree = vi.fn();
+    dialog.onCloseProjectTree = onCloseProjectTree;
+    const confirmSpy = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmSpy);
+
+    templateClickHandlerForText(renderRootGroup(dialog), "Close with subprojects (1)")(new Event("click"));
+
+    expect(onCloseProjectTree).toHaveBeenCalledWith(family[0]);
+  });
+
+  it("issues no request when confirmation is declined", () => {
+    const dialog = dialogWith(family);
+    Reflect.set(dialog, "openMenuProjectId", "root");
+    const onCloseProjectTree = vi.fn();
+    dialog.onCloseProjectTree = onCloseProjectTree;
+    const confirmSpy = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirmSpy);
+
+    templateClickHandlerForText(renderRootGroup(dialog), "Close with subprojects (1)")(new Event("click"));
+
+    expect(onCloseProjectTree).not.toHaveBeenCalled();
   });
 });

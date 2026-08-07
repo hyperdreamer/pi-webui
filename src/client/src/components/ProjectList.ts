@@ -6,7 +6,7 @@ import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
-import { projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
+import { projectSubtreeIds, projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -20,6 +20,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean, reflect: true }) collapsed = false;
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onClose?: (project: Project) => void;
+  @property({ attribute: false }) onCloseTree?: (project: Project) => void;
   @property({ attribute: false }) onPin?: (project: Project) => void;
   @property({ attribute: false }) onUnpin?: (project: Project) => void;
   @property({ attribute: false }) onShowStatistics?: (project: Project) => void;
@@ -160,6 +161,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
                 ? html`<button title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; this.onUnpin?.(project); }}>Unpin</button>`
                 : html`<button title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; this.onPin?.(project); }}>Pin</button>`}
               <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
+              ${this.renderCloseTreeEntry(project)}
             </div>
           ` : null}
         </div>
@@ -268,6 +270,21 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   private close(project: Project) {
     this.openMenuProjectId = undefined;
     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEBUI; it will not change the project folder.`)) this.onClose?.(project);
+  }
+
+  /** Descendant count comes from the whole catalog, so a folded family still reports honestly. */
+  private renderCloseTreeEntry(project: Project) {
+    const descendantCount = projectSubtreeIds(this.projects, project.id).length - 1;
+    if (descendantCount < 1) return null;
+    return html`<button title="Close this project and its subprojects" @click=${() => { this.closeTree(project, descendantCount); }}>Close with subprojects (${descendantCount})</button>`;
+  }
+
+  private closeTree(project: Project, descendantCount: number): void {
+    this.openMenuProjectId = undefined;
+    const noun = descendantCount === 1 ? "subproject" : "subprojects";
+    if (confirm(`Close ${project.name} and ${String(descendantCount)} ${noun}?\n\nThis only removes them from PI WEBUI; it will not change the project folders.`)) {
+      this.onCloseTree?.(project);
+    }
   }
 
   private showStatistics(project: Project) {
