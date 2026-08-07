@@ -30,6 +30,21 @@ describe("SlowConsumerGuard", () => {
     expect(socket.terminate).not.toHaveBeenCalled();
   });
 
+  it("does not terminate on the first deep observation when the clock is epoch-based", () => {
+    const socket = fakeSocket();
+    let clock = 1_700_000_000_000;
+    const guard = new SlowConsumerGuard(socket, { softLimitBytes: 1000, stallWindowMs: 100, now: () => clock });
+    socket.bufferedAmount = 5000;
+    expect(guard.afterSend()).toBe(false);
+    expect(socket.terminate).not.toHaveBeenCalled();
+    clock += 99;
+    expect(guard.afterSend()).toBe(false);
+    expect(socket.terminate).not.toHaveBeenCalled();
+    clock += 2;
+    expect(guard.afterSend()).toBe(true);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+
   it("terminates a consumer that stays above the soft limit without draining", () => {
     const socket = fakeSocket();
     let clock = 0;

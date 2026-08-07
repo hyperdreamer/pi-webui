@@ -33,7 +33,7 @@ export class SlowConsumerGuard {
   private readonly now: () => number;
   private readonly onTerminate: ((info: { bufferedAmount: number; stalledForMs: number }) => void) | undefined;
   private highWaterMark = 0;
-  private highWaterSinceMs = 0;
+  private highWaterSinceMs: number | undefined;
   private _terminated = false;
 
   constructor(
@@ -65,6 +65,11 @@ export class SlowConsumerGuard {
     // measured from the first observation of the current high-water regime;
     // a rising buffer raises the mark without restarting the clock, so a
     // monotonic climb still times out.
+    // First observation of a deep regime: stamp the stall start now rather
+    // than inheriting an epoch-zero timestamp, which would make an already
+    // deep socket look like it had been stalled for eons.
+    this.highWaterSinceMs ??= now;
+
     if (now - this.highWaterSinceMs >= this.stallWindowMs) {
       this._terminated = true;
       try {
