@@ -16,6 +16,28 @@ describe("SlowConsumerGuard", () => {
     expect(socket.terminate).not.toHaveBeenCalled();
   });
 
+  it("starts a fresh stall window after a delayed first deep observation", () => {
+    const socket = fakeSocket();
+    let clock = 0;
+    const guard = new SlowConsumerGuard(socket, { softLimitBytes: 1000, stallWindowMs: 5000, now: () => clock });
+
+    socket.bufferedAmount = 999;
+    expect(guard.afterSend()).toBe(false);
+
+    clock = 6000;
+    socket.bufferedAmount = 5000;
+    expect(guard.afterSend()).toBe(false);
+    expect(socket.terminate).not.toHaveBeenCalled();
+
+    clock = 10_999;
+    expect(guard.afterSend()).toBe(false);
+    expect(socket.terminate).not.toHaveBeenCalled();
+
+    clock = 11_000;
+    expect(guard.afterSend()).toBe(true);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+  });
+
   it("does not terminate a deep consumer that is still draining", () => {
     const socket = fakeSocket();
     let clock = 0;

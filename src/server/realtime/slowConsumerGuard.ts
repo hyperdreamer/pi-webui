@@ -23,9 +23,9 @@ export interface SlowConsumerGuardOptions {
 /**
  * Kills a websocket whose kernel buffer stays deep without draining. A socket
  * is terminated only when `bufferedAmount` exceeds the soft limit and has not
- * dropped below its high-water mark for `stallWindowMs`; any observed decrease
- * (or return at/below the soft limit) resets the mark and the stall clock, so
- * a deep-but-draining consumer survives.
+ * dropped below its high-water mark for `stallWindowMs`; an observed deep
+ * decrease restarts the stall clock, while returning at/below the soft limit
+ * ends the deep-stall regime entirely.
  */
 export class SlowConsumerGuard {
   private readonly softLimitBytes: number;
@@ -52,10 +52,17 @@ export class SlowConsumerGuard {
     const now = this.now();
     const bufferedAmount = this.socket.bufferedAmount;
 
-    // Drained back to (or below) the soft limit, or dropped below the running
-    // high-water mark: the consumer is making progress, so restart the stall
-    // window from the newly observed depth.
-    if (bufferedAmount <= this.softLimitBytes || bufferedAmount < this.highWaterMark) {
+    // At/below the soft limit there is no active deep-stall regime. A later
+    // deep observation must start a fresh stall window.
+    if (bufferedAmount <= this.softLimitBytes) {
+      this.highWaterMark = bufferedAmount;
+      this.highWaterSinceMs = undefined;
+      return false;
+    }
+
+    // A still-deep decrease is draining progress, so restart the stall window
+    // from the newly observed depth.
+    if (bufferedAmount < this.highWaterMark) {
       this.highWaterMark = bufferedAmount;
       this.highWaterSinceMs = now;
       return false;
