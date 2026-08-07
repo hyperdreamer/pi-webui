@@ -219,3 +219,38 @@ describe("buildApp project routes", () => {
     expect(unpinResponse.json<Project[]>()).toEqual([project]);
   });
 });
+
+describe("POST /projects/:projectId/close-tree", () => {
+  it("closes a project family and reports the closed ids", async () => {
+    const root = (await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Root", path: join(appTestContext.tempDir, "work"), create: true },
+    })).json<Project>();
+    await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Child", path: join(appTestContext.tempDir, "work", "app1"), create: true },
+    });
+    await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Other", path: join(appTestContext.tempDir, "other"), create: true },
+    });
+
+    const response = await appTestContext.app.inject({ method: "POST", url: `/api/projects/${root.id}/close-tree` });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ closedProjectIds: string[] }>();
+    expect(body.closedProjectIds).toEqual(expect.arrayContaining([root.id]));
+
+    const remaining = await appTestContext.app.inject({ method: "GET", url: "/api/projects" });
+    expect(remaining.json()).toHaveLength(1);
+  });
+
+  it("answers 404 for an unknown project", async () => {
+    const response = await appTestContext.app.inject({ method: "POST", url: "/api/projects/missing/close-tree" });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
