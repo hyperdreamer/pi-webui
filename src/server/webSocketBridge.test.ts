@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { bridgeSockets, createBufferedSender } from "./webSocketBridge.js";
+import { SLOW_CONSUMER_SOFT_LIMIT_BYTES } from "./realtime/slowConsumerGuard.js";
 
 const servers = new Set<WebSocketServer>();
 const sockets = new Set<WebSocket>();
@@ -25,6 +26,50 @@ describe("bridgeSockets", () => {
     const forwardedToClient = nextMessage(clientSide.peerSocket);
     upstreamSide.peerSocket.send("to-client");
     await expect(forwardedToClient).resolves.toBe("to-client");
+  });
+
+  it("terminates a browser-facing socket whose consumer stalls while deep and closes the upstream", { timeout: 30_000 }, async () => {
+    const clientSide = await createSocketPair();
+    const upstreamSide = await createSocketPair();
+    bridgeSockets(clientSide.bridgeSocket, upstreamSide.bridgeSocket);
+
+    // The production guard's stall window is 5 s; the flood deadline bounds
+    // this test well beyond it, leaving slack for kernel and ws buffering.
+    const floodDeadline = Date.now() + 15_000;
+
+    // Pause the browser-facing peer's TCP reads (ws.pause() delegates to the
+    // underlying socket) so the bridge's send buffer can never drain: the
+    // kernel receive window closes and bufferedAmount grows past the soft
+    // limit while the consumer stays stalled.
+    clientSide.peerSocket.pause();
+
+    const bridgeCloseCode = nextCloseCode(clientSide.bridgeSocket);
+    const upstreamClosed = nextClose(upstreamSide.peerSocket);
+
+    const frame = Buffer.alloc(64 * 1024);
+    let sent = 0;
+    let terminated = false;
+    while (Date.now() < floodDeadline && !terminated) {
+      upstreamSide.peerSocket.send(frame);
+      sent += 1;
+      // Yield periodically so the event loop can pump the flood through the
+      // bridge. Once the depth passes the soft limit, a trickle is enough to
+      // keep the guard's stall clock ticking because the paused consumer
+      // cannot drain anything.
+      if (sent % 64 === 0) {
+        const deep = clientSide.bridgeSocket.bufferedAmount > SLOW_CONSUMER_SOFT_LIMIT_BYTES;
+        await new Promise((resolve) => { setTimeout(resolve, deep ? 100 : 1); });
+      }
+      terminated = clientSide.bridgeSocket.readyState !== WebSocket.OPEN;
+    }
+
+    // Termination must beat the deadline: expiry means the guard never fired.
+    expect(terminated, "browser-facing bridge socket was not terminated within the flood deadline").toBe(true);
+    // Pin abrupt termination (1006): a clean close handshake must not satisfy
+    // this test, so an unrelated close cannot make it pass.
+    await expect(bridgeCloseCode).resolves.toBe(1006);
+    // The terminated browser-facing socket propagates a close to the upstream.
+    await upstreamClosed;
   });
 
   it("propagates close and error events to the opposite socket", async () => {
@@ -142,6 +187,12 @@ function nextClose(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
   return new Promise((resolve) => {
     socket.once("close", () => { resolve(); });
+  });
+}
+
+function nextCloseCode(socket: WebSocket): Promise<number> {
+  return new Promise((resolve) => {
+    socket.once("close", (code) => { resolve(code); });
   });
 }
 
