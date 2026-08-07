@@ -130,6 +130,28 @@ describe("close with subprojects", () => {
 
     expect(onCloseTree).not.toHaveBeenCalled();
   });
+
+  /**
+   * The entry's own count guard removes it on re-render, so the real staleness
+   * window is a handler captured by an earlier render that fires after the
+   * catalog changed. Matching the expanded browser's guard closes it.
+   */
+  it("does not confirm or delegate for a project that left the catalog", () => {
+    const list = new ProjectList();
+    list.projects = family;
+    Reflect.set(list, "openMenuProjectId", "root");
+    const onCloseTree = vi.fn();
+    list.onCloseTree = onCloseTree;
+    const confirmSpy = vi.fn<(message?: string) => boolean>(() => true);
+    vi.stubGlobal("confirm", confirmSpy);
+    const closeTree = templateClickHandlerForText(renderRow(list, rowFor(family, "root")), "Close with subprojects (1)");
+
+    list.projects = family.filter((project) => project.id !== "root");
+    closeTree(new Event("click"));
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(onCloseTree).not.toHaveBeenCalled();
+  });
 });
 
 describe("project list hierarchy rendering", () => {

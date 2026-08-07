@@ -281,6 +281,9 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
 
   private closeTree(project: Project, descendantCount: number): void {
     this.openMenuProjectId = undefined;
+    // A handler captured before the catalog changed must not act on a project
+    // that is already gone, matching the expanded browser's guard.
+    if (!this.projects.some((candidate) => candidate.id === project.id)) return;
     const noun = descendantCount === 1 ? "subproject" : "subprojects";
     if (confirm(`Close ${project.name} and ${String(descendantCount)} ${noun}?\n\nThis only removes them from PI WEBUI; it will not change the project folders.`)) {
       this.onCloseTree?.(project);
