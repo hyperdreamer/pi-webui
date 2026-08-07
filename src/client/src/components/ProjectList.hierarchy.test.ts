@@ -59,6 +59,13 @@ function isStringSet(value: unknown): value is ReadonlySet<string> {
   return value instanceof Set;
 }
 
+/** The composed shadow styles ProjectList actually applies, so style tests prove the rules are in this component and not only SessionList's. */
+function projectListStyles(): string {
+  const styles = ProjectList.styles;
+  const styleResults = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
+}
+
 function isUpdatedMethod(value: unknown): value is (this: ProjectList, changed: PropertyValues<ProjectList>) => void {
   return typeof value === "function";
 }
@@ -107,7 +114,7 @@ describe("project list hierarchy rendering", () => {
     const expanded: unknown = Reflect.get(list, "expandedProjectIds");
     if (!isStringSet(expanded)) throw new Error("ProjectList.expandedProjectIds is unavailable");
     expect([...expanded]).toEqual(["root"]);
-    expect(projectTreeRows(family, { expandedProjectIds: expanded }).some((row) => row.project.id === "child")).toBe(true);
+    expect(templateText(renderGroup(list, (group) => group[0]?.project.id === "root"))).toContain("Child");
   });
 
   it("collapses an open family back to its root", () => {
@@ -120,7 +127,7 @@ describe("project list hierarchy rendering", () => {
     const collapsed: unknown = Reflect.get(list, "expandedProjectIds");
     if (!isStringSet(collapsed)) throw new Error("ProjectList.expandedProjectIds is unavailable");
     expect([...collapsed]).toEqual([]);
-    expect(projectTreeRows(family, { expandedProjectIds: collapsed }).map((row) => row.project.id)).toEqual(["root", "standalone"]);
+    expect(templateText(renderGroup(list, (group) => group[0]?.project.id === "root"))).not.toContain("/work/app1");
   });
 
   it("marks a descendant row with the tree marker and capped depth", () => {
@@ -156,6 +163,12 @@ describe("project list hierarchy rendering", () => {
     const standaloneRendered = templateText(renderGroup(list, (group) => group[0]?.hasChildren !== true));
     expect(standaloneRendered).toContain("Standalone");
     expect(standaloneRendered).not.toContain("session-family-frame");
+  });
+
+  it("styles the family frame and disclosure control in ProjectList's own shadow styles", () => {
+    const styles = projectListStyles();
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border-radius:\s*10px;/);
+    expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*width:\s*24px;[^}]*border:\s*0;/);
   });
 
   it("keeps the heading count at the registered project total while folded", () => {
