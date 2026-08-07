@@ -1,4 +1,4 @@
-import type { TemplateResult } from "lit";
+import type { CSSResult, TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
 import { isTemplateResult, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
@@ -61,6 +61,13 @@ function renderRootGroup(dialog: ProjectBrowserDialog): TemplateResult {
   const group = groups.find((candidate) => candidate[0]?.project.id === "root");
   if (group === undefined) throw new Error("Expected a root row group");
   return render(group);
+}
+
+/** The composed shadow styles ProjectBrowserDialog actually applies, so style tests prove the rules are in this component and not only the sidebar's shared rules. */
+function projectBrowserDialogStyles(): string {
+  const styles = ProjectBrowserDialog.styles;
+  const styleResults: CSSResult[] = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
 }
 
 function isStringSet(value: unknown): value is ReadonlySet<string> {
@@ -156,5 +163,24 @@ describe("expanded project browser hierarchy", () => {
 
     expect(expandedIds(dialog)).toEqual([]);
     expect(dialogResultsText(dialog)).not.toContain("/work/app1");
+  });
+
+  it("indents descendant rows by consuming the capped depth variable in its own shadow styles", () => {
+    const styles = projectBrowserDialogStyles();
+    expect(styles).toMatch(/\.project-main\s*\{[^}]*padding:[^}]*calc\(11px \+ var\(--depth, 0\) \* 16px\);/);
+
+    const deep: Project[] = [
+      { id: "a", name: "A", path: "/a", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "b", name: "B", path: "/a/b", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "c", name: "C", path: "/a/b/c", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "d", name: "D", path: "/a/b/c/d", createdAt: "2026-08-07T00:00:00.000Z" },
+    ];
+    const dialog = dialogWith(deep);
+    Reflect.set(dialog, "expandedProjectIds", new Set(["a", "b", "c"]));
+    const rendered = dialogResultsText(dialog);
+
+    expect(rendered).toContain("--depth:1");
+    expect(rendered).toContain("--depth:2");
+    expect(rendered).not.toContain("--depth:3");
   });
 });

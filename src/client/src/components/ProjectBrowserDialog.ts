@@ -339,7 +339,7 @@ export class ProjectBrowserDialog extends LitElement {
     .result-area { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     .project-list { display: grid; gap: 8px; }
     .project-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; cursor: pointer; }
-    .project-main { position: relative; min-width: 0; display: grid; gap: 3px; border: 1px solid var(--pi-border); border-radius: 8px 0 0 8px; background: var(--pi-surface); padding: 9px 28px 9px 11px; }
+    .project-main { position: relative; min-width: 0; display: grid; gap: 3px; border: 1px solid var(--pi-border); border-radius: 8px 0 0 8px; background: var(--pi-surface); padding: 9px 28px 9px calc(11px + var(--depth, 0) * 16px); }
     .project-row:hover .project-main { background: var(--pi-surface-hover); }
     .project-row.selected .project-main, .project-row.selected .action-menu-toggle { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .project-name { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
