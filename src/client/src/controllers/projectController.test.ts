@@ -848,4 +848,92 @@ describe("closeProjectTree", () => {
 
     expect(harness.state().projects).toHaveLength(1);
   });
+
+  it("does not let an older in-flight catalog response restore closed projects", async () => {
+    const root = project("root", "/work");
+    const child = project("child", "/work/app1");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, child, other] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockResolvedValue({ closedProjectIds: ["root", "child"] }),
+        },
+      },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.closeProjectTree(root.id);
+
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+
+    pendingOldLoad.resolve([root, child, other]);
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[other]]);
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("reloads the catalog when a newer operation superseded the close-tree response", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, other] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingLoad = deferred<Project[]>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn()
+      .mockReturnValueOnce(pendingLoad.promise)
+      .mockResolvedValueOnce([other]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockReturnValue(pendingClose.promise),
+        },
+      },
+    );
+
+    const close = controller.closeProjectTree(root.id);
+    const load = controller.loadProjects();
+
+    pendingLoad.resolve([root, other]);
+    await load;
+
+    expect(state.projects.map((project) => project.id)).toEqual(["root", "other"]);
+
+    pendingClose.resolve({ closedProjectIds: ["root"] });
+    await close;
+
+    expect(projects).toHaveBeenCalledTimes(2);
+    expect(publishedProjectLists).toEqual([[root, other], [other]]);
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
 });

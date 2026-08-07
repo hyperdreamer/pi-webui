@@ -90,12 +90,24 @@ export class ProjectController {
    * Close a project family. The response is authoritative: the catalog may have
    * changed since the confirmation dialog rendered, so reconcile against the
    * ids the server actually removed rather than a locally computed subtree.
+   *
+   * The close participates in the catalog-operation ordering: it supersedes any
+   * in-flight load or pin mutation (and clears the loading state they owned), so
+   * an older response can no longer republish the pre-close catalog. When the
+   * close response is itself superseded, fall back to a fresh load, which is
+   * guaranteed to reflect the completed close on the server.
    */
   async closeProjectTree(projectId: string): Promise<void> {
     const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The close supersedes any in-flight load, so its finalizer no longer clears loading.
+    this.setState({ isLoadingProjects: false });
     try {
       const { closedProjectIds } = await this.api.closeProjectTree(projectId, machineId);
-      if (selectedMachineId(this.getState()) !== machineId) return;
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        if (selectedMachineId(this.getState()) === machineId) await this.loadProjects();
+        return;
+      }
       for (const closedProjectId of closedProjectIds) this.workspaces.forgetProject(closedProjectId);
       const state = this.getState();
       const closedIdSet = new Set(closedProjectIds);
@@ -103,7 +115,7 @@ export class ProjectController {
       this.onProjectsApplied?.(machineId);
       if (state.selectedProject !== undefined && closedIdSet.has(state.selectedProject.id)) this.workspaces.clearSelection();
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     }
   }
 
