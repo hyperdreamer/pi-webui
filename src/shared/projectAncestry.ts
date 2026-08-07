@@ -19,6 +19,11 @@ function normalizeForComparison(path: string): string {
 
 /** True when `parentPath` is a strict directory ancestor of `childPath`. Case-sensitive by design. */
 export function isDirectoryAncestor(parentPath: string, childPath: string): boolean {
+  // Checked before normalization: a bare root legitimately normalizes to "",
+  // so guarding afterwards would reject `/` and `C:\`. A blank path carries no
+  // directory at all, and treating it as an ancestor would make it adopt every
+  // absolute path — including in the server's atomic removal set.
+  if (parentPath.trim() === "" || childPath.trim() === "") return false;
   const parent = normalizeForComparison(parentPath);
   const child = normalizeForComparison(childPath);
   if (parent === child) return false;

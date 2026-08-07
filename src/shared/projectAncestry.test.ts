@@ -18,6 +18,11 @@ describe("isDirectoryAncestor", () => {
     ["drive-relative path is not a child", "C:", "C:work", false],
     ["relative child under root", "/", "work", false],
     ["case sensitivity", "/Work", "/work/app", false],
+    ["empty parent does not adopt an absolute child", "", "/work", false],
+    ["blank parent does not adopt an absolute child", "   ", "/work", false],
+    ["empty child is not a descendant", "/work", "", false],
+    ["blank child is not a descendant", "/work", "   ", false],
+    ["empty parent and empty child", "", "", false],
   ])("%s", (_label, parentPath, childPath, expected) => {
     expect(isDirectoryAncestor(parentPath, childPath)).toBe(expected);
   });
@@ -61,5 +66,29 @@ describe("projectDescendantIds", () => {
     const snapshot = structuredClone(projects);
     projectDescendantIds(projects, "root");
     expect(projects).toEqual(snapshot);
+  });
+
+  /**
+   * A blank path must never behave like a universal ancestor. The server uses
+   * this same rule to compute an atomic removal set, so an empty-path registry
+   * entry adopting every project would make one close delete the whole registry.
+   */
+  it("treats an empty-path entry as childless rather than the parent of everything", () => {
+    const withBlank = [
+      { id: "blank", path: "" },
+      { id: "alpha", path: "/alpha" },
+      { id: "beta", path: "/beta/nested" },
+    ];
+
+    expect(projectDescendantIds(withBlank, "blank")).toEqual([]);
+  });
+
+  it("still returns descendants for a genuine filesystem root entry", () => {
+    const withRoot = [
+      { id: "root", path: "/" },
+      { id: "alpha", path: "/alpha" },
+    ];
+
+    expect(projectDescendantIds(withRoot, "root")).toEqual(["alpha"]);
   });
 });
