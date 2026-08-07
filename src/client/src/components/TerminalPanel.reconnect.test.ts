@@ -29,7 +29,32 @@ describe("TerminalPanel terminal socket reconnect", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reconnects once after an unexpected close", () => {
+  it("reconnects after an unexpected close with a 500 ms initial delay, ×1.6 backoff, capped at 5 s", () => {
+    // One socket per factory call: the initial connect plus one per reconnect.
+    const sockets = Array.from({ length: 7 }, () => new FakeTerminalSocket());
+    for (const socket of sockets) terminalSocketMock.mockReturnValueOnce(asWebSocket(socket));
+    const panel = new TerminalPanel();
+
+    connectSocket(panel, fakeTerminal());
+    // 500 × 1.6 → 800 → 1280 → 2048 → 3276.8 → capped at 5000.
+    const expectedDelays = [500, 800, 1280, 2048, 3276.8, 5000];
+    const reconnectSteps = sockets.slice(0, expectedDelays.length).map((socket, index) => {
+      const delay = expectedDelays[index];
+      if (delay === undefined) throw new Error("Missing expected reconnect delay fixture");
+      return { socket, delay };
+    });
+    for (const [stepIndex, step] of reconnectSteps.entries()) {
+      step.socket.emit("close");
+      expect(terminalSocketMock).toHaveBeenCalledTimes(stepIndex + 1);
+      vi.advanceTimersByTime(Math.floor(step.delay) - 1);
+      expect(terminalSocketMock).toHaveBeenCalledTimes(stepIndex + 1);
+      vi.advanceTimersByTime(1);
+      expect(terminalSocketMock).toHaveBeenCalledTimes(stepIndex + 2);
+    }
+    expect(terminalSocketMock).toHaveBeenLastCalledWith("project-1", "workspace-1", "terminal-1", undefined, "local");
+  });
+
+  it("resets the reconnect delay to 500 ms after a successful open", () => {
     const firstSocket = new FakeTerminalSocket();
     const secondSocket = new FakeTerminalSocket();
     const thirdSocket = new FakeTerminalSocket();
@@ -38,22 +63,15 @@ describe("TerminalPanel terminal socket reconnect", () => {
       .mockReturnValueOnce(asWebSocket(secondSocket))
       .mockReturnValueOnce(asWebSocket(thirdSocket));
     const panel = new TerminalPanel();
-    const terminal = fakeTerminal();
 
-    connectSocket(panel, terminal);
+    connectSocket(panel, fakeTerminal());
     firstSocket.emit("close");
-
-    expect(terminalSocketMock).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(499);
-    expect(terminalSocketMock).toHaveBeenCalledOnce();
-
-    vi.advanceTimersByTime(1);
-
+    vi.advanceTimersByTime(500);
     expect(terminalSocketMock).toHaveBeenCalledTimes(2);
-    expect(terminalSocketMock).toHaveBeenLastCalledWith("project-1", "workspace-1", "terminal-1", undefined, "local");
 
     secondSocket.emit("open");
     secondSocket.emit("close");
+    // Without the reset the delay would have backed off to 800 ms.
     vi.advanceTimersByTime(499);
     expect(terminalSocketMock).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
