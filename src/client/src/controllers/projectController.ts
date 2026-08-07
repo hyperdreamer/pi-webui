@@ -94,8 +94,8 @@ export class ProjectController {
    * The close participates in the catalog-operation ordering: it supersedes any
    * in-flight load or pin mutation (and clears the loading state they owned), so
    * an older response can no longer republish the pre-close catalog. When the
-   * close response is itself superseded, fall back to a fresh load, which is
-   * guaranteed to reflect the completed close on the server.
+   * close response is itself superseded, apply its authoritative removals
+   * before a fresh load reconciles any newer catalog operation.
    */
   async closeProjectTree(projectId: string): Promise<void> {
     const machineId = selectedMachineId(this.getState());
@@ -104,16 +104,14 @@ export class ProjectController {
     this.setState({ isLoadingProjects: false });
     try {
       const { closedProjectIds } = await this.api.closeProjectTree(projectId, machineId);
-      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
-        if (selectedMachineId(this.getState()) === machineId) await this.loadProjects();
-        return;
-      }
+      if (selectedMachineId(this.getState()) !== machineId) return;
       for (const closedProjectId of closedProjectIds) this.workspaces.forgetProject(closedProjectId);
       const state = this.getState();
       const closedIdSet = new Set(closedProjectIds);
       this.setState({ projects: state.projects.filter((project) => !closedIdSet.has(project.id)) });
       this.onProjectsApplied?.(machineId);
       if (state.selectedProject !== undefined && closedIdSet.has(state.selectedProject.id)) this.workspaces.clearSelection();
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) await this.loadProjects();
     } catch (error) {
       if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     }

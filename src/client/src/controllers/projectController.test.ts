@@ -931,9 +931,55 @@ describe("closeProjectTree", () => {
     await close;
 
     expect(projects).toHaveBeenCalledTimes(2);
-    expect(publishedProjectLists).toEqual([[root, other], [other]]);
+    expect(publishedProjectLists).toEqual([[root, other], [other], [other]]);
     expect(state.projects.map((project) => project.id)).toEqual(["other"]);
     expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("applies authoritative cleanup before a superseded reconciliation", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, other], selectedProject: root };
+    const pendingLoad = deferred<Project[]>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn()
+      .mockReturnValueOnce(pendingLoad.promise)
+      .mockRejectedValueOnce(new Error("reconciliation failed"));
+    const forgetProject = vi.fn();
+    const clearSelection = vi.fn(() => {
+      state = { ...state, selectedProject: undefined };
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject, clearSelection },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockReturnValue(pendingClose.promise),
+        },
+      },
+    );
+
+    const close = controller.closeProjectTree(root.id);
+    const load = controller.loadProjects();
+
+    pendingLoad.resolve([root, other]);
+    await load;
+    pendingClose.resolve({ closedProjectIds: [root.id] });
+    await close;
+
+    expect(projects).toHaveBeenCalledTimes(2);
+    expect(state.projects.map((project) => project.id)).toEqual([other.id]);
+    expect(forgetProject).toHaveBeenCalledWith(root.id);
+    expect(clearSelection).toHaveBeenCalledOnce();
+    expect(state.selectedProject).toBeUndefined();
+    expect(state.error).toContain("reconciliation failed");
     expect(state.isLoadingProjects).toBe(false);
   });
 });
