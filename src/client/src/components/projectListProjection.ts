@@ -207,6 +207,11 @@ export function projectTreeRows(
   return rows;
 }
 
+/** Projected rows reduced to projects, so menu-order checks account for folds and reparenting. */
+export function visibleProjectsFromRows(rows: readonly ProjectTreeRow[]): Project[] {
+  return rows.map((row) => row.project);
+}
+
 /** The target plus every descendant, for confirmation counts and close-with-subprojects. Delegates to the shared rule so the client count and the server removal set cannot diverge. */
 export function projectSubtreeIds(projects: readonly Project[], targetId: string): string[] {
   if (!projects.some((project) => project.id === targetId)) return [];

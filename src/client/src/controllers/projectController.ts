@@ -59,15 +59,23 @@ export class ProjectController {
   async addProject(path: string, create?: boolean) {
     if (path.trim() === "") return;
     const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The add supersedes any in-flight load, so its finalizer no longer owns loading state.
+    this.setState({ isLoadingProjects: false });
     try {
       const project = await this.api.addProject(path.trim(), undefined, create, machineId);
       if (selectedMachineId(this.getState()) !== machineId) return;
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        this.setState({ projectDialogOpen: false });
+        await this.loadProjects();
+        return;
+      }
       const projects = this.getState().projects;
       this.setState({ projects: [...projects.filter((p) => p.id !== project.id), project], projectDialogOpen: false });
       this.onProjectsApplied?.(machineId);
       await this.workspaces.selectProject(project);
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     }
   }
 

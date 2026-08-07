@@ -5,8 +5,7 @@ import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
-import { projectSubtreeIds, projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
-import { visibleProjectsFromRows } from "./ProjectList";
+import { projectSubtreeIds, projectTreeRows, visibleProjectsFromRows, type ProjectTreeRow } from "./projectListProjection";
 import { activateSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 
 @customElement("project-browser-dialog")

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Project, Workspace, WorkspaceActivity } from "../api";
-import { displayedProjects, filterProjects, prioritizeActiveProjects } from "./projectListProjection";
+import { displayedProjects, filterProjects, prioritizeActiveProjects, visibleProjectsFromRows } from "./projectListProjection";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-26T00:00:00.000Z" },
@@ -103,6 +103,16 @@ describe("project pin ordering", () => {
     displayedProjects(mixed, "", {}, running);
 
     expect(mixed.map((project) => project.id)).toEqual(["client", "docs"]);
+  });
+});
+
+describe("visibleProjectsFromRows", () => {
+  it("maps projected rows without depending on a component module", () => {
+    const project = projects[0];
+    if (project === undefined) throw new Error("fixture missing project");
+    const row = { project, depth: 0, hasChildren: false, folded: false };
+
+    expect(visibleProjectsFromRows([row])).toEqual([project]);
   });
 });
 import { projectTreeRows } from "./projectListProjection";

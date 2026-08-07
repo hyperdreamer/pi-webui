@@ -983,3 +983,53 @@ describe("closeProjectTree", () => {
     expect(state.isLoadingProjects).toBe(false);
   });
 });
+
+describe("addProject catalog ordering", () => {
+  it("reconciles a delayed add after close-tree without selecting a closed project", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    const added = project("child", "/work/app1");
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [root, other],
+      selectedProject: root,
+    };
+    const pendingAdd = deferred<Project>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn().mockResolvedValue([other]);
+    const addProject = vi.fn().mockReturnValue(pendingAdd.promise);
+    const closeProjectTree = vi.fn().mockReturnValue(pendingClose.promise);
+    const selectProject = vi.fn().mockResolvedValue(undefined);
+    const clearSelection = vi.fn(() => {
+      state = { ...state, selectedProject: undefined };
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject, forgetProject: vi.fn(), clearSelection },
+      {
+        api: {
+          projects,
+          addProject,
+          closeProject: vi.fn(),
+          closeProjectTree,
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    const add = controller.addProject(added.path);
+    const close = controller.closeProjectTree(root.id);
+
+    pendingClose.resolve({ closedProjectIds: [root.id, added.id] });
+    await close;
+    pendingAdd.resolve(added);
+    await add;
+
+    expect(projects).toHaveBeenCalledWith("local");
+    expect(state.projects).toEqual([other]);
+    expect(state.selectedProject).toBeUndefined();
+    expect(selectProject).not.toHaveBeenCalled();
+  });
+});

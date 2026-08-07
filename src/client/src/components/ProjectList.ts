@@ -6,7 +6,7 @@ import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
-import { projectSubtreeIds, projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
+import { projectSubtreeIds, projectTreeRows, visibleProjectsFromRows, type ProjectTreeRow } from "./projectListProjection";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -320,9 +320,4 @@ export function shouldCloseProjectMenuForOrderChange(projectId: string, previous
   const previousIndex = previousProjects.findIndex((project) => project.id === projectId);
   const currentIndex = currentProjects.findIndex((project) => project.id === projectId);
   return previousIndex !== currentIndex;
-}
-
-/** Projected rows reduced to projects, so menu-order checks account for folds and reparenting. */
-export function visibleProjectsFromRows(rows: readonly ProjectTreeRow[]): Project[] {
-  return rows.map((row) => row.project);
 }
