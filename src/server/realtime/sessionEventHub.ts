@@ -1,10 +1,12 @@
 import type { GlobalSessionEvent, RealtimeEvent, SessionNotificationSummaryEvent, SessionUiEvent } from "../../shared/apiTypes.js";
 import { projectBrowserSessionEvent } from "../browserMessageProjection.js";
+import { SlowConsumerGuard, type SlowConsumerGuardOptions } from "./slowConsumerGuard.js";
 import { SessionStatusCoalescer, isImmediateActivityUpdate, isImmediateStatusUpdate } from "./sessionStatusCoalescer.js";
 
 export interface RealtimeSocket {
   readonly OPEN: number;
   readyState: number;
+  bufferedAmount: number;
   send(payload: string): void;
   terminate(): void;
   on(event: "close", listener: () => void): unknown;
@@ -15,6 +17,7 @@ export interface SessionEventHubOptions {
   now?: () => number;
   setTimeout?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimeout?: (handle: ReturnType<typeof setTimeout>) => void;
+  slowConsumer?: SlowConsumerGuardOptions;
 }
 
 type CoalescableEvent = Extract<SessionUiEvent, { type: "status.update" | "activity.update" }>;
@@ -25,10 +28,13 @@ export class SessionEventHub {
   private readonly seqBySession = new Map<string, number>();
   private readonly sessionStatusCoalescer: SessionStatusCoalescer<CoalescableEvent>;
   private readonly globalStatusCoalescer: SessionStatusCoalescer<CoalescableEvent>;
+  private readonly slowConsumerGuards = new WeakMap<RealtimeSocket, SlowConsumerGuard>();
+  private readonly slowConsumerOptions: SlowConsumerGuardOptions | undefined;
 
   constructor(options: SessionEventHubOptions = {}) {
     this.sessionStatusCoalescer = new SessionStatusCoalescer(isImmediateCoalescableEvent, options);
     this.globalStatusCoalescer = new SessionStatusCoalescer(isImmediateCoalescableEvent, options);
+    this.slowConsumerOptions = options.slowConsumer;
   }
 
   add(sessionId: string, socket: RealtimeSocket): void {
@@ -38,6 +44,7 @@ export class SessionEventHub {
       this.socketsBySession.set(sessionId, sockets);
     }
     sockets.add(socket);
+    this.ensureSlowConsumerGuard(socket);
     socket.on("close", () => {
       sockets.delete(socket);
     });
@@ -45,7 +52,17 @@ export class SessionEventHub {
 
   addGlobal(socket: RealtimeSocket): void {
     this.globalSockets.add(socket);
+    this.ensureSlowConsumerGuard(socket);
     socket.on("close", () => this.globalSockets.delete(socket));
+  }
+
+  private ensureSlowConsumerGuard(socket: RealtimeSocket): void {
+    if (this.slowConsumerOptions === undefined) return;
+    let guard = this.slowConsumerGuards.get(socket);
+    if (guard === undefined) {
+      guard = new SlowConsumerGuard(socket, this.slowConsumerOptions);
+      this.slowConsumerGuards.set(socket, guard);
+    }
   }
 
   publish(sessionId: string, event: SessionUiEvent): void {
@@ -113,6 +130,10 @@ export class SessionEventHub {
         } catch {
           // Removal is authoritative; cleanup failure must not block healthy sockets.
         }
+        continue;
+      }
+      if (this.slowConsumerGuards.get(socket)?.afterSend() ?? false) {
+        sockets.delete(socket);
       }
     }
   }

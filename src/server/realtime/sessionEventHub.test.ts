@@ -5,6 +5,7 @@ import { SessionEventHub, type RealtimeSocket } from "./sessionEventHub.js";
 class FakeSocket extends EventEmitter implements RealtimeSocket {
   readonly OPEN = 1;
   readyState = this.OPEN;
+  bufferedAmount = 0;
   send = vi.fn();
   terminate = vi.fn();
 }
@@ -155,6 +156,73 @@ describe("SessionEventHub", () => {
     expect(failed.terminate).toHaveBeenCalledOnce();
     expect(healthy.send).toHaveBeenLastCalledWith(JSON.stringify({ type: "assistant.delta", text: "again", seq: 2 }));
     expect(hub.currentSeq("s1")).toBe(2);
+  });
+
+  it("terminates a stalled global socket and removes it from fan-out while healthy sockets keep receiving", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      slowConsumer: { softLimitBytes: 10, stallWindowMs: 0, now: () => clock.now },
+    });
+    const stalled = new FakeSocket();
+    const healthy = new FakeSocket();
+    stalled.bufferedAmount = 100;
+    hub.addGlobal(stalled);
+    hub.addGlobal(healthy);
+
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "first" });
+    clock.advanceBy(10);
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "second" });
+
+    expect(stalled.terminate).toHaveBeenCalledOnce();
+    expect(stalled.send).toHaveBeenCalledTimes(1);
+    expect(healthy.send).toHaveBeenNthCalledWith(1, JSON.stringify({ type: "session.name", sessionId: "s1", name: "first" }));
+    expect(healthy.send).toHaveBeenNthCalledWith(2, JSON.stringify({ type: "session.name", sessionId: "s1", name: "second" }));
+  });
+
+  it("keeps per-session sequence numbering intact after dropping a stalled socket", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      slowConsumer: { softLimitBytes: 10, stallWindowMs: 0, now: () => clock.now },
+    });
+    const stalled = new FakeSocket();
+    const healthy = new FakeSocket();
+    stalled.bufferedAmount = 100;
+    hub.add("s1", stalled);
+    hub.add("s1", healthy);
+
+    hub.publish("s1", { type: "assistant.delta", text: "a" });
+    clock.advanceBy(10);
+    hub.publish("s1", { type: "assistant.delta", text: "b" });
+    hub.publish("s1", { type: "assistant.delta", text: "c" });
+
+    expect(hub.currentSeq("s1")).toBe(3);
+    expect(stalled.terminate).toHaveBeenCalledOnce();
+    expect(stalled.send).toHaveBeenCalledTimes(1);
+    expect(healthy.send).toHaveBeenNthCalledWith(1, JSON.stringify({ type: "assistant.delta", text: "a", seq: 1 }));
+    expect(healthy.send).toHaveBeenNthCalledWith(2, JSON.stringify({ type: "assistant.delta", text: "b", seq: 2 }));
+    expect(healthy.send).toHaveBeenNthCalledWith(3, JSON.stringify({ type: "assistant.delta", text: "c", seq: 3 }));
+  });
+
+  it("shares one slow-consumer guard across a socket's session and global registration", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub({
+      slowConsumer: { softLimitBytes: 10, stallWindowMs: 50, now: () => clock.now },
+    });
+    const socket = new FakeSocket();
+    socket.bufferedAmount = 100;
+    hub.add("s1", socket);
+    hub.addGlobal(socket);
+
+    // Session channel starts the stall clock at t=1000; the later global
+    // publish inherits it, so 70 ms of stall is already enough to terminate.
+    hub.publish("s1", { type: "assistant.delta", text: "a" });
+    clock.advanceBy(10);
+    hub.publish("s1", { type: "assistant.delta", text: "b" });
+    clock.advanceBy(60);
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "Renamed" });
+
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socket.send).toHaveBeenCalledTimes(3);
   });
 
   it("publishes global events only to global sockets", () => {
