@@ -57,7 +57,6 @@ export class SessionEventHub {
   }
 
   private ensureSlowConsumerGuard(socket: RealtimeSocket): void {
-    if (this.slowConsumerOptions === undefined) return;
     let guard = this.slowConsumerGuards.get(socket);
     if (guard === undefined) {
       guard = new SlowConsumerGuard(socket, this.slowConsumerOptions);

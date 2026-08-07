@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionEventHub, type RealtimeSocket } from "./sessionEventHub.js";
+import { SLOW_CONSUMER_SOFT_LIMIT_BYTES, SLOW_CONSUMER_STALL_WINDOW_MS } from "./slowConsumerGuard.js";
 
 class FakeSocket extends EventEmitter implements RealtimeSocket {
   readonly OPEN = 1;
@@ -223,6 +224,40 @@ describe("SessionEventHub", () => {
 
     expect(socket.terminate).toHaveBeenCalledOnce();
     expect(socket.send).toHaveBeenCalledTimes(3);
+  });
+
+  it("applies the default slow-consumer guard when the hub is constructed without options", () => {
+    const clock = new FakeClock();
+    const hub = new SessionEventHub();
+    const stalled = new FakeSocket();
+    const healthy = new FakeSocket();
+    stalled.bufferedAmount = SLOW_CONSUMER_SOFT_LIMIT_BYTES + 1;
+    hub.addGlobal(stalled);
+    hub.addGlobal(healthy);
+
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "first" });
+    clock.advanceBy(SLOW_CONSUMER_STALL_WINDOW_MS - 1);
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "second" });
+
+    // The stall window is measured from the first deep send; one millisecond
+    // short of the default window the socket still receives.
+    expect(stalled.terminate).not.toHaveBeenCalled();
+    expect(stalled.send).toHaveBeenCalledTimes(2);
+
+    clock.advanceBy(1);
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "third" });
+
+    expect(stalled.terminate).toHaveBeenCalledOnce();
+    expect(stalled.send).toHaveBeenCalledTimes(3);
+    expect(healthy.send).toHaveBeenNthCalledWith(1, JSON.stringify({ type: "session.name", sessionId: "s1", name: "first" }));
+    expect(healthy.send).toHaveBeenNthCalledWith(2, JSON.stringify({ type: "session.name", sessionId: "s1", name: "second" }));
+    expect(healthy.send).toHaveBeenNthCalledWith(3, JSON.stringify({ type: "session.name", sessionId: "s1", name: "third" }));
+
+    hub.publishGlobal({ type: "session.name", sessionId: "s1", name: "fourth" });
+
+    expect(stalled.terminate).toHaveBeenCalledOnce();
+    expect(stalled.send).toHaveBeenCalledTimes(3);
+    expect(healthy.send).toHaveBeenNthCalledWith(4, JSON.stringify({ type: "session.name", sessionId: "s1", name: "fourth" }));
   });
 
   it("publishes global events only to global sockets", () => {
