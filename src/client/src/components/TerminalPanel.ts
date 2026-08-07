@@ -394,6 +394,7 @@ export class TerminalPanel extends LitElement {
       return;
     }
     this.suppressTerminalInput = true;
+    terminal.reset();
     terminal.write(data, () => {
       this.suppressTerminalInput = false;
     });

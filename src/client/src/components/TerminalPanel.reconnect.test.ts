@@ -125,6 +125,38 @@ describe("TerminalPanel terminal socket reconnect", () => {
 
     expect(terminalSocketMock).toHaveBeenCalledOnce();
   });
+
+  it("resets the terminal before applying replay after a reconnect", async () => {
+    const firstSocket = new FakeTerminalSocket();
+    const secondSocket = new FakeTerminalSocket();
+    terminalSocketMock
+      .mockReturnValueOnce(asWebSocket(firstSocket))
+      .mockReturnValueOnce(asWebSocket(secondSocket));
+    const panel = new TerminalPanel();
+    const events: string[] = [];
+    const terminal = fakeTerminal(events);
+
+    connectSocket(panel, terminal);
+    firstSocket.emit("message", {
+      data: JSON.stringify({ type: "output", data: "live", replay: false }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual(["write:live"]);
+
+    firstSocket.emit("close");
+    vi.advanceTimersByTime(500);
+    expect(terminalSocketMock).toHaveBeenCalledTimes(2);
+
+    secondSocket.emit("message", {
+      data: JSON.stringify({ type: "output", data: "snapshot", replay: true }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).toEqual(["write:live", "reset", "write:snapshot"]);
+    expect(Reflect.get(panel, "suppressTerminalInput")).toBe(false);
+  });
 });
 
 class FakeTerminalSocket {
@@ -147,7 +179,7 @@ class FakeTerminalSocket {
   }
 }
 
-function connectSocket(panel: TerminalPanel, terminal: Pick<Terminal, "writeln">): void {
+function connectSocket(panel: TerminalPanel, terminal: FakeTerminal): void {
   const method: unknown = Reflect.get(panel, "connectSocket");
   if (typeof method !== "function") throw new Error("TerminalPanel.connectSocket is not callable");
   Reflect.apply(method, panel, ["project-1", "workspace-1", "terminal-1", terminal, undefined]);
@@ -159,8 +191,17 @@ function disposeTerminalView(panel: TerminalPanel): void {
   Reflect.apply(method, panel, []);
 }
 
-function fakeTerminal(): Pick<Terminal, "writeln"> {
-  return { writeln: vi.fn() };
+type FakeTerminal = Pick<Terminal, "reset" | "write" | "writeln">;
+
+function fakeTerminal(events: string[] = []): FakeTerminal {
+  return {
+    reset: vi.fn(() => { events.push("reset"); }),
+    write: vi.fn((data: string | Uint8Array, callback?: () => void) => {
+      events.push(`write:${typeof data === "string" ? data : "<bytes>"}`);
+      callback?.();
+    }),
+    writeln: vi.fn(),
+  };
 }
 
 function asWebSocket(socket: FakeTerminalSocket): WebSocket {
