@@ -1,4 +1,4 @@
-import type { Terminal } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { terminalSocket, type TerminalInfo } from "../api";
 import { TerminalPanel } from "./TerminalPanel";
@@ -126,6 +126,30 @@ describe("TerminalPanel terminal socket reconnect", () => {
     expect(terminalSocketMock).toHaveBeenCalledOnce();
   });
 
+  it("drops live bytes already queued when replay is applied", async () => {
+    vi.useRealTimers();
+    const panel = new TerminalPanel();
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const parsed = new Promise<void>((resolve) => {
+      const subscription = terminal.onWriteParsed(() => {
+        subscription.dispose();
+        resolve();
+      });
+    });
+
+    writeTerminalOutput(panel, terminal, "old", false);
+    writeTerminalOutput(panel, terminal, "snapshot", true);
+
+    try {
+      await parsed;
+
+      expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("snapshot");
+      expect(Reflect.get(panel, "suppressTerminalInput")).toBe(false);
+    } finally {
+      terminal.dispose();
+    }
+  });
+
   it("resets the terminal before applying replay after a reconnect", async () => {
     const firstSocket = new FakeTerminalSocket();
     const secondSocket = new FakeTerminalSocket();
@@ -154,7 +178,7 @@ describe("TerminalPanel terminal socket reconnect", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(events).toEqual(["write:live", "reset", "write:snapshot"]);
+    expect(events).toEqual(["write:live", "reset", "write:\u001bcsnapshot"]);
     expect(Reflect.get(panel, "suppressTerminalInput")).toBe(false);
   });
 });
@@ -192,6 +216,12 @@ function disposeTerminalView(panel: TerminalPanel): void {
 }
 
 type FakeTerminal = Pick<Terminal, "reset" | "write" | "writeln">;
+
+function writeTerminalOutput(panel: TerminalPanel, terminal: Terminal, data: string, replay: boolean): void {
+  const method: unknown = Reflect.get(panel, "writeTerminalOutput");
+  if (typeof method !== "function") throw new Error("TerminalPanel.writeTerminalOutput is not callable");
+  Reflect.apply(method, panel, [terminal, data, replay]);
+}
 
 function fakeTerminal(events: string[] = []): FakeTerminal {
   return {

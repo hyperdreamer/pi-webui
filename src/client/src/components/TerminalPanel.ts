@@ -395,7 +395,7 @@ export class TerminalPanel extends LitElement {
     }
     this.suppressTerminalInput = true;
     terminal.reset();
-    terminal.write(data, () => {
+    terminal.write("\u001bc" + data, () => {
       this.suppressTerminalInput = false;
     });
   }
