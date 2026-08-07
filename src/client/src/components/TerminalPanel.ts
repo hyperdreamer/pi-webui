@@ -479,8 +479,12 @@ export class TerminalPanel extends LitElement {
       this.terminalReconnectTimer = undefined;
     }
     this.terminalReconnectDelay = TERMINAL_RECONNECT_INITIAL_DELAY_MS;
-    this.socket?.close();
+    // Clear the reference before close(): a socket that dispatches "close"
+    // synchronously must not pass the close handler's identity guard and
+    // schedule a reconnect for a deliberately disposed view.
+    const socket = this.socket;
     this.socket = undefined;
+    socket?.close();
     this.terminal?.dispose();
     this.terminal = undefined;
     this.fitAddon = undefined;

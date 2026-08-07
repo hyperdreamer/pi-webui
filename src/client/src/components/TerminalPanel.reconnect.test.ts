@@ -92,6 +92,21 @@ describe("TerminalPanel terminal socket reconnect", () => {
     expect(terminalSocketMock).toHaveBeenCalledOnce();
   });
 
+  it("does not reconnect when disposal closes the live socket", () => {
+    const socket = new FakeTerminalSocket();
+    terminalSocketMock.mockReturnValueOnce(asWebSocket(socket));
+    const panel = new TerminalPanel();
+
+    connectSocket(panel, fakeTerminal());
+    // The fake close() dispatches "close" synchronously. Deliberate disposal must
+    // clear the socket reference before invoking close(), or the close handler's
+    // identity guard would pass and schedule a reconnect for the disposed view.
+    disposeTerminalView(panel);
+    vi.advanceTimersByTime(5000);
+
+    expect(terminalSocketMock).toHaveBeenCalledOnce();
+  });
+
   it("does not reconnect after the terminal sends an exit message", async () => {
     const socket = new FakeTerminalSocket();
     terminalSocketMock.mockReturnValueOnce(asWebSocket(socket));
@@ -116,7 +131,9 @@ class FakeTerminalSocket {
   readyState = 1;
   binaryType = "";
   readonly send = vi.fn();
-  readonly close = vi.fn();
+  readonly close = vi.fn(() => {
+    this.emit("close");
+  });
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
 
   addEventListener(type: string, listener: (event: unknown) => void): void {
