@@ -22,6 +22,9 @@ const TERMINAL_OPTIONS_BASE: ITerminalOptions = {
 
 const DEFAULT_TERMINAL_SIZE: TerminalSize = { cols: 100, rows: 30 };
 const COMMAND_RUN_POLL_INTERVAL_MS = 1000;
+const TERMINAL_RECONNECT_INITIAL_DELAY_MS = 500;
+const TERMINAL_RECONNECT_MAX_DELAY_MS = 5000;
+const TERMINAL_RECONNECT_BACKOFF = 1.6;
 const TERMINAL_EFFECTIVE_BACKGROUND_VARIABLE = "--pi-terminal-effective-bg";
 const TERMINAL_UI_OPACITY_VARIABLE = "--pi-terminal-ui-opacity";
 
@@ -61,6 +64,8 @@ export class TerminalPanel extends LitElement {
   private loadedCwd: string | undefined;
   private autoStartConsumedCwd: string | undefined;
   private commandRunPollTimer: number | undefined;
+  private terminalReconnectTimer: number | undefined;
+  private terminalReconnectDelay = TERMINAL_RECONNECT_INITIAL_DELAY_MS;
   private readonly softKeysDefaultEnvironmentMedia = createTerminalSoftKeysDefaultEnvironmentMedia();
   private softKeysPreferenceStored = hasTerminalSoftKeysPreference();
   private readonly onSoftKeysDefaultEnvironmentChange = () => {
@@ -343,12 +348,26 @@ export class TerminalPanel extends LitElement {
     const socket = terminalSocket(projectId, workspaceId, terminalId, initialSize, this.machineId);
     socket.binaryType = "arraybuffer";
     this.socket = socket;
-    socket.addEventListener("open", () => { this.fitAndNotify(); });
+    socket.addEventListener("open", () => {
+      if (this.socket !== socket) return;
+      this.terminalReconnectDelay = TERMINAL_RECONNECT_INITIAL_DELAY_MS;
+      this.fitAndNotify();
+    });
     socket.addEventListener("message", (event) => {
       void this.handleSocketMessage(event.data, terminalId, terminal);
     });
     socket.addEventListener("close", () => {
-      if (this.socket === socket) this.socket = undefined;
+      if (this.socket !== socket) return;
+      this.socket = undefined;
+      if (this.terminals.some((item) => item.id === terminalId && item.exited)) return;
+      if (this.terminalReconnectTimer !== undefined) window.clearTimeout(this.terminalReconnectTimer);
+      const delay = this.terminalReconnectDelay;
+      this.terminalReconnectDelay = Math.min(this.terminalReconnectDelay * TERMINAL_RECONNECT_BACKOFF, TERMINAL_RECONNECT_MAX_DELAY_MS);
+      this.terminalReconnectTimer = window.setTimeout(() => {
+        this.terminalReconnectTimer = undefined;
+        if (this.socket !== undefined || this.terminals.some((item) => item.id === terminalId && item.exited)) return;
+        this.connectSocket(projectId, workspaceId, terminalId, terminal, initialSize);
+      }, delay);
     });
   }
 
@@ -455,6 +474,11 @@ export class TerminalPanel extends LitElement {
   private disposeTerminalView(): void {
     this.resizeObserver?.disconnect();
     this.resizeObserver = undefined;
+    if (this.terminalReconnectTimer !== undefined) {
+      window.clearTimeout(this.terminalReconnectTimer);
+      this.terminalReconnectTimer = undefined;
+    }
+    this.terminalReconnectDelay = TERMINAL_RECONNECT_INITIAL_DELAY_MS;
     this.socket?.close();
     this.socket = undefined;
     this.terminal?.dispose();
