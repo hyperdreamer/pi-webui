@@ -6,7 +6,7 @@ import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
-import { displayedProjects } from "./projectListProjection";
+import { projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -31,6 +31,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
   @query(".project-search-input") private searchInput?: HTMLInputElement;
+  @state() private expandedProjectIds: ReadonlySet<string> = new Set();
   @state() private openMenuProjectId: string | undefined;
   @state() private menuStyle = "";
   @state() private searchOpen = false;
@@ -51,15 +52,27 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   }
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) this.openMenuProjectId = undefined;
+    if (changed.has("projects")) {
+      const existingIds = new Set(this.projects.map((project) => project.id));
+      const prunedExpansion = new Set([...this.expandedProjectIds].filter((id) => existingIds.has(id)));
+      if (prunedExpansion.size !== this.expandedProjectIds.size) this.expandedProjectIds = prunedExpansion;
+      if (this.openMenuProjectId !== undefined && !existingIds.has(this.openMenuProjectId)) this.openMenuProjectId = undefined;
+    }
     if (this.openMenuProjectId !== undefined && (changed.has("projects") || changed.has("activities") || changed.has("workspacesByProjectId"))) {
       const previousProjects = changed.get("projects") ?? this.projects;
       const previousWorkspacesByProjectId = changed.get("workspacesByProjectId") ?? this.workspacesByProjectId;
       const previousActivities = changed.get("activities") ?? this.activities;
+      const previousRows = projectTreeRows(previousProjects, {
+        queryText: this.searchQuery,
+        ...(this.selected === undefined ? {} : { selectedProjectId: this.selected.id }),
+        expandedProjectIds: this.expandedProjectIds,
+        workspacesByProjectId: previousWorkspacesByProjectId,
+        activities: previousActivities,
+      });
       if (shouldCloseProjectMenuForOrderChange(
         this.openMenuProjectId,
-        displayedProjects(previousProjects, this.searchQuery, previousWorkspacesByProjectId, previousActivities),
-        displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities),
+        visibleProjectsFromRows(previousRows),
+        visibleProjectsFromRows(this.visibleRows),
       )) this.openMenuProjectId = undefined;
     }
     if (changed.has("collapsed") && this.collapsed) this.openMenuProjectId = undefined;
@@ -70,8 +83,27 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
     return focusSelectedOrFirstSelectableRow(this.renderRoot, { fallbackSelector: ".section-toggle" });
   }
 
+  private get visibleRows(): ProjectTreeRow[] {
+    return projectTreeRows(this.projects, {
+      queryText: this.searchQuery,
+      ...(this.selected === undefined ? {} : { selectedProjectId: this.selected.id }),
+      expandedProjectIds: this.expandedProjectIds,
+      workspacesByProjectId: this.workspacesByProjectId,
+      activities: this.activities,
+    });
+  }
+
+  /** Group consecutive rows into depth-zero families so each root gets one frame. */
+  private groupRows(rows: readonly ProjectTreeRow[]): ProjectTreeRow[][] {
+    return rows.reduce<ProjectTreeRow[][]>((groups, row) => {
+      if (row.depth === 0) groups.push([row]);
+      else groups.at(-1)?.push(row);
+      return groups;
+    }, []);
+  }
+
   override render() {
-    const projects = displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities);
+    const rows = this.visibleRows;
     return html`
       <section>
         <h2>
@@ -83,8 +115,14 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         ${this.collapsed ? null : html`
           ${this.searchOpen ? this.renderSearchInput() : null}
           <div class="list-body">
-            ${repeat(projects, (project) => project.id, (project) => this.renderProjectRow(project))}
-            ${projects.length === 0 && this.searchQuery.trim() !== "" ? html`<p class="project-search-empty">No matching projects.</p>` : null}
+            ${repeat(
+              this.groupRows(rows),
+              (group) => group[0]?.project.id ?? "",
+              (group) => group[0]?.hasChildren === true
+                ? html`<div class="session-family-frame">${group.map((row) => this.renderProjectRow(row))}</div>`
+                : html`${group.map((row) => this.renderProjectRow(row))}`,
+            )}
+            ${rows.length === 0 && this.searchQuery.trim() !== "" ? html`<p class="project-search-empty">No matching projects.</p>` : null}
           </div>
         `}
       </section>
@@ -97,17 +135,20 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
    * inspection helpers, which cannot descend into the `repeat` directive's
    * results.
    */
-  private renderProjectRow(project: Project) {
+  private renderProjectRow(row: ProjectTreeRow) {
+    const project = row.project;
+    const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div
         class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
+        style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${project.path}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(project)); }}
         @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
       >
         <div class="action-main">
-          <span class="workspace-primary">${project.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin project" aria-label=${`Unpin ${project.name}`} aria-pressed="true" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(project); }}>★</button> ` : null}<span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
+          <span class="workspace-primary">${this.renderGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${project.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin project" aria-label=${`Unpin ${project.name}`} aria-pressed="true" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(project); }}>★</button> ` : null}<span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
           ${this.renderActivity(project)}
         </div>
         <div class="action-menu">
@@ -124,6 +165,20 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         </div>
       </div>
     `;
+  }
+
+  /** Hidden while searching, because search decides visibility rather than fold state. */
+  private renderGroupToggle(row: ProjectTreeRow) {
+    if (!row.hasChildren || this.searchQuery.trim() !== "") return null;
+    const action = row.folded ? "Expand" : "Collapse";
+    return html`<button class="session-group-toggle" type="button" title=${`${action} ${row.project.name}`} aria-label=${`${action} ${row.project.name}`} aria-expanded=${String(!row.folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleProjectGroup(row.project.id, row.folded); }}>${row.folded ? "▸" : "▾"}</button>`;
+  }
+
+  private toggleProjectGroup(projectId: string, folded: boolean): void {
+    const next = new Set(this.expandedProjectIds);
+    if (folded) next.add(projectId);
+    else next.delete(projectId);
+    this.expandedProjectIds = next;
   }
 
   private handleProjectKeydown(event: KeyboardEvent, project: Project): void {
@@ -240,4 +295,9 @@ export function shouldCloseProjectMenuForOrderChange(projectId: string, previous
   const previousIndex = previousProjects.findIndex((project) => project.id === projectId);
   const currentIndex = currentProjects.findIndex((project) => project.id === projectId);
   return previousIndex !== currentIndex;
+}
+
+/** Projected rows reduced to projects, so menu-order checks account for folds and reparenting. */
+export function visibleProjectsFromRows(rows: readonly ProjectTreeRow[]): Project[] {
+  return rows.map((row) => row.project);
 }
