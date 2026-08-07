@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { WebSocket, type RawData } from "ws";
 import { SessionDaemonClient } from "../../sessiond/sessionDaemonClient.js";
+import { SlowConsumerGuard } from "../realtime/slowConsumerGuard.js";
 
 export interface SessionProxyDaemon {
   request(method: string, path: string, body?: unknown): Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
@@ -90,8 +91,20 @@ function requestFailed(reply: FastifyReply, error: unknown): void {
 }
 
 function bridgeSockets(client: WebSocket, upstream: WebSocket): void {
+  // Guard only the upstream-to-browser direction: browser-to-server traffic is
+  // small and control-only, but the browser event queue can grow without bound
+  // when a tab stops reading (a 125.9 MB queue was observed on a /events bridge).
+  // On breach the one offending connection is terminated; its queued backlog is
+  // never replayed, so order-sensitive streams are not corrupted.
+  const guard = new SlowConsumerGuard(client);
   client.on("message", (data) => { sendIfOpen(upstream, data); });
-  upstream.on("message", (data) => { sendIfOpen(client, data); });
+  upstream.on("message", (data) => {
+    sendIfOpen(client, data);
+    if (guard.afterSend()) {
+      // The browser consumer is not draining: release the daemon subscription.
+      upstream.close();
+    }
+  });
   client.on("close", () => { upstream.close(); });
   upstream.on("close", () => { client.close(); });
   upstream.on("error", () => { client.close(); });
