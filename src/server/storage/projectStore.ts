@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, readFile, readlink, realpath, rename, stat, unlink
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
 import { randomUUID } from "node:crypto";
+import { projectDescendantIds } from "../../shared/projectAncestry.js";
 import type { Project } from "../types.js";
 
 interface ProjectFile {
@@ -156,6 +157,23 @@ export class ProjectStore {
       if (projects.length === data.projects.length) return false;
       await this.write({ projects });
       return true;
+    });
+  }
+
+  /**
+   * Remove a project together with every registered descendant in a single
+   * write. The snapshot is read, the removal set computed, and the result
+   * written inside one exclusive turn, so a concurrent add or pin cannot make
+   * the removal set stale or lose an update.
+   */
+  async removeTree(id: string): Promise<string[] | undefined> {
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      if (!data.projects.some((project) => project.id === id)) return undefined;
+      const removedIds = [id, ...projectDescendantIds(data.projects, id)];
+      const removedIdSet = new Set(removedIds);
+      await this.write({ projects: data.projects.filter((project) => !removedIdSet.has(project.id)) });
+      return removedIds;
     });
   }
 

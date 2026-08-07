@@ -12,7 +12,7 @@ function fakeStore(setPinned: ProjectStore["setPinned"]): ProjectStore {
   return { setPinned } as unknown as ProjectStore;
 }
 
-function fakeStoreWith(overrides: Partial<Pick<ProjectStore, "remove" | "get" | "setPinned">>): ProjectStore {
+function fakeStoreWith(overrides: Partial<Pick<ProjectStore, "remove" | "get" | "setPinned" | "removeTree">>): ProjectStore {
   // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- test stub with the minimal surface each not-found path uses.
   return overrides as unknown as ProjectStore;
 }
@@ -73,5 +73,21 @@ describe("ProjectService unknown project", () => {
     const service = new ProjectService(fakeStoreWith({ setPinned: vi.fn().mockResolvedValue(undefined) }));
 
     await expect(service.unpin("missing")).rejects.toBeInstanceOf(ProjectNotFoundError);
+  });
+});
+
+describe("ProjectService.closeTree", () => {
+  it("returns the closed project ids", async () => {
+    const removeTree = vi.fn().mockResolvedValue(["root", "child"]);
+    const service = new ProjectService(fakeStoreWith({ removeTree }));
+
+    await expect(service.closeTree("root")).resolves.toEqual({ closedProjectIds: ["root", "child"] });
+    expect(removeTree).toHaveBeenCalledWith("root");
+  });
+
+  it("throws ProjectNotFoundError for an unknown target", async () => {
+    const service = new ProjectService(fakeStoreWith({ removeTree: vi.fn().mockResolvedValue(undefined) }));
+
+    await expect(service.closeTree("missing")).rejects.toBeInstanceOf(ProjectNotFoundError);
   });
 });
