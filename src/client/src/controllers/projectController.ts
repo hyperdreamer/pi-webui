@@ -6,12 +6,12 @@ import type { WorkspaceController } from "./workspaceController";
 const DEFAULT_PROJECT_PATH = "~/workspace";
 
 export interface ProjectControllerDependencies {
-  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
+  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "closeProjectTree" | "pinProject" | "unpinProject">;
   onProjectsApplied?: (machineId: string) => void;
 }
 
 export class ProjectController {
-  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
+  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "closeProjectTree" | "pinProject" | "unpinProject">;
   private readonly onProjectsApplied: ((machineId: string) => void) | undefined;
   private projectCatalogOperationSequence = 0;
   private readonly pinMutationQueueByMachine = new Map<string, Promise<void>>();
@@ -81,6 +81,27 @@ export class ProjectController {
       this.setState({ projects: state.projects.filter((p) => p.id !== projectId) });
       this.onProjectsApplied?.(machineId);
       if (state.selectedProject?.id === projectId) this.workspaces.clearSelection();
+    } catch (error) {
+      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+    }
+  }
+
+  /**
+   * Close a project family. The response is authoritative: the catalog may have
+   * changed since the confirmation dialog rendered, so reconcile against the
+   * ids the server actually removed rather than a locally computed subtree.
+   */
+  async closeProjectTree(projectId: string): Promise<void> {
+    const machineId = selectedMachineId(this.getState());
+    try {
+      const { closedProjectIds } = await this.api.closeProjectTree(projectId, machineId);
+      if (selectedMachineId(this.getState()) !== machineId) return;
+      for (const closedProjectId of closedProjectIds) this.workspaces.forgetProject(closedProjectId);
+      const state = this.getState();
+      const closedIdSet = new Set(closedProjectIds);
+      this.setState({ projects: state.projects.filter((project) => !closedIdSet.has(project.id)) });
+      this.onProjectsApplied?.(machineId);
+      if (state.selectedProject !== undefined && closedIdSet.has(state.selectedProject.id)) this.workspaces.clearSelection();
     } catch (error) {
       if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
     }

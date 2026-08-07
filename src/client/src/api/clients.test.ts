@@ -182,6 +182,30 @@ describe("project usage API", () => {
   });
 });
 
+describe("closeProjectTree", () => {
+  it("posts to the close-tree path and parses the closed ids", async () => {
+    const fetchMock = stubJsonFetch({ closedProjectIds: ["root", "child"] });
+
+    await expect(projectsApi.closeProjectTree("root")).resolves.toEqual({ closedProjectIds: ["root", "child"] });
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/projects/root/close-tree");
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
+  });
+
+  it("encodes the project id", async () => {
+    const fetchMock = stubJsonFetch({ closedProjectIds: ["a/b"] });
+
+    await projectsApi.closeProjectTree("a/b");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/projects/a%2Fb/close-tree");
+  });
+
+  it("rejects a response without closedProjectIds", async () => {
+    stubJsonFetch({ closed: true });
+
+    await expect(projectsApi.closeProjectTree("root")).rejects.toThrow();
+  });
+});
+
 describe("project pin API", () => {
   it("posts pin and unpin to encoded selected-machine routes", async () => {
     const pinned = [{ id: "p 1", name: "Repo", path: "/repo", createdAt: "2026-08-06T00:00:00.000Z", pinned: true }];
