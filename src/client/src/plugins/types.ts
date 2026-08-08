@@ -284,6 +284,7 @@ export type ThemeToken =
   | "--pi-terminal-text"
   | "--pi-border"
   | "--pi-border-muted"
+  | "--pi-hierarchy-border"
   | "--pi-text"
   | "--pi-text-secondary"
   | "--pi-text-bright"

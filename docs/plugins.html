@@ -91,6 +91,7 @@
             <strong>On this page</strong>
             <a href="#extend">What can be extended</a>
             <a href="#packages-vs-plugins">Pi packages vs PI WEBUI plugins</a>
+            <a href="#theme-tokens">Theme tokens</a>
             <a href="#ask-ai">What to ask AI to build</a>
             <a href="#example">Canonical example</a>
             <a href="#built-in-plugins">Built-in plugins</a>
@@ -174,6 +175,16 @@
                 refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system
                 prompt files as supported by Pi. Reload the browser page separately for newly discovered or changed
                 PI WEBUI browser plugins. A routine session daemon restart is not required.
+              </p>
+            </section>
+
+            <section id="theme-tokens">
+              <h2>Theme tokens</h2>
+              <p>
+                Theme contributions may omit <code>--pi-hierarchy-border</code> for compatibility with legacy custom themes.
+                When present, this optional token controls the hierarchy frames and guide rails around nested session and
+                project rows. If it is missing or empty, PI WEBUI falls back to that theme's non-empty
+                <code>--pi-border</code>; an explicit non-empty <code>--pi-hierarchy-border</code> value takes precedence.
               </p>
             </section>
 

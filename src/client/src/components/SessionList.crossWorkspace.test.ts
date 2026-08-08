@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo, Workspace } from "../api";
 import { eligibleSessionReorderGroup } from "../sessionReorder";
-import { findOptionalTemplateEventHandlerAfterMarker, templateText } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerAfterMarker, isTemplateResult, templateText } from "../templateInspection.testSupport";
 import { SessionList, sessionRowsForCurrentTree } from "./SessionList";
 
 describe("cross-workspace session rows", () => {
@@ -9,12 +9,35 @@ describe("cross-workspace session rows", () => {
     expect(sessionListStyles()).toMatch(/\.action-row\.external-session \.action-name\s*\{[^}]*color:\s*var\(--pi-accent\);/);
   });
 
-  it("styles parent families with a solid red rectangular frame", () => {
+  it("styles parent families with a solid neutral rectangular frame", () => {
     const styles = sessionListStyles();
 
-    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-danger\);/);
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-hierarchy-border\);/);
     expect(styles).not.toContain(".session-family-frame::before");
     expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border-radius:\s*10px;/);
+  });
+
+  it("draws the nested guide rail on the row surface, not the row box", () => {
+    const styles = sessionListStyles();
+
+    expect(styles).toMatch(/\.action-row\.nested \.action-main::before\s*\{[^}]*background:\s*var\(--pi-hierarchy-border\);/);
+    expect(styles).not.toContain(".action-row.nested::before");
+  });
+
+  it("marks a row at the capped depth as nested", () => {
+    const parent = session("parent", "/workspace");
+    const child = session("child", "/workspace", { parentSessionPath: parent.path });
+    const grandchild = session("grandchild", "/workspace", { parentSessionPath: child.path });
+    const list = new SessionList();
+    list.sessions = [parent, child, grandchild];
+    const rows = sessionRowsForCurrentTree([parent, child, grandchild], { currentWorkspacePath: "/workspace" });
+    const grandchildRow = rows.find((row) => row.session.id === "grandchild");
+    if (grandchildRow === undefined) throw new Error("grandchild row missing");
+    const parentRow = rows.find((row) => row.session.id === "parent");
+    if (parentRow === undefined) throw new Error("parent row missing");
+
+    expect(renderedRowClasses(list, grandchildRow)).toContain("nested");
+    expect(renderedRowClasses(list, parentRow)).not.toContain("nested");
   });
 
   it("nests a related session from another workspace beneath its local parent", () => {
@@ -131,6 +154,19 @@ function sessionListStyles(): string {
   const styles = SessionList.styles;
   const styleResults = Array.isArray(styles) ? styles : [styles];
   return styleResults.map((style) => style.cssText).join("\n");
+}
+
+/**
+ * Session rows render inside a map over row groups, so templateText cannot reach
+ * a single row through render(). This uses the component's own per-row seam,
+ * matching the pattern already used by this component's other row tests.
+ */
+function renderedRowClasses(list: SessionList, row: unknown): string {
+  const method: unknown = Reflect.get(list, "renderSession");
+  if (typeof method !== "function") throw new Error("SessionList.renderSession is not callable");
+  const rendered: unknown = Reflect.apply(method, list, [row, 0, "current", [], [], [], false, false]);
+  if (!isTemplateResult(rendered)) throw new Error("SessionList.renderSession did not return a template");
+  return templateText(rendered);
 }
 
 function workspace(id: string, path: string): Workspace {

@@ -108,7 +108,7 @@ export class SessionBrowserDialog extends LitElement {
     const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div
-        class=${`action-row session-browser-row ${this.selected?.id === session.id ? "selected" : ""}`}
+        class=${`action-row session-browser-row ${this.selected?.id === session.id ? "selected" : ""} ${cappedDepth >= 2 ? "nested" : ""}`}
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
@@ -221,7 +221,7 @@ export class SessionBrowserDialog extends LitElement {
     .session-browser-search { width: 100%; min-width: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 8px 10px; font: inherit; }
     .result-area { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     .session-list { display: grid; gap: 2px; }
-    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
     .session-family-frame > .action-row { margin: 4px 0; }
     .session-family-frame > .action-row:first-child { margin-top: 0; }
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }

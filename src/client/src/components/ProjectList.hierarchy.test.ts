@@ -237,6 +237,25 @@ describe("project list hierarchy rendering", () => {
     expect(rendered).toContain("--depth:2");
   });
 
+  it("marks a row at the capped depth as nested", () => {
+    const deep: Project[] = [
+      { id: "a", name: "A", path: "/a", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "b", name: "B", path: "/a/b", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "c", name: "C", path: "/a/b/c", createdAt: "2026-08-07T00:00:00.000Z" },
+    ];
+    const list = new ProjectList();
+    list.projects = deep;
+
+    expect(templateText(renderRow(list, rowFor(deep, "c", ["a", "b"])))).toContain("nested");
+    expect(templateText(renderRow(list, rowFor(deep, "b", ["a"])))).not.toContain("nested");
+  });
+
+  it("frames project families with the neutral hierarchy border", () => {
+    const styles = projectListStyles();
+
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-hierarchy-border\);/);
+  });
+
   it("frames a family root and leaves a standalone project unframed", () => {
     const list = new ProjectList();
     list.projects = family;

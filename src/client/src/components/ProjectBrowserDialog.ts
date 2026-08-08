@@ -178,7 +178,7 @@ export class ProjectBrowserDialog extends LitElement {
     const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div
-        class=${`project-row action-row ${this.selected?.id === project.id ? "selected" : ""}`}
+        class=${`project-row action-row ${this.selected?.id === project.id ? "selected" : ""} ${cappedDepth >= 2 ? "nested" : ""}`}
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${project.path}
@@ -379,7 +379,9 @@ export class ProjectBrowserDialog extends LitElement {
     .empty-state { display: grid; gap: 10px; justify-items: start; margin: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
     .add-empty-button { color: var(--pi-text); }
     /* Family frames and disclosure toggles mirror SessionList's rules so both surfaces present identically. */
-    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .project-row.nested .project-main::before { content: ""; position: absolute; top: -5px; bottom: -5px; left: calc((var(--depth, 0) - 1) * 16px + 16px); width: 2px; background: var(--pi-hierarchy-border); pointer-events: none; }
+    .session-family-frame > .project-row.nested:last-child .project-main::before { bottom: 50%; }
     .session-family-frame > .action-row { margin: 4px 0; }
     .session-family-frame > .action-row:first-child { margin-top: 0; }
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }

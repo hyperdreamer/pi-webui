@@ -480,7 +480,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const canDrag = this.canDragSessionReorder(row, scope, reorderGroup, reorderMarkers);
     return html`
       <div
-        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${row.external ? "external-session" : ""} ${selectionActive ? "selecting" : ""} ${indicatorKind === "unread" ? "unread" : ""}"
+        class="action-row ${this.selected?.id === session.id ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""} ${session.archived === true ? "archived" : ""} ${row.external ? "external-session" : ""} ${selectionActive ? "selecting" : ""} ${indicatorKind === "unread" ? "unread" : ""} ${cappedDepth >= 2 ? "nested" : ""}"
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${session.path}
@@ -1109,7 +1109,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     .plain-heading { min-width: 0; }
     .action-name-line { min-width: 0; display: flex; align-items: flex-start; gap: 6px; }
     .action-name-line .action-name { flex: 1 1 auto; min-width: 0; }
-    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
     .session-family-frame > .action-row { margin: 4px 0; }
     .session-family-frame > .action-row:first-child { margin-top: 0; }
     .session-family-frame > .action-row:last-child { margin-bottom: 0; }
