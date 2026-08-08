@@ -184,6 +184,94 @@ describe("PromptEditor attachment scoping", () => {
     }
   });
 
+  it("finishes a pending capture in a moved scope without recreating the source", async () => {
+    const store = new PromptAttachmentDraftStore();
+    const editor = editorWithStore(store, "temporary-session");
+    store.write("local:temporary-session", {
+      attachments: [{ id: "attachment-1", kind: "image", name: "existing.png", mimeType: "image/png", data: "UE5H", size: 3 }],
+    });
+    selectSession(editor, "temporary-session");
+    const reader = installDeferredFileReader();
+
+    try {
+      const method: unknown = Reflect.get(editor, "addAttachmentFiles");
+      if (!isAddAttachmentFiles(method)) throw new Error("PromptEditor.addAttachmentFiles is not callable");
+      const capture = method.call(editor, [pngFile("migrating.png")]);
+
+      store.move("local:temporary-session", "local:real-session");
+      selectSession(editor, "real-session");
+      reader.finish("data:image/png;base64,UE5H");
+      await capture;
+      await flushMicrotasks();
+
+      expect(store.read("local:real-session").attachments.map((attachment) => attachment.name)).toEqual(["existing.png", "migrating.png"]);
+      expect(store.read("local:temporary-session").attachments).toEqual([]);
+      expect(renderedNames(editor)).toEqual(["existing.png", "migrating.png"]);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  it("preserves a moved capture that finishes before the editor scope update", async () => {
+    const store = new PromptAttachmentDraftStore();
+    const editor = editorWithStore(store, "temporary-session");
+    store.write("local:temporary-session", {
+      attachments: [{ id: "attachment-1", kind: "image", name: "existing.png", mimeType: "image/png", data: "UE5H", size: 3 }],
+    });
+    selectSession(editor, "temporary-session");
+    const reader = installDeferredFileReader();
+
+    try {
+      const method: unknown = Reflect.get(editor, "addAttachmentFiles");
+      if (!isAddAttachmentFiles(method)) throw new Error("PromptEditor.addAttachmentFiles is not callable");
+      const capture = method.call(editor, [pngFile("migrating.png")]);
+
+      store.move("local:temporary-session", "local:real-session");
+      reader.finish("data:image/png;base64,UE5H");
+      await capture;
+      await flushMicrotasks();
+      expect(store.read("local:real-session").attachments.map((attachment) => attachment.name)).toEqual(["existing.png", "migrating.png"]);
+
+      selectSession(editor, "real-session");
+
+      expect(store.read("local:real-session").attachments.map((attachment) => attachment.name)).toEqual(["existing.png", "migrating.png"]);
+      expect(store.read("local:temporary-session").attachments).toEqual([]);
+      expect(renderedNames(editor)).toEqual(["existing.png", "migrating.png"]);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  it("does not recreate a cleared scope when a pending capture and scope update settle", async () => {
+    const store = new PromptAttachmentDraftStore();
+    const editor = editorWithStore(store, "temporary-session");
+    store.write("local:temporary-session", {
+      attachments: [{ id: "attachment-1", kind: "image", name: "existing.png", mimeType: "image/png", data: "UE5H", size: 3 }],
+    });
+    selectSession(editor, "temporary-session");
+    const reader = installDeferredFileReader();
+
+    try {
+      const method: unknown = Reflect.get(editor, "addAttachmentFiles");
+      if (!isAddAttachmentFiles(method)) throw new Error("PromptEditor.addAttachmentFiles is not callable");
+      const capture = method.call(editor, [pngFile("discarded.png")]);
+
+      store.clear("local:temporary-session");
+      selectSession(editor, "other-session");
+      expect(store.hasEntry("local:temporary-session")).toBe(false);
+
+      reader.finish("data:image/png;base64,UE5H");
+      await capture;
+      await flushMicrotasks();
+
+      expect(store.read("local:temporary-session").attachments).toEqual([]);
+      expect(store.hasEntry("local:temporary-session")).toBe(false);
+      expect(renderedNames(editor)).toEqual([]);
+    } finally {
+      reader.restore();
+    }
+  });
+
   it("clears only the sending session's stored draft on send", () => {
     const store = new PromptAttachmentDraftStore();
     const editor = editorWithStore(store, "session-a");

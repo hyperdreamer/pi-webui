@@ -13,7 +13,7 @@ import {
   type PromptAttachmentDelivery,
 } from "../../../shared/apiTypes";
 import { capturePromptAttachments, effectivePromptAttachmentDelivery, isInlinePromptAttachment, promptAttachmentsCanUseInlineDelivery } from "../promptAttachmentCapture";
-import { promptAttachmentDrafts, PromptAttachmentDraftStore, type PendingAttachment, type PromptAttachmentDraft } from "../promptAttachmentDrafts";
+import { promptAttachmentDrafts, PromptAttachmentDraftStore, type PendingAttachment, type PromptAttachmentDraft, type PromptAttachmentDraftScope } from "../promptAttachmentDrafts";
 import { inputModeForDraft, inputModesEqual, type InputMode } from "../inputModes";
 import { machineSessionKey } from "../machineKeys";
 import { detectPromptCompletionTrigger, fileCompletionInsertText, type PromptCompletionTrigger } from "../promptCompletions";
@@ -81,6 +81,7 @@ export class PromptEditor extends LitElement {
   @state() private attachments: PendingAttachment[] = [];
   @state() private attachmentDelivery: PromptAttachmentDelivery = loadAttachmentDelivery();
   @state() private attachmentError: string | undefined = undefined;
+  private attachmentScope: PromptAttachmentDraftScope | undefined;
   private requestVersion = 0;
   private editor: EditorView | undefined;
   private readonly editableCompartment = new Compartment();
@@ -93,22 +94,29 @@ export class PromptEditor extends LitElement {
     const previousSessionId = changed.has("sessionId") ? changed.get("sessionId") : this.sessionId;
     const previousMachineId = changed.has("machineId") ? changed.get("machineId") : this.machineId;
     const previousKey = draftStorageKey(previousMachineId, previousSessionId);
+    const previousScope = this.attachmentScope
+      ?? (previousKey === undefined ? undefined : this.attachmentDrafts.findScope(previousKey));
     if (previousKey !== undefined) saveDraft(previousKey, this.draft);
     const currentKey = draftStorageKey(this.machineId, this.sessionId);
     // Park the outgoing session's unsent attachments before adopting the next
     // session's, so switching away never carries files into another session.
-    // Only when the scope actually changed and the rendered mirror holds
-    // something: parking an empty mirror would delete the stored draft via the
-    // store's empty-snapshot rule, losing a draft the editor has not adopted.
+    // Only while the handle still owns the outgoing raw key and the rendered
+    // mirror holds something: a migrated scope may already contain a capture
+    // that completed before this lifecycle update, and parking the stale mirror
+    // would overwrite it. Parking an empty mirror would delete a stored draft
+    // the editor has not adopted via the store's empty-snapshot rule.
     if (
       previousKey !== undefined
       && previousKey !== currentKey
+      && previousScope?.currentKey() === previousKey
       && (this.attachments.length > 0 || this.attachmentError !== undefined)
     ) {
-      this.attachmentDrafts.write(previousKey, this.currentAttachmentDraft());
+      previousScope.write(this.currentAttachmentDraft());
     }
     this.draft = currentKey !== undefined ? loadDraft(currentKey) : "";
-    this.adoptAttachmentDraft(currentKey === undefined ? { attachments: [] } : this.attachmentDrafts.read(currentKey));
+    const currentScope = currentKey === undefined ? undefined : this.attachmentDrafts.openScope(currentKey);
+    this.attachmentScope = currentScope;
+    this.adoptAttachmentDraft(currentScope?.read() ?? { attachments: [] });
     this.currentInputMode = inputModeForDraft(this.draft);
     this.completions = [];
     this.selectedIndex = 0;
@@ -310,6 +318,14 @@ export class PromptEditor extends LitElement {
     return draftStorageKey(this.machineId, this.sessionId);
   }
 
+  private activeAttachmentScope(): PromptAttachmentDraftScope | undefined {
+    const key = this.attachmentScopeKey();
+    if (key === undefined) return undefined;
+    if (this.attachmentScope?.currentKey() !== undefined) return this.attachmentScope;
+    this.attachmentScope = this.attachmentDrafts.openScope(key);
+    return this.attachmentScope;
+  }
+
   private currentAttachmentDraft(): PromptAttachmentDraft {
     return {
       attachments: this.attachments,
@@ -324,9 +340,9 @@ export class PromptEditor extends LitElement {
 
   /** Mirror the rendered attachment state into the active scope's stored draft. */
   private persistAttachmentDraft(): void {
-    const key = this.attachmentScopeKey();
-    if (key === undefined) return;
-    this.attachmentDrafts.write(key, this.currentAttachmentDraft());
+    const scope = this.activeAttachmentScope();
+    if (scope === undefined) return;
+    scope.write(this.currentAttachmentDraft());
   }
 
   private removeAttachment(id: string) {
@@ -364,8 +380,8 @@ export class PromptEditor extends LitElement {
     // Capture the scope before awaiting: the user may select another session
     // while the read is outstanding, and these bytes belong to the session that
     // was active when they were dropped, pasted, or picked.
-    const scopeKey = this.attachmentScopeKey();
-    if (scopeKey === undefined) {
+    const scope = this.activeAttachmentScope();
+    if (scope === undefined) {
       this.attachmentError = undefined;
       const starter = await capturePromptAttachments(files, readFileAsBase64);
       if (starter.attachments.length > 0) {
@@ -375,18 +391,14 @@ export class PromptEditor extends LitElement {
       return;
     }
 
-    if (scopeKey === this.attachmentScopeKey()) this.attachmentError = undefined;
+    this.attachmentError = undefined;
+    const capture = scope.beginCapture();
     const { attachments, error } = await capturePromptAttachments(files, readFileAsBase64);
-    // Re-read rather than reusing a pre-await copy, so a second capture that
-    // finished first is not dropped. The error comes only from this batch, so a
-    // prior failure cannot survive a later successful read.
-    const existing = this.attachmentDrafts.read(scopeKey);
-    const merged: PromptAttachmentDraft = {
-      attachments: [...existing.attachments, ...attachments.map((attachment) => ({ id: this.attachmentDrafts.nextAttachmentId(), ...attachment }))],
-      ...(error === undefined ? {} : { error }),
-    };
-    this.attachmentDrafts.write(scopeKey, merged);
-    if (scopeKey !== this.attachmentScopeKey()) return;
+    // The capture handle follows move() and becomes inert after clear(), so a
+    // late read cannot recreate an obsolete source key.
+    const merged = capture.complete(attachments, error);
+    if (merged === undefined) return;
+    if (scope.currentKey() !== this.attachmentScopeKey()) return;
     this.adoptAttachmentDraft(merged);
   }
 
@@ -611,10 +623,12 @@ export class PromptEditor extends LitElement {
     this.currentInputMode = { kind: "normal" };
     const key = draftStorageKey(this.machineId, this.sessionId);
     if (key !== undefined) clearDraft(key);
+    const scope = key === undefined ? undefined : this.activeAttachmentScope();
+    if (scope !== undefined) scope.clear();
+    this.attachmentScope = undefined;
     this.completions = [];
     this.attachments = [];
     this.attachmentError = undefined;
-    if (key !== undefined) this.attachmentDrafts.clear(key);
     // `draft` is not reactive, so the cleared text will not flow to CodeMirror
     // via `updated()`; push it to the editor document explicitly.
     this.syncEditorDoc();
