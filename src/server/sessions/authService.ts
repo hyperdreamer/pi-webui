@@ -95,12 +95,20 @@ export class AuthService {
       notify: () => undefined,
     };
     await this.runtime.login(providerId, "api_key", interaction);
+    // Pi 0.84+ login() no longer refreshes the catalog after persisting a
+    // credential; refresh before announcing the change so listeners observe a
+    // settled runtime snapshot (the codebase-wide auth refresh contract).
+    await this.runtime.refresh({ allowNetwork: false });
     await this.emit({}, { operation: "login", providerId, authType: "api_key" });
     return { accepted: true };
   }
 
   async logoutProvider(providerId: string): Promise<{ accepted: true }> {
     await this.runtime.logout(providerId);
+    // Pi 0.84+ logout() no longer refreshes the catalog after removing a
+    // credential; refresh before announcing the change so listeners observe a
+    // settled runtime snapshot (the codebase-wide auth refresh contract).
+    await this.runtime.refresh({ allowNetwork: false });
     await this.emit({ removedProviderId: providerId }, { operation: "logout", providerId });
     return { accepted: true };
   }

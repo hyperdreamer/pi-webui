@@ -410,9 +410,85 @@ describe("OAuthLoginFlowService", () => {
     expect(() => { service.get(state.flowId); }).toThrow("Login flow not found");
     service.dispose();
   });
+
+  it("refreshes the runtime after a committed login and before announcing completion", async () => {
+    const calls: string[] = [];
+    const service = new OAuthLoginFlowService();
+    const runtime = fakeRuntime(() => {
+      calls.push("login");
+      return Promise.resolve();
+    });
+    const refresh = vi.spyOn(runtime, "refresh").mockImplementation((options) => {
+      calls.push(`refresh:${JSON.stringify(options)}`);
+      return Promise.resolve({ aborted: false, errors: new Map<string, Error>() });
+    });
+
+    const state = service.start({
+      providerId: "test-provider",
+      providerName: "Test Provider",
+      runtime,
+      onComplete: () => { calls.push("onComplete"); },
+    });
+    await flushAsyncLogin();
+
+    expect(service.get(state.flowId)).toMatchObject({ status: "complete" });
+    expect(refresh).toHaveBeenCalledExactlyOnceWith({ allowNetwork: false });
+    // The refresh must settle the runtime before listeners are told the login
+    // committed, otherwise they observe a stale catalog snapshot.
+    expect(calls).toEqual(["login", 'refresh:{"allowNetwork":false}', "onComplete"]);
+    service.dispose();
+  });
+
+  it("completes a cancelled flow when the post-login refresh is still in flight", async () => {
+    const finishRefresh = deferred<undefined>();
+    const refreshStarted = deferred<undefined>();
+    const service = new OAuthLoginFlowService();
+    const runtime = fakeRuntime(() => Promise.resolve());
+    vi.spyOn(runtime, "refresh").mockImplementation(async () => {
+      refreshStarted.resolve(undefined);
+      await finishRefresh.promise;
+      return { aborted: false, errors: new Map<string, Error>() };
+    });
+
+    const state = service.start({ providerId: "test-provider", providerName: "Test Provider", runtime });
+    await refreshStarted.promise;
+
+    // Cancelling mid-refresh must not strand the already-persisted credential:
+    // the committed login supersedes the transient cancelled state.
+    expect(service.cancel(state.flowId)).toMatchObject({ status: "cancelled", error: "Login cancelled" });
+
+    finishRefresh.resolve(undefined);
+    await flushAsyncLogin();
+
+    const settled = service.get(state.flowId);
+    expect(settled).toMatchObject({ status: "complete", progress: ["Login complete"] });
+    expect(settled).not.toHaveProperty("error");
+    service.dispose();
+  });
+
+  it("marks the flow errored when the post-login refresh fails", async () => {
+    // The refresh runs inside the login chain's fulfilment handler, so a sibling
+    // rejection handler would never observe its failure: the flow would stay
+    // "running" forever and the rejection would surface as unhandled.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    const service = new OAuthLoginFlowService();
+    const runtime = fakeRuntime(() => Promise.resolve());
+    vi.spyOn(runtime, "refresh").mockRejectedValue(new Error("catalog refresh failed"));
+
+    const state = service.start({ providerId: "test-provider", providerName: "Test Provider", runtime });
+    await flushAsyncLogin();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(service.get(state.flowId)).toMatchObject({ status: "error", error: "catalog refresh failed" });
+    expect(unhandled).toEqual([]);
+    process.off("unhandledRejection", onUnhandled);
+    service.dispose();
+  });
 });
 
-function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRuntime, "login"> {
+function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRuntime, "login" | "refresh"> {
   return {
     login: (providerId, type, interaction) => {
       authTypes?.push(type);
@@ -420,10 +496,17 @@ function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRun
         ? { type: "api_key", key: "test" }
         : { type: "oauth", refresh: "r", access: "a", expires: 0 });
     },
+    refresh: () => Promise.resolve({ aborted: false, errors: new Map<string, Error>() }),
   };
 }
 
 async function flushAsyncLogin(): Promise<void> {
+  // Drains the login chain: prompt resolution, the fake login, the explicit
+  // post-login refresh (Pi 0.84+ no longer refreshes inside login), and the
+  // reconcile/complete callback.
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();

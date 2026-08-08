@@ -149,9 +149,14 @@ describe("AuthService", () => {
     const { auth, credentials, changes } = await createAuthService();
 
     const state = await auth.startApiKeyLogin("cloudflare-ai-gateway");
-    expect(state.prompt).toMatchObject({ message: "Enter Cloudflare API key", promptType: "secret" });
-    if (state.prompt === undefined) throw new Error("Expected Cloudflare key prompt");
-    auth.respondToOAuthFlow(state.flowId, state.prompt.requestId, "cf-secret");
+    // Pi 0.84+ queues credential operations, so the first prompt can arrive
+    // after start() returns; poll until it appears (same pattern as below).
+    await vi.waitFor(() => {
+      expect(auth.oauthFlow(state.flowId).prompt).toMatchObject({ message: "Enter Cloudflare API key", promptType: "secret" });
+    });
+    const prompt = auth.oauthFlow(state.flowId).prompt;
+    if (prompt === undefined) throw new Error("Expected Cloudflare key prompt");
+    auth.respondToOAuthFlow(state.flowId, prompt.requestId, "cf-secret");
 
     await vi.waitFor(() => {
       expect(auth.oauthFlow(state.flowId).prompt).toMatchObject({ message: "Enter Cloudflare account ID", promptType: "text" });
@@ -184,9 +189,14 @@ describe("AuthService", () => {
     const { auth, credentials, changes } = await createAuthService();
 
     const state = await auth.startApiKeyLogin(providerId);
-    expect(state.select).toBeDefined();
-    if (state.select === undefined) throw new Error("Expected auth method selection");
-    auth.respondToOAuthFlow(state.flowId, state.select.requestId, selection);
+    // Pi 0.84+ queues credential operations, so the first prompt can arrive
+    // after start() returns; poll until it appears (same pattern as below).
+    await vi.waitFor(() => {
+      expect(auth.oauthFlow(state.flowId).select).toBeDefined();
+    });
+    const select = auth.oauthFlow(state.flowId).select;
+    if (select === undefined) throw new Error("Expected auth method selection");
+    auth.respondToOAuthFlow(state.flowId, select.requestId, selection);
 
     await vi.waitFor(() => {
       expect(auth.oauthFlow(state.flowId).prompt).toMatchObject({ message: secretPrompt, promptType: "secret" });

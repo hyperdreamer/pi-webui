@@ -47,26 +47,24 @@ upgrade the Pi package set together and require a clean full audit instead.
 
 | Field | Value |
 | --- | --- |
-| Status | Active, narrowly scoped upstream-only/non-bundled exception |
-| Last validated | 2026-08-03 |
-| Expires | 2026-08-25 |
-| Upstream package path | `@earendil-works/pi-coding-agent@0.83.0` → published `npm-shrinkwrap.json` |
-| PI WEBUI compatibility range | `>=0.83.0 <0.84` |
+| Status | **Resolved by upstream release** — register kept for audit history |
+| Last validated | 2026-08-08 |
+| Expires | 2026-08-25 (review anchor; the exception no longer applies) |
+| Upstream package path | `@earendil-works/pi-coding-agent@0.84.1` → published `npm-shrinkwrap.json` |
+| PI WEBUI compatibility range | `>=0.84.0 <0.85` |
 | Bundling evidence | The package `files` allowlist excludes this register and all `node_modules`; verify with `npm pack --dry-run --ignore-scripts --json` at each release. |
 | Production-audit requirement | `npm audit --omit=dev --json` must remain clean. |
 
-The current root development installation contains these upstream-locked paths:
+At the last validation, the newest published Pi Coding Agent release (`0.84.1`)
+shrinkwraps `brace-expansion@5.0.9` and `undici@8.9.0`, resolving the registered
+`brace-expansion@5.0.7` finding (GHSA-mh99-v99m-4gvg) and the later `undici`
+advisories; `npm audit` reports no findings through the Pi package set. Per
+policy, a compatible upstream release that resolves the registered findings ends
+this exception: future releases require a clean full audit instead.
 
-- **High — `brace-expansion@5.0.7`** via `minimatch@10.2.5`:
-  [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg)
-  (unbounded expansion denial of service).
-
-At the last validation, the newest published Pi Coding Agent release (`0.83.0`)
-still shrinkwrapped vulnerable `brace-expansion@5.0.7`; npm audit reported no
-production vulnerabilities. npm overrides do not penetrate that published shrinkwrap.
-Therefore, do not force a local replacement: wait for a compatible upstream release that
-resolves every advisory, then upgrade the Pi package set together and rerun:
-
-```sh
-npm audit --include=dev
-```
+Remaining findings in the root development installation are pi-webui-own paths
+outside this register's upstream-only scope and were never covered by it:
+`brace-expansion@5.0.8` via the eslint toolchain (`minimatch@10.2.5`),
+`fast-uri@4.1.1` via `fastify`, `js-yaml@4.3.0` via the Changesets toolchain,
+and `nanoid@3.3.16` via `postcss`. They must be resolved or handled through the
+normal audit gate before release.

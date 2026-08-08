@@ -4,7 +4,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { CommandOption, OAuthFlowState } from "../../shared/apiTypes.js";
 
 /** The single runtime capability this service drives — narrowed for testable DI. */
-type OAuthLoginRuntime = Pick<ModelRuntime, "login">;
+type OAuthLoginRuntime = Pick<ModelRuntime, "login" | "refresh">;
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SelectPrompt = Extract<AuthPrompt, { type: "select" }>;
 type ValuePrompt = Exclude<AuthPrompt, { type: "select" }>;
@@ -94,15 +94,27 @@ export class OAuthLoginFlowService {
       notify: (event) => { this.handleEvent(record, event); },
     };
 
-    void options.runtime.login(options.providerId, options.authType ?? "oauth", interaction).then(
-      () => this.reconcileCommittedLogin(record, options.onComplete),
-      (error: unknown) => {
+    void options.runtime.login(options.providerId, options.authType ?? "oauth", interaction)
+      .then(async () => {
+        // Pi 0.84+ login() no longer refreshes the catalog after persisting a
+        // credential. Refresh before reconciling so the committed login is only
+        // announced once the runtime has settled (mirrors the removed internal
+        // post-login refresh; no signal so cancellation during it cannot leave
+        // a persisted login stranded).
+        await options.runtime.refresh({ allowNetwork: false });
+        return this.reconcileCommittedLogin(record, options.onComplete);
+      })
+      // Catches the login *and* the post-login refresh. Chaining `.catch` rather
+      // than passing a rejection handler to `.then` is deliberate: a sibling
+      // handler cannot observe a rejection thrown by its own fulfilment
+      // callback, which would strand the flow in `running` and surface an
+      // unhandled rejection.
+      .catch((error: unknown) => {
         if (!this.isCurrent(record)) return;
         this.clearPending(record);
         if (record.state.status !== "running") return;
         this.markTerminal(record, { ...withoutInteraction(record.state), status: "error", error: error instanceof Error ? error.message : String(error) });
-      },
-    );
+      });
 
     return this.get(flowId);
   }
