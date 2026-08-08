@@ -151,6 +151,8 @@ npm run dev:web
 npm run dev:client
 ```
 
+For faster broad local feedback, run `npm run test:fast`. Keep `npm run verify` for final validation; it uses the serial test profile for reliability.
+
 Validate changes with:
 
 ```bash

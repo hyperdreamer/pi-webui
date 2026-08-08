@@ -40,6 +40,15 @@ describe("project identity", () => {
     });
   });
 
+  it("exposes explicit fast and serial test profiles while keeping verification serial", () => {
+    expect(packageManifest.scripts).toMatchObject({
+      test: "vitest run --config vitest.config.ts",
+      "test:fast": "vitest run --config vitest.config.ts --maxWorkers=4",
+      "test:serial": "vitest run --config vitest.config.ts --maxWorkers=1",
+      verify: "npm run typecheck && npm run lint && npm run knip && npm run test:serial",
+    });
+  });
+
   it("uses PI WEBUI plugin and extension paths", () => {
     expect(existsSync(join(repositoryRoot, "pi-webui-plugins"))).toBe(true);
     const legacyPluginDirectory = ["pi", "web-plugins"].join("-");
