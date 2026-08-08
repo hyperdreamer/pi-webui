@@ -274,6 +274,14 @@ describe("project list hierarchy rendering", () => {
     expect(styles).toMatch(/\.session-group-toggle\s*\{[^}]*width:\s*24px;[^}]*border:\s*0;/);
   });
 
+  it("anchors nested project connectors to the parent disclosure column", () => {
+    const styles = projectListStyles();
+
+    expect(styles).toMatch(/\.tree-marker\s*\{[^}]*flex:\s*0 0 12px;[^}]*width:\s*12px;/);
+    expect(styles).toMatch(/\.action-row\.nested \.action-main\s*\{[^}]*padding-left:\s*calc\(9px \+ var\(--depth, 0\) \* 16px \+ 19px\);/);
+    expect(styles).toMatch(/\.action-row\.nested \.action-main::before\s*\{[^}]*left:\s*calc\(9px \+ var\(--depth, 0\) \* 16px \+ 18px\);/);
+  });
+
   it("keeps the heading count at the registered project total while folded", () => {
     const list = new ProjectList();
     list.collapsible = true;

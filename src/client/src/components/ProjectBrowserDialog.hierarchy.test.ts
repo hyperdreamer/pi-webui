@@ -226,6 +226,14 @@ describe("expanded project browser hierarchy", () => {
     expect(styles).toMatch(/\.project-row\.nested \.project-main::before\s*\{[^}]*background:\s*var\(--pi-hierarchy-border\);/);
     expect(styles).not.toContain(".project-row.nested::before");
   });
+
+  it("anchors nested project connectors to the parent disclosure column", () => {
+    const styles = projectBrowserDialogStyles();
+
+    expect(styles).toMatch(/\.tree-marker\s*\{[^}]*display:\s*inline-grid;[^}]*width:\s*12px;/);
+    expect(styles).toMatch(/\.project-row\.nested \.project-main\s*\{[^}]*padding-left:\s*calc\(11px \+ var\(--depth, 0\) \* 16px \+ 13px\);/);
+    expect(styles).toMatch(/\.project-row\.nested \.project-main::before\s*\{[^}]*left:\s*calc\(11px \+ var\(--depth, 0\) \* 16px \+ 12px\);/);
+  });
 });
 
 describe("expanded browser close with subprojects", () => {

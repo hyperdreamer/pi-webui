@@ -186,7 +186,7 @@ export class ProjectBrowserDialog extends LitElement {
         @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
       >
         <div class="project-main">
-          <span class="project-name">${this.renderGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${this.renderPinToggle(project)}${project.name}</span>
+          <span class="project-name">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${this.renderGroupToggle(row)}${this.renderPinToggle(project)}${project.name}</span>
           <span class="project-path">${project.path}</span>
           ${this.renderActivity(project)}
         </div>
@@ -380,7 +380,9 @@ export class ProjectBrowserDialog extends LitElement {
     .add-empty-button { color: var(--pi-text); }
     /* Family frames and disclosure toggles mirror SessionList's rules so both surfaces present identically. */
     .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
-    .project-row.nested .project-main::before { content: ""; position: absolute; top: -5px; bottom: -5px; left: calc((var(--depth, 0) - 1) * 16px + 16px); width: 2px; background: var(--pi-hierarchy-border); pointer-events: none; }
+    /* Shift grandchildren so the guide meets the marker's leading edge at the parent toggle center. */
+    .project-row.nested .project-main { padding-left: calc(11px + var(--depth, 0) * 16px + 13px); }
+    .project-row.nested .project-main::before { content: ""; position: absolute; top: -5px; bottom: -5px; left: calc(11px + var(--depth, 0) * 16px + 12px); width: 2px; background: var(--pi-hierarchy-border); pointer-events: none; }
     .session-family-frame > .project-row.nested:last-child .project-main::before { bottom: 50%; }
     .session-family-frame > .action-row { margin: 4px 0; }
     .session-family-frame > .action-row:first-child { margin-top: 0; }
@@ -388,7 +390,7 @@ export class ProjectBrowserDialog extends LitElement {
     .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; cursor: pointer; }
     .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); }
     .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
-    .tree-marker { color: var(--pi-dim); margin-right: 5px; }
+    .tree-marker { display: inline-grid; place-items: center; width: 12px; color: var(--pi-dim); margin-right: 5px; }
     @keyframes pulse { 0%, 100% { transform: scale(.75); opacity: .55; } 50% { transform: scale(1.2); opacity: 1; } }
 
     @media (max-width: 760px) {

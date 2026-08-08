@@ -149,7 +149,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
       >
         <div class="action-main">
-          <span class="workspace-primary">${this.renderGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${project.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin project" aria-label=${`Unpin ${project.name}`} aria-pressed="true" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(project); }}>★</button> ` : null}<span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
+          <span class="workspace-primary">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${this.renderGroupToggle(row)}${project.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin project" aria-label=${`Unpin ${project.name}`} aria-pressed="true" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(project); }}>★</button> ` : null}<span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
           ${this.renderActivity(project)}
         </div>
         <div class="action-menu">
@@ -307,11 +307,15 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       .pinned-star { flex: 0 0 auto; border: 0; background: transparent; color: #d4a017; padding: 0; font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
       .pinned-star:hover { border-radius: 4px; background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); transform: scale(1.25); }
       .pinned-star:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; border-radius: 2px; }
+      .tree-marker { flex: 0 0 12px; display: inline-grid; place-items: center; width: 12px; margin-right: 5px; }
       /* Family frames and disclosure toggles, mirroring SessionList's rules so both lists present identically; kept local because listStyles is shared more widely. */
       .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
       .session-family-frame > .action-row { margin: 4px 0; }
       .session-family-frame > .action-row:first-child { margin-top: 0; }
       .session-family-frame > .action-row:last-child { margin-bottom: 0; }
+      /* Shift grandchildren so the guide meets the marker's leading edge at the parent toggle center. */
+      .action-row.nested .action-main { padding-left: calc(9px + var(--depth, 0) * 16px + 19px); }
+      .action-row.nested .action-main::before { left: calc(9px + var(--depth, 0) * 16px + 18px); }
       .session-group-toggle { flex: 0 0 auto; display: grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; }
       .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); transform: scale(1.25); }
       .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
