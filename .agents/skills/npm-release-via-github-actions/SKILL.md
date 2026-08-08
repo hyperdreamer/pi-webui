@@ -140,7 +140,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      - `package-lock.json`
      - `CHANGELOG.md`
      - consumed/deleted `.changeset/*.md` fragments
-   - Before staging, confirm `package-lock.json` is actually in the diff and carries the new version. If `git status --short` does not show `package-lock.json` as modified while `package.json` changed version, the lockfile sync in step 4 was missed — go back and run `npm install --package-lock-only`. Never commit a release where `package.json` advanced but `package-lock.json` did not.
+   - Before staging, confirm `package-lock.json` is actually in the diff and carries the new version. If `git status --short` does not show `package-lock.json` as modified while `package.json` changed version, the lockfile sync in step 5 was missed — go back and run `npm install --package-lock-only`. Never commit a release where `package.json` advanced but `package-lock.json` did not.
    - Use:
      ```bash
      git add package.json package-lock.json CHANGELOG.md .changeset
