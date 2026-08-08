@@ -78,19 +78,46 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Apply that bump to the current version to get the recommended target. From `1.11.3`, a highest pending bump of `patch` gives `1.11.4`, `minor` gives `1.12.0`, and `major` gives `2.0.0`.
    - Confirm the recommended target with the user before editing version files, committing, tagging, or publishing. Show the current version and where it came from, the recommended target, the tag that will be created, and which pending change drives the bump level.
    - If the user supplies an exact stable version, accept it only when it is valid semver, greater than the current version, absent from npm, and not lower than the minimum stable target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
-   - If the user supplies an exact prerelease, require valid semver, a version greater than the current version, and an unpublished npm version. Strip prerelease and build metadata to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
+   - If the user supplies an exact prerelease, reject build metadata (`+...`) before confirmation. `npm version 1.12.0-beta+sha --no-git-tag-version` writes `1.12.0-beta`, so a build-metadata target cannot survive the exact-target workflow.
+   - Require the remaining exact prerelease to be valid semver, greater than the current version, and unpublished on npm. Strip its prerelease portion to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
+   - Derive the npm channel from the first prerelease identifier exactly as `.github/workflows/publish.yml` does: take everything after the first `-`, then everything before the first `.`. Reject the target if npm's SemVer parser treats that identifier as a valid SemVer range, such as numeric `0`, because npm rejects valid ranges as dist-tags:
+     ```bash
+     requested_version='<requested-version>'
+     tag="${requested_version#*-}"
+     tag="${tag%%.*}"
+     node -e 'const semver = require("semver"); const tag = process.argv[1]; if (semver.validRange(tag) !== null) { console.error("invalid npm dist-tag:", tag, "is a valid SemVer range"); process.exit(1); }' "$tag"
+     ```
+   - Before presenting an exact prerelease for confirmation, require npm itself to reproduce it exactly in a disposable directory. This probe must not mutate the repository:
+     ```bash
+     requested_version='<requested-version>'
+     current_version="$(node -p "require('./package.json').version")"
+     canonical_version="$(
+       set -e
+       probe_dir="$(mktemp -d)"
+       trap 'rm -rf "$probe_dir"' EXIT
+       printf '{"name":"version-probe","version":"%s","private":true}\n' "$current_version" > "$probe_dir/package.json"
+       cd "$probe_dir"
+       npm version "$requested_version" --no-git-tag-version >/dev/null
+       node -p "require('./package.json').version"
+     )"
+     if [ "$canonical_version" != "$requested_version" ]; then
+       echo "npm canonicalized $requested_version to $canonical_version; choose a new exact target" >&2
+       exit 1
+     fi
+     ```
+     If any exact-prerelease check fails, explain the failed check, ask for a new target, and run all checks again before confirming it. Never silently confirm npm's canonicalized replacement.
    - An exact prerelease on a new major line is an explicit request for that major line. Never infer a major prerelease from pending work.
    - Never infer a `major` bump. If the pending changes look breaking and the user has not asked for a breaking release, raise that during confirmation.
    - If npm already has the confirmed version, stop and ask for a different target. npm rejects republishing an existing version.
    - Tag names follow the existing convention in this repository, `v<version>`.
 
 4. **Prepare Changesets prerelease mode when requested**
-   - Stable releases skip this step.
+   - Stable releases outside an active prerelease line skip this step.
    - For the first prerelease on a release line, derive the stable base target from pending changesets. If the user did not name a prerelease tag, use `beta`, matching this repository's established tags. Recommend and confirm `<base>-<tag>.0` before mutation, then enter pre mode:
      ```bash
      npm run changeset -- pre enter <tag>
      ```
-     The following version step must create `.changeset/pre.json`; commit it with the release prep.
+     `changeset -- pre enter <tag>` creates `.changeset/pre.json` immediately. The following `changeset version` step updates its consumed-changeset state; commit the resulting `.changeset/pre.json` with the release prep.
    - For a subsequent prerelease, require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base. Run `npm run changelog:status`; its next prerelease version is authoritative. Confirm that target before versioning and do not enter pre mode again.
    - If the package version is already a prerelease but `.changeset/pre.json` is absent, exited, or names a different tag/base, stop and explain the inconsistent prerelease state instead of guessing or recreating it.
    - For the final stable release from pre mode, confirm the current prerelease's base version before mutation, then exit pre mode:
@@ -152,14 +179,22 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
 8. **Create a GitHub Release to trigger publishing**
    - Prefer release notes from the generated changelog instead of generic generated notes.
    - Extract the new version's section from `CHANGELOG.md` into a temporary notes file if useful.
-   - Use the pushed commit on `main` as the target:
+   - Use the pushed commit on `main` as the target. For a stable version, keep the release unmarked as a prerelease:
      ```bash
      gh release create v<new-version> \
        --target main \
        --title "v<new-version>" \
        --notes-file /tmp/pi-webui-release-notes-v<new-version>.md
      ```
-   - If a clean notes file is not practical, `--generate-notes` is acceptable, but prefer the Changesets-generated text because it is curated.
+   - For a prerelease version, use the same target, title, and notes, and explicitly prevent GitHub from treating it as the latest stable release:
+     ```bash
+     gh release create v<new-version> \
+       --target main \
+       --title "v<new-version>" \
+       --notes-file /tmp/pi-webui-release-notes-v<new-version>.md \
+       --prerelease --latest=false
+     ```
+   - If a clean notes file is not practical, `--generate-notes` is acceptable, but prefer the Changesets-generated text because it is curated. Preserve the corresponding stable or prerelease metadata branch when changing only the notes option.
    - Creating a non-draft published release triggers `on: release: types: [published]`.
    - If the user specifically wants to review notes first, create a draft release, then publish it through GitHub when approved. Remember: draft creation will not trigger publishing until it is published.
 
@@ -179,12 +214,27 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Fix by committing and creating a new release/tag if needed, or rerun the failed GitHub Actions job when the failure is transient. Do not publish locally as a workaround.
 
 10. **Verify npm registry publication**
-   - After the workflow succeeds, verify:
+   - After the workflow succeeds, keep the exact-version tarball check so verification cannot accidentally resolve a different tag or version:
      ```bash
-     npm view <package-name> version
      npm view <package-name>@<new-version> dist.tarball
      ```
-   - If npm has not updated yet, wait briefly and check again.
+   - Then assert the workflow updated the expected dist-tag to the exact new version. Stable releases must check `latest`. Prereleases must derive the tag with the same first-prerelease-identifier operations as `.github/workflows/publish.yml`:
+     ```bash
+     new_version='<new-version>'
+     if [[ "$new_version" == *-* ]]; then
+       tag="${new_version#*-}"
+       tag="${tag%%.*}"
+     else
+       tag='latest'
+     fi
+     published_version="$(npm view <package-name> "dist-tags.$tag")"
+     if [ "$published_version" != "$new_version" ]; then
+       echo "npm dist-tags.$tag is $published_version, expected $new_version" >&2
+       exit 1
+     fi
+     ```
+     This is the required `npm view <package-name> dist-tags.latest` equality assertion for stable releases and `npm view <package-name> dist-tags.<tag>` equality assertion for prereleases.
+   - If npm has not updated yet, wait briefly and check both the exact-version tarball and expected dist-tag again. A successful workflow is not sufficient while either registry assertion disagrees.
 
 ## Reruns and special cases
 

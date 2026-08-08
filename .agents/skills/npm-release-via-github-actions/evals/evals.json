@@ -4,13 +4,13 @@
     {
       "id": 1,
       "prompt": "Please make a new npm release for this package. Use the next patch version.",
-      "expected_output": "The assistant should inspect package.json, pending Changesets, and the GitHub Actions publish workflow; determine the highest pending bump type; recommend an ordinary semver target derived from it; confirm that target with the user before editing version files; run changeset version; sync package-lock.json to the final version; avoid local npm publish; run verification; commit and push; create a GitHub Release using the generated changelog notes; monitor the publish workflow; and verify npm. It should not compute a date-based version.",
+      "expected_output": "The assistant should inspect package.json, pending Changesets, and the GitHub Actions publish workflow; determine the highest pending bump type; recommend an ordinary semver target derived from it; confirm that target with the user before editing version files; run changeset version; sync package-lock.json to the final version; avoid local npm publish; run verification; commit and push; create a stable GitHub Release using the generated changelog notes without prerelease metadata; monitor the publish workflow; verify the exact-version tarball; and assert that npm dist-tags.latest equals the new stable version. It should not compute a date-based version.",
       "files": []
     },
     {
       "id": 2,
       "prompt": "bump npm to 1.12.0 and publish it",
-      "expected_output": "The assistant should validate the requested version as semver that is greater than the current version, unpublished, and not lower than the minimum target implied by the pending changesets, then use it. It should avoid local npm publish, generate CHANGELOG.md through Changesets, enforce the requested version with --no-git-tag-version only if the Changesets result differs, sync the lockfile, push a release commit, create a GitHub Release that triggers publish.yml, and report action and npm status.",
+      "expected_output": "The assistant should validate the requested version as semver that is greater than the current version, unpublished, and not lower than the minimum target implied by the pending changesets, then use it. It should avoid local npm publish, generate CHANGELOG.md through Changesets, enforce the requested version with --no-git-tag-version only if the Changesets result differs, sync the lockfile, push a release commit, create a stable GitHub Release without prerelease metadata to trigger publish.yml, verify the exact-version tarball, assert that npm dist-tags.latest equals 1.12.0, and report action and npm status.",
       "files": []
     },
     {
@@ -34,13 +34,25 @@
     {
       "id": 6,
       "prompt": "make the next minor beta release; current is 1.11.3 and the pending changesets require minor",
-      "expected_output": "The assistant should derive stable base 1.12.0, recommend and explicitly confirm 1.12.0-beta.0 before mutation, then enter Changesets pre mode with beta and run the normal version workflow. It should commit .changeset/pre.json with the release prep, preserve lockfile synchronization, publish only through the GitHub Release workflow, and verify the beta npm dist-tag.",
+      "expected_output": "The assistant should derive stable base 1.12.0, recommend and explicitly confirm 1.12.0-beta.0 before mutation, then enter Changesets pre mode with beta and run the normal version workflow. It should commit .changeset/pre.json with the release prep, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.0.",
       "files": []
     },
     {
       "id": 7,
       "prompt": "we are on 1.12.0-beta.0 in Changesets pre mode and have a new patch changeset; release the next beta",
-      "expected_output": "The assistant should require active .changeset/pre.json for the same beta release line, use changeset status to identify 1.12.0-beta.1, confirm that target before mutation, and run changeset version without entering pre mode again. It should keep .changeset/pre.json for later betas or pre exit, preserve lockfile synchronization, and publish only through the GitHub Release workflow under the beta dist-tag.",
+      "expected_output": "The assistant should require active .changeset/pre.json for the same beta release line, use changeset status to identify 1.12.0-beta.1, confirm that target before mutation, and run changeset version without entering pre mode again. It should keep .changeset/pre.json for later betas or pre exit, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.1.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "publish exact prerelease 1.12.0-0; current is 1.11.3 and the pending changesets require minor",
+      "expected_output": "The assistant should derive the first prerelease identifier exactly as publish.yml does, recognize 0 as the npm channel, and reject the target because npm parses 0 as a valid SemVer range and therefore rejects it as a dist-tag. It should ask for a named prerelease channel and require a new exact target to be validated and confirmed before any repository mutation.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "publish exact prerelease 1.12.0-beta+sha; current is 1.11.3 and the pending changesets require minor",
+      "expected_output": "The assistant should reject build metadata before confirmation because npm version canonicalizes 1.12.0-beta+sha to 1.12.0-beta. It should ask for a metadata-free exact target, run npm version in a disposable location with no repository mutation, require the canonicalized version to reproduce the requested target exactly, and explicitly reconfirm the replacement before entering pre mode or changing release files.",
       "files": []
     }
   ]
