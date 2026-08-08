@@ -27,6 +27,9 @@ invocations, and staged-validation behavior remain serial by default. Change
 policy visible at the call site rather than relying only on the shared config.
 
 Document `npm run test:fast` briefly in the README's existing Development section.
+Add a corresponding agent-facing rule to `.agents/skills/testing-guide/SKILL.md`:
+use focused tests first, use `npm run test:fast` for broad local feedback, do not
+run it alongside other heavy work, and use `npm run verify` as the final gate.
 Keep `npm run verify` as the required final validation command.
 
 ## Contract coverage
@@ -55,8 +58,8 @@ override was rejected because it is hard to discover and easy to mistype.
 3. Run `npm run test:fast` and confirm the full suite passes with four workers.
 4. Run `npm run verify` and confirm typecheck, lint, Knip, and the explicit serial
    test profile pass.
-5. Run `git diff --check` and inspect the README Development section for concise,
-   non-duplicated guidance.
+5. Run `git diff --check` and inspect the README Development section and testing
+   guide for concise, non-duplicated guidance.
 
 ## Release tracking
 
