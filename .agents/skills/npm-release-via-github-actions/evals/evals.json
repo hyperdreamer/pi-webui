@@ -34,13 +34,13 @@
     {
       "id": 6,
       "prompt": "make the next minor beta release; current is 1.11.3 and the pending changesets require minor",
-      "expected_output": "The assistant should derive stable base 1.12.0, validate the beta channel through the same all-path channel guard before initial pre-mode mutation, recommend and explicitly confirm 1.12.0-beta.0 before mutation, then enter Changesets pre mode with beta and run the normal version workflow. It should commit .changeset/pre.json with the release prep, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.0.",
+      "expected_output": "The assistant should derive stable base 1.12.0, construct complete candidate 1.12.0-beta.0, validate it through the full-candidate contract, and then validate the beta channel through the same all-path channel guard before confirmation or initial pre-mode mutation. It should explicitly confirm 1.12.0-beta.0 before entering Changesets pre mode with beta and running the normal version workflow. It should commit .changeset/pre.json with the release prep, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.0.",
       "files": []
     },
     {
       "id": 7,
       "prompt": "we are on 1.12.0-beta.0 in Changesets pre mode and have a new patch changeset; release the next beta",
-      "expected_output": "The assistant should require active .changeset/pre.json for the same beta release line, use changeset status to identify 1.12.0-beta.1, validate the beta channel through the same all-path channel guard before subsequent pre-mode mutation, confirm that target before mutation, and run changeset version without entering pre mode again. It should keep .changeset/pre.json for later betas or pre exit, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.1.",
+      "expected_output": "The assistant should require active .changeset/pre.json for the same beta release line and use changeset status to identify authoritative complete candidate 1.12.0-beta.1. It should validate that candidate through the full-candidate contract and then validate the beta channel through the same all-path channel guard before confirmation or subsequent pre-mode mutation, confirm the target, and run changeset version without entering pre mode again. It should keep .changeset/pre.json for later betas or pre exit, preserve lockfile synchronization, publish only through a GitHub Release created with --prerelease --latest=false, verify the exact-version tarball, and assert that npm dist-tags.beta equals 1.12.0-beta.1.",
       "files": []
     },
     {
@@ -71,6 +71,12 @@
       "id": 12,
       "prompt": "make the next minor prerelease using prerelease tag 0; current is 1.11.3 and the pending changesets require minor",
       "expected_output": "The assistant should validate the user-named channel before confirmation or changeset pre enter, reject 0 because npm parses it as a SemVer range, ask for a safe named channel, derive and validate the replacement target, and reconfirm before mutation.",
+      "files": []
+    },
+    {
+      "id": 13,
+      "prompt": "make the next minor prerelease using prerelease tag beta+sha; current is 1.11.3 and the pending changesets require minor",
+      "expected_output": "The assistant should construct complete candidate 1.12.0-beta+sha.0, reject it through the full-candidate contract before confirmation or mutation because it contains build metadata and npm canonicalizes it instead of reproducing it byte-for-byte, and avoid changeset pre enter. It should ask for a safe replacement tag, reconstruct and validate the complete candidate, run the channel guard, and explicitly reconfirm before mutating release files.",
       "files": []
     }
   ]

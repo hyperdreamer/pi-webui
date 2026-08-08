@@ -76,13 +76,12 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Read the current version from `package.json`.
    - Determine the highest bump type among pending changesets, ordering `major` above `minor` above `patch`.
    - Apply that bump to the current version to get the recommended target. From `1.11.3`, a highest pending bump of `patch` gives `1.11.4`, `minor` gives `1.12.0`, and `major` gives `2.0.0`.
-   - Confirm the recommended target with the user before editing version files, committing, tagging, or publishing. Show the current version and where it came from, the recommended target, the tag that will be created, and which pending change drives the bump level.
-   - If the user supplies an exact npm version, validate every user-supplied exact target through the same ordered contract before confirmation:
+   - **Full-candidate contract for every package version.** Before confirming every release candidate that can become an npm package version, whether it is recommended/generated or a user-supplied exact target, validate the complete candidate through the same ordered contract:
      1. Require strict valid SemVer.
-     2. Reject any build metadata (`+...`) for both stable and prerelease targets because npm does not preserve it as the package version: `npm version 1.12.0+sha --no-git-tag-version` writes `1.12.0` and `npm version 1.12.0-beta+sha --no-git-tag-version` writes `1.12.0-beta`, so a build-metadata target cannot survive the exact-target workflow.
-     3. Require npm itself to reproduce the target byte-for-byte in a disposable directory. This probe must not mutate the repository:
+     2. Reject any build metadata (`+...`) for both stable and prerelease candidates because npm does not preserve it as the package version: `npm version 1.12.0+sha --no-git-tag-version` writes `1.12.0` and `npm version 1.12.0-beta+sha --no-git-tag-version` writes `1.12.0-beta`, so a build-metadata candidate cannot survive the release workflow.
+     3. Require npm itself to reproduce the candidate byte-for-byte in a disposable directory. This probe must not mutate the repository:
         ```bash
-        requested_version='<requested-version>'
+        requested_version='<candidate-version>'
         current_version="$(node -p "require('./package.json').version")"
         canonical_version="$(
           set -e
@@ -94,22 +93,23 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
           node -p "require('./package.json').version"
         )"
         if [ "$canonical_version" != "$requested_version" ]; then
-          echo "npm canonicalized $requested_version to $canonical_version; choose a new exact target" >&2
+          echo "npm canonicalized $requested_version to $canonical_version; choose a new release candidate" >&2
           exit 1
         fi
         ```
-     If any of these checks fails, explain the failed check, ask for a new exact target, and run all of them again before confirming it. Never silently confirm npm's canonicalized replacement.
-   - Then apply the checks for the target's class:
-     - Exact stable: greater than the current version, absent from npm, and not lower than the minimum stable target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
-     - Exact prerelease: greater than the current version and unpublished on npm. Strip its prerelease portion to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
-   - **Channel guard for every prerelease path.** Before confirming any prerelease target or entering/versioning pre mode, derive the channel exactly as `.github/workflows/publish.yml` does: take everything after the first `-`, then everything before the first `.`. Reject channel `latest` and any channel that npm's SemVer parser treats as a valid SemVer range, such as numeric `0`, because npm rejects valid ranges as dist-tags and a prerelease must never move the default `latest` channel. Run this recipe:
+     If any check fails, explain the failed check and stop before confirmation or repository mutation. For a user-supplied exact target, ask for a new exact target; for a generated prerelease, ask for a safe replacement tag or target and reconstruct the complete candidate. Run the full-candidate contract again before confirming the replacement. Never silently confirm npm's canonicalized replacement.
+   - Then apply the checks for the candidate's class:
+     - Stable candidate: greater than the current version, absent from npm, and not lower than the minimum stable target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
+     - Prerelease candidate: greater than the current version and unpublished on npm. Strip its prerelease portion to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
+   - **Channel guard for every prerelease path.** After the complete prerelease candidate passes the full-candidate contract and before confirming it or entering/versioning pre mode, derive the channel exactly as `.github/workflows/publish.yml` does: take everything after the first `-`, then everything before the first `.`. Reject channel `latest` and any channel that npm's SemVer parser treats as a valid SemVer range, such as numeric `0`, because npm rejects valid ranges as dist-tags and a prerelease must never move the default `latest` channel. Run this recipe:
      ```bash
-     requested_version='<requested-version>'
+     requested_version='<candidate-version>'
      tag="${requested_version#*-}"
      tag="${tag%%.*}"
      node -e 'const semver = require("semver"); const tag = process.argv[1]; if (tag === "latest" || semver.validRange(tag) !== null) { console.error("invalid npm dist-tag:", tag, "must not be `latest` or a valid SemVer range"); process.exit(1); }' "$tag"
      ```
-     The guard applies to every prerelease entry path: a user-supplied exact prerelease, the default or recommended first prerelease, a user-named initial prerelease tag, and Changesets output for a subsequent prerelease in active pre mode. A failure must stop before `changeset pre enter`, `changeset version`, version-file edits, commit, tag, or release creation; ask for a safe named channel and target and reconfirm before proceeding.
+     The full-candidate contract and then this guard apply to every prerelease entry path: a user-supplied exact prerelease, the default or recommended first prerelease, a user-named initial prerelease tag, and Changesets output for a subsequent prerelease in active pre mode. A failure must stop before `changeset pre enter`, `changeset version`, version-file edits, commit, tag, or release creation; ask for a safe named channel and target, rerun both validations, and reconfirm before proceeding.
+   - **Confirmation comes after validation.** After the full-candidate contract, the candidate-class checks, and the prerelease channel guard where applicable have passed, confirm the validated target with the user before editing version files, entering/versioning pre mode, committing, tagging, or publishing. Show the current version and where it came from, the recommended or user-selected target, the tag that will be created, and which pending change drives the bump level.
    - An exact prerelease on a new major line is an explicit request for that major line. Never infer a major prerelease from pending work.
    - Never infer a `major` bump. If the pending changes look breaking and the user has not asked for a breaking release, raise that during confirmation.
    - If npm already has the confirmed version, stop and ask for a different target. npm rejects republishing an existing version.
@@ -117,12 +117,12 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
 
 4. **Prepare Changesets prerelease mode when requested**
    - Stable releases outside an active prerelease line skip this step.
-   - For the first prerelease on a release line, derive the stable base target from pending changesets. If the user did not name a prerelease tag, use `beta`, matching this repository's established tags. Validate the tag through the step 3 channel guard before confirming it or entering pre mode, then recommend and confirm `<base>-<tag>.0` before mutation:
+   - For the first prerelease on a release line, derive the stable base target from pending changesets. If the user did not name a prerelease tag, use `beta`, matching this repository's established tags. Construct the complete candidate `<base>-<tag>.0`, run the step 3 full-candidate contract on it, and then run the step 3 channel guard on the same candidate. Only after both validations pass, recommend and confirm that candidate before mutation:
      ```bash
      npm run changeset -- pre enter <tag>
      ```
      `changeset -- pre enter <tag>` creates `.changeset/pre.json` immediately. The following `changeset version` step updates its consumed-changeset state; commit the resulting `.changeset/pre.json` with the release prep.
-   - For a subsequent prerelease, require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base. Run `npm run changelog:status`; its next prerelease version is authoritative. Run the step 3 channel guard on that version before confirming it or running `changeset version`; do not enter pre mode again.
+   - For a subsequent prerelease, require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base. Run `npm run changelog:status`; its next prerelease version is the authoritative complete candidate. Run the step 3 full-candidate contract and then the step 3 channel guard on that version before confirming it or running `changeset version`; do not enter pre mode again.
    - If the package version is already a prerelease but `.changeset/pre.json` is absent, exited, or names a different tag/base, stop and explain the inconsistent prerelease state instead of guessing or recreating it.
    - For the final stable release from pre mode, confirm the current prerelease's base version before mutation, then exit pre mode:
      ```bash
