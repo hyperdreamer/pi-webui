@@ -31,6 +31,13 @@ export class ProjectService {
     if (!(await this.store.remove(id))) throw new ProjectNotFoundError();
   }
 
+  /** Close a project and its registered descendants. The store owns the removal set. */
+  async closeTree(id: string): Promise<{ closedProjectIds: string[] }> {
+    const closedProjectIds = await this.store.removeTree(id);
+    if (closedProjectIds === undefined) throw new ProjectNotFoundError();
+    return { closedProjectIds };
+  }
+
   async requireProject(id: string): Promise<Project> {
     const project = await this.store.get(id);
     if (!project) throw new ProjectNotFoundError();

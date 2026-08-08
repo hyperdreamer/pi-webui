@@ -4,7 +4,7 @@ import type { Project, WorkspaceActivity } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { ProjectList, shouldCloseProjectMenuForOrderChange } from "./ProjectList";
-import { displayedProjects } from "./projectListProjection";
+import { displayedProjects, type ProjectTreeRow } from "./projectListProjection";
 
 const projects: Project[] = [
   { id: "server", name: "Server Console", path: "/work/server-console", createdAt: "2026-07-24T00:00:00.000Z" },
@@ -156,7 +156,7 @@ describe("project pin controls", () => {
 });
 
 /** Render a single project row through ProjectList's private per-row seam. */
-type RenderProjectRow = (this: ProjectList, project: Project) => TemplateResult;
+type RenderProjectRow = (this: ProjectList, row: ProjectTreeRow) => TemplateResult;
 
 function isRenderProjectRow(value: unknown): value is RenderProjectRow {
   return typeof value === "function";
@@ -165,5 +165,5 @@ function isRenderProjectRow(value: unknown): value is RenderProjectRow {
 function renderProjectRow(list: ProjectList, project: Project): TemplateResult {
   const method: unknown = Reflect.get(list, "renderProjectRow");
   if (!isRenderProjectRow(method)) throw new Error("ProjectList.renderProjectRow is not callable");
-  return method.call(list, project);
+  return method.call(list, { project, depth: 0, hasChildren: false, folded: false });
 }

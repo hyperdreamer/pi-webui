@@ -100,6 +100,14 @@ function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectServi
     }
   });
 
+  app.post<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId/close-tree`, async (request, reply) => {
+    try {
+      return await projects.closeTree(request.params.projectId);
+    } catch (error) {
+      return sendProjectRouteError(reply, error);
+    }
+  });
+
   app.get<{ Querystring: { q?: string } }>(`${prefix}/project-directories`, async (request, reply) => {
     try {
       return await listDirectorySuggestions(request.query.q ?? "");

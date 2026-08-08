@@ -260,3 +260,75 @@ describe("ProjectStore durable writes", () => {
     expect(persisted).toEqual({ projects: await store.list() });
   });
 });
+
+describe("ProjectStore.removeTree", () => {
+  let tempDir = "";
+  let filePath = "";
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "pi-webui-project-store-"));
+    filePath = join(tempDir, "projects.json");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  async function storeWithProjects(inputs: readonly { name: string; path: string }[]): Promise<ProjectStore> {
+    const store = new ProjectStore(filePath);
+    for (const input of inputs) await store.add(input);
+    return store;
+  }
+
+  it("removes the target and every descendant in one write", async () => {
+    const store = await storeWithProjects([
+      { name: "Root", path: "/work" },
+      { name: "Child", path: "/work/app1" },
+      { name: "Grandchild", path: "/work/app1/nested" },
+      { name: "Unrelated", path: "/other" },
+    ]);
+    const projects = await store.list();
+    const root = projects.find((project) => project.path === "/work");
+    if (root === undefined) throw new Error("fixture missing root");
+
+    const removed = await store.removeTree(root.id);
+
+    expect(removed).toHaveLength(3);
+    expect(removed?.[0]).toBe(root.id);
+    expect((await store.list()).map((project) => project.path)).toEqual(["/other"]);
+  });
+
+  it("leaves directory-boundary near misses untouched", async () => {
+    const store = await storeWithProjects([
+      { name: "App", path: "/work/app" },
+      { name: "Application", path: "/work/application" },
+    ]);
+    const projects = await store.list();
+    const app = projects.find((project) => project.path === "/work/app");
+    if (app === undefined) throw new Error("fixture missing app");
+
+    await store.removeTree(app.id);
+
+    expect((await store.list()).map((project) => project.path)).toEqual(["/work/application"]);
+  });
+
+  it("removes only the target when it has no descendants", async () => {
+    const store = await storeWithProjects([
+      { name: "Root", path: "/work" },
+      { name: "Leaf", path: "/work/leaf" },
+    ]);
+    const projects = await store.list();
+    const leaf = projects.find((project) => project.path === "/work/leaf");
+    if (leaf === undefined) throw new Error("fixture missing leaf");
+
+    expect(await store.removeTree(leaf.id)).toEqual([leaf.id]);
+    expect((await store.list()).map((project) => project.path)).toEqual(["/work"]);
+  });
+
+  it("reports an unknown target distinctly from an empty removal", async () => {
+    const store = await storeWithProjects([{ name: "Root", path: "/work" }]);
+
+    expect(await store.removeTree("missing")).toBeUndefined();
+    expect(await store.list()).toHaveLength(1);
+  });
+});

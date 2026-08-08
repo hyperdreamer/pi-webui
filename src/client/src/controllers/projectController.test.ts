@@ -62,6 +62,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
       },
     );
@@ -102,6 +103,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -148,6 +150,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -188,6 +191,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -238,6 +242,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn().mockResolvedValue(undefined),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
         onProjectsApplied,
       },
@@ -259,7 +264,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn(), closeProjectTree: vi.fn() } },
     );
 
     await controller.pinProject(beta.id);
@@ -277,7 +282,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject, closeProjectTree: vi.fn() } },
     );
 
     await controller.unpinProject(beta.id);
@@ -300,6 +305,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn().mockRejectedValue(new Error("Project not found")),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
       },
     );
@@ -331,7 +337,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject, closeProjectTree: vi.fn() } },
     );
 
     const firstMutation = controller.pinProject(alpha.id);
@@ -368,7 +374,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn(), closeProjectTree: vi.fn() } },
     );
 
     const localMutation = controller.pinProject(localProject.id);
@@ -402,7 +408,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject, closeProjectTree: vi.fn() } },
     );
 
     const firstMutation = controller.pinProject(alpha.id);
@@ -448,6 +454,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn(),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
       },
     );
@@ -502,6 +509,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn().mockReturnValue(pendingPin.promise),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
       },
     );
@@ -543,6 +551,7 @@ describe("ProjectController", () => {
           closeProject: vi.fn(),
           pinProject: vi.fn().mockReturnValue(pendingPin.promise),
           unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
         },
       },
     );
@@ -571,7 +580,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn(), closeProjectTree: vi.fn() } },
     );
 
     const pin = controller.pinProject(beta.id);
@@ -594,7 +603,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject, closeProjectTree: vi.fn() } },
     );
 
     const unpin = controller.unpinProject(beta.id);
@@ -616,7 +625,7 @@ describe("ProjectController", () => {
       () => state,
       (patch) => { state = { ...state, ...patch }; },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+      { api: { projects: vi.fn(), addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn(), closeProjectTree: vi.fn() } },
     );
 
     const pin = controller.pinProject(alpha.id);
@@ -645,7 +654,7 @@ describe("ProjectController", () => {
         state = { ...state, ...patch };
       },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn() } },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject, unpinProject: vi.fn(), closeProjectTree: vi.fn() } },
     );
 
     const oldLoad = controller.loadProjects();
@@ -679,7 +688,7 @@ describe("ProjectController", () => {
         state = { ...state, ...patch };
       },
       { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
-      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject } },
+      { api: { projects, addProject: vi.fn(), closeProject: vi.fn(), pinProject: vi.fn(), unpinProject, closeProjectTree: vi.fn() } },
     );
 
     const oldLoad = controller.loadProjects();
@@ -695,5 +704,332 @@ describe("ProjectController", () => {
     expect(state.projects).toEqual([project("beta", "/beta"), alpha]);
     expect(state.error).toBe("");
     expect(state.isLoadingProjects).toBe(false);
+  });
+});
+
+function createHarness(options: {
+  projects: Project[];
+  selectedProject?: Project;
+  api?: { closeProjectTree?: (projectId: string, machineId?: string) => Promise<{ closedProjectIds: string[] }> };
+  onBeforeResolve?: () => void;
+}) {
+  let state: AppState = {
+    ...initialAppState(),
+    projects: options.projects,
+    ...(options.selectedProject === undefined ? {} : { selectedProject: options.selectedProject }),
+  };
+  const forgottenProjectIds: string[] = [];
+  let clearSelectionCallCount = 0;
+  const controller = new ProjectController(
+    () => state,
+    (patch) => { state = { ...state, ...patch }; },
+    {
+      selectProject: vi.fn(),
+      forgetProject: vi.fn((projectId: string) => { forgottenProjectIds.push(projectId); }),
+      clearSelection: vi.fn(() => { clearSelectionCallCount += 1; }),
+    },
+    {
+      api: {
+        projects: vi.fn(),
+        addProject: vi.fn(),
+        closeProject: vi.fn(),
+        pinProject: vi.fn(),
+        unpinProject: vi.fn(),
+        closeProjectTree: (projectId: string, machineId?: string) => Promise.resolve().then(() => {
+          options.onBeforeResolve?.();
+          return options.api?.closeProjectTree?.(projectId, machineId) ?? Promise.resolve({ closedProjectIds: [] });
+        }),
+      },
+    },
+  );
+  return {
+    controller,
+    state: () => state,
+    forgottenProjectIds,
+    get clearSelectionCalls() {
+      return clearSelectionCallCount;
+    },
+    switchMachine: (machineId: string) => {
+      state = { ...state, selectedMachine: { id: machineId, name: machineId, kind: "remote", createdAt: "now", updatedAt: "now" } };
+    },
+  };
+}
+
+describe("closeProjectTree", () => {
+  it("removes every closed project from the catalog", async () => {
+    const harness = createHarness({
+      projects: [
+        { id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" },
+        { id: "child", name: "Child", path: "/work/app1", createdAt: "2026-08-07T00:00:00.000Z" },
+        { id: "other", name: "Other", path: "/other", createdAt: "2026-08-07T00:00:00.000Z" },
+      ],
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root", "child"] }) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.state().projects.map((project) => project.id)).toEqual(["other"]);
+  });
+
+  it("forgets workspace state for every closed project", async () => {
+    const harness = createHarness({
+      projects: [
+        { id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" },
+        { id: "child", name: "Child", path: "/work/app1", createdAt: "2026-08-07T00:00:00.000Z" },
+      ],
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root", "child"] }) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.forgottenProjectIds).toEqual(["root", "child"]);
+  });
+
+  it("clears the selection when the selected project was a closed descendant", async () => {
+    const child = { id: "child", name: "Child", path: "/work/app1", createdAt: "2026-08-07T00:00:00.000Z" };
+    const harness = createHarness({
+      projects: [{ id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" }, child],
+      selectedProject: child,
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root", "child"] }) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.clearSelectionCalls).toBe(1);
+  });
+
+  it("keeps the selection when it was not closed", async () => {
+    const other = { id: "other", name: "Other", path: "/other", createdAt: "2026-08-07T00:00:00.000Z" };
+    const harness = createHarness({
+      projects: [{ id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" }, other],
+      selectedProject: other,
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root"] }) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.clearSelectionCalls).toBe(0);
+  });
+
+  it("reconciles against the returned ids rather than a locally computed subtree", async () => {
+    const harness = createHarness({
+      projects: [
+        { id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" },
+        { id: "child", name: "Child", path: "/work/app1", createdAt: "2026-08-07T00:00:00.000Z" },
+      ],
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root"] }) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.state().projects.map((project) => project.id)).toEqual(["child"]);
+  });
+
+  it("surfaces a failure through the error state and leaves the catalog intact", async () => {
+    const harness = createHarness({
+      projects: [{ id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" }],
+      api: { closeProjectTree: () => Promise.reject(new Error("boom")) },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.state().error).toContain("boom");
+    expect(harness.state().projects).toHaveLength(1);
+  });
+
+  it("ignores a result that arrives after the machine changed", async () => {
+    const harness = createHarness({
+      projects: [{ id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" }],
+      api: { closeProjectTree: () => Promise.resolve({ closedProjectIds: ["root"] }) },
+      onBeforeResolve: () => { harness.switchMachine("other-machine"); },
+    });
+
+    await harness.controller.closeProjectTree("root");
+
+    expect(harness.state().projects).toHaveLength(1);
+  });
+
+  it("does not let an older in-flight catalog response restore closed projects", async () => {
+    const root = project("root", "/work");
+    const child = project("child", "/work/app1");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, child, other] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingOldLoad = deferred<Project[]>();
+    const projects = vi.fn().mockReturnValue(pendingOldLoad.promise);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockResolvedValue({ closedProjectIds: ["root", "child"] }),
+        },
+      },
+    );
+
+    const oldLoad = controller.loadProjects();
+    await controller.closeProjectTree(root.id);
+
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+
+    pendingOldLoad.resolve([root, child, other]);
+    await oldLoad;
+
+    expect(publishedProjectLists).toEqual([[other]]);
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("reloads the catalog when a newer operation superseded the close-tree response", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, other] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingLoad = deferred<Project[]>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn()
+      .mockReturnValueOnce(pendingLoad.promise)
+      .mockResolvedValueOnce([other]);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject: vi.fn(), forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockReturnValue(pendingClose.promise),
+        },
+      },
+    );
+
+    const close = controller.closeProjectTree(root.id);
+    const load = controller.loadProjects();
+
+    pendingLoad.resolve([root, other]);
+    await load;
+
+    expect(state.projects.map((project) => project.id)).toEqual(["root", "other"]);
+
+    pendingClose.resolve({ closedProjectIds: ["root"] });
+    await close;
+
+    expect(projects).toHaveBeenCalledTimes(2);
+    expect(publishedProjectLists).toEqual([[root, other], [other], [other]]);
+    expect(state.projects.map((project) => project.id)).toEqual(["other"]);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+
+  it("applies authoritative cleanup before a superseded reconciliation", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    let state: AppState = { ...initialAppState(), projects: [root, other], selectedProject: root };
+    const pendingLoad = deferred<Project[]>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn()
+      .mockReturnValueOnce(pendingLoad.promise)
+      .mockRejectedValueOnce(new Error("reconciliation failed"));
+    const forgetProject = vi.fn();
+    const clearSelection = vi.fn(() => {
+      state = { ...state, selectedProject: undefined };
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject: vi.fn(), forgetProject, clearSelection },
+      {
+        api: {
+          projects,
+          addProject: vi.fn(),
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn().mockReturnValue(pendingClose.promise),
+        },
+      },
+    );
+
+    const close = controller.closeProjectTree(root.id);
+    const load = controller.loadProjects();
+
+    pendingLoad.resolve([root, other]);
+    await load;
+    pendingClose.resolve({ closedProjectIds: [root.id] });
+    await close;
+
+    expect(projects).toHaveBeenCalledTimes(2);
+    expect(state.projects.map((project) => project.id)).toEqual([other.id]);
+    expect(forgetProject).toHaveBeenCalledWith(root.id);
+    expect(clearSelection).toHaveBeenCalledOnce();
+    expect(state.selectedProject).toBeUndefined();
+    expect(state.error).toContain("reconciliation failed");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+});
+
+describe("addProject catalog ordering", () => {
+  it("reconciles a delayed add after close-tree without selecting a closed project", async () => {
+    const root = project("root", "/work");
+    const other = project("other", "/other");
+    const added = project("child", "/work/app1");
+    let state: AppState = {
+      ...initialAppState(),
+      projects: [root, other],
+      selectedProject: root,
+    };
+    const pendingAdd = deferred<Project>();
+    const pendingClose = deferred<{ closedProjectIds: string[] }>();
+    const projects = vi.fn().mockResolvedValue([other]);
+    const addProject = vi.fn().mockReturnValue(pendingAdd.promise);
+    const closeProjectTree = vi.fn().mockReturnValue(pendingClose.promise);
+    const selectProject = vi.fn().mockResolvedValue(undefined);
+    const clearSelection = vi.fn(() => {
+      state = { ...state, selectedProject: undefined };
+    });
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject, forgetProject: vi.fn(), clearSelection },
+      {
+        api: {
+          projects,
+          addProject,
+          closeProject: vi.fn(),
+          closeProjectTree,
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+        },
+      },
+    );
+
+    const add = controller.addProject(added.path);
+    const close = controller.closeProjectTree(root.id);
+
+    pendingClose.resolve({ closedProjectIds: [root.id, added.id] });
+    await close;
+    pendingAdd.resolve(added);
+    await add;
+
+    expect(projects).toHaveBeenCalledWith("local");
+    expect(state.projects).toEqual([other]);
+    expect(state.selectedProject).toBeUndefined();
+    expect(selectProject).not.toHaveBeenCalled();
   });
 });

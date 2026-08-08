@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
 import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
+import type { ProjectTreeRow } from "./projectListProjection";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -25,17 +26,23 @@ function invokeReflectedVoidMethod(target: object, name: string, ...args: unknow
 /**
  * Node-based component tests cannot mount Lit's keyed DOM. Inspect the repeat
  * directive at the rendering boundary to lock down its stable row identity.
+ * Rows now render as depth-zero family groups, so the helper unwraps each
+ * group to the single-row shape the assertions already expect.
  */
 function isProjectRowsRepeatValues(value: unknown): value is readonly [
-  readonly unknown[],
-  (project: Project) => TemplateResult,
-  (project: Project) => TemplateResult,
+  readonly ProjectTreeRow[][],
+  (group: readonly ProjectTreeRow[]) => unknown,
+  (group: readonly ProjectTreeRow[]) => TemplateResult,
 ] {
-  return Array.isArray(value) && Array.isArray(value[0]) && typeof value[1] === "function" && typeof value[2] === "function";
+  return Array.isArray(value) && Array.isArray(value[0]) && Array.isArray(value[0][0]) && typeof value[1] === "function" && typeof value[2] === "function";
+}
+
+function rowFor(project: Project): ProjectTreeRow {
+  return { project, depth: 0, hasChildren: false, folded: false };
 }
 
 function projectRowsRepeatDirective(dialog: ProjectBrowserDialog): {
-  items: readonly unknown[];
+  items: readonly Project[];
   key: (project: Project) => unknown;
   render: (project: Project) => TemplateResult;
 } {
@@ -45,9 +52,13 @@ function projectRowsRepeatDirective(dialog: ProjectBrowserDialog): {
   const directive = templateValueAfterMarker(rendered, '<div class="project-list">');
   if (typeof directive !== "object" || directive === null) throw new Error("Expected project rows to use Lit repeat");
   const values: unknown = Reflect.get(directive, "values");
-  if (!isProjectRowsRepeatValues(values)) throw new Error("Expected project rows to use Lit repeat with items, key, and template callbacks");
+  if (!isProjectRowsRepeatValues(values)) throw new Error("Expected project rows to use Lit repeat with row groups");
 
-  return { items: values[0], key: values[1], render: values[2] };
+  return {
+    items: values[0].map((group) => group[0]?.project).filter((project): project is Project => project !== undefined),
+    key: (project) => values[1]([rowFor(project)]),
+    render: (project) => values[2]([rowFor(project)]),
+  };
 }
 
 function clickEvent(path: EventTarget[]): Event {

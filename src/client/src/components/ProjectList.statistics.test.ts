@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Project } from "../api";
 import { findOptionalTemplateEventHandlerNearMarker, templateEventHandlerNearMarker, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectList } from "./ProjectList";
+import type { ProjectTreeRow } from "./projectListProjection";
 
 const project: Project = { id: "p1", name: "app", path: "/dev/app", createdAt: "2026-08-01T00:00:00.000Z" };
 
@@ -18,10 +19,10 @@ function renderProjectRow(list: ProjectList): TemplateResult {
   const directive = templateValueAfterMarker(list.render(), '<div class="list-body">');
   const values: unknown = typeof directive === "object" && directive !== null ? Reflect.get(directive, "values") : undefined;
   if (!isProjectRowsRepeatValues(values)) throw new Error("Expected project rows to use Lit repeat");
-  return values[2](project);
+  return values[2]([{ project, depth: 0, hasChildren: false, folded: false }]);
 }
 
-function isProjectRowsRepeatValues(value: unknown): value is readonly [readonly unknown[], (project: Project) => unknown, (project: Project) => TemplateResult] {
+function isProjectRowsRepeatValues(value: unknown): value is readonly [readonly ProjectTreeRow[][], (group: readonly ProjectTreeRow[]) => unknown, (group: readonly ProjectTreeRow[]) => TemplateResult] {
   return Array.isArray(value) && Array.isArray(value[0]) && typeof value[1] === "function" && typeof value[2] === "function";
 }
 

@@ -903,6 +903,7 @@ describe("ProjectActivityOwnershipCoordinator", () => {
             closeProject: vi.fn(),
             pinProject: vi.fn(),
             unpinProject: vi.fn(),
+            closeProjectTree: vi.fn(),
           },
           onProjectsApplied: (machineId) => { ownershipTasks.push(coordinator.handleProjectsApplied(machineId)); },
         },

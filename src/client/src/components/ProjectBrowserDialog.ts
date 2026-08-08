@@ -5,7 +5,7 @@ import type { Project, Workspace, WorkspaceActivity } from "../api";
 import { projectActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicator } from "./activityBadge";
-import { displayedProjects } from "./projectListProjection";
+import { projectSubtreeIds, projectTreeRows, visibleProjectsFromRows, type ProjectTreeRow } from "./projectListProjection";
 import { activateSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
 
 @customElement("project-browser-dialog")
@@ -16,6 +16,7 @@ export class ProjectBrowserDialog extends LitElement {
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) onSelect?: (project: Project) => void;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onCloseProjectTree?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onPinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onUnpinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onShowProjectStatistics?: (project: Project) => void | Promise<void>;
@@ -26,6 +27,7 @@ export class ProjectBrowserDialog extends LitElement {
   @state() private searchQuery = "";
   @state() private openMenuProjectId: string | undefined;
   @state() private menuStyle = "";
+  @state() private expandedProjectIds: ReadonlySet<string> = new Set();
   @query(".project-browser-search") private searchInput?: HTMLInputElement;
 
   private readonly onDocumentClick = (event: Event): void => {
@@ -48,23 +50,42 @@ export class ProjectBrowserDialog extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) {
-      this.openMenuProjectId = undefined;
-      return;
+    if (changed.has("projects")) {
+      const existingIds = new Set(this.projects.map((project) => project.id));
+      const prunedExpansion = new Set([...this.expandedProjectIds].filter((id) => existingIds.has(id)));
+      if (prunedExpansion.size !== this.expandedProjectIds.size) this.expandedProjectIds = prunedExpansion;
+      if (this.openMenuProjectId !== undefined && !existingIds.has(this.openMenuProjectId)) {
+        this.openMenuProjectId = undefined;
+        return;
+      }
     }
     if (this.openMenuProjectId === undefined || (!changed.has("projects") && !changed.has("activities") && !changed.has("workspacesByProjectId"))) return;
 
     const previousProjects = changed.get("projects") ?? this.projects;
     const previousActivities = changed.get("activities") ?? this.activities;
     const previousWorkspacesByProjectId = changed.get("workspacesByProjectId") ?? this.workspacesByProjectId;
-    if (visibleProjectOrderChanged(
-      displayedProjects(previousProjects, this.searchQuery, previousWorkspacesByProjectId, previousActivities),
-      this.visibleProjects,
-    )) this.openMenuProjectId = undefined;
+    const previousRows = projectTreeRows(previousProjects, {
+      queryText: this.searchQuery,
+      ...(this.selected === undefined ? {} : { selectedProjectId: this.selected.id }),
+      expandedProjectIds: this.expandedProjectIds,
+      workspacesByProjectId: previousWorkspacesByProjectId,
+      activities: previousActivities,
+    });
+    if (visibleProjectOrderChanged(visibleProjectsFromRows(previousRows), this.visibleProjects)) this.openMenuProjectId = undefined;
+  }
+
+  private get visibleRows(): ProjectTreeRow[] {
+    return projectTreeRows(this.projects, {
+      queryText: this.searchQuery,
+      ...(this.selected === undefined ? {} : { selectedProjectId: this.selected.id }),
+      expandedProjectIds: this.expandedProjectIds,
+      workspacesByProjectId: this.workspacesByProjectId,
+      activities: this.activities,
+    });
   }
 
   private get visibleProjects(): Project[] {
-    return displayedProjects(this.projects, this.searchQuery, this.workspacesByProjectId, this.activities);
+    return visibleProjectsFromRows(this.visibleRows);
   }
 
   private close(): void {
@@ -127,42 +148,79 @@ export class ProjectBrowserDialog extends LitElement {
       `;
     }
 
-    const projects = this.visibleProjects;
-    if (projects.length === 0) return html`<p class="empty-state">No matching projects.</p>`;
+    const rows = this.visibleRows;
+    if (rows.length === 0) return html`<p class="empty-state">No matching projects.</p>`;
 
     return html`
       <div class="project-list">
-        ${repeat(projects, (project) => project.id, (project) => html`
-          <div
-            class=${`project-row action-row ${this.selected?.id === project.id ? "selected" : ""}`}
-            tabindex="0"
-            title=${project.path}
-            @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.select(project); }); }}
-            @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
-          >
-            <div class="project-main">
-              <span class="project-name">${this.renderPinToggle(project)}${project.name}</span>
-              <span class="project-path">${project.path}</span>
-              ${this.renderActivity(project)}
-            </div>
-            <div class="action-menu">
-              <button class="action-menu-toggle" type="button" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>
-                <svg class="action-menu-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg>
-              </button>
-              ${this.openMenuProjectId === project.id ? html`
-                <div class="action-menu-panel" style=${this.menuStyle}>
-                  ${this.statisticsAvailable ? html`<button type="button" title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
-                  ${project.pinned === true
-                    ? html`<button type="button" title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; void this.onUnpinProject?.(project); }}>Unpin</button>`
-                    : html`<button type="button" title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; void this.onPinProject?.(project); }}>Pin</button>`}
-                  <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
-                </div>
-              ` : null}
-            </div>
-          </div>
-        `)}
+        ${repeat(
+          this.groupRows(rows),
+          (group) => group[0]?.project.id ?? "",
+          (group) => group[0]?.hasChildren === true
+            ? html`<div class="session-family-frame">${group.map((row) => this.renderProjectRow(row))}</div>`
+            : html`${group.map((row) => this.renderProjectRow(row))}`,
+        )}
       </div>
     `;
+  }
+
+  /** Group consecutive rows into depth-zero families so each root gets one frame. */
+  private groupRows(rows: readonly ProjectTreeRow[]): ProjectTreeRow[][] {
+    return rows.reduce<ProjectTreeRow[][]>((groups, row) => {
+      if (row.depth === 0) groups.push([row]);
+      else groups.at(-1)?.push(row);
+      return groups;
+    }, []);
+  }
+
+  private renderProjectRow(row: ProjectTreeRow): TemplateResult {
+    const project = row.project;
+    const cappedDepth = Math.min(row.depth, 2);
+    return html`
+      <div
+        class=${`project-row action-row ${this.selected?.id === project.id ? "selected" : ""}`}
+        style=${`--depth:${String(cappedDepth)}`}
+        tabindex="0"
+        title=${project.path}
+        @click=${(event: MouseEvent) => { activateSelectableRow(event, () => { this.select(project); }); }}
+        @keydown=${(event: KeyboardEvent) => { this.handleProjectKeydown(event, project); }}
+      >
+        <div class="project-main">
+          <span class="project-name">${this.renderGroupToggle(row)}${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${this.renderPinToggle(project)}${project.name}</span>
+          <span class="project-path">${project.path}</span>
+          ${this.renderActivity(project)}
+        </div>
+        <div class="action-menu">
+          <button class="action-menu-toggle" type="button" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>
+            <svg class="action-menu-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg>
+          </button>
+          ${this.openMenuProjectId === project.id ? html`
+            <div class="action-menu-panel" style=${this.menuStyle}>
+              ${this.statisticsAvailable ? html`<button type="button" title="Project statistics" @click=${() => { this.showStatistics(project); }}>Statistics</button>` : null}
+              ${project.pinned === true
+                ? html`<button type="button" title="Unpin project" @click=${() => { this.openMenuProjectId = undefined; void this.onUnpinProject?.(project); }}>Unpin</button>`
+                : html`<button type="button" title="Pin project to keep it at the top of the list" @click=${() => { this.openMenuProjectId = undefined; void this.onPinProject?.(project); }}>Pin</button>`}
+              <button type="button" title="Close project" @click=${() => { this.closeProject(project); }}>Close</button>
+              ${this.renderCloseTreeEntry(project)}
+            </div>
+          ` : null}
+        </div>
+      </div>
+    `;
+  }
+
+  /** Hidden while searching, because search decides visibility rather than fold state. */
+  private renderGroupToggle(row: ProjectTreeRow): TemplateResult | null {
+    if (!row.hasChildren || this.searchQuery.trim() !== "") return null;
+    const action = row.folded ? "Expand" : "Collapse";
+    return html`<button class="session-group-toggle" type="button" title=${`${action} ${row.project.name}`} aria-label=${`${action} ${row.project.name}`} aria-expanded=${String(!row.folded)} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleProjectGroup(row.project.id, row.folded); }}>${row.folded ? "▸" : "▾"}</button>`;
+  }
+
+  private toggleProjectGroup(projectId: string, folded: boolean): void {
+    const next = new Set(this.expandedProjectIds);
+    if (folded) next.add(projectId);
+    else next.delete(projectId);
+    this.expandedProjectIds = next;
   }
 
   private handleSearchInput(event: Event): void {
@@ -229,6 +287,21 @@ export class ProjectBrowserDialog extends LitElement {
     }
   }
 
+  private renderCloseTreeEntry(project: Project): TemplateResult | null {
+    const descendantCount = projectSubtreeIds(this.projects, project.id).length - 1;
+    if (descendantCount < 1) return null;
+    return html`<button type="button" title="Close this project and its subprojects" @click=${() => { this.closeProjectTree(project, descendantCount); }}>Close with subprojects (${descendantCount})</button>`;
+  }
+
+  private closeProjectTree(project: Project, descendantCount: number): void {
+    this.openMenuProjectId = undefined;
+    if (!this.hasProject(project.id)) return;
+    const noun = descendantCount === 1 ? "subproject" : "subprojects";
+    if (confirm(`Close ${project.name} and ${String(descendantCount)} ${noun}?\n\nThis only removes them from PI WEBUI; it will not change the project folders.`)) {
+      void this.onCloseProjectTree?.(project);
+    }
+  }
+
   private showStatistics(project: Project) {
     this.openMenuProjectId = undefined;
     void this.onShowProjectStatistics?.(project);
@@ -282,7 +355,7 @@ export class ProjectBrowserDialog extends LitElement {
     .result-area { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
     .project-list { display: grid; gap: 8px; }
     .project-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; cursor: pointer; }
-    .project-main { position: relative; min-width: 0; display: grid; gap: 3px; border: 1px solid var(--pi-border); border-radius: 8px 0 0 8px; background: var(--pi-surface); padding: 9px 28px 9px 11px; }
+    .project-main { position: relative; min-width: 0; display: grid; gap: 3px; border: 1px solid var(--pi-border); border-radius: 8px 0 0 8px; background: var(--pi-surface); padding: 9px 28px 9px calc(11px + var(--depth, 0) * 16px); }
     .project-row:hover .project-main { background: var(--pi-surface-hover); }
     .project-row.selected .project-main, .project-row.selected .action-menu-toggle { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .project-name { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
@@ -305,6 +378,15 @@ export class ProjectBrowserDialog extends LitElement {
     .action-menu-panel button:hover { background: var(--pi-selection-bg); }
     .empty-state { display: grid; gap: 10px; justify-items: start; margin: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-muted); padding: 14px; }
     .add-empty-button { color: var(--pi-text); }
+    /* Family frames and disclosure toggles mirror SessionList's rules so both surfaces present identically. */
+    .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+    .session-family-frame > .action-row { margin: 4px 0; }
+    .session-family-frame > .action-row:first-child { margin-top: 0; }
+    .session-family-frame > .action-row:last-child { margin-bottom: 0; }
+    .session-group-toggle { flex: 0 0 auto; display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 24px; margin: 0; border: 0; border-radius: 4px; background: transparent; color: var(--pi-muted); padding: 0; font: inherit; line-height: 1; cursor: pointer; }
+    .session-group-toggle:hover { background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); color: var(--pi-text); }
+    .session-group-toggle:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
+    .tree-marker { color: var(--pi-dim); margin-right: 5px; }
     @keyframes pulse { 0%, 100% { transform: scale(.75); opacity: .55; } 50% { transform: scale(1.2); opacity: 1; } }
 
     @media (max-width: 760px) {

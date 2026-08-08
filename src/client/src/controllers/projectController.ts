@@ -6,12 +6,12 @@ import type { WorkspaceController } from "./workspaceController";
 const DEFAULT_PROJECT_PATH = "~/workspace";
 
 export interface ProjectControllerDependencies {
-  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
+  api?: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "closeProjectTree" | "pinProject" | "unpinProject">;
   onProjectsApplied?: (machineId: string) => void;
 }
 
 export class ProjectController {
-  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "pinProject" | "unpinProject">;
+  private readonly api: Pick<typeof defaultApi, "projects" | "addProject" | "closeProject" | "closeProjectTree" | "pinProject" | "unpinProject">;
   private readonly onProjectsApplied: ((machineId: string) => void) | undefined;
   private projectCatalogOperationSequence = 0;
   private readonly pinMutationQueueByMachine = new Map<string, Promise<void>>();
@@ -59,15 +59,23 @@ export class ProjectController {
   async addProject(path: string, create?: boolean) {
     if (path.trim() === "") return;
     const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The add supersedes any in-flight load, so its finalizer no longer owns loading state.
+    this.setState({ isLoadingProjects: false });
     try {
       const project = await this.api.addProject(path.trim(), undefined, create, machineId);
       if (selectedMachineId(this.getState()) !== machineId) return;
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        this.setState({ projectDialogOpen: false });
+        await this.loadProjects();
+        return;
+      }
       const projects = this.getState().projects;
       this.setState({ projects: [...projects.filter((p) => p.id !== project.id), project], projectDialogOpen: false });
       this.onProjectsApplied?.(machineId);
       await this.workspaces.selectProject(project);
     } catch (error) {
-      if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     }
   }
 
@@ -83,6 +91,37 @@ export class ProjectController {
       if (state.selectedProject?.id === projectId) this.workspaces.clearSelection();
     } catch (error) {
       if (selectedMachineId(this.getState()) === machineId) this.setState({ error: String(error) });
+    }
+  }
+
+  /**
+   * Close a project family. The response is authoritative: the catalog may have
+   * changed since the confirmation dialog rendered, so reconcile against the
+   * ids the server actually removed rather than a locally computed subtree.
+   *
+   * The close participates in the catalog-operation ordering: it supersedes any
+   * in-flight load or pin mutation (and clears the loading state they owned), so
+   * an older response can no longer republish the pre-close catalog. When the
+   * close response is itself superseded, apply its authoritative removals
+   * before a fresh load reconciles any newer catalog operation.
+   */
+  async closeProjectTree(projectId: string): Promise<void> {
+    const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The close supersedes any in-flight load, so its finalizer no longer clears loading.
+    this.setState({ isLoadingProjects: false });
+    try {
+      const { closedProjectIds } = await this.api.closeProjectTree(projectId, machineId);
+      if (selectedMachineId(this.getState()) !== machineId) return;
+      for (const closedProjectId of closedProjectIds) this.workspaces.forgetProject(closedProjectId);
+      const state = this.getState();
+      const closedIdSet = new Set(closedProjectIds);
+      this.setState({ projects: state.projects.filter((project) => !closedIdSet.has(project.id)) });
+      this.onProjectsApplied?.(machineId);
+      if (state.selectedProject !== undefined && closedIdSet.has(state.selectedProject.id)) this.workspaces.clearSelection();
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) await this.loadProjects();
+    } catch (error) {
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
     }
   }
 

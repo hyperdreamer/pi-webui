@@ -2202,6 +2202,16 @@ export function parseClosed(value: unknown): { closed: true } {
   return { closed: true };
 }
 
+function requireStringValue(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Expected string value");
+  return value;
+}
+
+export function parseClosedProjectTree(value: unknown): { closedProjectIds: string[] } {
+  const record = requireRecord(value);
+  return { closedProjectIds: arrayOf(requireStringValue)(record["closedProjectIds"]) };
+}
+
 export function parseAborted(value: unknown): { aborted: true } {
   const record = requireRecord(value);
   if (record["aborted"] !== true) throw new Error("Expected aborted response");

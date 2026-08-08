@@ -74,6 +74,7 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onOpenSessionBrowser?: (restoreFocus: () => void) => void;
   @property({ attribute: false }) onSelectProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+  @property({ attribute: false }) onCloseProjectTree?: (project: Project) => void;
   @property({ attribute: false }) onPinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onUnpinProject?: (project: Project) => void | Promise<void>;
   @property({ attribute: false }) onShowProjectStatistics?: (project: Project) => void;
@@ -168,6 +169,7 @@ export class AppNavigationPanel extends LitElement {
         .onOpenExpanded=${(restoreFocus: () => void) => this.onOpenProjectBrowser?.(restoreFocus)}
         .onSelect=${(project: Project) => this.onSelectProject?.(project)}
         .onClose=${(project: Project) => this.onCloseProject?.(project)}
+        .onCloseTree=${(project: Project) => this.onCloseProjectTree?.(project)}
         .onPin=${(project: Project) => this.onPinProject?.(project)}
         .onUnpin=${(project: Project) => this.onUnpinProject?.(project)}
         .statisticsAvailable=${this.projectStatisticsAvailable}
