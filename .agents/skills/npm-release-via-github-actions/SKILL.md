@@ -59,7 +59,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - If there are unrelated or user-owned uncommitted changes, pause and ask before including, stashing, or working around them.
    - Pull/rebase only when it is safe and the user has not left local work that could be disrupted.
 
-2. **Review and normalize pending changesets**
+2. **Review pending changesets**
    - Run:
      ```bash
      npm run changelog:status
@@ -67,37 +67,36 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Inspect `.changeset/*.md` files.
    - If there are no changesets but there are user-visible changes to release, pause and ask whether to add a changeset. Do not create a low-quality release note just to proceed.
    - If changesets exist, make sure their text is user-facing.
-   - For `pi-webui`, non-breaking changesets must use `patch` even for new features. The package uses CalVer shaped as semver: `MAJOR.YYYYMM.PATCH`. The semver `minor` position is the release month, not feature size.
-   - If a pending changeset uses `minor` for a non-breaking change, edit its frontmatter to `patch` before versioning. Do not ask the user whether to use a patch increase or date change.
+   - This repo uses ordinary semver. Use `patch` for backward-compatible fixes and maintenance, `minor` for backward-compatible new features and capabilities, and `major` only for a breaking release the user explicitly requested.
+   - If a pending changeset's bump type does not match its actual compatibility impact, do not rewrite it silently. Carry the corrected classification into the version recommendation in step 3, and apply the correction to the fragment only after the user confirms the target.
    - Use `major` only when the user explicitly requests a breaking/major release.
    - If you believe the pending changes introduce a breaking change but the user has not explicitly requested a major release, pause before versioning and ask the user to confirm whether this should be released as a breaking major version or changed to remain non-breaking.
 
-3. **Compute the `pi-webui` CalVer version**
-   - For `pi-webui`, always compute the version from the release date as `MAJOR.YYYYMM.PATCH`.
-   - Use the current date at release time for `YYYYMM` (for example, `date +%Y%m`). Do not ask whether to use a same-month patch increase or a date change.
-   - Keep the current `MAJOR` unless the user explicitly requests a breaking/major release. Do not infer or perform a major version bump on your own.
-   - Set `PATCH` deterministically:
-     - If the current package version already has the target `MAJOR` and release-month `YYYYMM`, use current patch + 1.
-     - Otherwise use patch `0` for the first release of that major/month.
-     - If npm already has the computed version, increment only `PATCH` until an unpublished version is found.
-   - If the user says `patch`, `minor`, `new version`, `new release`, `publish`, or similar without an exact version, still use this CalVer algorithm. Treat `minor` as a non-breaking release request, not as permission to let Changesets increment semver minor arbitrarily.
-   - If the user gives an exact version, use it only when they clearly intend that exact value. Otherwise preserve the CalVer rule above.
-   - If the computed CalVer target would be lower than or equal to the current package version because of clock/version inconsistency, stop and explain the inconsistency instead of inventing a non-CalVer version.
+3. **Determine the release version**
+   - Read the current version from `package.json`.
+   - Determine the highest bump type among pending changesets, ordering `major` above `minor` above `patch`.
+   - Apply that bump to the current version to get the recommended target. From `1.11.3`, a highest pending bump of `patch` gives `1.11.4`, `minor` gives `1.12.0`, and `major` gives `2.0.0`.
+   - Confirm the recommended target with the user before editing version files, committing, tagging, or publishing. Show the current version and where it came from, the recommended target, the tag that will be created, and which pending change drives the bump level.
+   - If the user supplies an exact version, accept it only when it is valid semver, greater than the current version, absent from npm, and not lower than the minimum target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
+   - Never infer a `major` bump. If the pending changes look breaking and the user has not asked for a breaking release, raise that during confirmation.
+   - If npm already has the confirmed version, stop and ask for a different target. npm rejects republishing an existing version.
+   - Tag names follow the existing convention in this repository, `v<version>`.
 
 4. **Generate changelog and version files**
-   - Run the Changesets version step after normalizing non-breaking changesets to `patch`:
+   - Run the Changesets version step after the user has confirmed the target:
      ```bash
      npm run release:version
      ```
    - This consumes pending `.changeset/*.md` fragments, updates `CHANGELOG.md`, updates `package.json`, and updates the npm lockfile when applicable.
-   - Changesets may produce a semver bump that does not match the computed CalVer target, especially on the first release of a new month. That is expected; enforce the computed target with:
+   - Changesets derives the version from the pending fragments, so its result should already equal the confirmed target. Compare the two. Only if the user requested an exact version that differs from the Changesets result, enforce it with:
      ```bash
-     npm version <computed-calver-version> --no-git-tag-version
+     npm version <confirmed-version> --no-git-tag-version
      ```
-   - Update the newly generated `CHANGELOG.md` heading to match the computed CalVer version if Changesets used a different heading. This manual changelog heading edit is acceptable during release prep; normal development should still use changeset fragments instead.
+   - If you enforced a different version in the previous bullet, update the newly generated `CHANGELOG.md` heading to match it. This manual changelog heading edit is acceptable during release prep; normal development should still use changeset fragments instead.
+   - If the Changesets result and the confirmed target disagree for any other reason, stop and reconcile it with the user rather than overwriting the version silently.
    - Review the generated `CHANGELOG.md` section. It should be suitable for GitHub Release notes.
    - Do not use plain `npm version <new-version>` because it creates a local git tag as a side effect; releases should be controlled via GitHub.
-   - **Sync the lockfile to the final version.** `npm run release:version` (Changesets) updates `package.json` but does not reliably rewrite `package-lock.json`, and the CalVer-enforcing `npm version --no-git-tag-version` only touches the lock when it actually runs. Either path can leave the committed `package-lock.json` behind at the previous version, which then resurfaces as an unexpected diff after the next `npm install`. After the version is finalized, always resync the lockfile without touching `node_modules`:
+   - **Sync the lockfile to the final version.** `npm run release:version` (Changesets) updates `package.json` but does not reliably rewrite `package-lock.json`, and the exact-version-enforcing `npm version --no-git-tag-version` only touches the lock when it actually runs. Either path can leave the committed `package-lock.json` behind at the previous version, which then resurfaces as an unexpected diff after the next `npm install`. After the version is finalized, always resync the lockfile without touching `node_modules`:
      ```bash
      npm install --package-lock-only
      ```

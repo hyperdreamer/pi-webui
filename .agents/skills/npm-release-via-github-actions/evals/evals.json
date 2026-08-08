@@ -4,13 +4,13 @@
     {
       "id": 1,
       "prompt": "Please make a new npm release for this package. Use the next patch version.",
-      "expected_output": "The assistant should inspect package.json, pending Changesets, and the GitHub Actions publish workflow; normalize non-breaking Changesets to patch; compute the pi-webui CalVer target as MAJOR.YYYYMM.PATCH using the release date and next patch for that major/month; run changeset version; enforce the computed version if needed; avoid local npm publish; run verification; commit/push; create a GitHub Release using changelog notes; monitor the publish workflow; and verify npm.",
+      "expected_output": "The assistant should inspect package.json, pending Changesets, and the GitHub Actions publish workflow; determine the highest pending bump type; recommend an ordinary semver target derived from it; confirm that target with the user before editing version files; run changeset version; sync package-lock.json to the final version; avoid local npm publish; run verification; commit and push; create a GitHub Release using the generated changelog notes; monitor the publish workflow; and verify npm. It should not compute a date-based version.",
       "files": []
     },
     {
       "id": 2,
-      "prompt": "bump npm to 1.202605.4 and publish it",
-      "expected_output": "The assistant should use the clearly requested exact version, avoid local npm publish, generate/update CHANGELOG.md through Changesets, enforce the requested version with --no-git-tag-version only if needed, push a release commit, create a GitHub Release that triggers publish.yml, and report action/npm status.",
+      "prompt": "bump npm to 1.12.0 and publish it",
+      "expected_output": "The assistant should validate the requested version as semver that is greater than the current version, unpublished, and not lower than the minimum target implied by the pending changesets, then use it. It should avoid local npm publish, generate CHANGELOG.md through Changesets, enforce the requested version with --no-git-tag-version only if the Changesets result differs, sync the lockfile, push a release commit, create a GitHub Release that triggers publish.yml, and report action and npm status.",
       "files": []
     },
     {
@@ -21,8 +21,8 @@
     },
     {
       "id": 4,
-      "prompt": "make a new release; I added a non-breaking feature changeset that says minor",
-      "expected_output": "The assistant should not ask whether to use a patch bump or date change. It should treat non-breaking pi-webui changesets as patch, compute MAJOR.YYYYMM.PATCH from the release date, run release prep, and enforce the computed CalVer version before creating the GitHub Release.",
+      "prompt": "make a new release; one pending changeset says patch but it adds a whole new CLI flag",
+      "expected_output": "The assistant should notice that a backward-compatible new CLI flag is a minor change rather than a patch, recommend a minor target derived from the corrected bump type, and present the current version and recommended target for confirmation. It should not rewrite the changeset fragment or edit version files before the user confirms, and it should not compute a date-based version.",
       "files": []
     },
     {
