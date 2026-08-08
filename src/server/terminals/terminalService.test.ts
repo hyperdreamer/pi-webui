@@ -117,34 +117,36 @@ describe.skipIf(process.platform === "win32")("TerminalService command runs", ()
     });
 
     it("sets PI_WEBUI_TERMINAL in a continued interactive shell", async () => {
-      const service = new TerminalService();
-      try {
-        const run = service.runCommand({
-          origin: "core",
-          projectId: "p1",
-          workspaceId: "w1",
-          cwd: process.cwd(),
-          title: "Done command",
-          command: "true",
-        });
-        await terminalExit(service, run.terminalId);
+      await withBashLoginProfile(async () => {
+        const service = new TerminalService();
+        try {
+          const run = service.runCommand({
+            origin: "core",
+            projectId: "p1",
+            workspaceId: "w1",
+            cwd: process.cwd(),
+            title: "Done command",
+            command: "true",
+          });
+          await terminalExit(service, run.terminalId);
 
-        const continued = service.continue(run.terminalId);
+          const continued = service.continue(run.terminalId);
 
-        expect(continued).toMatchObject({ id: run.terminalId, exited: false });
-        expect(continued.commandRunId).toBeUndefined();
-        expect(service.get(run.terminalId)?.commandRunId).toBeUndefined();
+          expect(continued).toMatchObject({ id: run.terminalId, exited: false });
+          expect(continued.commandRunId).toBeUndefined();
+          expect(service.get(run.terminalId)?.commandRunId).toBeUndefined();
 
-        const frame = "__PI_WEBUI_CONTINUE_ENV_42D8B1__";
-        const exit = terminalExit(service, run.terminalId);
-        service.write(run.terminalId, `printf '${frame}%s${frame}\\n' "$PI_WEBUI_TERMINAL"\nexit\n`);
+          const frame = "__PI_WEBUI_CONTINUE_ENV_42D8B1__";
+          const exit = terminalExit(service, run.terminalId);
+          service.write(run.terminalId, `printf '${frame}%s${frame}\\n' "$PI_WEBUI_TERMINAL"\nexit\n`);
 
-        const output = await exit;
-        expect(output).toContain("[continued in interactive shell]");
-        expect(output).toContain(`${frame}1${frame}`);
-      } finally {
-        service.dispose();
-      }
+          const output = await exit;
+          expect(output).toContain("[continued in interactive shell]");
+          expect(output).toContain(`${frame}1${frame}`);
+        } finally {
+          service.dispose();
+        }
+      });
     });
   });
 

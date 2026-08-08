@@ -73,16 +73,21 @@ describe("toSafeMarkdownHtml", () => {
 
   it("bounds retained characters, not just entry count", () => {
     clearMarkdownHtmlCache();
-    const body = "x".repeat(20_000);
+    const body = "x".repeat(80_000);
+    const parse = vi.spyOn(marked, "parse").mockReturnValue("<p>cached</p>");
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        toSafeMarkdownHtml(`${body} ${String(index)}`);
+      }
 
-    for (let index = 0; index < 600; index += 1) {
-      toSafeMarkdownHtml(`${body} ${String(index)}`);
+      // 100 entries is far below the 1,600-entry cap, so only the character
+      // budget can be holding this down.
+      expect(parse).toHaveBeenCalledTimes(100);
+      expect(markdownHtmlCacheSize()).toBeLessThan(100);
+      expect(markdownHtmlCacheChars()).toBeLessThanOrEqual(6_000_000);
+    } finally {
+      parse.mockRestore();
     }
-
-    // 600 entries is far below the 1,600-entry cap, so only the character
-    // budget can be holding this down.
-    expect(markdownHtmlCacheSize()).toBeLessThan(600);
-    expect(markdownHtmlCacheChars()).toBeLessThanOrEqual(6_000_000);
   });
 
   it("does not let one oversized message evict the working set", () => {
