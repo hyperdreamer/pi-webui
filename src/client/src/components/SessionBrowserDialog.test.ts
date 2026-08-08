@@ -204,6 +204,12 @@ describe("SessionBrowserDialog", () => {
     expect(rendered).not.toContain("session-reorder-grip");
     expect("onReorder" in dialog).toBe(false);
   });
+
+  it("frames session families with the neutral hierarchy border", () => {
+    const styles = sessionBrowserDialogStyles();
+
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-hierarchy-border\);/);
+  });
 });
 
 describe("session browser pin controls", () => {

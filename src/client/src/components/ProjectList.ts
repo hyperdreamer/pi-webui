@@ -141,7 +141,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
     const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div
-        class=${`action-row ${this.selected?.id === project.id ? "selected" : ""}`}
+        class=${`action-row ${this.selected?.id === project.id ? "selected" : ""} ${cappedDepth >= 2 ? "nested" : ""}`}
         style=${`--depth:${String(cappedDepth)}`}
         tabindex="0"
         title=${project.path}
@@ -308,7 +308,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
       .pinned-star:hover { border-radius: 4px; background: var(--pi-surface); box-shadow: 0 0 0 1px var(--pi-border); transform: scale(1.25); }
       .pinned-star:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; border-radius: 2px; }
       /* Family frames and disclosure toggles, mirroring SessionList's rules so both lists present identically; kept local because listStyles is shared more widely. */
-      .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-danger); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
+      .session-family-frame { box-sizing: border-box; margin: 6px 0; border: 1px solid var(--pi-hierarchy-border); border-radius: 10px; background: color-mix(in srgb, var(--pi-surface) 52%, transparent); padding: 5px 6px; }
       .session-family-frame > .action-row { margin: 4px 0; }
       .session-family-frame > .action-row:first-child { margin-top: 0; }
       .session-family-frame > .action-row:last-child { margin-bottom: 0; }
