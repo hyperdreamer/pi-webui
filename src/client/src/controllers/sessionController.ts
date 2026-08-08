@@ -3,6 +3,7 @@ import type { AppState } from "../appState";
 import { forgetCachedNewSession, isCachedNewSessionInfo, markCachedNewSessionInfo, mergeCachedNewSessions, rememberCachedNewSession, stripCachedNewSessionMarker } from "../cachedNewSessions";
 import { textMessage } from "../chatMessages";
 import { machineSessionKey } from "../machineKeys";
+import { promptAttachmentDrafts, type PromptAttachmentDraftStore } from "../promptAttachmentDrafts";
 import { clearDraft, moveDraft, saveDraft } from "../promptDraftStorage";
 import { ChatTranscriptStore } from "../chatTranscriptStore";
 import { isShellInput } from "../inputModes";
@@ -80,6 +81,8 @@ export interface SessionControllerDependencies {
   scheduleOverloadResync?: OverloadResyncScheduler;
   maxJoinBufferedEvents?: number;
   notifications?: SessionNotificationSessionBridge;
+  /** Session-scoped composer attachment drafts, moved and cleared with text drafts. */
+  attachmentDrafts?: PromptAttachmentDraftStore;
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
   onStarterModelPolicyConfirmed?: (event: StarterModelPolicyConfirmedEvent) => void;
@@ -179,6 +182,7 @@ export class SessionController {
   private readonly socket: SessionEventSocket;
   private readonly api: typeof defaultApi;
   private readonly transcripts: ChatTranscriptStore;
+  private readonly attachmentDrafts: PromptAttachmentDraftStore;
   private readonly notifications: SessionNotificationSessionBridge | undefined;
   private readonly replacePromptEditorText: SessionControllerDependencies["replacePromptEditorText"];
   private readonly onSelectedSessionReady: SessionControllerDependencies["onSelectedSessionReady"];
@@ -238,6 +242,7 @@ export class SessionController {
   ) {
     this.socket = deps.socket ?? new SessionSocket();
     this.api = deps.api ?? defaultApi;
+    this.attachmentDrafts = deps.attachmentDrafts ?? promptAttachmentDrafts;
     this.transcripts = deps.transcripts ?? new ChatTranscriptStore();
     this.streamEventBuffer = deps.streamEventBuffer ?? new StreamEventBuffer();
     this.now = deps.now ?? (() => Date.now());
@@ -1049,6 +1054,7 @@ export class SessionController {
     }
     forgetCachedNewSession(session.id, selectedMachineId(this.getState()));
     clearDraft(this.sessionCacheKey(session.id));
+    this.attachmentDrafts.clear(this.sessionCacheKey(session.id));
     const state = this.getState();
     const sessions = state.sessions.filter((candidate) => candidate.id !== session.id);
     this.setState({
@@ -1633,6 +1639,7 @@ export class SessionController {
     const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
     if (pending.discarded) {
       clearDraft(machineSessionKey(pending.machineId, tempId));
+      this.attachmentDrafts.clear(machineSessionKey(pending.machineId, tempId));
       this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
       this.applyReleasedCreatedSessions(releasedCreatedSessions, pending.machineId);
       void this.api.stop(session, pending.machineId).catch(() => {
@@ -1643,6 +1650,9 @@ export class SessionController {
 
     rememberCachedNewSession(session, pending.machineId);
     moveDraft(machineSessionKey(pending.machineId, tempId), machineSessionKey(pending.machineId, session.id));
+    // The composer was scoped to the temporary id; without this move an unsent
+    // attachment would disappear when `sessionId` becomes the real id.
+    this.attachmentDrafts.move(machineSessionKey(pending.machineId, tempId), machineSessionKey(pending.machineId, session.id));
     const cachedSession = markCachedNewSessionInfo(session, pending.machineId);
     if (!this.isCurrentPendingStart(pending)) {
       this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
@@ -1741,6 +1751,7 @@ export class SessionController {
       const replacement = await this.api.startSession(session.cwd, machineId);
       rememberCachedNewSession(replacement, machineId);
       moveDraft(this.sessionCacheKey(session.id), this.sessionCacheKey(replacement.id));
+      this.attachmentDrafts.move(this.sessionCacheKey(session.id), this.sessionCacheKey(replacement.id));
       forgetCachedNewSession(session.id, machineId);
       const cachedReplacement = markCachedNewSessionInfo(replacement, machineId);
       this.setState({ sessions: [cachedReplacement, ...this.getState().sessions.filter((candidate) => candidate.id !== session.id)], error: "" });
