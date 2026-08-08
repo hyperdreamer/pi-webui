@@ -16,6 +16,24 @@ describe("SlowConsumerGuard", () => {
     expect(socket.terminate).not.toHaveBeenCalled();
   });
 
+  it("never terminates a socket sitting exactly at the soft limit", () => {
+    const socket = fakeSocket();
+    let clock = 0;
+    const guard = new SlowConsumerGuard(socket, { softLimitBytes: 1000, stallWindowMs: 100, now: () => clock });
+
+    // The soft limit is a threshold the buffer must *exceed*, so the exact
+    // boundary value is not a deep-stall regime no matter how long it persists.
+    // Pinning the boundary itself keeps a later `<=` -> `<` slip from silently
+    // terminating a consumer that is exactly at, but never past, the limit.
+    socket.bufferedAmount = 1000;
+    expect(guard.afterSend()).toBe(false);
+
+    clock = 100_000;
+    expect(guard.afterSend()).toBe(false);
+    expect(guard.terminated).toBe(false);
+    expect(socket.terminate).not.toHaveBeenCalled();
+  });
+
   it("starts a fresh stall window after a delayed first deep observation", () => {
     const socket = fakeSocket();
     let clock = 0;
