@@ -12,7 +12,8 @@ import {
   type ModelTierSettingsResponse,
   type PromptAttachmentDelivery,
 } from "../../../shared/apiTypes";
-import { capturePromptAttachments, effectivePromptAttachmentDelivery, isInlinePromptAttachment, promptAttachmentsCanUseInlineDelivery, type CapturedAttachment } from "../promptAttachmentCapture";
+import { capturePromptAttachments, effectivePromptAttachmentDelivery, isInlinePromptAttachment, promptAttachmentsCanUseInlineDelivery } from "../promptAttachmentCapture";
+import { promptAttachmentDrafts, PromptAttachmentDraftStore, type PendingAttachment, type PromptAttachmentDraft } from "../promptAttachmentDrafts";
 import { inputModeForDraft, inputModesEqual, type InputMode } from "../inputModes";
 import { machineSessionKey } from "../machineKeys";
 import { detectPromptCompletionTrigger, fileCompletionInsertText, type PromptCompletionTrigger } from "../promptCompletions";
@@ -28,8 +29,6 @@ import "./AutocompleteMenu";
 import "./SessionModelPolicyControl";
 import "./SessionThinkingMenu";
 import "./SessionTierMenu";
-
-type PendingAttachment = CapturedAttachment & { id: string };
 
 @customElement("prompt-editor")
 export class PromptEditor extends LitElement {
@@ -65,6 +64,8 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
+  /** Injectable so tests and the app share one app-lifetime draft store. */
+  @property({ attribute: false }) attachmentDrafts: PromptAttachmentDraftStore = promptAttachmentDrafts;
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
   @query(".attachment-input") private attachmentInput?: HTMLInputElement;
   // `draft` is the live document text but is intentionally NOT reactive: it
@@ -80,7 +81,6 @@ export class PromptEditor extends LitElement {
   @state() private attachments: PendingAttachment[] = [];
   @state() private attachmentDelivery: PromptAttachmentDelivery = loadAttachmentDelivery();
   @state() private attachmentError: string | undefined = undefined;
-  private attachmentSeq = 0;
   private requestVersion = 0;
   private editor: EditorView | undefined;
   private readonly editableCompartment = new Compartment();
@@ -95,7 +95,20 @@ export class PromptEditor extends LitElement {
     const previousKey = draftStorageKey(previousMachineId, previousSessionId);
     if (previousKey !== undefined) saveDraft(previousKey, this.draft);
     const currentKey = draftStorageKey(this.machineId, this.sessionId);
+    // Park the outgoing session's unsent attachments before adopting the next
+    // session's, so switching away never carries files into another session.
+    // Only when the scope actually changed and the rendered mirror holds
+    // something: parking an empty mirror would delete the stored draft via the
+    // store's empty-snapshot rule, losing a draft the editor has not adopted.
+    if (
+      previousKey !== undefined
+      && previousKey !== currentKey
+      && (this.attachments.length > 0 || this.attachmentError !== undefined)
+    ) {
+      this.attachmentDrafts.write(previousKey, this.currentAttachmentDraft());
+    }
     this.draft = currentKey !== undefined ? loadDraft(currentKey) : "";
+    this.adoptAttachmentDraft(currentKey === undefined ? { attachments: [] } : this.attachmentDrafts.read(currentKey));
     this.currentInputMode = inputModeForDraft(this.draft);
     this.completions = [];
     this.selectedIndex = 0;
@@ -292,8 +305,33 @@ export class PromptEditor extends LitElement {
     saveAttachmentDelivery(this.attachmentDelivery);
   }
 
+  /** The active draft key, or `undefined` for the starter composer. */
+  private attachmentScopeKey(): string | undefined {
+    return draftStorageKey(this.machineId, this.sessionId);
+  }
+
+  private currentAttachmentDraft(): PromptAttachmentDraft {
+    return {
+      attachments: this.attachments,
+      ...(this.attachmentError === undefined ? {} : { error: this.attachmentError }),
+    };
+  }
+
+  private adoptAttachmentDraft(draft: PromptAttachmentDraft): void {
+    this.attachments = [...draft.attachments];
+    this.attachmentError = draft.error;
+  }
+
+  /** Mirror the rendered attachment state into the active scope's stored draft. */
+  private persistAttachmentDraft(): void {
+    const key = this.attachmentScopeKey();
+    if (key === undefined) return;
+    this.attachmentDrafts.write(key, this.currentAttachmentDraft());
+  }
+
   private removeAttachment(id: string) {
     this.attachments = this.attachments.filter((attachment) => attachment.id !== id);
+    this.persistAttachmentDraft();
   }
 
   private async handlePaste(event: ClipboardEvent) {
@@ -323,12 +361,33 @@ export class PromptEditor extends LitElement {
   }
 
   private async addAttachmentFiles(files: File[]) {
-    this.attachmentError = undefined;
-    const { attachments, error } = await capturePromptAttachments(files, readFileAsBase64);
-    if (attachments.length > 0) {
-      this.attachments = [...this.attachments, ...attachments.map((attachment) => ({ id: `attachment-${String(++this.attachmentSeq)}`, ...attachment }))];
+    // Capture the scope before awaiting: the user may select another session
+    // while the read is outstanding, and these bytes belong to the session that
+    // was active when they were dropped, pasted, or picked.
+    const scopeKey = this.attachmentScopeKey();
+    if (scopeKey === undefined) {
+      this.attachmentError = undefined;
+      const starter = await capturePromptAttachments(files, readFileAsBase64);
+      if (starter.attachments.length > 0) {
+        this.attachments = [...this.attachments, ...starter.attachments.map((attachment) => ({ id: this.attachmentDrafts.nextAttachmentId(), ...attachment }))];
+      }
+      this.attachmentError = starter.error;
+      return;
     }
-    if (error !== undefined) this.attachmentError = error;
+
+    if (scopeKey === this.attachmentScopeKey()) this.attachmentError = undefined;
+    const { attachments, error } = await capturePromptAttachments(files, readFileAsBase64);
+    // Re-read rather than reusing a pre-await copy, so a second capture that
+    // finished first is not dropped. The error comes only from this batch, so a
+    // prior failure cannot survive a later successful read.
+    const existing = this.attachmentDrafts.read(scopeKey);
+    const merged: PromptAttachmentDraft = {
+      attachments: [...existing.attachments, ...attachments.map((attachment) => ({ id: this.attachmentDrafts.nextAttachmentId(), ...attachment }))],
+      ...(error === undefined ? {} : { error }),
+    };
+    this.attachmentDrafts.write(scopeKey, merged);
+    if (scopeKey !== this.attachmentScopeKey()) return;
+    this.adoptAttachmentDraft(merged);
   }
 
   private currentAttachments(): PromptAttachment[] {
@@ -555,6 +614,7 @@ export class PromptEditor extends LitElement {
     this.completions = [];
     this.attachments = [];
     this.attachmentError = undefined;
+    if (key !== undefined) this.attachmentDrafts.clear(key);
     // `draft` is not reactive, so the cleared text will not flow to CodeMirror
     // via `updated()`; push it to the editor document explicitly.
     this.syncEditorDoc();
