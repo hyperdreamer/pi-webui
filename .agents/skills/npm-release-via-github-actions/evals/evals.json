@@ -94,7 +94,7 @@
     {
       "id": 16,
       "prompt": "make the next minor prerelease using prerelease tag --help; current is 1.11.3 and the pending changesets require minor",
-      "expected_output": "The assistant should reject the leading-hyphen channel before confirmation or changeset pre enter because it is option-like, ask for a safe named channel, validate and confirm the replacement once, and verify pre.json mode and tag immediately after a later valid pre enter before versioning.",
+      "expected_output": "The assistant should reject the leading-hyphen channel before confirmation or changeset pre enter because it is option-like, running the channel-guard recipe so the value reaches the script through Node's argument terminator (node -e '<script>' -- \"$tag\") instead of being swallowed as a Node option; ask for a safe named channel, validate and confirm the replacement once, and verify pre.json mode and tag immediately after a later valid pre enter before versioning.",
       "files": []
     }
   ]
