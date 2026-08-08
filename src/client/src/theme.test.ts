@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, findThemePairForTheme, resolveThemePreference } from "./theme";
+import { describe, expect, it, vi } from "vitest";
+import { CLASSIC_THEME_ID, applyPiWebUiTheme, DEFAULT_THEME_PREFERENCE, findThemePairForTheme, resolveThemePreference } from "./theme";
 import type { QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, ThemeColorScheme, ThemeTokens } from "./plugins/types";
 
 const tokens = {
@@ -57,6 +57,26 @@ const themePairs: QualifiedThemePairContribution[] = [
     dark: "themes:pi-webui-dark",
   },
 ];
+
+describe("applyPiWebUiTheme", () => {
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+  ])("falls back to the selected theme's border when the hierarchy border is %s", (_description, hierarchyBorder) => {
+    const legacyTheme = themeWithTokens({ "--pi-border": "#legacy-border" });
+    if (hierarchyBorder === undefined) Reflect.deleteProperty(legacyTheme.tokens, "--pi-hierarchy-border");
+    else legacyTheme.tokens["--pi-hierarchy-border"] = hierarchyBorder;
+    const hierarchyBorderValue = applyThemeAndReadToken(legacyTheme, "--pi-hierarchy-border");
+
+    expect(hierarchyBorderValue).toBe("#legacy-border");
+  });
+
+  it("preserves an explicit hierarchy border over the selected theme's border", () => {
+    const explicitTheme = themeWithTokens({ "--pi-border": "#theme-border", "--pi-hierarchy-border": "#explicit-hierarchy-border" });
+
+    expect(applyThemeAndReadToken(explicitTheme, "--pi-hierarchy-border")).toBe("#explicit-hierarchy-border");
+  });
+});
 
 describe("resolveThemePreference", () => {
   it("resolves the default auto preference to the dark member when the system is dark", () => {
@@ -116,6 +136,38 @@ describe("resolveThemePreference", () => {
     expect(findThemePairForTheme(themePairs, "themes:pi-webui-dark")?.id).toBe("themes:pi-webui");
   });
 });
+
+function themeWithTokens(tokenOverrides: Partial<ThemeTokens> = {}): QualifiedThemeContribution {
+  return {
+    ...theme("custom", "Custom", "dark"),
+    tokens: { ...tokens, ...tokenOverrides },
+  };
+}
+
+function applyThemeAndReadToken(themeContribution: QualifiedThemeContribution, token: string): string {
+  const styleValues = new Map<string, string>();
+  vi.stubGlobal("document", {
+    documentElement: {
+      dataset: {},
+      style: {
+        colorScheme: "",
+        setProperty(name: string, value: string): void {
+          styleValues.set(name, value);
+        },
+        removeProperty(name: string): void {
+          styleValues.delete(name);
+        },
+      },
+    },
+  });
+
+  try {
+    applyPiWebUiTheme(themeContribution);
+    return styleValues.get(token) ?? "";
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
 
 function theme(localId: string, name: string, colorScheme: ThemeColorScheme): QualifiedThemeContribution {
   return {

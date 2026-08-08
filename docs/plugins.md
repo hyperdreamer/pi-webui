@@ -28,6 +28,10 @@ When machine federation is enabled, **Settings → Pi packages** targets the cur
 
 Use **Settings → PI WEBUI plugins** to enable or disable discovered PI WEBUI browser plugins before the browser imports them. In a federated setup, this plugin enablement surface targets the currently selected machine and labels where changes are saved. If an older or unavailable remote PI WEBUI server does not advertise selected-machine settings support, PI WEBUI reports the plugin settings as unsupported or unavailable instead of silently falling back to the gateway. After installing, removing, or updating a Pi package, type `/reload` in each idle PI WEBUI session on the target machine to refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system prompt files as supported by Pi. Reload the browser page separately for newly discovered or changed PI WEBUI browser plugins. A routine session daemon restart is not required.
 
+## Theme tokens
+
+Theme contributions may omit `--pi-hierarchy-border` for compatibility with legacy custom themes. When present, this optional token controls the hierarchy frames and guide rails around nested session and project rows. If it is missing or empty, PI WEBUI falls back to that theme's non-empty `--pi-border`; an explicit non-empty `--pi-hierarchy-border` value takes precedence.
+
 ## Trust model
 
 Plugins run as JavaScript in the browser app. Treat them as trusted code:

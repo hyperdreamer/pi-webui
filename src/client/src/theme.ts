@@ -88,7 +88,8 @@ export function applyPiWebUiTheme(theme: QualifiedThemeContribution): void {
   root.dataset["piWebUiTheme"] = theme.id;
   root.style.colorScheme = theme.colorScheme;
   for (const token of THEME_TOKENS) {
-    const value = theme.tokens[token];
+    let value: unknown = theme.tokens[token];
+    if (token === "--pi-hierarchy-border" && (typeof value !== "string" || value === "")) value = theme.tokens["--pi-border"];
     if (typeof value === "string" && value !== "") root.style.setProperty(token, value);
     else root.style.removeProperty(token);
   }

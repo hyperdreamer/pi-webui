@@ -4,7 +4,7 @@ import type { Project } from "../api";
 import { isTemplateResult, templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { ProjectList } from "./ProjectList";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
-import type { ProjectTreeRow } from "./projectListProjection";
+import { projectTreeRows, type ProjectTreeRow } from "./projectListProjection";
 
 const family: Project[] = [
   { id: "root", name: "Root", path: "/work", createdAt: "2026-08-07T00:00:00.000Z" },
@@ -47,6 +47,14 @@ function dialogRepeatParts(dialog: ProjectBrowserDialog): {
   const values: unknown = Reflect.get(directive, "values");
   if (!isDialogRepeatValues(values)) throw new Error("Expected project rows to use Lit repeat with row groups");
   return { groups: values[0], render: values[2] };
+}
+
+function renderProjectRow(dialog: ProjectBrowserDialog, row: ProjectTreeRow): TemplateResult {
+  const method: unknown = Reflect.get(dialog, "renderProjectRow");
+  if (typeof method !== "function") throw new Error("Expected ProjectBrowserDialog.renderProjectRow");
+  const rendered: unknown = Reflect.apply(method, dialog, [row]);
+  if (!isTemplateResult(rendered)) throw new Error("Expected ProjectBrowserDialog.renderProjectRow to return a TemplateResult");
+  return rendered;
 }
 
 /** Flattened text of every rendered row group, in display order. */
@@ -182,6 +190,28 @@ describe("expanded project browser hierarchy", () => {
     expect(rendered).toContain("--depth:1");
     expect(rendered).toContain("--depth:2");
     expect(rendered).not.toContain("--depth:3");
+  });
+
+  it("marks only capped depth-two project rows as nested", () => {
+    const deep: Project[] = [
+      { id: "a", name: "A", path: "/a", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "b", name: "B", path: "/a/b", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "c", name: "C", path: "/a/b/c", createdAt: "2026-08-07T00:00:00.000Z" },
+      { id: "d", name: "D", path: "/a/b/c/d", createdAt: "2026-08-07T00:00:00.000Z" },
+    ];
+    const dialog = dialogWith(deep);
+    const rows = projectTreeRows(deep, { expandedProjectIds: new Set(["a", "b", "c"]) });
+    const depthOneRow = rows.find((row) => row.project.id === "b");
+    const cappedDepthRow = rows.find((row) => row.project.id === "d");
+
+    if (depthOneRow === undefined || cappedDepthRow === undefined) throw new Error("Expected depth-one and capped-depth project rows");
+    const depthOneMarkup = templateText(renderProjectRow(dialog, depthOneRow));
+    const cappedDepthMarkup = templateText(renderProjectRow(dialog, cappedDepthRow));
+
+    expect(depthOneMarkup).toContain("--depth:1");
+    expect(depthOneMarkup).not.toMatch(/\bnested\b/);
+    expect(cappedDepthMarkup).toContain("--depth:2");
+    expect(cappedDepthMarkup).toMatch(/\bnested\b/);
   });
 
   it("frames project families with the neutral hierarchy border", () => {

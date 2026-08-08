@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { sessionLabel } from "../sessionLabels";
+import { sessionRows, type SessionRow } from "../sessionTreeRows";
 import { SessionBrowserDialog } from "./SessionBrowserDialog";
 
 const session = (id: string, patch: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -192,6 +193,27 @@ describe("SessionBrowserDialog", () => {
     expect(renderedText).toContain("Child");
   });
 
+  it("marks only capped depth-two session rows as nested", () => {
+    const root = session("root", { firstMessage: "Root session" });
+    const depthOne = session("depth-one", { parentSessionPath: root.path, firstMessage: "Depth one session" });
+    const depthTwo = session("depth-two", { parentSessionPath: depthOne.path, firstMessage: "Depth two session" });
+    const depthThree = session("depth-three", { parentSessionPath: depthTwo.path, firstMessage: "Depth three session" });
+    const dialog = new SessionBrowserDialog();
+    dialog.sessions = [root, depthOne, depthTwo, depthThree];
+    const rows = sessionRows(dialog.sessions);
+    const depthOneRow = rows.find((row) => row.session.id === depthOne.id);
+    const cappedDepthRow = rows.find((row) => row.session.id === depthThree.id);
+
+    if (depthOneRow === undefined || cappedDepthRow === undefined) throw new Error("Expected depth-one and capped-depth session rows");
+    const depthOneMarkup = renderSessionRow(dialog, depthOneRow);
+    const cappedDepthMarkup = renderSessionRow(dialog, cappedDepthRow);
+
+    expect(depthOneMarkup).toContain("--depth:1");
+    expect(depthOneMarkup).not.toMatch(/\bnested\b/);
+    expect(cappedDepthMarkup).toContain("--depth:2");
+    expect(cappedDepthMarkup).toMatch(/\bnested\b/);
+  });
+
   it("keeps the expanded browser read-only while preserving manual session order", () => {
     const later = session("later", { firstMessage: "Later session", manualOrder: 1 });
     const first = session("first", { firstMessage: "First session", manualOrder: 0 });
@@ -253,6 +275,12 @@ describe("session browser pin controls", () => {
     expect(templateText(rendered)).toContain("★");
   });
 });
+
+function renderSessionRow(dialog: SessionBrowserDialog, row: SessionRow): string {
+  const method: unknown = Reflect.get(dialog, "renderSession");
+  if (typeof method !== "function") throw new Error("Expected SessionBrowserDialog.renderSession");
+  return templateText(Reflect.apply(method, dialog, [row]));
+}
 
 function sessionBrowserDialogStyles(): string {
   const styles = SessionBrowserDialog.styles;
