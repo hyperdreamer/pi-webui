@@ -186,16 +186,14 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   override render() {
     const sessionTreeSessions = this.sessionTreeSessions();
-    let preparedActivityFor: SessionActivityResolver | undefined;
-    const activityFor: SessionActivityResolver = (session) => {
-      preparedActivityFor ??= createSessionActivityResolver(sessionTreeSessions, {
-        statuses: this.statuses,
-        activities: this.activities,
-        sending: this.sending,
-        unreadSessionIds: this.unreadSessionIds,
-      });
-      return preparedActivityFor(session);
-    };
+    // Indexed once per render, not once per row: rebuilding the parent/child
+    // index inside every row made large catalogs quadratic.
+    const activityFor = createSessionActivityResolver(sessionTreeSessions, {
+      statuses: this.statuses,
+      activities: this.activities,
+      sending: this.sending,
+      unreadSessionIds: this.unreadSessionIds,
+    });
     const treeOptions = this.currentSessionTreeOptions();
     const normalCurrentRows = sessionRowsForSessionList(sessionTreeSessions, {
       ...treeOptions,

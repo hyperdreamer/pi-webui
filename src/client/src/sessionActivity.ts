@@ -56,6 +56,10 @@ export function createSessionActivityResolver(
  * Produces an accessible, tree-aware activity presentation for one session.
  * Descendant work is counted recursively so an idle root remains visibly active
  * while any tracked child or grandchild continues working.
+ *
+ * This indexes `sessions` on every call. Rendering several rows from the same
+ * collection must use {@link createSessionActivityResolver} instead, otherwise
+ * the per-row index rebuild makes a large list quadratic.
  */
 export function sessionActivityIndicators(
   session: SessionInfo,
