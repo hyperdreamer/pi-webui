@@ -183,6 +183,19 @@ describe("expanded project browser hierarchy", () => {
     expect(rendered).toContain("--depth:2");
     expect(rendered).not.toContain("--depth:3");
   });
+
+  it("frames project families with the neutral hierarchy border", () => {
+    const styles = projectBrowserDialogStyles();
+
+    expect(styles).toMatch(/\.session-family-frame\s*\{[^}]*border:\s*1px solid var\(--pi-hierarchy-border\);/);
+  });
+
+  it("draws the nested guide rail on the project row surface", () => {
+    const styles = projectBrowserDialogStyles();
+
+    expect(styles).toMatch(/\.project-row\.nested \.project-main::before\s*\{[^}]*background:\s*var\(--pi-hierarchy-border\);/);
+    expect(styles).not.toContain(".project-row.nested::before");
+  });
 });
 
 describe("expanded browser close with subprojects", () => {
