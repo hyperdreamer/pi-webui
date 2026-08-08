@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionActivity, SessionInfo, SessionStatus } from "./api";
-import { sessionActivityIndicators } from "./sessionActivity";
+import { createSessionActivityResolver, sessionActivityIndicators } from "./sessionActivity";
 
 const idleStatus = (sessionId: string, patch: Partial<SessionStatus> = {}): SessionStatus => ({
   sessionId,
@@ -86,6 +86,18 @@ describe("sessionActivityIndicators", () => {
     ]);
   });
 
+  it("indexes the session collection once for multiple indicator lookups", () => {
+    const parent = session("parent");
+    const child = session("child", { parentSessionPath: parent.path });
+    const sessions = new CountingSessionCollection(parent, child);
+
+    const indicatorsFor = createSessionActivityResolver(sessions);
+    indicatorsFor(parent);
+    indicatorsFor(child);
+
+    expect(sessions.iterations).toBe(1);
+  });
+
   it("returns no marker for a read, idle session tree", () => {
     const parent = session("parent");
     const child = session("child", { parentSessionPath: parent.path });
@@ -93,3 +105,12 @@ describe("sessionActivityIndicators", () => {
     expect(sessionActivityIndicators(parent, [parent, child])).toEqual([]);
   });
 });
+
+class CountingSessionCollection extends Array<SessionInfo> {
+  iterations = 0;
+
+  override [Symbol.iterator](): ArrayIterator<SessionInfo> {
+    this.iterations += 1;
+    return super[Symbol.iterator]();
+  }
+}

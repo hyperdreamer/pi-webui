@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo, SessionStatus } from "../api";
 import { templateClickHandlerForText, templateEventHandlerAfterValue, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { sessionLabel } from "../sessionLabels";
+import { createSessionActivityResolver } from "../sessionActivity";
 import { sessionRows, type SessionRow } from "../sessionTreeRows";
 import { SessionBrowserDialog } from "./SessionBrowserDialog";
 
@@ -279,7 +280,7 @@ describe("session browser pin controls", () => {
 function renderSessionRow(dialog: SessionBrowserDialog, row: SessionRow): string {
   const method: unknown = Reflect.get(dialog, "renderSession");
   if (typeof method !== "function") throw new Error("Expected SessionBrowserDialog.renderSession");
-  return templateText(Reflect.apply(method, dialog, [row]));
+  return templateText(Reflect.apply(method, dialog, [row, createSessionActivityResolver(dialog.sessions)]));
 }
 
 function sessionBrowserDialogStyles(): string {

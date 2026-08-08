@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionInfo, Workspace } from "../api";
+import { createSessionActivityResolver } from "../sessionActivity";
 import { eligibleSessionReorderGroup } from "../sessionReorder";
 import { findOptionalTemplateEventHandlerAfterMarker, isTemplateResult, templateText } from "../templateInspection.testSupport";
 import { SessionList, sessionRowsForCurrentTree } from "./SessionList";
@@ -164,7 +165,16 @@ function sessionListStyles(): string {
 function renderedRowClasses(list: SessionList, row: unknown): string {
   const method: unknown = Reflect.get(list, "renderSession");
   if (typeof method !== "function") throw new Error("SessionList.renderSession is not callable");
-  const rendered: unknown = Reflect.apply(method, list, [row, 0, "current", [], [], [], false, false]);
+  const rendered: unknown = Reflect.apply(method, list, [
+    row,
+    0,
+    "current",
+    createSessionActivityResolver(list.sessions),
+    [],
+    [],
+    false,
+    false,
+  ]);
   if (!isTemplateResult(rendered)) throw new Error("SessionList.renderSession did not return a template");
   return templateText(rendered);
 }

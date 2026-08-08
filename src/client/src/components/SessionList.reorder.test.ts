@@ -315,7 +315,11 @@ describe("SessionList reorder interaction", () => {
     expect(gripFor(list, selected.path)).toBeNull();
     expect(gripFor(list, peer.path)?.closest(".action-main")).not.toBeNull();
     expect(list.renderRoot.querySelector(".session-reorder-slot")).toBeNull();
+  });
 
+  it("suppresses grips for sessions that cannot be reordered", async () => {
+    const selected = sessionFixture("selected");
+    const peer = sessionFixture("peer");
     const archived = sessionFixture("archived", "/repo", { archived: true });
     const archivedList = await mountList({ sessions: [archived, peer], selected: archived });
     expect(gripFor(archivedList, archived.path)).toBeNull();
@@ -356,22 +360,26 @@ describe("SessionList reorder interaction", () => {
     await disabledList.updateComplete;
     expect(gripFor(disabledList, selected.path)).toBeNull();
 
+    const orphan = sessionFixture("orphan", "/repo", { parentSessionPath: "/sessions/missing.jsonl" });
+    const orphanList = await mountList({ sessions: [orphan, peer], selected: orphan });
+    expect(gripFor(orphanList, orphan.path)).toBeNull();
+  });
+
+  it("suppresses grips beyond the session reorder protocol limits", async () => {
     const oversized = Array.from({ length: 1_001 }, (_, index) => sessionFixture(`oversized-${String(index)}`));
     const oversizedSelected = oversized[0];
     if (oversizedSelected === undefined) throw new Error("Missing oversized selected session");
     const oversizedList = await mountList({ sessions: oversized, selected: oversizedSelected });
     expect(gripFor(oversizedList, oversizedSelected.path)).toBeNull();
 
+    const selected = sessionFixture("selected");
+    const peer = sessionFixture("peer");
     const catalogList = await mountList({
       sessions: [selected, peer],
       selected,
       workspaces: Array.from({ length: 1_001 }, (_, index) => workspace(`/catalog-${String(index)}`, `catalog-${String(index)}`)),
     });
     expect(gripFor(catalogList, selected.path)).toBeNull();
-
-    const orphan = sessionFixture("orphan", "/repo", { parentSessionPath: "/sessions/missing.jsonl" });
-    const orphanList = await mountList({ sessions: [orphan, peer], selected: orphan });
-    expect(gripFor(orphanList, orphan.path)).toBeNull();
   });
 
   it("rejects pen, non-primary, and right-button drags through pointerup", async () => {

@@ -1,7 +1,7 @@
 import { LitElement, css, html, type TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { SessionActivity, SessionInfo, SessionStatus } from "../api";
-import { sessionActivityIndicators } from "../sessionActivity";
+import { createSessionActivityResolver, type SessionActivityResolver } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { filterSessionRows, hasSessionSearchQuery } from "../sessionSearch";
 import { sessionRowsForSearch, type SessionRow } from "../sessionTreeRows";
@@ -70,11 +70,17 @@ export class SessionBrowserDialog extends LitElement {
     const rows = this.visibleRows;
     if (rows.length === 0) return html`<p class="empty-state">No matching sessions.</p>`;
     const rowGroups = this.groupRows(rows);
+    const activityFor = createSessionActivityResolver(this.sessions, {
+      statuses: this.statuses,
+      activities: this.activities,
+      sending: this.sending,
+      unreadSessionIds: this.unreadSessionIds,
+    });
     return html`
       <div class="session-list">
         ${rowGroups.map((group) => group.length > 1 || group[0]?.hasChildren === true
-          ? html`<div class="session-family-frame">${group.map((row) => this.renderSession(row))}</div>`
-          : group.map((row) => this.renderSession(row)))}
+          ? html`<div class="session-family-frame">${group.map((row) => this.renderSession(row, activityFor))}</div>`
+          : group.map((row) => this.renderSession(row, activityFor)))}
       </div>
     `;
   }
@@ -97,14 +103,9 @@ export class SessionBrowserDialog extends LitElement {
     }, []);
   }
 
-  private renderSession(row: SessionRow): TemplateResult {
+  private renderSession(row: SessionRow, activityFor: SessionActivityResolver): TemplateResult {
     const session = row.session;
-    const indicators = sessionActivityIndicators(session, this.sessions, {
-      statuses: this.statuses,
-      activities: this.activities,
-      sending: this.sending,
-      unreadSessionIds: this.unreadSessionIds,
-    });
+    const indicators = activityFor(session);
     const cappedDepth = Math.min(row.depth, 2);
     return html`
       <div

@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing, svg, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace } from "../api";
-import { sessionActivityIndicators, sessionRowActivityKind } from "../sessionActivity";
+import { createSessionActivityResolver, sessionRowActivityKind, type SessionActivityResolver } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
 import { eligibleSessionReorderGroup, moveSessionInGroup, sessionReorderEdgeScrollDelta, sessionReorderInsertionIndex, sessionReorderRequest, sessionReorderSubtreePaths, sessionReorderThresholdReached, type SessionReorderPeerRect } from "../sessionReorder";
@@ -186,6 +186,16 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   override render() {
     const sessionTreeSessions = this.sessionTreeSessions();
+    let preparedActivityFor: SessionActivityResolver | undefined;
+    const activityFor: SessionActivityResolver = (session) => {
+      preparedActivityFor ??= createSessionActivityResolver(sessionTreeSessions, {
+        statuses: this.statuses,
+        activities: this.activities,
+        sending: this.sending,
+        unreadSessionIds: this.unreadSessionIds,
+      });
+      return preparedActivityFor(session);
+    };
     const treeOptions = this.currentSessionTreeOptions();
     const normalCurrentRows = sessionRowsForSessionList(sessionTreeSessions, {
       ...treeOptions,
@@ -240,7 +250,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
                 row,
                 descendantCounts.get(row.session.id) ?? 0,
                 "current",
-                sessionTreeSessions,
+                activityFor,
                 reorderGroup,
                 currentRows,
                 reorderMarkers,
@@ -258,7 +268,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
                   row,
                   descendantCounts.get(row.session.id) ?? 0,
                   "archived",
-                  sessionTreeSessions,
+                  activityFor,
                   [],
                   currentRows,
                   false,
@@ -453,7 +463,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     row: SessionRow,
     descendantCount: number,
     scope: SessionSelectionScope,
-    activitySessions: readonly SessionInfo[],
+    activityFor: SessionActivityResolver,
     reorderGroup: readonly SessionInfo[],
     reorderRows: readonly SessionRow[],
     reorderMarkers: boolean,
@@ -497,7 +507,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
               ? this.renderSessionRenameInput(session)
               : html`${this.renderSessionGroupToggle(row)}<span class="action-name" dir="auto">${row.depth > 0 ? html`<span class="tree-marker">↳</span>` : null}${!row.external && session.pinned === true ? html`<button class="pinned-star" type="button" title="Click to unpin session" aria-label="Unpin session" @click=${(event: MouseEvent) => { event.stopPropagation(); this.onUnpin?.(session); }}>★</button> ` : null}${sessionLabel(session)}${row.depth > 2 ? html` <span class="badge">depth ${row.depth}</span>` : null}${externalWorkspaceLabel === undefined ? null : html` <span class="badge external-workspace" title=${`Open ${externalWorkspaceLabel} workspace`}>${externalWorkspaceLabel} ↗</span>`}${row.hasMissingParent ? html` <span class="badge">parent unavailable</span>` : null}</span>`}
           </span><small>${this.renderSessionMetaPrefix(session, status, activity)}${String(session.messageCount)} messages</small>
-          ${this.renderActivity(session, activitySessions)}
+          ${this.renderActivity(session, activityFor)}
           ${canDrag ? html`
             <span
               class="session-reorder-grip"
@@ -1072,13 +1082,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     return { authoritative: this.authoritativeSessionPersistence };
   }
 
-  private renderActivity(session: SessionInfo, sessions: readonly SessionInfo[]) {
-    return renderActionActivityIndicators(sessionActivityIndicators(session, sessions, {
-      statuses: this.statuses,
-      activities: this.activities,
-      sending: this.sending,
-      unreadSessionIds: this.unreadSessionIds,
-    }));
+  private renderActivity(session: SessionInfo, activityFor: SessionActivityResolver) {
+    return renderActionActivityIndicators(activityFor(session));
   }
 
   static override styles = [listStyles, css`

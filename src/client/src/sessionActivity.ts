@@ -18,6 +18,8 @@ export interface SessionActivityRuntime {
   unreadSessionIds?: ReadonlySet<string>;
 }
 
+export type SessionActivityResolver = (session: SessionInfo) => SessionActivityIndicator[];
+
 /**
  * Reports direct work for a session row. It deliberately does not inspect child
  * sessions so callers that need a tree-aware presentation can use
@@ -37,6 +39,20 @@ export function sessionRowActivityKind(
 }
 
 /**
+ * Prepares tree-aware activity lookup for rendering several rows from the same
+ * session collection. The collection is indexed once when the resolver is made.
+ */
+export function createSessionActivityResolver(
+  sessions: readonly SessionInfo[],
+  runtime: SessionActivityRuntime = {},
+): SessionActivityResolver {
+  const childrenByParentPath = indexSessionActivity(sessions);
+  return (session) => canShowSessionActivity(session)
+    ? sessionActivityIndicatorsFromIndex(session, childrenByParentPath, runtime)
+    : [];
+}
+
+/**
  * Produces an accessible, tree-aware activity presentation for one session.
  * Descendant work is counted recursively so an idle root remains visibly active
  * while any tracked child or grandchild continues working.
@@ -47,7 +63,14 @@ export function sessionActivityIndicators(
   runtime: SessionActivityRuntime = {},
 ): SessionActivityIndicator[] {
   if (!canShowSessionActivity(session)) return [];
+  return sessionActivityIndicatorsFromIndex(session, indexSessionActivity(sessions), runtime);
+}
 
+function sessionActivityIndicatorsFromIndex(
+  session: SessionInfo,
+  childrenByParentPath: ReadonlyMap<string, readonly SessionInfo[]>,
+  runtime: SessionActivityRuntime,
+): SessionActivityIndicator[] {
   const ownKind = sessionRowActivityKind(
     session,
     runtime.statuses?.[session.id],
@@ -56,7 +79,7 @@ export function sessionActivityIndicators(
     runtime.unreadSessionIds?.has(session.id) === true,
   );
   const ownAttention = sessionNeedsAttention(session, runtime);
-  const descendants = descendantActivityCounts(session, sessions, runtime);
+  const descendants = descendantActivityCounts(session, childrenByParentPath, runtime);
   const indicators: SessionActivityIndicator[] = [];
 
   const attentionCount = descendants.attentionCount + (ownAttention ? 1 : 0);
@@ -83,7 +106,7 @@ export function sessionActivityIndicators(
   return indicators;
 }
 
-function descendantActivityCounts(session: SessionInfo, sessions: readonly SessionInfo[], runtime: SessionActivityRuntime): { workingCount: number; attentionCount: number } {
+function indexSessionActivity(sessions: readonly SessionInfo[]): ReadonlyMap<string, readonly SessionInfo[]> {
   const sessionsByPath = new Map<string, SessionInfo>();
   for (const candidate of sessions) sessionsByPath.set(candidate.path, candidate);
 
@@ -95,7 +118,14 @@ function descendantActivityCounts(session: SessionInfo, sessions: readonly Sessi
     children.push(candidate);
     childrenByParentPath.set(parentPath, children);
   }
+  return childrenByParentPath;
+}
 
+function descendantActivityCounts(
+  session: SessionInfo,
+  childrenByParentPath: ReadonlyMap<string, readonly SessionInfo[]>,
+  runtime: SessionActivityRuntime,
+): { workingCount: number; attentionCount: number } {
   let workingCount = 0;
   let attentionCount = 0;
   const visit = (parentPath: string, ancestors: ReadonlySet<string>): void => {
