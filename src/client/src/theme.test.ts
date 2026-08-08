@@ -10,6 +10,7 @@ const tokens = {
   "--pi-terminal-text": "#000000",
   "--pi-border": "#000000",
   "--pi-border-muted": "#000000",
+  "--pi-hierarchy-border": "#000000",
   "--pi-text": "#000000",
   "--pi-text-secondary": "#000000",
   "--pi-text-bright": "#000000",
