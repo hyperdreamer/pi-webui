@@ -30,7 +30,7 @@ even though `package.json`, npm, and the maintained tag line all use SemVer.
 
 ## Approach
 
-Use a focused policy correction in four repository-only files:
+Use a focused policy correction in four repository-only policy files. The committed design and implementation plans are required SDD process artifacts; they are part of whole-branch history but are not task deliverables and do not violate the four-policy-file implementation scope:
 
 - `.agents/skills/changeset-changelog/SKILL.md`
 - `.agents/skills/changeset-changelog/evals/evals.json`
@@ -77,6 +77,24 @@ greater than the current version, unpublished, and not lower than the minimum
 next version implied by the highest pending Changeset bump. Publication continues
 exclusively through the existing GitHub Release-triggered workflow; local
 `npm publish` remains forbidden.
+
+### Prerelease release lines
+
+Ordinary SemVer includes prereleases. Validate a requested prerelease separately from a stable target:
+
+- It must be valid SemVer, greater than the current package version, and unpublished.
+- Strip prerelease and build metadata to obtain its base release. For example, the base release of `1.12.0-beta.1` is `1.12.0`.
+- The base release must be at least the minimum stable target implied by the highest pending Changeset bump. A next-minor `1.12.0-beta.1` is therefore valid when pending work requires `1.12.0`, even though SemVer correctly orders the prerelease below stable `1.12.0`.
+- An exact major-line prerelease still counts as an explicit user request for that major line; never infer it.
+
+Use Changesets prerelease mode rather than treating a prerelease package as a stable version:
+
+1. For the first prerelease on a line, confirm the complete target before mutation, run `npm run changeset -- pre enter <tag>`, then run the normal Changesets version step. Changesets creates `<base>-<tag>.0` and `.changeset/pre.json`.
+2. For subsequent prereleases, require `.changeset/pre.json` in `pre` mode with the same base line and tag. `npm run changelog:status` is authoritative for the next prerelease target; confirm it before `npm run release:version`. Do not enter pre mode again.
+3. For the final stable release, confirm the prerelease's base version, then run `npm run changeset -- pre exit` followed by `npm run release:version`. Changesets writes the stable base version and removes `.changeset/pre.json`.
+4. If the user requested an exact prerelease ordinal that differs from Changesets output, the existing conditional `npm version <confirmed-version> --no-git-tag-version` and changelog-heading correction apply after versioning. Keep `.changeset/pre.json` committed so later prereleases and final exit remain coherent.
+
+The publish workflow already derives the npm dist-tag from the first prerelease identifier. For this repository, an unnamed prerelease request uses `beta`, matching the established `v1.11.0-beta.*` tags; still confirm the exact target before mutation.
 
 ### Version-enforcement machinery
 

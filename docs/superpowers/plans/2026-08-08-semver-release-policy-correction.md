@@ -12,13 +12,14 @@
 
 ## Global Constraints
 
-- Edit only these four files: `.agents/skills/changeset-changelog/SKILL.md`, `.agents/skills/changeset-changelog/evals/evals.json`, `.agents/skills/npm-release-via-github-actions/SKILL.md`, `.agents/skills/npm-release-via-github-actions/evals/evals.json`.
+- Implementation task deliverables are limited to these four policy files: `.agents/skills/changeset-changelog/SKILL.md`, `.agents/skills/changeset-changelog/evals/evals.json`, `.agents/skills/npm-release-via-github-actions/SKILL.md`, `.agents/skills/npm-release-via-github-actions/evals/evals.json`. Committed process artifacts under `docs/superpowers/specs/` and `docs/superpowers/plans/`, including this plan and its approved design, are exempt from this task-level restriction and remain part of whole-branch review.
 - Do not change `package.json`, `package-lock.json`, `CHANGELOG.md`, any `.changeset/*.md` fragment, any git tag, or anything on npm.
 - Do not prepare or publish a release.
 - Do not edit runtime tests that use date-shaped versions as version-comparison input data: `src/server/piWebUiStatus.test.ts`, `pi-webui-plugins/updates/updatesLogic.test.ts`, `src/docker/piWebUiDockerDocs.test.ts`. Those fixtures test version comparison, not release policy.
 - Do not add a Changeset. `package.json#files` does not list `.agents`, so these files are not shipped to package consumers.
-- Do not add new files. No new test file, no new script.
+- Do not add implementation, runtime, test, or script files. Committed SDD spec and plan files are required process artifacts and are exempt from this restriction.
 - The repo's version scheme is ordinary SemVer `MAJOR.MINOR.PATCH`; the current version is `1.11.3`.
+- Preserve SemVer prerelease releases: validate a requested prerelease by its base release line, use Changesets pre mode for initial and subsequent prereleases, and use `changeset pre exit` for the final stable release.
 - Publication stays exclusively through a published GitHub Release triggering `.github/workflows/publish.yml`. Local `npm publish` remains forbidden.
 - Preserve the lockfile-synchronization guidance and its rationale in `npm-release-via-github-actions/SKILL.md`; only the phrase naming CalVer enforcement may change.
 - `npm run verify:staged` does not validate `.agents/skills` files. It runs whole-project typecheck and Knip only, and reports no ESLint and no related Vitest coverage for these paths. Run it before committing as the standard gate, but do not treat it as evidence for this change.
