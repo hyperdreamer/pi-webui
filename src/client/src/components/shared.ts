@@ -448,6 +448,8 @@ export const listStyles = css`
   .action-row.selected .action-main, .action-row.selected .action-menu-toggle { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
   .action-row.archived .action-main { color: var(--pi-muted); }
   .action-main { position: relative; box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--pi-border); border-top-right-radius: 0; border-bottom-right-radius: 0; border-top-left-radius: 8px; border-bottom-left-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 22px 7px calc(9px + var(--depth, 0) * 16px); text-align: left; }
+  .action-row.nested .action-main::before { content: ""; position: absolute; top: -5px; bottom: -5px; left: calc((var(--depth, 0) - 1) * 16px + 16px); width: 2px; background: var(--pi-hierarchy-border); pointer-events: none; }
+  .session-family-frame > .action-row.nested:last-child .action-main::before { bottom: 50%; }
   .action-name { display: -webkit-box; max-height: 2.5em; overflow: hidden; overflow-wrap: anywhere; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .action-row:not(.selected):hover .action-main { background: var(--pi-surface-hover); }
   .workspace-row .action-main { border-radius: 8px 0 0 8px; }
