@@ -101,15 +101,27 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Then apply the checks for the candidate's class:
      - Stable candidate: greater than the current version, absent from npm, and not lower than the minimum stable target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
      - Prerelease candidate: greater than the current version and unpublished on npm. Strip its prerelease portion to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
-   - **Channel guard for every prerelease path.** After the complete prerelease candidate passes the full-candidate contract and before confirming it or entering/versioning pre mode, derive the channel exactly as `.github/workflows/publish.yml` does: take everything after the first `-`, then everything before the first `.`. Reject channel `latest` and any channel that npm's SemVer parser treats as a valid SemVer range, such as numeric `0`, because npm rejects valid ranges as dist-tags and a prerelease must never move the default `latest` channel. Run this recipe:
+   - **Channel guard for every prerelease path.** After the complete prerelease candidate passes the full-candidate contract and before confirming it or entering/versioning pre mode, derive the channel exactly as `.github/workflows/publish.yml` does: take everything after the first `-`, then everything before the first `.`. Reject channel `latest`, any channel that npm's SemVer parser treats as a valid SemVer range such as numeric `0`, and any channel beginning with `-` (a leading hyphen): npm rejects valid ranges as dist-tags, a prerelease must never move the default `latest` channel, and Changesets parses a leading-hyphen tag as a CLI option, so `changeset -- pre enter --help` prints usage and exits 0 without creating `.changeset/pre.json` while `pre enter -x` fails with an unknown-flag error. Run this recipe:
      ```bash
      requested_version='<candidate-version>'
      tag="${requested_version#*-}"
      tag="${tag%%.*}"
-     node -e 'const semver = require("semver"); const tag = process.argv[1]; if (tag === "latest" || semver.validRange(tag) !== null) { console.error("invalid npm dist-tag:", tag, "must not be `latest` or a valid SemVer range"); process.exit(1); }' "$tag"
+     node -e 'const semver = require("semver"); const tag = process.argv[1]; if (tag.startsWith("-") || tag === "latest" || semver.validRange(tag) !== null) { console.error("invalid npm dist-tag:", tag, "must not start with `-`, must not be `latest`, and must not be a valid SemVer range"); process.exit(1); }' "$tag"
      ```
      The full-candidate contract and then this guard apply to every prerelease entry path: a user-supplied exact prerelease, the default or recommended first prerelease, a user-named initial prerelease tag, and Changesets output for a subsequent prerelease in active pre mode. A failure must stop before `changeset pre enter`, `changeset version`, version-file edits, commit, tag, or release creation; ask for a safe named channel and target, rerun both validations, and reconfirm before proceeding.
-   - **Confirmation comes after validation.** After the full-candidate contract, the candidate-class checks, and the prerelease channel guard where applicable have passed, confirm the validated target with the user before editing version files, entering/versioning pre mode, committing, tagging, or publishing. Show the current version and where it came from, the recommended or user-selected target, the tag that will be created, and which pending change drives the bump level.
+   - **Release target vs. Changesets intermediate.** Distinguish the version that will actually be released from the version Changesets is expected to emit:
+     - **Release target:** the single version shown to the user for confirmation and ultimately tagged and published.
+     - **Changesets intermediate candidate:** the valid version Changesets is expected to emit before an allowed exact-version override. Validate it through the same contract as the target, but never present it as a second release target and never confirm it merely because it passed validation.
+     - **Generated-target flow:** the intermediate and the release target are the same version; confirm it once.
+     - **Exact-target flow:** the user's exact version is the release target; the Changesets-derived version is only the validated intermediate that may be overridden after versioning; confirm only the exact target once.
+     - **Final stable from pre mode:** the active prerelease base is the release target; the stable Changesets result is the intermediate; confirm the base once.
+
+     | Flow | Release target | Changesets intermediate | Confirmation |
+     | --- | --- | --- | --- |
+     | generated stable/prerelease | generated candidate | same version | generated target once |
+     | exact stable/prerelease | user exact version | Changesets-derived version | exact target once |
+     | final stable from pre mode | active prerelease base | stable Changesets result | stable base once |
+   - **Confirmation comes after validation.** The release target is the sole version confirmed per release attempt; confirmation happens exactly once, after every applicable target, intermediate, class, channel, and pre-mode consistency check has passed and before mutation. After the full-candidate contract, the candidate-class checks, and the prerelease channel guard where applicable have passed, confirm the validated release target with the user before editing version files, entering/versioning pre mode, committing, tagging, or publishing. Show the current version and where it came from, the recommended or user-selected target, the tag that will be created, and which pending change drives the bump level.
    - An exact prerelease on a new major line is an explicit request for that major line. Never infer a major prerelease from pending work.
    - Never infer a `major` bump. If the pending changes look breaking and the user has not asked for a breaking release, raise that during confirmation.
    - If npm already has the confirmed version, stop and ask for a different target. npm rejects republishing an existing version.
@@ -117,19 +129,25 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
 
 4. **Prepare Changesets prerelease mode when requested**
    - Stable releases outside an active prerelease line skip this step.
-   - For the first prerelease on a release line, derive the stable base target from pending changesets. If the user did not name a prerelease tag, use `beta`, matching this repository's established tags. Construct the complete candidate `<base>-<tag>.0`, run the step 3 full-candidate contract on it, and then run the step 3 channel guard on the same candidate. Only after both validations pass, recommend and confirm that candidate before mutation:
+   - **Initial prerelease on a release line.** Derive the stable base target from pending changesets. Determine the prerelease channel: if the user supplied an exact prerelease, derive the channel from that exact target (everything after the first `-`, then everything before the first `.`); if the user separately named a channel that disagrees with the exact target's channel, stop and ask the user to resolve the conflict before confirmation. If there is no exact prerelease and the user did not name a tag, use `beta`, matching this repository's established tags. Before mutation, predict the Changesets intermediate as `<base>-<tag>.0` and validate both the release target and that intermediate through the step 3 full-candidate contract, the candidate-class checks where applicable, and the step 3 channel guard. The exact target must remain greater than the current version, unpublished, and no lower in base compatibility than pending work.
+   - **Generated-target flow (initial).** The predicted intermediate `<base>-<tag>.0` is also the release target; confirm it exactly once, then enter pre mode:
      ```bash
      npm run changeset -- pre enter <tag>
      ```
-     `changeset -- pre enter <tag>` creates `.changeset/pre.json` immediately. The following `changeset version` step updates its consumed-changeset state; commit the resulting `.changeset/pre.json` with the release prep.
-   - For a subsequent prerelease, require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base. Run `npm run changelog:status`; its next prerelease version is the authoritative complete candidate. Run the step 3 full-candidate contract and then the step 3 channel guard on that version before confirming it or running `changeset version`; do not enter pre mode again.
+     `changeset -- pre enter <tag>` creates `.changeset/pre.json` immediately. Immediately after a valid `pre enter`, verify that `.changeset/pre.json` exists with the expected tag and `"mode": "pre"` before any versioning:
+     ```bash
+     expected_tag='<tag>'
+     node -e 'const fs=require("node:fs"); const expected=process.argv[1]; const path=".changeset/pre.json"; if (!fs.existsSync(path)) { console.error("Changesets pre mode was not created"); process.exit(1); } const pre=JSON.parse(fs.readFileSync(path,"utf8")); if (pre.mode!=="pre" || pre.tag!==expected) { console.error("unexpected Changesets pre state:", pre.mode, pre.tag, "expected pre", expected); process.exit(1); }' "$expected_tag"
+     ```
+     If the postcondition fails, stop and resolve or revert the failed pre-mode preparation before any `changeset version`, package/changelog edit, commit, tag, or release creation. The following `changeset version` step updates its consumed-changeset state; commit the resulting `.changeset/pre.json` with the release prep.
+   - **Exact-target flow (initial).** The exact ordinal remains the sole confirmed release target; validate it through the same contract and confirm only it exactly once, explaining that Changesets may emit the validated intermediate before the documented step 5 override. Never recommend or confirm `<base>-<tag>.0` after an exact ordinal has been selected as the release target. Enter pre mode only after that sole confirmation, run the same `pre enter` and `pre.json` postcondition as above, then run Changesets versioning normally and apply the step 5 exact override and changelog-heading correction only if the actual Changesets result differs from the exact target.
+   - **Subsequent prerelease in active pre mode.** Require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base; an exact target must have the same base and channel as the active pre mode, otherwise stop before confirmation. Run `npm run changelog:status`; treat its next prerelease version as the Changesets intermediate candidate. Validate the intermediate and the selected release target through the step 3 full-candidate contract and channel guard. Generated-target flow: the status result is the release target; confirm it exactly once. Exact-target flow: the user's exact ordinal is the release target; confirm only it exactly once, and treat the status result only as the validated intermediate to be overridden after versioning when different. Run `changeset version` without entering pre mode again. Keep `.changeset/pre.json` coherent for later prereleases and final stable exit.
    - If the package version is already a prerelease but `.changeset/pre.json` is absent, exited, or names a different tag/base, stop and explain the inconsistent prerelease state instead of guessing or recreating it.
    - For the final stable release from pre mode, confirm the current prerelease's base version before mutation, then exit pre mode:
      ```bash
      npm run changeset -- pre exit
      ```
      Run the normal version step next; it must write the stable base version and remove `.changeset/pre.json`.
-   - If the user confirmed an exact prerelease ordinal different from Changesets output, use the conditional exact-version override and changelog-heading correction in step 5. Keep the active `.changeset/pre.json` so subsequent prereleases and final stable exit remain coherent.
    - `.github/workflows/publish.yml` derives the npm dist-tag from the first prerelease identifier, so `1.12.0-beta.1` publishes under `beta` while stable versions publish under `latest`.
 
 5. **Generate changelog and version files**
@@ -138,7 +156,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      npm run release:version
      ```
    - This consumes pending `.changeset/*.md` fragments, updates `CHANGELOG.md`, updates `package.json`, and updates the npm lockfile when applicable.
-   - Changesets derives the version from the pending fragments and active prerelease state, so its result should already equal the confirmed target (the stable version, or the prerelease version from pre mode). Compare the two. Only if the user requested an exact version that differs from the Changesets result, enforce it with:
+   - Changesets derives the version from the pending fragments and active prerelease state. In a generated-target flow that result is the release target itself; in an exact-target flow it is the validated Changesets intermediate, which is allowed to differ only when the user requested an exact version. Compare the result with the confirmed release target. Only if the user requested an exact version that differs from the Changesets result (the validated intermediate), enforce it with:
      ```bash
      npm version <confirmed-version> --no-git-tag-version
      ```
