@@ -258,6 +258,17 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      This is the required `npm view <package-name> dist-tags.latest` equality assertion for stable releases and `npm view <package-name> dist-tags.<tag>` equality assertion for prereleases.
    - If npm has not updated yet, wait briefly and check both the exact-version tarball and expected dist-tag again. A successful workflow is not sufficient while either registry assertion disagrees.
 
+11. **Sync local git tags after every release**
+   - Releases create the release tag on GitHub (via `gh release create`), so the local clone misses it until fetched. After every release — stable or prerelease — sync tags:
+     ```bash
+     git fetch --tags origin
+     ```
+   - Verify the local and remote tag sets match (ignore `^{}` peeled entries, which are annotated-tag dereferences, not tags):
+     ```bash
+     comm -3 <(git tag | sort) <(git ls-remote --tags origin | awk '{print $2}' | sed 's|refs/tags/||' | sort)
+     ```
+   - Confirm the new `v<new-version>` tag is present locally. If any expected tag is still missing after the fetch, investigate before reporting the release complete.
+
 ## Reruns and special cases
 
 - If a GitHub Actions publish run failed due to a transient infrastructure issue, prefer `gh run rerun <run-id> --failed` or rerun the workflow in GitHub.
