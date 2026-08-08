@@ -465,6 +465,27 @@ describe("OAuthLoginFlowService", () => {
     expect(settled).not.toHaveProperty("error");
     service.dispose();
   });
+
+  it("marks the flow errored when the post-login refresh fails", async () => {
+    // The refresh runs inside the login chain's fulfilment handler, so a sibling
+    // rejection handler would never observe its failure: the flow would stay
+    // "running" forever and the rejection would surface as unhandled.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    const service = new OAuthLoginFlowService();
+    const runtime = fakeRuntime(() => Promise.resolve());
+    vi.spyOn(runtime, "refresh").mockRejectedValue(new Error("catalog refresh failed"));
+
+    const state = service.start({ providerId: "test-provider", providerName: "Test Provider", runtime });
+    await flushAsyncLogin();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(service.get(state.flowId)).toMatchObject({ status: "error", error: "catalog refresh failed" });
+    expect(unhandled).toEqual([]);
+    process.off("unhandledRejection", onUnhandled);
+    service.dispose();
+  });
 });
 
 function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRuntime, "login" | "refresh"> {
