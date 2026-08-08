@@ -151,9 +151,13 @@ npm run dev:web
 npm run dev:client
 ```
 
-For faster broad local feedback, run `npm run test:fast`. Keep `npm run verify` for final validation; it uses the serial test profile for reliability.
+`npm test` and `npm run test:fast` use four workers for local feedback. Run the routine local gate with:
 
-Validate changes with:
+```bash
+npm run verify:fast
+```
+
+Before final merge or release, run the authoritative serial gate:
 
 ```bash
 npm run verify

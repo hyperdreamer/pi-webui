@@ -40,12 +40,14 @@ describe("project identity", () => {
     });
   });
 
-  it("exposes explicit fast and serial test profiles while keeping verification serial", () => {
+  it("uses fast local defaults while preserving serial final verification", () => {
     expect(packageManifest.scripts).toMatchObject({
-      test: "vitest run --config vitest.config.ts",
+      test: "vitest run --config vitest.config.ts --maxWorkers=4",
       "test:fast": "vitest run --config vitest.config.ts --maxWorkers=4",
       "test:serial": "vitest run --config vitest.config.ts --maxWorkers=1",
+      "verify:fast": "npm run typecheck && npm run lint && npm run knip && npm run test:fast",
       verify: "npm run typecheck && npm run lint && npm run knip && npm run test:serial",
+      prepublishOnly: "npm run verify",
     });
   });
 

@@ -27,7 +27,7 @@ Prefer this order unless the behavior requires a higher layer:
 2. **Controller/runtime adapter tests** for state orchestration, endpoint selection, cancellation, timers, and injected collaborators.
 3. **Route/API contract tests** for HTTP status mapping, path/query/body parsing, proxy allowlists, and compatibility contracts.
 4. **Component-boundary tests** for UI event wiring and rendered state. Prefer real DOM/custom-element interaction when practical.
-5. **Broad verification** (`npm run verify`) when a change is cross-cutting, changes shared helpers/types, or before final merge review.
+5. **Broad verification** (`npm run verify:fast`) for routine agent completion when a change is cross-cutting or changes shared helpers/types. Use `npm run verify` for final merge, release, CI-equivalent validation, or when explicitly requested.
 
 Do not jump to a broad UI or integration test just because it feels more realistic if a lower layer proves the same behavior with less noise and less flake risk.
 
@@ -82,24 +82,26 @@ Run the narrowest meaningful check first:
 - Changed test file: `npm test -- --run <test-file>`.
 - Source or exported type changes: also run `npm run typecheck`.
 - Non-trivial test helper, component, or lint-sensitive changes: run `npx eslint <changed-file>` or `npm run lint` when broader lint coverage is needed.
-- Cross-cutting changes or final merge review: prefer `npm run verify`.
+- Cross-cutting changes or routine agent completion: prefer `npm run verify:fast`.
+- Final merge, release, CI-equivalent validation, or an explicit serial request: run `npm run verify`.
 
 Record exact commands and results when working under relay/audit workflows or when handing work to another agent.
 
 ### Fast local feedback
 
+- `npm test` and `npm run test:fast` use four Vitest workers.
 - Use focused tests first: `npm test -- --run <test-file>`.
-- Use `npm run test:fast` when broad local feedback is useful.
-- Do not run `test:fast` alongside another full suite, heavy job, parallel agent, or subsession; concurrent load can cause timing-sensitive tests to time out.
-- Treat `test:fast` as iterative feedback. Use `npm run verify` as the final gate; it runs the serial profile.
+- Use `npm run verify:fast` for routine broad validation and agent completion.
+- Do not run a fast full suite alongside another full suite, heavy job, parallel agent, or subsession; concurrent load can cause timing-sensitive tests to time out.
+- Reserve `npm run verify`, which selects the serial test profile, for final merge, release, CI-equivalent validation, or an explicit request.
 
 ### Resource contention during local full-suite runs
 
-The full suite is timing-sensitive. `vitest.config.ts` sets `maxWorkers: 1` to keep test files serial, but that only controls contention *inside* the Vitest process. Heavy work running alongside it on the same machine can still starve tests that wait on real subprocesses, ptys, or rendered DOM, and they fail with `Test timed out in 5000ms` even though nothing is wrong with the code.
+The full suite is timing-sensitive. `vitest.config.ts` keeps direct Vitest and staged-validation runs serial with `maxWorkers: 1`; `npm test` and `npm run test:fast` explicitly override that default with four workers, while `npm run verify` selects `test:serial`. Heavy work running alongside either profile can still starve tests that wait on real subprocesses, ptys, or rendered DOM, causing `Test timed out in 5000ms` even though nothing is wrong with the code.
 
 So when triaging a timeout:
 
-- Re-run the failing file alone on an otherwise idle machine before concluding anything. A test that passes alone and fails in a loaded full-suite run is evidence about the machine, not the test.
+- Re-run the failing file alone with `npm run test:serial -- --run <test-file>` on an otherwise idle machine before concluding anything. A test that passes alone and fails in a loaded full-suite run is evidence about the machine, not the test.
 - Check whether the same test fails in CI. CI runs `npm run verify` on `ubuntu-latest` with the suite to itself, so a green CI history means the local failure is environmental.
 - Do not run the full suite concurrently with other heavy jobs, including parallel agents or subsessions. Each run generates the contention that makes the others fail, so the results describe the load, not the code.
 
