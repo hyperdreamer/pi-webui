@@ -77,23 +77,42 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Determine the highest bump type among pending changesets, ordering `major` above `minor` above `patch`.
    - Apply that bump to the current version to get the recommended target. From `1.11.3`, a highest pending bump of `patch` gives `1.11.4`, `minor` gives `1.12.0`, and `major` gives `2.0.0`.
    - Confirm the recommended target with the user before editing version files, committing, tagging, or publishing. Show the current version and where it came from, the recommended target, the tag that will be created, and which pending change drives the bump level.
-   - If the user supplies an exact version, accept it only when it is valid semver, greater than the current version, absent from npm, and not lower than the minimum target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
+   - If the user supplies an exact stable version, accept it only when it is valid semver, greater than the current version, absent from npm, and not lower than the minimum stable target implied by the highest pending bump. If a check fails, say which one and ask again rather than adjusting the number yourself.
+   - If the user supplies an exact prerelease, require valid semver, a version greater than the current version, and an unpublished npm version. Strip prerelease and build metadata to obtain its base release; that base release, not the prerelease itself, must be at least the minimum stable target implied by pending changesets. For example, `1.12.0-beta.1` is valid for a pending minor target of `1.12.0` even though it correctly sorts below stable `1.12.0`.
+   - An exact prerelease on a new major line is an explicit request for that major line. Never infer a major prerelease from pending work.
    - Never infer a `major` bump. If the pending changes look breaking and the user has not asked for a breaking release, raise that during confirmation.
    - If npm already has the confirmed version, stop and ask for a different target. npm rejects republishing an existing version.
    - Tag names follow the existing convention in this repository, `v<version>`.
 
-4. **Generate changelog and version files**
+4. **Prepare Changesets prerelease mode when requested**
+   - Stable releases skip this step.
+   - For the first prerelease on a release line, derive the stable base target from pending changesets. If the user did not name a prerelease tag, use `beta`, matching this repository's established tags. Recommend and confirm `<base>-<tag>.0` before mutation, then enter pre mode:
+     ```bash
+     npm run changeset -- pre enter <tag>
+     ```
+     The following version step must create `.changeset/pre.json`; commit it with the release prep.
+   - For a subsequent prerelease, require `.changeset/pre.json` with `"mode": "pre"`, the same tag, and the same release base. Run `npm run changelog:status`; its next prerelease version is authoritative. Confirm that target before versioning and do not enter pre mode again.
+   - If the package version is already a prerelease but `.changeset/pre.json` is absent, exited, or names a different tag/base, stop and explain the inconsistent prerelease state instead of guessing or recreating it.
+   - For the final stable release from pre mode, confirm the current prerelease's base version before mutation, then exit pre mode:
+     ```bash
+     npm run changeset -- pre exit
+     ```
+     Run the normal version step next; it must write the stable base version and remove `.changeset/pre.json`.
+   - If the user confirmed an exact prerelease ordinal different from Changesets output, use the conditional exact-version override and changelog-heading correction in step 5. Keep the active `.changeset/pre.json` so subsequent prereleases and final stable exit remain coherent.
+   - `.github/workflows/publish.yml` derives the npm dist-tag from the first prerelease identifier, so `1.12.0-beta.1` publishes under `beta` while stable versions publish under `latest`.
+
+5. **Generate changelog and version files**
    - Run the Changesets version step after the user has confirmed the target:
      ```bash
      npm run release:version
      ```
    - This consumes pending `.changeset/*.md` fragments, updates `CHANGELOG.md`, updates `package.json`, and updates the npm lockfile when applicable.
-   - Changesets derives the version from the pending fragments, so its result should already equal the confirmed target. Compare the two. Only if the user requested an exact version that differs from the Changesets result, enforce it with:
+   - Changesets derives the version from the pending fragments and active prerelease state, so its result should already equal the confirmed target (the stable version, or the prerelease version from pre mode). Compare the two. Only if the user requested an exact version that differs from the Changesets result, enforce it with:
      ```bash
      npm version <confirmed-version> --no-git-tag-version
      ```
    - If you enforced a different version in the previous bullet, update the newly generated `CHANGELOG.md` heading to match it. This manual changelog heading edit is acceptable during release prep; normal development should still use changeset fragments instead.
-   - If the Changesets result and the confirmed target disagree for any other reason, stop and reconcile it with the user rather than overwriting the version silently.
+   - If the Changesets result and the confirmed stable or prerelease target disagree for any other reason, stop and reconcile it with the user rather than overwriting the version silently.
    - Review the generated `CHANGELOG.md` section. It should be suitable for GitHub Release notes.
    - Do not use plain `npm version <new-version>` because it creates a local git tag as a side effect; releases should be controlled via GitHub.
    - **Sync the lockfile to the final version.** `npm run release:version` (Changesets) updates `package.json` but does not reliably rewrite `package-lock.json`, and the exact-version-enforcing `npm version --no-git-tag-version` only touches the lock when it actually runs. Either path can leave the committed `package-lock.json` behind at the previous version, which then resurfaces as an unexpected diff after the next `npm install`. After the version is finalized, always resync the lockfile without touching `node_modules`:
@@ -106,7 +125,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      ```
    - If the lockfile mismatch persists, stop and resolve it before committing; do not ship a release whose `package-lock.json` version disagrees with `package.json`.
 
-5. **Run checks before creating the release**
+6. **Run checks before creating the release**
    - Run the repository's normal verification commands, for example:
      ```bash
      npm run verify
@@ -115,7 +134,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      ```
    - If checks fail, fix the issue or report it. Do not create the GitHub Release until the release commit is sound.
 
-6. **Commit and push the release prep**
+7. **Commit and push the release prep**
    - Commit only intended release changes. Typical files include:
      - `package.json`
      - `package-lock.json`
@@ -130,7 +149,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      ```
    - If there are other intentional changes required for the release, include them deliberately and mention them.
 
-7. **Create a GitHub Release to trigger publishing**
+8. **Create a GitHub Release to trigger publishing**
    - Prefer release notes from the generated changelog instead of generic generated notes.
    - Extract the new version's section from `CHANGELOG.md` into a temporary notes file if useful.
    - Use the pushed commit on `main` as the target:
@@ -144,7 +163,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
    - Creating a non-draft published release triggers `on: release: types: [published]`.
    - If the user specifically wants to review notes first, create a draft release, then publish it through GitHub when approved. Remember: draft creation will not trigger publishing until it is published.
 
-8. **Monitor GitHub Actions**
+9. **Monitor GitHub Actions**
    - Find the publish run:
      ```bash
      gh run list --workflow publish.yml --limit 5
@@ -159,7 +178,7 @@ If there is no GitHub Actions publish workflow, stop and explain that one must b
      ```
    - Fix by committing and creating a new release/tag if needed, or rerun the failed GitHub Actions job when the failure is transient. Do not publish locally as a workaround.
 
-9. **Verify npm registry publication**
+10. **Verify npm registry publication**
    - After the workflow succeeds, verify:
      ```bash
      npm view <package-name> version

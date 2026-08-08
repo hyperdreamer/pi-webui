@@ -30,6 +30,18 @@
       "prompt": "make a new release; the API auth config format changed and old config files probably won't work anymore",
       "expected_output": "The assistant should recognize a possible breaking change and pause to ask the user whether to proceed as an explicitly requested breaking major release or change the work to remain non-breaking. It should not infer or perform a major version bump without user confirmation.",
       "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "make the next minor beta release; current is 1.11.3 and the pending changesets require minor",
+      "expected_output": "The assistant should derive stable base 1.12.0, recommend and explicitly confirm 1.12.0-beta.0 before mutation, then enter Changesets pre mode with beta and run the normal version workflow. It should commit .changeset/pre.json with the release prep, preserve lockfile synchronization, publish only through the GitHub Release workflow, and verify the beta npm dist-tag.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "we are on 1.12.0-beta.0 in Changesets pre mode and have a new patch changeset; release the next beta",
+      "expected_output": "The assistant should require active .changeset/pre.json for the same beta release line, use changeset status to identify 1.12.0-beta.1, confirm that target before mutation, and run changeset version without entering pre mode again. It should keep .changeset/pre.json for later betas or pre exit, preserve lockfile synchronization, and publish only through the GitHub Release workflow under the beta dist-tag.",
+      "files": []
     }
   ]
 }
