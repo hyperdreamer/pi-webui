@@ -36,7 +36,7 @@ Requirements:
 
 - Node.js 22.19.0 or newer
 - npm
-- Pi Coding Agent `>=0.83.0 <0.84`, configured for your user
+- Pi Coding Agent `>=0.84.0 <0.85`, configured for your user
 - git and the development tools your agents need
 
 Install PI WEBUI from npm or clone from GitHub:
@@ -150,6 +150,8 @@ npm run dev:sessiond
 npm run dev:web
 npm run dev:client
 ```
+
+For faster broad local feedback, run `npm run test:fast`. Keep `npm run verify` for final validation; it uses the serial test profile for reliability.
 
 Validate changes with:
 

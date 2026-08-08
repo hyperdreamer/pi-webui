@@ -41,7 +41,9 @@
     "knip": "knip",
     "lint": "eslint --no-error-on-unmatched-pattern \"src/**/*.ts\" \"extensions/**/*.ts\" \"pi-webui-plugins/**/*.ts\" \"optional-skills/**/*.mjs\" vite.config.ts vitest.config.ts",
     "test": "vitest run --config vitest.config.ts",
-    "verify": "npm run typecheck && npm run lint && npm run knip && npm test",
+    "test:fast": "vitest run --config vitest.config.ts --maxWorkers=4",
+    "test:serial": "vitest run --config vitest.config.ts --maxWorkers=1",
+    "verify": "npm run typecheck && npm run lint && npm run knip && npm run test:serial",
     "verify:staged": "node scripts/verify-staged.mjs",
     "start": "tsx src/server/index.ts",
     "start:sessiond": "tsx src/server/sessiond.ts",
@@ -84,9 +86,9 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "@earendil-works/pi-agent-core": "^0.83.0",
-    "@earendil-works/pi-ai": "^0.83.0",
-    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-agent-core": "^0.84.0",
+    "@earendil-works/pi-ai": "^0.84.0",
+    "@earendil-works/pi-coding-agent": "^0.84.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.3",
     "@types/ws": "^8.18.1",
@@ -116,9 +118,9 @@
   "homepage": "https://pi-webui.dev/",
   "packageManager": "npm@11.11.0",
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": ">=0.83.0 <0.84",
-    "@earendil-works/pi-ai": ">=0.83.0 <0.84",
-    "@earendil-works/pi-coding-agent": ">=0.83.0 <0.84"
+    "@earendil-works/pi-agent-core": ">=0.84.0 <0.85",
+    "@earendil-works/pi-ai": ">=0.84.0 <0.85",
+    "@earendil-works/pi-coding-agent": ">=0.84.0 <0.85"
   },
   "keywords": [
     "pi-package",

@@ -5123,9 +5123,10 @@ export class PiSessionService implements SessionRouteService {
   }
 
   applyAuthChange(change: AuthChange = {}): void {
-    // ModelRuntime.login()/logout() refresh the shared runtime before AuthService
-    // emits the change, so no refresh is needed here. Keeping this synchronous
-    // also lets every active session observe the same committed auth snapshot.
+    // AuthService refreshes the shared runtime after login()/logout() before it
+    // emits the change (Pi 0.84+ no longer refreshes internally), so no refresh
+    // is needed here. Keeping this synchronous also lets every active session
+    // observe the same committed auth snapshot.
     for (const active of this.active.values()) {
       const { session } = active.runtime;
       this.syncCurrentModelAuthWarning(session, change.removedProviderId);

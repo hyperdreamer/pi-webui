@@ -86,6 +86,13 @@ Run the narrowest meaningful check first:
 
 Record exact commands and results when working under relay/audit workflows or when handing work to another agent.
 
+### Fast local feedback
+
+- Use focused tests first: `npm test -- --run <test-file>`.
+- Use `npm run test:fast` when broad local feedback is useful.
+- Do not run `test:fast` alongside another full suite, heavy job, parallel agent, or subsession; concurrent load can cause timing-sensitive tests to time out.
+- Treat `test:fast` as iterative feedback. Use `npm run verify` as the final gate; it runs the serial profile.
+
 ### Resource contention during local full-suite runs
 
 The full suite is timing-sensitive. `vitest.config.ts` sets `maxWorkers: 1` to keep test files serial, but that only controls contention *inside* the Vitest process. Heavy work running alongside it on the same machine can still starve tests that wait on real subprocesses, ptys, or rendered DOM, and they fail with `Test timed out in 5000ms` even though nothing is wrong with the code.

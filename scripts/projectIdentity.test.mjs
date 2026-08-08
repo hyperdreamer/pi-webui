@@ -29,14 +29,23 @@ describe("project identity", () => {
 
   it("keeps the embedded Pi SDK dependencies aligned with its supported peer series", () => {
     expect(packageManifest.devDependencies).toMatchObject({
-      "@earendil-works/pi-agent-core": "^0.83.0",
-      "@earendil-works/pi-ai": "^0.83.0",
-      "@earendil-works/pi-coding-agent": "^0.83.0",
+      "@earendil-works/pi-agent-core": "^0.84.0",
+      "@earendil-works/pi-ai": "^0.84.0",
+      "@earendil-works/pi-coding-agent": "^0.84.0",
     });
     expect(packageManifest.peerDependencies).toMatchObject({
-      "@earendil-works/pi-agent-core": ">=0.83.0 <0.84",
-      "@earendil-works/pi-ai": ">=0.83.0 <0.84",
-      "@earendil-works/pi-coding-agent": ">=0.83.0 <0.84",
+      "@earendil-works/pi-agent-core": ">=0.84.0 <0.85",
+      "@earendil-works/pi-ai": ">=0.84.0 <0.85",
+      "@earendil-works/pi-coding-agent": ">=0.84.0 <0.85",
+    });
+  });
+
+  it("exposes explicit fast and serial test profiles while keeping verification serial", () => {
+    expect(packageManifest.scripts).toMatchObject({
+      test: "vitest run --config vitest.config.ts",
+      "test:fast": "vitest run --config vitest.config.ts --maxWorkers=4",
+      "test:serial": "vitest run --config vitest.config.ts --maxWorkers=1",
+      verify: "npm run typecheck && npm run lint && npm run knip && npm run test:serial",
     });
   });
 
