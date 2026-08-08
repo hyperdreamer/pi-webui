@@ -53,15 +53,15 @@ Use the package name from `package.json`; for this repo it is `@hyperdreamer/pi-
 
 ## Choosing patch/minor/major
 
-This repo uses CalVer shaped as semver: `MAJOR.YYYYMM.PATCH` (for example, `1.202605.3`). The semver `minor` position is the release month, not feature size. Because only the first component represents breaking compatibility, choose Changeset bump types this way:
+This repo uses ordinary semver: `MAJOR.MINOR.PATCH` (for example, `1.11.3`). Choose the Changeset bump type from the change's compatibility impact, not from how large the work felt:
 
-- `patch`: all non-breaking changes, including bug fixes, docs corrections, polish, release-process improvements, small compatible behavior changes, and new backward-compatible user-facing capabilities.
-- `minor`: do not use for this repo. The release workflow sets `YYYYMM` from the release date.
-- `major`: use only when the user explicitly requests a breaking/major release. Breaking changes can include changes to CLI, install expectations, package API, config, data formats, or supported runtime behavior.
+- `patch`: backward-compatible bug fixes, documentation corrections, polish, release-process improvements, and maintenance changes that add no new public capability.
+- `minor`: backward-compatible new features and user-facing capabilities, such as a new CLI option, a new configuration key, a new panel, or new API surface that existing users are unaffected by.
+- `major`: breaking changes, and only when the user explicitly requests a breaking/major release. Breaking changes can include changes to CLI, install expectations, package API, config, data formats, supported runtime behavior, and narrowed peer dependency ranges.
 
 If you believe a change is breaking but the user has not explicitly requested a major release, pause and ask the user to confirm whether to release it as a breaking major version or change the work so it remains non-breaking. Do not infer or perform a major version bump on your own.
 
-During release prep, the npm release skill always computes the version from the release date (`MAJOR.YYYYMM.PATCH`) and increments `PATCH` only when another release already exists for that major/month. Do not ask whether to choose a patch increase or a date change for normal releases.
+During release prep, the npm release skill derives the release version from the highest bump type among pending changesets and confirms that target with the user before touching version files. If a pending fragment's bump type does not match its actual compatibility impact, raise the mismatch as part of that confirmation instead of silently rewriting the fragment.
 
 ## Writing good changeset text
 
@@ -99,7 +99,7 @@ When asked to commit, use Conventional Commit style:
 - `feat: add persistent session reconnect handling`
 - `fix: preserve queued commands across API restarts`
 - `docs: document systemd user services`
-- `chore(release): v1.202605.4`
+- `chore(release): v1.11.4`
 
 Keep commits and changesets aligned, but remember their audiences differ:
 

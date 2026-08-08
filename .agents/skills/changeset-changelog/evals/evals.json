@@ -10,7 +10,7 @@
     {
       "id": 2,
       "prompt": "Add release notes for this new CLI option before we merge.",
-      "expected_output": "The assistant should add a changeset fragment for @hyperdreamer/pi-webui using patch for a backward-compatible CLI option, reserve major only for explicit user-requested breaking releases, avoid minor because pi-webui uses the semver minor slot for YYYYMM, and keep the text user-facing.",
+      "expected_output": "The assistant should add a changeset fragment for @hyperdreamer/pi-webui using minor for a backward-compatible new CLI option, use patch only for backward-compatible fixes and maintenance, reserve major for explicit user-requested breaking releases, and keep the text user-facing.",
       "files": []
     },
     {
