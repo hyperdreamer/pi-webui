@@ -4,7 +4,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { CommandOption, OAuthFlowState } from "../../shared/apiTypes.js";
 
 /** The single runtime capability this service drives — narrowed for testable DI. */
-type OAuthLoginRuntime = Pick<ModelRuntime, "login">;
+type OAuthLoginRuntime = Pick<ModelRuntime, "login" | "refresh">;
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SelectPrompt = Extract<AuthPrompt, { type: "select" }>;
 type ValuePrompt = Exclude<AuthPrompt, { type: "select" }>;
@@ -95,7 +95,15 @@ export class OAuthLoginFlowService {
     };
 
     void options.runtime.login(options.providerId, options.authType ?? "oauth", interaction).then(
-      () => this.reconcileCommittedLogin(record, options.onComplete),
+      async () => {
+        // Pi 0.84+ login() no longer refreshes the catalog after persisting a
+        // credential. Refresh before reconciling so the committed login is only
+        // announced once the runtime has settled (mirrors the removed internal
+        // post-login refresh; no signal so cancellation during it cannot leave
+        // a persisted login stranded).
+        await options.runtime.refresh({ allowNetwork: false });
+        return this.reconcileCommittedLogin(record, options.onComplete);
+      },
       (error: unknown) => {
         if (!this.isCurrent(record)) return;
         this.clearPending(record);

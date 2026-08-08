@@ -412,7 +412,7 @@ describe("OAuthLoginFlowService", () => {
   });
 });
 
-function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRuntime, "login"> {
+function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRuntime, "login" | "refresh"> {
   return {
     login: (providerId, type, interaction) => {
       authTypes?.push(type);
@@ -420,10 +420,17 @@ function fakeRuntime(login: LoginHandler, authTypes?: AuthType[]): Pick<ModelRun
         ? { type: "api_key", key: "test" }
         : { type: "oauth", refresh: "r", access: "a", expires: 0 });
     },
+    refresh: () => Promise.resolve({ aborted: false, errors: new Map<string, Error>() }),
   };
 }
 
 async function flushAsyncLogin(): Promise<void> {
+  // Drains the login chain: prompt resolution, the fake login, the explicit
+  // post-login refresh (Pi 0.84+ no longer refreshes inside login), and the
+  // reconcile/complete callback.
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
