@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.11.4
+
+### Patch Changes
+
+- c496db2: Show registered project directories as an expandable hierarchy in the Projects sidebar and the expanded project browser. A project added inside another project's folder now appears as a subproject of its nearest registered parent, with expand and collapse controls, and project families are grouped visually like parent and child sessions. Project action menus gained "Close with subprojects" for closing a project together with everything registered beneath it, which only removes them from PI WEBUI and never changes the folders on disk.
+- 08e5ee1: Show session and project families with a neutral hierarchy frame instead of the error-red border, add a guide rail that groups a nested session with its children, and fall back to a custom theme's `--pi-border` when its hierarchy border token is missing.
+- aca62a2: Upgrade the supported Pi Coding Agent package set to the 0.84.x release series.
+- d9a7248: Keep the browser responsive after long idle periods by bounding per-connection
+  WebSocket event queues on the server. A tab that stops reading events is now
+  disconnected and reconnected with fresh state instead of replaying hours of
+  accumulated updates, which could freeze the tab when returning to it or when
+  switching to a busy project or session. Terminal panes now reconnect automatically
+  after an unexpected socket close.
+
 ## 1.11.3
 
 ### Patch Changes
