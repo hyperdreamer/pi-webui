@@ -21,7 +21,9 @@ Keep every unsubmitted prompt attachment with the session where the user added i
 
 Use one app-lifetime in-memory attachment draft store. `PiWebUiApp` owns the store and passes the same instance to every `PromptEditor`, including editor instances created after a render-branch change. Store keys use the existing `machineSessionKey(machineId, sessionId)` identity, matching prompt text drafts.
 
-An editor-local map was rejected because a Lit remount would lose every saved draft. Browser persistence was rejected because retaining potentially large or sensitive file contents across reloads is unnecessary for this behavior.
+An editor-local map was rejected because a Lit remount would lose every saved draft.
+
+Attachment drafts follow text-draft semantics deliberately: the same `machineSessionKey` identity with `cwd` excluded, the same temporary-to-resolved migration, and the same clear-on-send and clear-on-discard rules. Durability is the single property not matched, and that is a limit rather than a preference. Text drafts are short strings in `localStorage`; one base64-encoded photo is frequently several megabytes against a typical five-megabyte origin quota, and `saveDraft` deliberately swallows quota failures, so an over-quota attachment would vanish silently while appearing saved. In-memory storage fails predictably at reload instead of unpredictably at capture.
 
 ## Architecture
 
@@ -74,7 +76,7 @@ The implementation is a user-visible bug fix and receives a patch Changeset. It 
 
 ## Non-Goals
 
-- Persisting attachment drafts across page reloads, browser restarts, or devices.
+- Persisting attachment drafts across page reloads, browser restarts, or devices. Attachment drafts match text-draft scoping, not text-draft durability; see Approach for why.
 - Uploading files before the user submits a prompt.
 - Changing prompt text persistence.
 - Changing attachment delivery modes, size limits, supported MIME types, or server-side attachment handling.
