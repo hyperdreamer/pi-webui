@@ -1,4 +1,4 @@
-import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
@@ -60,6 +60,7 @@ import {
   parseProject,
   parseProjectUsageCountResponse,
   parseProjectUsageResponse,
+  parseRecentProjectEntry,
   parseReloaded,
   parseRestored,
   parseSavedAttachments,
@@ -320,6 +321,12 @@ export const projectsApi = {
     request(`${machinePrefix(machineId)}/sessions/project-usage`, parseProjectUsageResponse, { method: "POST", body: JSON.stringify(input) }),
 };
 
+export const recentProjectsApi = {
+  recentProjects: (machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects`, arrayOf(parseRecentProjectEntry)),
+  recordRecentProject: (projectId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/recent`, arrayOf(parseRecentProjectEntry), { method: "POST" }),
+  removeRecentProject: (entryId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects/${encodeURIComponent(entryId)}`, arrayOf(parseRecentProjectEntry), { method: "DELETE" }),
+};
+
 export const workspacesApi = {
   workspaces: (projectId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces`, arrayOf(parseWorkspace)),
   deleteWorkspace: (projectId: string, workspaceId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, parseTerminalCommandRun, { method: "DELETE" }),
@@ -534,6 +541,7 @@ export const api = {
   ...piPackagePluginsApi,
   ...activityApi,
   ...projectsApi,
+  ...recentProjectsApi,
   ...workspacesApi,
   ...sessionsApi,
   ...terminalsApi,
