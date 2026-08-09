@@ -95,10 +95,15 @@ export class ProjectController {
     try {
       const project = await this.api.addProject(path.trim(), name, false, machineId);
       if (selectedMachineId(this.getState()) !== machineId) return project;
-      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) {
-        const projects = this.getState().projects;
-        this.setState({ projects: [...projects.filter((p) => p.id !== project.id), project] });
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        // A newer same-machine catalog operation superseded this response, so the
+        // registration must not republish or select the stale project; reload the
+        // authoritative catalog instead, like the stale addProject path does.
+        await this.loadProjects();
+        return project;
       }
+      const projects = this.getState().projects;
+      this.setState({ projects: [...projects.filter((p) => p.id !== project.id), project] });
       this.onProjectsApplied?.(machineId);
       await this.workspaces.selectProject(project);
       return project;

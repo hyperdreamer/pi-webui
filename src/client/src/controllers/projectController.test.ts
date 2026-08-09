@@ -1033,3 +1033,64 @@ describe("addProject catalog ordering", () => {
     expect(selectProject).not.toHaveBeenCalled();
   });
 });
+
+describe("addRegisteredProject catalog ordering", () => {
+  it("reconciles a reopen superseded by a newer same-machine catalog operation", async () => {
+    const alpha = project("alpha", "/work/alpha");
+    const beta = project("beta", "/work/beta");
+    let state: AppState = { ...initialAppState(), projects: [] };
+    const publishedProjectLists: Project[][] = [];
+    const pendingAlpha = deferred<Project>();
+    const pendingBeta = deferred<Project>();
+    const projects = vi.fn().mockResolvedValue([beta]);
+    const addProject = vi.fn()
+      .mockReturnValueOnce(pendingAlpha.promise)
+      .mockReturnValueOnce(pendingBeta.promise);
+    const selectProject = vi.fn().mockResolvedValue(undefined);
+    const onProjectsApplied = vi.fn();
+    const controller = new ProjectController(
+      () => state,
+      (patch) => {
+        if (patch.projects !== undefined) publishedProjectLists.push(patch.projects);
+        state = { ...state, ...patch };
+      },
+      { selectProject, forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects,
+          addProject,
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
+        },
+        onProjectsApplied,
+      },
+    );
+
+    const reopen = controller.addRegisteredProject(alpha.path, "Alpha");
+    const addBeta = controller.addRegisteredProject(beta.path, "Beta");
+
+    pendingBeta.resolve(beta);
+    await addBeta;
+
+    expect(state.projects).toEqual([beta]);
+    expect(selectProject).toHaveBeenCalledWith(beta);
+
+    pendingAlpha.resolve(alpha);
+    await reopen;
+
+    expect(addProject.mock.calls).toEqual([
+      [alpha.path, "Alpha", false, "local"],
+      [beta.path, "Beta", false, "local"],
+    ]);
+    expect(projects).toHaveBeenCalledWith("local");
+    expect(publishedProjectLists).toEqual([[beta], [beta]]);
+    expect(state.projects).toEqual([beta]);
+    expect(selectProject).toHaveBeenCalledTimes(1);
+    expect(selectProject).toHaveBeenCalledWith(beta);
+    expect(onProjectsApplied).toHaveBeenCalledTimes(2);
+    expect(state.error).toBe("");
+    expect(state.isLoadingProjects).toBe(false);
+  });
+});
