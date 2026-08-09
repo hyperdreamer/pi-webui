@@ -1,9 +1,30 @@
-import { LitElement, html } from "lit";
+import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { writeClipboardText } from "../clipboard";
 import { toSafeMarkdownHtml } from "../formatting/markdown";
 import { formattedTextStyles } from "./shared";
+
+/**
+ * Tail size at which a live (still streaming) message stops being rendered as
+ * markdown and is shown as line-preserving plain text until the response ends.
+ *
+ * Every streamed delta re-parses and replaces the whole growing tail, so the
+ * per-update cost rises with tail length. Measured in Chromium against this
+ * component with streaming-shaped content: 10.6ms median / 12.3ms max at 24k
+ * chars, 15.1ms / 17.7ms at 32k, 43.8ms at 64k, and 135.9ms at 128k, while
+ * plain text stays flat near 0ms at every size. 24k chars is therefore the
+ * largest tail whose worst-case update still fits inside one 16ms frame.
+ */
+export const LIVE_PLAIN_TEXT_MIN_CHARS = 24_000;
+
+/**
+ * Whether this render should bypass markdown. Only a live tail qualifies:
+ * settled text is parsed once and cached, so its size is not a per-update cost.
+ */
+export function shouldRenderLivePlainText({ text, live }: { text: string; live: boolean }): boolean {
+  return live && text.length >= LIVE_PLAIN_TEXT_MIN_CHARS;
+}
 
 @customElement("formatted-text")
 export class FormattedText extends LitElement {
@@ -16,6 +37,9 @@ export class FormattedText extends LitElement {
   @property({ type: Boolean }) live = false;
 
   override render() {
+    // A large live tail renders as plain text: Lit updates the single text node
+    // in place instead of reparsing and rebuilding the whole subtree per delta.
+    if (shouldRenderLivePlainText(this)) return html`<div class="formatted plain" dir="auto">${this.text}</div>`;
     return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text, { cache: !this.live }))}</div>`;
   }
 
@@ -71,5 +95,10 @@ export class FormattedText extends LitElement {
     button.setAttribute("aria-label", label);
   }
 
-  static override styles = formattedTextStyles;
+  static override styles = [
+    formattedTextStyles,
+    css`
+      .formatted.plain { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    `,
+  ];
 }
