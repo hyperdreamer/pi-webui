@@ -1,4 +1,5 @@
 import { mkdir, realpath, stat } from "node:fs/promises";
+import type { RecentProjectEntry } from "../../shared/apiTypes.js";
 import type { ProjectStore } from "../storage/projectStore.js";
 import type { Project } from "../types.js";
 import { expandUserPath } from "./directorySuggestions.js";
@@ -8,6 +9,14 @@ export class ProjectNotFoundError extends Error {
   constructor() {
     super("Project not found");
     this.name = "ProjectNotFoundError";
+  }
+}
+
+/** Thrown when a history entry cannot be removed because its path is registered again. */
+export class RecentProjectRegisteredError extends Error {
+  constructor() {
+    super("Recent project is registered");
+    this.name = "RecentProjectRegisteredError";
   }
 }
 
@@ -36,6 +45,24 @@ export class ProjectService {
     const closedProjectIds = await this.store.removeTree(id);
     if (closedProjectIds === undefined) throw new ProjectNotFoundError();
     return { closedProjectIds };
+  }
+
+  listRecent(): Promise<RecentProjectEntry[]> {
+    return this.store.listRecent();
+  }
+
+  /** Record meaningful user work. The store resolves the project and owns ordering. */
+  async recordRecent(projectId: string): Promise<RecentProjectEntry[]> {
+    const entries = await this.store.touchRecent(projectId);
+    if (entries === undefined) throw new ProjectNotFoundError();
+    return entries;
+  }
+
+  async removeRecent(entryId: string): Promise<RecentProjectEntry[]> {
+    const removal = await this.store.removeRecent(entryId);
+    if (removal.kind === "not-found") throw new ProjectNotFoundError();
+    if (removal.kind === "registered") throw new RecentProjectRegisteredError();
+    return removal.entries;
   }
 
   async requireProject(id: string): Promise<Project> {
