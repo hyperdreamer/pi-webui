@@ -1468,8 +1468,8 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
-    const startPlus = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue();
-    const startLegacy = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue();
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue(false);
+    const startLegacy = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockResolvedValue(false);
     stubComposerFocus(app);
     setAppState(app, fullPreferenceCapableStarterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -1495,7 +1495,7 @@ describe("PiWebUiApp starter policy start snapshot", () => {
     const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy").mockResolvedValue(completeDefaultPolicy);
     vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
     const start = vi.spyOn(sessionController(app), "startSessionWithPrompt").mockImplementation(promptStartFrom(Promise.resolve(false)));
-    const startPlus = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue();
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue(false);
     stubComposerFocus(app);
     setAppState(app, starterState());
     await loadStarterSessionDefaults(app, mainWorkspace);
@@ -2469,7 +2469,7 @@ describe("PiWebUiApp policy-blocked starter notice", () => {
   it("does not render a start failure that lands after the user moved to another workspace", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
-    const pendingStart = deferred<undefined>();
+    const pendingStart = deferred<boolean>();
     vi.spyOn(sessionController(app), "startSessionWithPrompt").mockReturnValue(pendingStart.promise);
     stubComposerFocus(app);
     stubWorkspaceChangeSideEffects(app);
@@ -2514,9 +2514,10 @@ describe("PiWebUiApp policy-blocked starter notice", () => {
 
 function promptStartFrom(
   completion: Promise<boolean>,
-): (...args: Parameters<SessionController["startSessionWithPrompt"]>) => Promise<void> {
+): (...args: Parameters<SessionController["startSessionWithPrompt"]>) => Promise<boolean> {
   return (...args) => completion.then((started) => {
     args[5]?.(started);
+    return started;
   });
 }
 

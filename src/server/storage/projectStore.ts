@@ -174,6 +174,7 @@ export class ProjectStore {
   async touchRecent(projectId: string): Promise<RecentProjectEntry[] | undefined> {
     return await this.exclusive(async () => {
       const data = await this.read();
+      if (data.invalidRecentProjects !== undefined) throw new Error("Stored recent projects are malformed");
       const project = data.projects.find((candidate) => candidate.id === projectId);
       if (project === undefined) return undefined;
       const recentProjects = this.promote(data.recentProjects, project);
@@ -185,6 +186,7 @@ export class ProjectStore {
   async removeRecent(entryId: string): Promise<RecentRemoval> {
     return await this.exclusive(async () => {
       const data = await this.read();
+      if (data.invalidRecentProjects !== undefined) throw new Error("Stored recent projects are malformed");
       const target = data.recentProjects.find((entry) => entry.id === entryId);
       if (target === undefined) return { kind: "not-found" };
       if (data.projects.some((project) => project.path === target.path)) return { kind: "registered" };
@@ -315,7 +317,9 @@ export class ProjectStore {
     const tempPath = join(dirname(target.path), `.${basename(target.path)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
     // A quarantined history is written back verbatim: a parser defect must never
     // silently replace a user's history with an empty list.
-    const recentProjects = data.invalidRecentProjects ?? data.recentProjects;
+    const recentProjects = data.invalidRecentProjects !== undefined
+      ? data.invalidRecentProjects
+      : data.recentProjects;
     const document = data.invalidRecentProjects === undefined && data.recentProjects.length === 0
       ? { projects: data.projects }
       : { projects: data.projects, recentProjects };

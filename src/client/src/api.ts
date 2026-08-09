@@ -1,5 +1,6 @@
 export { activityApi, api, configApi, filesApi, gitApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, recentProjectsApi, sessionsApi, skillsConfigApi, terminalsApi, utilityModelsApi, workspacesApi } from "./api/clients";
 export { globalSessionEvents, realtimeEvents, sessionEvents, terminalSocket } from "./api/sockets";
+export { HttpRequestError } from "./api/http";
 export { DEFAULT_WORKSPACE_UPLOADS_FOLDER, effectiveWorkspaceUploadFolder, uploadWorkspaceFile, uploadWorkspaceFiles, workspaceEffectiveUploadFolder, workspaceUploadPath, WorkspaceUploadBatchError, WorkspaceUploadCancelledError } from "./api/workspaceUploads";
 export type { UploadWorkspaceFileOptions, UploadWorkspaceFilesOptions, WorkspaceFileUploadProgress, WorkspaceUploadBatchFileProgress, WorkspaceUploadBatchProgress, WorkspaceUploadFileFailure, WorkspaceUploadFileInput, WorkspaceUploadFolderConfig, WorkspaceUploadTask, WorkspaceUploadXhr, WorkspaceUploadXhrFactory } from "./api/workspaceUploads";
 export type { SessionCreationSource, SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, SessionStartOptions, StarterModelPolicyPreference } from "../../shared/apiTypes";

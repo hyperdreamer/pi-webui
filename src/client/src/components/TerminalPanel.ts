@@ -470,8 +470,9 @@ export class TerminalPanel extends LitElement {
   }
 
   private send(message: { type: "input"; data: string } | { type: "resize"; cols: number; rows: number }): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify(message));
     if (message.type === "input") this.onInput?.();
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
   }
 
   private disposeTerminalView(): void {

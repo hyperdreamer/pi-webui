@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RecentProjectEntry } from "../../../shared/apiTypes";
+import { HttpRequestError } from "../api";
 import { RecentProjectController, type RecentProjectsState } from "./recentProjectController";
 
 function entry(path: string, id = path): RecentProjectEntry {
@@ -20,7 +21,7 @@ function harness(overrides: Partial<{
   recentProjects: (machineId?: string) => Promise<RecentProjectEntry[]>;
   recordRecentProject: (projectId: string, machineId?: string) => Promise<RecentProjectEntry[]>;
   removeRecentProject: (entryId: string, machineId?: string) => Promise<RecentProjectEntry[]>;
-}> = {}, machineId = "local") {
+}> = {}, machineId = "local", reconcileProjects: (machineId: string) => Promise<void> = () => Promise.resolve()) {
   const states: RecentProjectsState[] = [];
   const errors: string[] = [];
   let current = machineId;
@@ -34,6 +35,7 @@ function harness(overrides: Partial<{
     machineId: () => current,
     onChange: (state) => { states.push(state); },
     onBackgroundError: (operation) => { errors.push(operation); },
+    reconcileProjects,
   });
   return { api, controller, errors, states, selectMachine: (next: string) => { current = next; } };
 }
@@ -120,6 +122,47 @@ describe("RecentProjectController recording work", () => {
     expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/alpha")] });
   });
 
+  it("orders a later touch after an earlier load for the same machine", async () => {
+    const staleLoad = deferred<RecentProjectEntry[]>();
+    const acceptedTouch = deferred<RecentProjectEntry[]>();
+    const recordRecentProject = vi.fn(() => acceptedTouch.promise);
+    const { controller } = harness({
+      recentProjects: () => staleLoad.promise,
+      recordRecentProject,
+    });
+
+    const loading = controller.load();
+    controller.recordWork("project-beta");
+    await Promise.resolve();
+
+    expect(recordRecentProject).not.toHaveBeenCalled();
+    staleLoad.resolve([entry("/work/alpha"), entry("/work/beta")]);
+    await loading;
+    await vi.waitFor(() => { expect(recordRecentProject).toHaveBeenCalledTimes(1); });
+    acceptedTouch.resolve([entry("/work/beta"), entry("/work/alpha")]);
+    await vi.waitFor(() => {
+      expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta"), entry("/work/alpha")] });
+    });
+  });
+
+  it("retries a touch after the previous attempt failed", async () => {
+    const recordRecentProject = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([entry("/work/beta"), entry("/work/alpha")]);
+    const { controller, errors } = harness({
+      recentProjects: () => Promise.resolve([entry("/work/alpha"), entry("/work/beta")]),
+      recordRecentProject,
+    });
+    await controller.load();
+
+    controller.recordWork("project-beta");
+    await vi.waitFor(() => { expect(errors).toEqual(["record recent project"]); });
+    controller.recordWork("project-beta");
+
+    await vi.waitFor(() => { expect(recordRecentProject).toHaveBeenCalledTimes(2); });
+    expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta"), entry("/work/alpha")] });
+  });
+
   it("serializes mutations so an earlier response cannot overwrite a later one", async () => {
     const first = deferred<RecentProjectEntry[]>();
     const second = deferred<RecentProjectEntry[]>();
@@ -157,14 +200,147 @@ describe("RecentProjectController removing entries", () => {
     expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta")] });
   });
 
-  it("refreshes and rethrows when removal conflicts with a registration", async () => {
+  it("orders a later removal after an earlier load for the same machine", async () => {
+    const staleLoad = deferred<RecentProjectEntry[]>();
+    const acceptedRemoval = deferred<RecentProjectEntry[]>();
+    const removeRecentProject = vi.fn(() => acceptedRemoval.promise);
     const { controller } = harness({
-      recentProjects: () => Promise.resolve([entry("/work/alpha")]),
-      removeRecentProject: () => Promise.reject(new Error("Recent project is registered")),
+      recentProjects: () => staleLoad.promise,
+      removeRecentProject,
+    });
+
+    const loading = controller.load();
+    const removing = controller.removeEntry("entry-alpha");
+    await Promise.resolve();
+
+    expect(removeRecentProject).not.toHaveBeenCalled();
+    staleLoad.resolve([entry("/work/alpha"), entry("/work/beta")]);
+    await loading;
+    await vi.waitFor(() => { expect(removeRecentProject).toHaveBeenCalledTimes(1); });
+    acceptedRemoval.resolve([entry("/work/beta")]);
+    await removing;
+    expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta")] });
+  });
+
+  it("reconciles history and registered projects before rethrowing a removal conflict", async () => {
+    const calls: string[] = [];
+    const conflict = new HttpRequestError("Recent project is registered", 409);
+    const recentProjects = vi.fn()
+      .mockResolvedValueOnce([entry("/work/alpha")])
+      .mockImplementationOnce(() => {
+        calls.push("history");
+        return Promise.resolve([entry("/work/alpha")]);
+      });
+    const reconcileProjects = vi.fn(() => {
+      calls.push("catalog");
+      return Promise.resolve();
+    });
+    const { controller } = harness({
+      recentProjects,
+      removeRecentProject: () => {
+        calls.push("remove");
+        return Promise.reject(conflict);
+      },
+    }, "local", reconcileProjects);
+    await controller.load();
+
+    await expect(controller.removeEntry("/work/alpha")).rejects.toBe(conflict);
+
+    expect(calls).toEqual(["remove", "catalog", "history"]);
+    expect(recentProjects).toHaveBeenCalledTimes(2);
+    expect(reconcileProjects).toHaveBeenCalledWith("local");
+    expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/alpha")] });
+  });
+
+  it("preserves the original conflict when both reconciliation attempts fail", async () => {
+    const conflict = new HttpRequestError("Recent project is registered", 409);
+    const recentProjects = vi.fn()
+      .mockResolvedValueOnce([entry("/work/alpha")])
+      .mockRejectedValueOnce(new Error("history offline"));
+    const reconcileProjects = vi.fn(() => Promise.reject(new Error("catalog offline")));
+    const { controller } = harness({
+      recentProjects,
+      removeRecentProject: () => Promise.reject(conflict),
+    }, "local", reconcileProjects);
+    await controller.load();
+
+    await expect(controller.removeEntry("/work/alpha")).rejects.toBe(conflict);
+
+    expect(recentProjects).toHaveBeenCalledTimes(2);
+    expect(reconcileProjects).toHaveBeenCalledWith("local");
+  });
+
+  it("does not reconcile a non-conflict removal failure", async () => {
+    const failure = new HttpRequestError("Machine offline", 503);
+    const recentProjects = vi.fn().mockResolvedValue([entry("/work/alpha")]);
+    const reconcileProjects = vi.fn(() => Promise.resolve());
+    const { controller } = harness({
+      recentProjects,
+      removeRecentProject: () => Promise.reject(failure),
+    }, "local", reconcileProjects);
+    await controller.load();
+
+    await expect(controller.removeEntry("/work/alpha")).rejects.toBe(failure);
+
+    expect(recentProjects).toHaveBeenCalledTimes(1);
+    expect(reconcileProjects).not.toHaveBeenCalled();
+  });
+});
+
+describe("RecentProjectController machine operation scopes", () => {
+  it("does not publish a mutation after the selected machine changes", async () => {
+    const oldMachineTouch = deferred<RecentProjectEntry[]>();
+    const recentProjects = vi.fn((machineId?: string) => Promise.resolve(
+      machineId === "remote-b" ? [entry("/remote/beta")] : [entry("/local/alpha")],
+    ));
+    const { controller, selectMachine } = harness({
+      recentProjects,
+      recordRecentProject: () => oldMachineTouch.promise,
     });
     await controller.load();
 
-    await expect(controller.removeEntry("/work/alpha")).rejects.toThrow(/registered/i);
-    expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/alpha")] });
+    controller.recordWork("local-project");
+    selectMachine("remote-b");
+    await controller.load();
+    oldMachineTouch.resolve([entry("/local/touched")]);
+    await Promise.resolve();
+
+    expect(controller.state).toEqual({ kind: "ready", entries: [entry("/remote/beta")] });
+  });
+
+  it("lets a new machine load, touch, and remove while an old-machine operation is blocked", async () => {
+    const oldMachineTouch = deferred<RecentProjectEntry[]>();
+    const recordRecentProject = vi.fn((projectId: string, machineId?: string) => (
+      machineId === "local" ? oldMachineTouch.promise : Promise.resolve([entry(`/remote/${projectId}`)])
+    ));
+    const removeRecentProject = vi.fn(() => Promise.resolve([]));
+    const recentProjects = vi.fn((machineId?: string) => Promise.resolve(
+      machineId === "remote-b" ? [entry("/remote/seed")] : [entry("/local/seed")],
+    ));
+    const { controller, selectMachine } = harness({ recentProjects, recordRecentProject, removeRecentProject });
+    await controller.load();
+
+    controller.recordWork("blocked-local-project");
+    await vi.waitFor(() => {
+      expect(recordRecentProject).toHaveBeenCalledWith("blocked-local-project", "local");
+    });
+
+    selectMachine("remote-b");
+    await controller.load();
+    controller.recordWork("remote-project");
+    const removing = controller.removeEntry("remote-entry");
+
+    try {
+      await vi.waitFor(() => {
+        expect(recordRecentProject).toHaveBeenCalledWith("remote-project", "remote-b");
+        expect(removeRecentProject).toHaveBeenCalledWith("remote-entry", "remote-b");
+      });
+    } finally {
+      oldMachineTouch.resolve([entry("/local/touched")]);
+      await removing;
+    }
+
+    expect(recentProjects).toHaveBeenCalledWith("remote-b");
+    expect(controller.state).toEqual({ kind: "ready", entries: [] });
   });
 });

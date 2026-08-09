@@ -22,9 +22,13 @@ export class ClosedRecentProjectDialog extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.close();
+    super.disconnectedCallback();
+  }
+
+  close(): void {
     const dialog = this.nativeDialog;
     if (dialog?.open === true) dialog.close();
-    super.disconnectedCallback();
   }
 
   override render(): TemplateResult {
@@ -81,9 +85,9 @@ export class ClosedRecentProjectDialog extends LitElement {
 
   static override styles = css`
     :host { position: fixed; inset: 0; z-index: 70; display: block; color: var(--pi-text); font: 14px system-ui, sans-serif; }
-    dialog { border: 0; padding: 0; background: transparent; }
+    dialog { max-width: calc(100vw - 24px); border: 0; padding: 0; background: transparent; }
     dialog::backdrop { background: var(--pi-overlay); }
-    .closed-recent-frame { width: min(480px, 92vw); display: grid; gap: 12px; padding: 20px; border: 1px solid var(--pi-border); border-radius: 12px; background: var(--pi-bg); box-shadow: 0 20px 64px var(--pi-shadow-strong); }
+    .closed-recent-frame { box-sizing: border-box; width: min(480px, 92vw); max-width: calc(100vw - 24px); display: grid; gap: 12px; padding: 20px; border: 1px solid var(--pi-border); border-radius: 12px; background: var(--pi-bg); box-shadow: 0 20px 64px var(--pi-shadow-strong); }
     h2, p { margin: 0; }
     .closed-recent-path { overflow-wrap: anywhere; color: var(--pi-muted); }
     .closed-recent-error { color: var(--pi-danger); }

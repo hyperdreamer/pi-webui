@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, terminalsApi } from "../api";
-import type { GitStatusResponse, Project, TerminalCommandRun, Workspace } from "../api";
+import type { GitStatusResponse, Machine, Project, StarterModelPolicyPreference, TerminalCommandRun, Workspace } from "../api";
 import type { AppState } from "../appState";
 import { SessionController } from "../controllers/sessionController";
 import { WorkspaceController } from "../controllers/workspaceController";
@@ -25,6 +25,28 @@ const workspace: Workspace = {
   isGitWorktree: false,
 };
 
+const projectBeta: Project = {
+  id: "p2",
+  name: "beta",
+  path: "/work/beta",
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
+
+const remoteMachine: Machine = {
+  id: "remote-b",
+  name: "Remote B",
+  kind: "remote",
+  baseUrl: "https://remote-b.example.test",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+const plusPolicy: StarterModelPolicyPreference = {
+  mode: "tiered",
+  tier: "frontier",
+  exact: { model: { provider: "openai", id: "gpt-frontier" }, thinkingLevel: "high" },
+};
+
 const terminalCommandRun: TerminalCommandRun = {
   id: "run-1",
   origin: "core",
@@ -45,12 +67,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function installRecorder(app: PiWebUiApp): string[] {
-  const recorded: string[] = [];
+interface RecordedProjectWork {
+  projectId: string;
+  machineId: string | undefined;
+}
+
+function installRecorder(app: PiWebUiApp): RecordedProjectWork[] {
+  const recorded: RecordedProjectWork[] = [];
   const controller: unknown = Reflect.get(app, "recentProjects");
   if (typeof controller !== "object" || controller === null) throw new Error("Expected the recentProjects controller");
-  Reflect.set(controller, "recordWork", (projectId: string) => { recorded.push(projectId); });
+  Reflect.set(controller, "recordWork", (projectId: string, machineId?: string) => { recorded.push({ projectId, machineId }); });
   return recorded;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function recordProjectWork(app: PiWebUiApp): void {
@@ -138,7 +175,7 @@ describe("PiWebUiApp.recordProjectWork", () => {
 
     recordProjectWork(app);
 
-    expect(recorded).toEqual(["p1"]);
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
   });
 
   it("records nothing when no project is selected", () => {
@@ -150,16 +187,49 @@ describe("PiWebUiApp.recordProjectWork", () => {
     expect(recorded).toEqual([]);
   });
 
-  it("records work when a prompt is submitted", () => {
+  it("records a prompt only after SessionController accepts it", async () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project });
-    const send = vi.spyOn(sessions(app), "send").mockResolvedValue(undefined);
+    const acceptance = deferred<boolean>();
+    const send = vi.spyOn(sessions(app), "send").mockReturnValue(acceptance.promise);
 
     invokePrivate(app, "sendPrompt", "summarize the changes");
 
-    expect(recorded).toEqual(["p1"]);
+    expect(recorded).toEqual([]);
     expect(send).toHaveBeenCalledWith("summarize the changes", undefined, undefined, undefined);
+    acceptance.resolve(true);
+    await vi.waitFor(() => {
+      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    });
+  });
+
+  it("does not record a prompt rejected by SessionController", async () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    setState(app, { selectedProject: project });
+    vi.spyOn(sessions(app), "send").mockResolvedValue(false);
+
+    invokePrivate(app, "sendPrompt", "unsent work");
+    await Promise.resolve();
+
+    expect(recorded).toEqual([]);
+  });
+
+  it("records an awaited prompt against its originating machine and project", async () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    const acceptance = deferred<boolean>();
+    setState(app, { selectedProject: project });
+    vi.spyOn(sessions(app), "send").mockReturnValue(acceptance.promise);
+
+    invokePrivate(app, "sendPrompt", "work in alpha");
+    setState(app, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+    acceptance.resolve(true);
+
+    await vi.waitFor(() => {
+      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    });
   });
 
   it("records work when a runtime terminal is opened", async () => {
@@ -170,10 +240,10 @@ describe("PiWebUiApp.recordProjectWork", () => {
 
     await invokePrivate(app, "openRuntimeTerminal", "local", workspace);
 
-    expect(recorded).toEqual(["p1"]);
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
   });
 
-  it("records work when a plugin terminal is opened", () => {
+  it("records work once when a plugin terminal is opened", async () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project, selectedWorkspace: workspace });
@@ -181,22 +251,37 @@ describe("PiWebUiApp.recordProjectWork", () => {
 
     workspacePanelTerminal(app).open({});
 
-    // The host wrapper records after issuing the open, and the openRuntimeTerminal
-    // it delegates to records as well; the controller's newest-entry check makes
-    // the repeated call a synchronous no-op.
-    expect(recorded).toEqual(["p1", "p1"]);
+    await vi.waitFor(() => {
+      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    });
   });
 
-  it("records work when a plugin runs a terminal command", async () => {
+  it("records a terminal command only after launch succeeds and keeps its origin", async () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project, selectedWorkspace: workspace });
-    vi.spyOn(terminalsApi, "runTerminalCommand").mockResolvedValue(terminalCommandRun);
+    const launch = deferred<TerminalCommandRun>();
+    vi.spyOn(terminalsApi, "runTerminalCommand").mockReturnValue(launch.promise);
 
     const handle = workspacePanelTerminal(app).runCommand({ title: "Build", command: "npm test" });
 
-    expect(recorded).toEqual(["p1"]);
+    expect(recorded).toEqual([]);
+    setState(app, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+    launch.resolve(terminalCommandRun);
     await expect(handle).resolves.toMatchObject({ run: { id: "run-1", status: "succeeded" } });
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("does not record a failed terminal command launch", async () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    setState(app, { selectedProject: project, selectedWorkspace: workspace });
+    vi.spyOn(terminalsApi, "runTerminalCommand").mockRejectedValue(new Error("launch failed"));
+
+    await expect(workspacePanelTerminal(app).runCommand({ title: "Build", command: "npm test" }))
+      .rejects.toThrow("launch failed");
+
+    expect(recorded).toEqual([]);
   });
 
   it("records work when the terminal tab reports input", () => {
@@ -206,7 +291,50 @@ describe("PiWebUiApp.recordProjectWork", () => {
 
     terminalTabOnInput(app)();
 
-    expect(recorded).toEqual(["p1"]);
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("records a successful legacy starter prompt and ignores a failed one", async () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    setState(app, { selectedProject: project, selectedWorkspace: workspace });
+    Reflect.set(app, "focusChatComposer", () => Promise.resolve());
+    Reflect.set(app, "starterModelPolicySelectionSupported", () => false);
+    const start = vi.spyOn(sessions(app), "startSessionWithPrompt")
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    invokePrivate(app, "handleStartSessionPrompt", "legacy success");
+    await vi.waitFor(() => {
+      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    });
+    invokePrivate(app, "handleStartSessionPrompt", "legacy failure");
+    await Promise.resolve();
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("records a successful Plus starter prompt and ignores a failed one", async () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    setState(app, { selectedProject: project, selectedWorkspace: workspace });
+    Reflect.set(app, "focusChatComposer", () => Promise.resolve());
+    Reflect.set(app, "starterModelPolicySelectionSupported", () => true);
+    Reflect.set(app, "starterPlusModelPolicyInitializer", () => plusPolicy);
+    const start = vi.spyOn(sessions(app), "startPlusSessionWithPrompt")
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    invokePrivate(app, "handleStartSessionPrompt", "plus success");
+    await vi.waitFor(() => {
+      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    });
+    invokePrivate(app, "handleStartSessionPrompt", "plus failure");
+    await Promise.resolve();
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
   });
 
   it("does not record when a project is selected", async () => {

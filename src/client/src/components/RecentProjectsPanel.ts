@@ -23,7 +23,7 @@ export class RecentProjectsPanel extends LitElement {
   @property({ attribute: false }) activities: Record<string, WorkspaceActivity> = {};
   @property({ attribute: false }) selectedProjectId: string | undefined;
   @property({ attribute: false }) onOpenRegistered?: (project: Project) => void;
-  @property({ attribute: false }) onOpenClosed?: (entry: RecentProjectEntry) => void;
+  @property({ attribute: false }) onOpenClosed?: (entry: RecentProjectEntry, restoreFocus: () => void) => void;
   @property({ attribute: false }) onRetry?: () => void;
 
   override render(): TemplateResult {
@@ -54,6 +54,7 @@ export class RecentProjectsPanel extends LitElement {
         class=${`action-row recent-project-row ${selected ? "selected" : ""}`}
         tabindex="0"
         role="button"
+        data-recent-project-id=${entry.id}
         title=${entry.path}
         aria-label=${project === undefined ? `${entry.name}, closed, ${entry.path}` : `${entry.name}, ${entry.path}`}
         @click=${() => { this.open(entry, project); }}
@@ -83,8 +84,15 @@ export class RecentProjectsPanel extends LitElement {
   }
 
   private open(entry: RecentProjectEntry, project: Project | undefined): void {
-    if (project === undefined) this.onOpenClosed?.(entry);
+    if (project === undefined) this.onOpenClosed?.(entry, () => { this.focusEntry(entry.id); });
     else this.onOpenRegistered?.(project);
+  }
+
+  private focusEntry(entryId: string): void {
+    if (!this.isConnected) return;
+    const row = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".recent-project-row"))
+      .find((candidate) => candidate.dataset["recentProjectId"] === entryId);
+    row?.focus();
   }
 
   static override styles = [listStyles, css`

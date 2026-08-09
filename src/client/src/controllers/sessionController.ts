@@ -102,7 +102,10 @@ type QueuedPendingSessionSendInput =
   | { type: "shell"; text: string }
   | { type: "command"; text: string };
 
-type QueuedPendingSessionSend = QueuedPendingSessionSendInput & { id: string };
+type QueuedPendingSessionSend = QueuedPendingSessionSendInput & {
+  id: string;
+  onDelivered?: (accepted: boolean) => void;
+};
 
 type PendingSessionStartRequest =
   | { kind: "legacy"; modelPolicy?: SessionModelPolicyUpdate }
@@ -313,7 +316,12 @@ export class SessionController {
     const machineId = selectedMachineId(this.getState());
     const pending = this.createPendingSessionStart(workspace, machineId, request);
     this.pendingSessionStarts.set(pending.tempId, pending);
-    this.insertAndSelectPendingSession(pending.session);
+    try {
+      this.insertAndSelectPendingSession(pending.session);
+    } catch (error) {
+      this.failPendingSessionStart(pending.tempId, error);
+      throw error;
+    }
     try {
       const session = pending.request.kind === "plus"
         ? await this.api.startPlusSession(workspace.path, pending.request.initialModelPolicy, machineId)
@@ -344,7 +352,7 @@ export class SessionController {
     delivery: PromptAttachmentDelivery = "inline",
     modelPolicy?: SessionModelPolicyUpdate,
     onStarted?: (started: boolean) => void,
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.startSessionWithPromptRequest(
       text,
       streamingBehavior,
@@ -365,7 +373,7 @@ export class SessionController {
     delivery: PromptAttachmentDelivery,
     initialModelPolicy: StarterModelPolicyPreference,
     onStarted?: (started: boolean) => void,
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.startSessionWithPromptRequest(
       text,
       streamingBehavior,
@@ -383,18 +391,20 @@ export class SessionController {
     delivery: PromptAttachmentDelivery,
     request: PendingSessionStartRequest,
     onStarted: ((started: boolean) => void) | undefined,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const startingSession = this.startSessionRequest(request).then(
       (started) => ({ rejected: false as const, started }),
       (error: unknown) => ({ rejected: true as const, started: false, error }),
     );
+    let promptAccepted: boolean;
     try {
-      await this.send(text, streamingBehavior, attachments, delivery);
+      promptAccepted = await this.send(text, streamingBehavior, attachments, delivery, true);
     } finally {
       onStarted?.((await startingSession).started);
     }
     const startOutcome = await startingSession;
     if (startOutcome.rejected) throw startOutcome.error;
+    return startOutcome.started && promptAccepted;
   }
 
   preferredSession(cwd: string, sessions: SessionInfo[], targetSessionId: string | undefined): SessionInfo | undefined {
@@ -497,17 +507,38 @@ export class SessionController {
     }
   }
 
-  async send(text: string, streamingBehavior?: "steer" | "followUp", attachments?: PromptAttachment[], delivery: PromptAttachmentDelivery = "inline") {
+  async send(
+    text: string,
+    streamingBehavior?: "steer" | "followUp",
+    attachments?: PromptAttachment[],
+    delivery: PromptAttachmentDelivery = "inline",
+    waitForPendingDelivery = false,
+  ): Promise<boolean> {
+    return await this.sendWithPendingOutcome(text, streamingBehavior, attachments, delivery, waitForPendingDelivery);
+  }
+
+  private async sendWithPendingOutcome(
+    text: string,
+    streamingBehavior: "steer" | "followUp" | undefined,
+    attachments: PromptAttachment[] | undefined,
+    delivery: PromptAttachmentDelivery,
+    waitForPendingDelivery: boolean,
+  ): Promise<boolean> {
     const session = this.getState().selectedSession;
-    if (!session || session.archived === true) return;
+    if (!session || session.archived === true) return false;
 
     const trimmed = text.trim();
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (isClientPendingStartSessionInfo(session)) {
-      if (!hasAttachments && trimmed.startsWith("/")) this.enqueuePendingSessionSend(session, { type: "command", text });
-      else if (!hasAttachments && isShellInput(text)) this.enqueuePendingSessionSend(session, { type: "shell", text });
-      else this.enqueuePendingSessionSend(session, { type: "prompt", text, streamingBehavior, attachments, delivery });
-      return;
+      const input: QueuedPendingSessionSendInput = !hasAttachments && trimmed.startsWith("/")
+        ? { type: "command", text }
+        : !hasAttachments && isShellInput(text)
+          ? { type: "shell", text }
+          : { type: "prompt", text, streamingBehavior, attachments, delivery };
+      if (!waitForPendingDelivery) return this.enqueuePendingSessionSend(session, input);
+      return await new Promise<boolean>((resolve) => {
+        if (!this.enqueuePendingSessionSend(session, input, resolve)) resolve(false);
+      });
     }
     if (!hasAttachments && trimmed.startsWith("/")) return this.runCommand(text);
     if (!hasAttachments && isShellInput(text)) return this.runShell(text);
@@ -515,7 +546,7 @@ export class SessionController {
     // Capture the originating session/machine before any await so the request
     // and its sending indicator stay bound to the right session even if the
     // user navigates elsewhere mid-upload.
-    await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, selectedMachineId(this.getState()), { markSending: hasAttachments });
+    return await this.deliverPromptToSession(session, text, streamingBehavior, attachments, delivery, selectedMachineId(this.getState()), { markSending: hasAttachments });
   }
 
   private markSendingPrompt(sessionId: string, sending: boolean): void {
@@ -527,24 +558,22 @@ export class SessionController {
     }
   }
 
-  async runShell(text: string) {
+  async runShell(text: string): Promise<boolean> {
     const session = this.getState().selectedSession;
-    if (!session || session.archived === true) return;
+    if (!session || session.archived === true) return false;
     if (isClientPendingStartSessionInfo(session)) {
-      this.enqueuePendingSessionSend(session, { type: "shell", text });
-      return;
+      return this.enqueuePendingSessionSend(session, { type: "shell", text });
     }
-    await this.deliverShellToSession(session, text, selectedMachineId(this.getState()), { optimisticLine: true });
+    return await this.deliverShellToSession(session, text, selectedMachineId(this.getState()), { optimisticLine: true });
   }
 
-  async runCommand(text: string) {
+  async runCommand(text: string): Promise<boolean> {
     const session = this.getState().selectedSession;
-    if (!session || session.archived === true) return;
+    if (!session || session.archived === true) return false;
     if (isClientPendingStartSessionInfo(session)) {
-      this.enqueuePendingSessionSend(session, { type: "command", text });
-      return;
+      return this.enqueuePendingSessionSend(session, { type: "command", text });
     }
-    await this.deliverCommandToSession(session, text, selectedMachineId(this.getState()), { applyResult: true });
+    return await this.deliverCommandToSession(session, text, selectedMachineId(this.getState()), { applyResult: true });
   }
 
   async renameSession(session: SessionInfo, name: string): Promise<void> {
@@ -565,13 +594,21 @@ export class SessionController {
     }
   }
 
-  private enqueuePendingSessionSend(session: ClientPendingStartSessionInfo, input: QueuedPendingSessionSendInput): void {
+  private enqueuePendingSessionSend(
+    session: ClientPendingStartSessionInfo,
+    input: QueuedPendingSessionSendInput,
+    onDelivered?: (accepted: boolean) => void,
+  ): boolean {
     const pending = this.pendingSessionStarts.get(session.id);
     if (pending === undefined || pending.discarded) {
       this.setState({ error: "The backend session is not ready for queued sends. Copy your message before discarding this failed start." });
-      return;
+      return false;
     }
-    const queued: QueuedPendingSessionSend = { ...input, id: `pending-send-${String(++this.pendingQueuedSendSeq)}` };
+    const queued: QueuedPendingSessionSend = {
+      ...input,
+      id: `pending-send-${String(++this.pendingQueuedSendSeq)}`,
+      ...(onDelivered === undefined ? {} : { onDelivered }),
+    };
     pending.queuedSends.push(queued);
     const state = this.getState();
     const current = state.clientQueuedSessionMessages[session.id] ?? [];
@@ -582,12 +619,19 @@ export class SessionController {
       activity: state.selectedSession?.id === session.id ? activity : state.activity,
       error: "",
     });
+    return true;
   }
 
   private async flushQueuedPendingSends(session: SessionInfo, machineId: string, queuedSends: readonly QueuedPendingSessionSend[]): Promise<void> {
-    for (const queued of queuedSends) {
+    for (let index = 0; index < queuedSends.length; index += 1) {
+      const queued = queuedSends[index];
+      if (queued === undefined) continue;
       const delivered = await this.deliverQueuedPendingSend(session, machineId, queued);
-      if (!delivered) return;
+      queued.onDelivered?.(delivered);
+      if (!delivered) {
+        for (const remaining of queuedSends.slice(index + 1)) remaining.onDelivered?.(false);
+        return;
+      }
       this.dropNextQueuedSessionMessage(session.id);
     }
   }
@@ -1045,6 +1089,7 @@ export class SessionController {
     const pendingStart = isClientPendingStartSessionInfo(session) ? this.pendingSessionStarts.get(session.id) : undefined;
     if (pendingStart !== undefined) {
       pendingStart.discarded = true;
+      for (const queued of pendingStart.queuedSends) queued.onDelivered?.(false);
       pendingStart.queuedSends = [];
     }
     else {
@@ -1638,6 +1683,7 @@ export class SessionController {
     const queuedSends = pending.queuedSends.splice(0);
     const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId, session.id);
     if (pending.discarded) {
+      for (const queued of queuedSends) queued.onDelivered?.(false);
       clearDraft(machineSessionKey(pending.machineId, tempId));
       this.attachmentDrafts.clear(machineSessionKey(pending.machineId, tempId));
       this.setState({ clientQueuedSessionMessages: omitKey(this.getState().clientQueuedSessionMessages, tempId) });
@@ -1683,6 +1729,7 @@ export class SessionController {
     const pending = this.pendingSessionStarts.get(tempId);
     if (pending === undefined) return;
     this.pendingSessionStarts.delete(tempId);
+    for (const queued of pending.queuedSends) queued.onDelivered?.(false);
     const releasedCreatedSessions = this.takeSuppressedCreatedSessionsFor(pending.cwd, pending.machineId);
     const isCurrentPendingStart = this.isCurrentPendingStart(pending);
     if (pending.discarded || !isCurrentPendingStart) {

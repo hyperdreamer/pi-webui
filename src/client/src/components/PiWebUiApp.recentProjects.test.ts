@@ -1,6 +1,6 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, recentProjectsApi } from "../api";
+import { api, HttpRequestError, recentProjectsApi } from "../api";
 import type { Project, RecentProjectEntry } from "../api";
 import type { AppState } from "../appState";
 import { ProjectController } from "../controllers/projectController";
@@ -122,6 +122,22 @@ describe("PiWebUiApp recent projects tab", () => {
       expect(recentProjectsController(app).state).toEqual({ kind: "ready", entries: [closedEntry] });
     });
   });
+
+  it("refreshes the registered-project catalog before surfacing a removal conflict", async () => {
+    const app = createApp();
+    setClosedEntry(app);
+    const conflict = new HttpRequestError("Recent project is registered", 409);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
+    vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([closedEntry]);
+    const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([projectAlpha]);
+    await recentProjectsController(app).load();
+
+    const onRemove = dialogRemoveHandler(app);
+    await expect(onRemove(closedEntry)).rejects.toBe(conflict);
+
+    expect(loadProjects).toHaveBeenCalledWith("local");
+    expect(appState(app).projects).toEqual([projectAlpha]);
+  });
 });
 
 function setClosedEntry(app: PiWebUiApp): void {
@@ -132,6 +148,13 @@ function dialogReopenHandler(app: PiWebUiApp): (entry: RecentProjectEntry) => Pr
   const rendered = renderClosedRecentProjectDialog(app);
   const handler: unknown = templateValueAfterMarker(rendered, ".onReopen=");
   if (!isReopenHandler(handler)) throw new Error("Expected onReopen handler");
+  return handler;
+}
+
+function dialogRemoveHandler(app: PiWebUiApp): (entry: RecentProjectEntry) => Promise<void> {
+  const rendered = renderClosedRecentProjectDialog(app);
+  const handler: unknown = templateValueAfterMarker(rendered, ".onRemove=");
+  if (!isReopenHandler(handler)) throw new Error("Expected onRemove handler");
   return handler;
 }
 

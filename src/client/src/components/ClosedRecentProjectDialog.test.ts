@@ -76,6 +76,15 @@ describe("closed-recent-project-dialog", () => {
     teardown();
   });
 
+  it("bounds the dialog frame's total width inside narrow viewports", () => {
+    const frameRule = /\.closed-recent-frame\s*\{[^}]*\}/.exec(ClosedRecentProjectDialog.styles.cssText)?.[0];
+    const nativeRule = /(?:^|\s)dialog\s*\{[^}]*\}/.exec(ClosedRecentProjectDialog.styles.cssText)?.[0];
+
+    expect(frameRule).toMatch(/box-sizing:\s*border-box/);
+    expect(frameRule).toMatch(/max-width:\s*calc\(100vw - 24px\)/);
+    expect(nativeRule).toMatch(/max-width:\s*calc\(100vw - 24px\)/);
+  });
+
   it("reopens and closes on success", async () => {
     const onReopen = vi.fn().mockResolvedValue(undefined);
     const onClose = vi.fn();

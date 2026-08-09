@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { SessionController } from "./sessionController";
 import { defaultApi, deferred, emptyPage, FakeSocket, oldSession, replacementSession, sessionLookupId, status, workspace, type AppState, type Deferred, type PromptAttachment, type SessionInfo } from "./sessionController.testSupport";
@@ -42,12 +42,74 @@ describe("SessionController send queue", () => {
     expect(startOutcomes).toEqual([]);
 
     startRequest.resolve(started);
-    await startAndSend;
+    await expect(startAndSend).resolves.toBe(true);
 
     expect(startOutcomes).toEqual([true]);
 
     expect(promptCalls).toEqual([{ sessionId: started.id, text: "Help me understand this project" }]);
     expect(state.selectedSession?.id).toBe(started.id);
+  });
+
+  it("returns false when the started session rejects its initial prompt", async () => {
+    const started: SessionInfo = { ...oldSession, id: "started-session", path: "/tmp/started-session.jsonl" };
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      startSession: () => Promise.resolve(started),
+      messages: () => Promise.resolve(emptyPage),
+      status: (session) => Promise.resolve(status(sessionLookupId(session))),
+      prompt: () => Promise.reject(new Error("prompt rejected")),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+    const startOutcomes: boolean[] = [];
+
+    await expect(controller.startSessionWithPrompt(
+      "Initial work",
+      undefined,
+      undefined,
+      "inline",
+      undefined,
+      (startedSuccessfully) => { startOutcomes.push(startedSuccessfully); },
+    )).resolves.toBe(false);
+
+    expect(startOutcomes).toEqual([true]);
+    expect(state.error).toContain("prompt rejected");
+  });
+
+  it("returns false without delivering the initial prompt when session start fails", async () => {
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+    const prompt = vi.fn<typeof defaultApi.prompt>();
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      startSession: () => Promise.reject(new Error("start rejected")),
+      prompt,
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+    const startOutcomes: boolean[] = [];
+
+    await expect(controller.startSessionWithPrompt(
+      "Initial work",
+      undefined,
+      undefined,
+      "inline",
+      undefined,
+      (startedSuccessfully) => { startOutcomes.push(startedSuccessfully); },
+    )).resolves.toBe(false);
+
+    expect(startOutcomes).toEqual([false]);
+    expect(prompt).not.toHaveBeenCalled();
   });
 
   it("toggles the per-session sending state around an inline attachment send and forwards attachments", async () => {
@@ -149,9 +211,56 @@ describe("SessionController send queue", () => {
       { api, socket: new FakeSocket() },
     );
 
-    await controller.send("hello");
+    await expect(controller.send("hello")).resolves.toBe(true);
     expect(seen).toEqual([{}]);
     expect(state.sendingPrompts).toEqual({});
+  });
+
+  it("returns false for no session, an archived session, and a failed prompt delivery", async () => {
+    const promptCalls: string[] = [];
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      prompt: (_session, text) => {
+        promptCalls.push(text);
+        return Promise.reject(new Error("prompt offline"));
+      },
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    await expect(controller.send("no session")).resolves.toBe(false);
+    state = { ...state, selectedSession: { ...oldSession, archived: true }, sessions: [{ ...oldSession, archived: true }] };
+    await expect(controller.send("archived")).resolves.toBe(false);
+    state = { ...state, selectedSession: oldSession, sessions: [oldSession] };
+    await expect(controller.send("try delivery")).resolves.toBe(false);
+
+    expect(promptCalls).toEqual(["try delivery"]);
+    expect(state.error).toContain("prompt offline");
+  });
+
+  it("reports shell and command API acceptance through send", async () => {
+    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+    const api: typeof defaultApi = {
+      ...defaultApi,
+      shell: () => Promise.resolve({ accepted: true }),
+      runCommand: () => Promise.reject(new Error("command offline")),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket: new FakeSocket() },
+    );
+
+    await expect(controller.send("!pwd")).resolves.toBe(true);
+    await expect(controller.send("/help")).resolves.toBe(false);
   });
 
   it("sends slash commands without inserting an optimistic transcript line and toggles the sending state", async () => {
@@ -333,6 +442,8 @@ describe("SessionController send queue", () => {
     expect(state.clientQueuedSessionMessages[temporaryId]).toEqual([{ kind: "followUp", text: "recover me" }]);
     expect(state.activity).toMatchObject({ sessionId: temporaryId, phase: "error", label: "Session creation failed" });
     expect(state.activity?.detail).toContain("1 queued message kept below");
+
+    await expect(controller.send("cannot queue after failure")).resolves.toBe(false);
 
     await controller.deleteCachedNewSession(state.selectedSession);
 

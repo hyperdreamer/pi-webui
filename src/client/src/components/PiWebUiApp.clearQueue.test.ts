@@ -89,7 +89,7 @@ describe("PiWebUiApp manual compaction wiring", () => {
   it("runs the compact command and retains its control while a session is active", () => {
     const app = createApp();
     const controller = appSessionController(app);
-    const runCommand = vi.spyOn(controller, "runCommand").mockResolvedValue(undefined);
+    const runCommand = vi.spyOn(controller, "runCommand").mockResolvedValue(true);
     const idleState = { ...stateWithRuntime(undefined), status: idleStatus() };
     setAppState(app, idleState);
 

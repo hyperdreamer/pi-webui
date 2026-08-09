@@ -92,7 +92,7 @@ import "./SystemPromptDialog";
 import "./WorkspacePanel";
 import type { ResolvedWorkspacePanelTab, WorkspacePanelEmptyState } from "./WorkspacePanel";
 import "./RecentProjectsPanel";
-import "./ClosedRecentProjectDialog";
+import { ClosedRecentProjectDialog } from "./ClosedRecentProjectDialog";
 import "./TerminalPanel";
 import "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
@@ -177,6 +177,11 @@ interface ResolvedActivityRailItem {
 
 interface ActiveActivityRailItem extends ResolvedActivityRailItem {
   generation: number;
+}
+
+interface ProjectWorkTarget {
+  machineId: string;
+  projectId: string;
 }
 
 @customElement("pi-webui-app")
@@ -327,6 +332,9 @@ export class PiWebUiApp extends LitElement {
     machineId: () => selectedMachineId(this.state),
     onChange: () => { this.requestUpdate(); },
     onBackgroundError: (operation, error) => { console.warn(`Failed to ${operation}`, error); },
+    reconcileProjects: async (machineId) => {
+      if (selectedMachineId(this.state) === machineId) await this.projects.loadProjects();
+    },
   });
   private readonly keyboard = new KeyboardShortcutDispatcher();
   private readonly realtime = new RealtimeSocket();
@@ -379,6 +387,8 @@ export class PiWebUiApp extends LitElement {
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private closedRecentProjectEntry: RecentProjectEntry | undefined;
+  private closedRecentProjectRestoreFocus: (() => void) | undefined;
+  private closedRecentProjectDialogGeneration = 0;
   @state() private starterSessionDefaults: SessionDefaultsResponse | SessionDefaultsV2Response | undefined;
   private starterSessionDefaultsSeq = 0;
   @state() private starterModelPolicyPreferenceReadError = "";
@@ -1119,7 +1129,7 @@ export class PiWebUiApp extends LitElement {
     const key = machineScopedKey(machineId, origin);
     const existing = this.terminalCommandRunRuntimes.get(key);
     if (existing !== undefined) return existing;
-    const runtime = createTerminalCommandRunsRuntime(origin, {
+    const baseRuntime = createTerminalCommandRunsRuntime(origin, {
       api: {
         runTerminalCommand: (runtimeOrigin, input) => terminalsApi.runTerminalCommand(runtimeOrigin, input, machineId),
         listCommandRuns: (filter) => terminalsApi.listCommandRuns(filter, machineId),
@@ -1127,11 +1137,22 @@ export class PiWebUiApp extends LitElement {
       },
       openTerminal: (workspace, options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
     });
+    const runtime: TerminalCommandRunsInternalRuntime = {
+      ...baseRuntime,
+      runCommand: async (input) => {
+        const handle = await baseRuntime.runCommand(input);
+        this.recordProjectWork({ machineId, projectId: input.workspace.projectId });
+        return handle;
+      },
+    };
     this.terminalCommandRunRuntimes.set(key, runtime);
     return runtime;
   }
 
-  private async openRuntimeTerminal(machineId: string, workspace: Workspace | undefined, options?: { terminalId?: string | undefined }): Promise<void> {
+  private async openRuntimeTerminal(machineId: string, workspace: Workspace | undefined, options?: { terminalId?: string | undefined }): Promise<boolean> {
+    const workTarget = workspace === undefined
+      ? this.selectedProjectWorkTarget(machineId)
+      : { machineId, projectId: workspace.projectId };
     if (selectedMachineId(this.state) !== machineId || (workspace !== undefined && (this.state.selectedWorkspace?.id !== workspace.id || this.state.selectedProject?.id !== workspace.projectId))) {
       if (!this.routeRestoreInProgress) this.rememberCurrentMachineNavigation();
       await this.restoreRouteFor({
@@ -1144,11 +1165,12 @@ export class PiWebUiApp extends LitElement {
       }, false, { selectedTerminalId: options?.terminalId }, "core:workspace.terminal");
       if (selectedMachineId(this.state) !== machineId) {
         this.setState({ error: "Machine not found for terminal command run" });
-        return;
+        return false;
       }
     }
     this.openTerminal(options);
-    this.recordProjectWork();
+    this.recordProjectWork(workTarget);
+    return true;
   }
 
   private selectTerminal(terminalId: string | undefined, options?: { replace?: boolean | undefined }): void {
@@ -1531,7 +1553,7 @@ export class PiWebUiApp extends LitElement {
         .activities=${this.state.workspaceActivities}
         .selectedProjectId=${this.state.selectedProject?.id}
         .onOpenRegistered=${(project: Project) => { void this.workspaces.selectProject(project); }}
-        .onOpenClosed=${(entry: RecentProjectEntry) => { this.closedRecentProjectEntry = entry; }}
+        .onOpenClosed=${(entry: RecentProjectEntry, restoreFocus: () => void) => { this.openClosedRecentProject(entry, restoreFocus); }}
         .onRetry=${() => { void this.recentProjects.retry(); }}
       ></recent-projects-panel>
     `;
@@ -2423,9 +2445,29 @@ export class PiWebUiApp extends LitElement {
           await this.recentProjects.load();
         }}
         .onRemove=${(target: RecentProjectEntry) => this.recentProjects.removeEntry(target.id)}
-        .onClose=${() => { this.closedRecentProjectEntry = undefined; }}
+        .onClose=${() => { this.closeClosedRecentProjectDialog(); }}
       ></closed-recent-project-dialog>
     `;
+  }
+
+  private openClosedRecentProject(entry: RecentProjectEntry, restoreFocus: () => void): void {
+    this.closedRecentProjectDialogGeneration += 1;
+    this.closedRecentProjectRestoreFocus = restoreFocus;
+    this.closedRecentProjectEntry = entry;
+  }
+
+  private closeClosedRecentProjectDialog(): void {
+    const generation = this.closedRecentProjectDialogGeneration;
+    const restoreFocus = this.closedRecentProjectRestoreFocus;
+    this.closedRecentProjectRestoreFocus = undefined;
+    const dialog = this.renderRoot.querySelector<ClosedRecentProjectDialog>("closed-recent-project-dialog");
+    dialog?.close();
+    this.closedRecentProjectEntry = undefined;
+    void this.updateComplete.then(() => {
+      if (this.closedRecentProjectEntry === undefined && this.closedRecentProjectDialogGeneration === generation) {
+        restoreFocus?.();
+      }
+    });
   }
 
   private workspacePanels(): QualifiedWorkspacePanelContribution[] {
@@ -2811,10 +2853,15 @@ export class PiWebUiApp extends LitElement {
    * and task or terminal-command dispatch. Selection, browsing, polling, and
    * streaming must never call this.
    */
-  private recordProjectWork(): void {
+  private selectedProjectWorkTarget(machineId = selectedMachineId(this.state)): ProjectWorkTarget | undefined {
+    if (selectedMachineId(this.state) !== machineId) return undefined;
     const projectId = this.state.selectedProject?.id;
-    if (projectId === undefined) return;
-    this.recentProjects.recordWork(projectId);
+    return projectId === undefined ? undefined : { machineId, projectId };
+  }
+
+  private recordProjectWork(target = this.selectedProjectWorkTarget()): void {
+    if (target === undefined) return;
+    this.recentProjects.recordWork(target.projectId, target.machineId);
   }
 
   private readonly handleRecordProjectWork = (): void => {
@@ -2881,15 +2928,8 @@ export class PiWebUiApp extends LitElement {
   private createWorkspacePanelTerminal(workspace: Workspace, machineId: string, origin: string): WorkspacePanelTerminal {
     const terminalCommandRuns = this.terminalCommandRunsForOrigin(origin, machineId);
     return {
-      open: (options) => {
-        void this.openRuntimeTerminal(machineId, workspace, options);
-        this.recordProjectWork();
-      },
-      runCommand: (input) => {
-        const run = terminalCommandRuns.runCommand({ ...input, workspace });
-        this.recordProjectWork();
-        return run;
-      },
+      open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
+      runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
     };
   }
 
@@ -3811,8 +3851,10 @@ export class PiWebUiApp extends LitElement {
   private sendPrompt(text: string, streamingBehavior?: "steer" | "followUp", attachments?: import("../api").PromptAttachment[], delivery?: import("../../../shared/apiTypes").PromptAttachmentDelivery): void {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
-    void this.sessions.send(text, streamingBehavior, attachments, delivery);
-    this.recordProjectWork();
+    const workTarget = this.selectedProjectWorkTarget();
+    void this.sessions.send(text, streamingBehavior, attachments, delivery).then((accepted) => {
+      if (accepted) this.recordProjectWork(workTarget);
+    });
   }
 
   // Stable handler identities for child components. Inlined arrow closures
@@ -3836,6 +3878,7 @@ export class PiWebUiApp extends LitElement {
     // stale completion cannot clear a newer draft or another workspace's draft.
     const workspaceId = this.state.selectedWorkspace?.id;
     const startMachineId = selectedMachineId(this.state);
+    const workTarget = this.selectedProjectWorkTarget(startMachineId);
     const starterModelPolicy = this.starterModelPolicy;
     const plusInitializer = this.starterPlusModelPolicyInitializer();
     const usePlusStart = this.starterModelPolicySelectionSupported(startMachineId);
@@ -3859,7 +3902,9 @@ export class PiWebUiApp extends LitElement {
             this.clearStarterModelPolicyAfterSuccessfulStart(started, workspaceId, starterModelPolicy);
           },
         );
-    void start.catch((error: unknown) => {
+    void start.then((accepted) => {
+      if (accepted) this.recordProjectWork(workTarget);
+    }).catch((error: unknown) => {
       if (workspaceId === undefined) return;
       this.publishStarterNotice(starterFailureNotice(
         "start-failed",

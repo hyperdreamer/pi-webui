@@ -392,7 +392,7 @@ describe("SessionController pending starts", () => {
     expect(startOutcomes).toEqual([]);
 
     startRequest.resolve(started);
-    await expect(starting).resolves.toBeUndefined();
+    await expect(starting).resolves.toBe(true);
 
     expect(prompt).toHaveBeenCalledWith(
       expect.objectContaining({ id: started.id }),

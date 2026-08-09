@@ -736,7 +736,7 @@ describe("SessionController model policy state", () => {
     expect(startOutcomes).toEqual([]);
 
     startRequest.resolve(selectedSession);
-    await expect(startAndSend).resolves.toBeUndefined();
+    await expect(startAndSend).resolves.toBe(true);
 
     expect(startOutcomes).toEqual([true]);
     expect(promptCalls).toEqual([{ sessionId: selectedSession.id, text: "Plan the migration" }]);
@@ -852,7 +852,7 @@ describe("SessionController model policy state", () => {
       "inline",
       tieredUpdate,
       (started) => { startOutcomes.push(started); },
-    )).resolves.toBeUndefined();
+    )).resolves.toBe(false);
 
     expect(startOutcomes).toEqual([false]);
 

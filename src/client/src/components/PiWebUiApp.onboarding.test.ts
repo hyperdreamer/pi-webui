@@ -131,7 +131,7 @@ describe("PiWebUiApp session onboarding", () => {
     const controller = appSessionController(app);
     const startSessionWithPrompt = vi.spyOn(controller, "startSessionWithPrompt").mockImplementation((...args) => {
       args[5]?.(false);
-      return Promise.resolve();
+      return Promise.resolve(false);
     });
     const focusChatComposer = vi.fn(() => Promise.resolve());
     if (!Reflect.set(app, "focusChatComposer", focusChatComposer)) throw new Error("Could not install prompt focus harness");

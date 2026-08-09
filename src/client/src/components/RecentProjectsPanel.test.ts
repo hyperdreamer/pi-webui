@@ -69,6 +69,23 @@ describe("recent-projects-panel rendering", () => {
     teardown();
   });
 
+  it("renders a refreshed matching project path as registered", async () => {
+    const alphaEntry = entry("/work/alpha");
+    const alphaProject = project("p1", "/work/alpha");
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [alphaEntry] },
+      projects: [],
+    });
+    expect(panel.renderRoot.textContent).toContain("Closed");
+
+    panel.projects = [alphaProject];
+    await panel.updateComplete;
+
+    expect(panel.renderRoot.textContent).not.toContain("Closed");
+    expect(rows(panel)[0]?.getAttribute("aria-label")).toBe("alpha, /work/alpha");
+    teardown();
+  });
+
   it("shows an activity indicator for a registered project with active work", async () => {
     const { panel, teardown } = await mount({
       state: { kind: "ready", entries: [entry("/work/alpha")] },
@@ -141,7 +158,7 @@ describe("recent-projects-panel activation", () => {
 
     rows(panel)[0]?.click();
 
-    expect(onOpenClosed).toHaveBeenCalledWith(closed);
+    expect(onOpenClosed).toHaveBeenCalledWith(closed, expect.any(Function));
     expect(onOpenRegistered).not.toHaveBeenCalled();
     teardown();
   });

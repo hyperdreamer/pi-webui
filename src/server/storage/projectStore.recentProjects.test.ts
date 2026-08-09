@@ -149,16 +149,33 @@ describe("ProjectStore malformed recent history", () => {
     await expect(storeWithClock().listRecent()).rejects.toThrow(/recent/i);
   });
 
-  it("preserves the quarantined value through a later registry write", async () => {
-    await writeFile(filePath, `${JSON.stringify(corrupt)}\n`, "utf8");
+  it.each([
+    ["null", null],
+    ["a non-array value", "not-an-array"],
+  ])("preserves %s history through a later registry write", async (_label, recentProjects) => {
+    await writeFile(filePath, `${JSON.stringify({ ...corrupt, recentProjects })}\n`, "utf8");
     const store = storeWithClock();
 
     await store.add({ path: "/work/beta" });
 
     const raw = await readRaw();
-    expect(raw["recentProjects"]).toBe("not-an-array");
+    expect(raw["recentProjects"]).toBe(recentProjects);
     const projects = raw["projects"];
     const paths = Array.isArray(projects) ? projects.map((project: unknown) => (isRecord(project) && typeof project["path"] === "string" ? project["path"] : undefined)) : [];
     expect(paths.filter((path) => path !== undefined)).toEqual(["/work/alpha", "/work/beta"]);
+  });
+
+  it.each([
+    ["null", null],
+    ["a malformed object", { unexpected: true }],
+  ])("rejects history mutations and preserves %s history verbatim", async (_label, recentProjects) => {
+    const original = `${JSON.stringify({ ...corrupt, recentProjects }, null, 2)}\n`;
+    await writeFile(filePath, original, "utf8");
+    const store = storeWithClock();
+
+    await expect(store.touchRecent("p1")).rejects.toThrow(/recent projects.*malformed/i);
+    await expect(store.removeRecent("missing-entry")).rejects.toThrow(/recent projects.*malformed/i);
+
+    expect(await readFile(filePath, "utf8")).toBe(original);
   });
 });
