@@ -289,7 +289,10 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
     this.workspaces,
-    { onProjectsApplied: (machineId) => { void this.projectActivityOwnership.handleProjectsApplied(machineId); } },
+    { onProjectsApplied: (machineId) => {
+      void this.projectActivityOwnership.handleProjectsApplied(machineId);
+      void this.recentProjects.load();
+    } },
   );
   private readonly machines = new MachineController(
     () => this.state,
@@ -2407,7 +2410,7 @@ export class PiWebUiApp extends LitElement {
       <closed-recent-project-dialog
         .entry=${entry}
         .onReopen=${async (target: RecentProjectEntry) => {
-          await this.projects.addProject(target.path);
+          await this.projects.addRegisteredProject(target.path, target.name);
           await this.recentProjects.load();
         }}
         .onRemove=${(target: RecentProjectEntry) => this.recentProjects.removeEntry(target.id)}
@@ -4280,6 +4283,11 @@ export class PiWebUiApp extends LitElement {
         ...(unreadCount === 0 ? {} : { badge: unreadCount, badgeLabel: `${String(unreadCount)} unread`, badgeTone: "unread" }),
       },
       { id: "chat", label: "Chat", icon: "chat" },
+      {
+        id: "core:recent-projects",
+        label: "Recent Projects",
+        icon: renderBuiltinTabIcon("history"),
+      },
       ...this.visibleWorkspacePanels().map((panel): AppMobileMainTab => {
         const icon = panel.icon ?? this.mobilePanelIcon(panel);
         return {

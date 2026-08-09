@@ -79,6 +79,34 @@ export class ProjectController {
     }
   }
 
+  /**
+   * Register an existing project path without creating it, and surface failures
+   * to the caller instead of absorbing them into the app-level error banner.
+   * The closed-recent-project dialog needs the specific failure at the
+   * initiating interaction, so this method rejects on failure. The registered
+   * project is selected through the same flow addProject uses.
+   */
+  async addRegisteredProject(path: string, name?: string): Promise<Project> {
+    if (path.trim() === "") throw new Error("Project path is required");
+    const machineId = selectedMachineId(this.getState());
+    const sequence = ++this.projectCatalogOperationSequence;
+    // The registration supersedes any in-flight load, so its finalizer no longer owns loading state.
+    this.setState({ isLoadingProjects: false });
+    try {
+      const project = await this.api.addProject(path.trim(), name, false, machineId);
+      if (selectedMachineId(this.getState()) !== machineId) return project;
+      if (this.isCurrentProjectCatalogOperation(machineId, sequence)) {
+        const projects = this.getState().projects;
+        this.setState({ projects: [...projects.filter((p) => p.id !== project.id), project] });
+      }
+      this.onProjectsApplied?.(machineId);
+      await this.workspaces.selectProject(project);
+      return project;
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
   async closeProject(projectId: string) {
     const machineId = selectedMachineId(this.getState());
     try {
