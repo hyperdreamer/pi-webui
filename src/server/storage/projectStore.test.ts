@@ -111,7 +111,7 @@ describe("ProjectStore pin state", () => {
     await Promise.all([store.setPinned(alpha.id, true), store.setPinned(beta.id, true)]);
 
     const persisted: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    expect(persisted).toEqual({ projects: await store.list() });
+    expect(persisted).toEqual({ projects: await store.list(), recentProjects: await store.listRecent() });
     expect(await store.list()).toHaveLength(2);
     expect((await store.list()).every((project) => project.pinned === true)).toBe(true);
   });
@@ -141,7 +141,7 @@ describe("ProjectStore durable writes", () => {
     const project = await store.add({ path: "/work/alpha" });
 
     expect((await lstat(filePath)).isSymbolicLink()).toBe(true);
-    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual({ projects: [project] });
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual({ projects: [project], recentProjects: [expect.objectContaining({ path: project.path })] });
   });
 
   it.skipIf(process.platform === "win32")("resolves a relative dangling symlink from its physical parent", async () => {
@@ -164,7 +164,7 @@ describe("ProjectStore durable writes", () => {
     const project = await store.add({ path: "/work/alpha" });
 
     expect((await lstat(configuredPath)).isSymbolicLink()).toBe(true);
-    expect(JSON.parse(await readFile(intendedPath, "utf8"))).toEqual({ projects: [project] });
+    expect(JSON.parse(await readFile(intendedPath, "utf8"))).toEqual({ projects: [project], recentProjects: [expect.objectContaining({ path: project.path })] });
     await expect(readFile(lexicalAlternativePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await store.list()).toEqual([project]);
     expect(await readdir(intendedRegistryDir)).toEqual(["projects.json"]);
@@ -191,7 +191,7 @@ describe("ProjectStore durable writes", () => {
     const project = await store.add({ path: "/work/alpha" });
 
     expect((await lstat(configuredPath)).isSymbolicLink()).toBe(true);
-    expect(JSON.parse(await readFile(intendedPath, "utf8"))).toEqual({ projects: [project] });
+    expect(JSON.parse(await readFile(intendedPath, "utf8"))).toEqual({ projects: [project], recentProjects: [expect.objectContaining({ path: project.path })] });
     await expect(readFile(lexicalAlternativePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await store.list()).toEqual([project]);
     expect(await readdir(intendedRegistryDir)).toEqual(["projects.json"]);
@@ -257,7 +257,7 @@ describe("ProjectStore durable writes", () => {
     await store.setPinned(project.id, true);
 
     const persisted: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    expect(persisted).toEqual({ projects: await store.list() });
+    expect(persisted).toEqual({ projects: await store.list(), recentProjects: await store.listRecent() });
   });
 });
 

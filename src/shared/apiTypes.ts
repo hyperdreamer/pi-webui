@@ -512,6 +512,21 @@ export interface Project {
   pinned?: boolean;
 }
 
+/** Maximum number of remembered recent projects per machine. */
+export const RECENT_PROJECT_LIMIT = 20;
+
+/**
+ * One remembered project in a machine's most-recently-used history. Independent
+ * of registration: an entry survives closing the project, and `path` (not a
+ * project id) is the durable identity because reopening can mint a new id.
+ */
+export interface RecentProjectEntry {
+  id: string;
+  name: string;
+  path: string;
+  lastUsedAt: string;
+}
+
 export interface ProjectUsageTotals {
   input: number;
   output: number;

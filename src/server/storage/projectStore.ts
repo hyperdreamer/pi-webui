@@ -3,10 +3,19 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
 import { randomUUID } from "node:crypto";
 import { projectDescendantIds } from "../../shared/projectAncestry.js";
+import { RECENT_PROJECT_LIMIT, type RecentProjectEntry } from "../../shared/apiTypes.js";
 import type { Project } from "../types.js";
 
 interface ProjectFile {
   projects: Project[];
+  /** Parsed history, empty when the stored value was absent or malformed. */
+  recentProjects: RecentProjectEntry[];
+  /**
+   * The raw stored history when it could not be parsed. Preserved verbatim on
+   * every write so a parser defect cannot destroy a user's history, and used to
+   * fail `listRecent` loudly instead of reporting an empty list.
+   */
+  invalidRecentProjects?: unknown;
 }
 
 interface ResolvedWriteTarget {
@@ -87,7 +96,29 @@ async function resolveMissingWriteTarget(filePath: string): Promise<ResolvedWrit
 
 function parseProjectFile(value: unknown): ProjectFile {
   if (!isRecord(value) || !Array.isArray(value["projects"])) throw new Error("Invalid project file");
-  return { projects: value["projects"].map(parseProject) };
+  // Registered projects are parsed independently of history so a corrupt
+  // optional history can never fail or hide a registry read.
+  const projects = value["projects"].map(parseProject);
+  const storedRecent = value["recentProjects"];
+  if (storedRecent === undefined) return { projects, recentProjects: [] };
+  try {
+    return { projects, recentProjects: parseRecentProjects(storedRecent) };
+  } catch {
+    return { projects, recentProjects: [], invalidRecentProjects: storedRecent };
+  }
+}
+
+function parseRecentProjects(value: unknown): RecentProjectEntry[] {
+  if (!Array.isArray(value)) throw new Error("Invalid recent projects");
+  return value.map((entry) => {
+    if (!isRecord(entry)) throw new Error("Invalid recent project");
+    const id = entry["id"];
+    const name = entry["name"];
+    const path = entry["path"];
+    const lastUsedAt = entry["lastUsedAt"];
+    if (typeof id !== "string" || typeof name !== "string" || typeof path !== "string" || typeof lastUsedAt !== "string") throw new Error("Invalid recent project");
+    return { id, name, path, lastUsedAt };
+  });
 }
 
 function parseProject(value: unknown): Project {
@@ -116,13 +147,63 @@ export function projectStorePath(env: NodeJS.ProcessEnv = process.env, cwd = pro
   return resolve(cwd, configured);
 }
 
+export type RecentRemoval =
+  | { kind: "removed"; entries: RecentProjectEntry[] }
+  | { kind: "not-found" }
+  | { kind: "registered" };
+
 export class ProjectStore {
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath = projectStorePath()) {}
+  constructor(private readonly filePath = projectStorePath(), private readonly now: () => Date = () => new Date()) {}
 
   async list(): Promise<Project[]> {
     return (await this.read()).projects;
+  }
+
+  async listRecent(): Promise<RecentProjectEntry[]> {
+    const data = await this.read();
+    if (data.invalidRecentProjects !== undefined) throw new Error("Stored recent projects are malformed");
+    return data.recentProjects;
+  }
+
+  /**
+   * Record meaningful work on a registered project. Path identity comes from the
+   * registry itself, so history can never disagree with registration dedupe.
+   */
+  async touchRecent(projectId: string): Promise<RecentProjectEntry[] | undefined> {
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      const project = data.projects.find((candidate) => candidate.id === projectId);
+      if (project === undefined) return undefined;
+      const recentProjects = this.promote(data.recentProjects, project);
+      await this.write({ ...data, recentProjects });
+      return recentProjects;
+    });
+  }
+
+  async removeRecent(entryId: string): Promise<RecentRemoval> {
+    return await this.exclusive(async () => {
+      const data = await this.read();
+      const target = data.recentProjects.find((entry) => entry.id === entryId);
+      if (target === undefined) return { kind: "not-found" };
+      if (data.projects.some((project) => project.path === target.path)) return { kind: "registered" };
+      const recentProjects = data.recentProjects.filter((entry) => entry.id !== entryId);
+      await this.write({ ...data, recentProjects });
+      return { kind: "removed", entries: recentProjects };
+    });
+  }
+
+  /** Move `project` to the front of history, reusing any entry for the same registry path. */
+  private promote(entries: readonly RecentProjectEntry[], project: Project): RecentProjectEntry[] {
+    const existing = entries.find((entry) => entry.path === project.path);
+    const promoted: RecentProjectEntry = {
+      id: existing?.id ?? randomUUID(),
+      name: project.name,
+      path: project.path,
+      lastUsedAt: this.now().toISOString(),
+    };
+    return [promoted, ...entries.filter((entry) => entry.path !== project.path)].slice(0, RECENT_PROJECT_LIMIT);
   }
 
   async add(input: { name?: string; path: string }): Promise<Project> {
@@ -130,7 +211,10 @@ export class ProjectStore {
       const data = await this.read();
       const path = input.path;
       const existing = data.projects.find((p) => p.path === path);
-      if (existing) return existing;
+      if (existing) {
+        await this.write({ ...data, recentProjects: this.promote(data.recentProjects, existing) });
+        return existing;
+      }
 
       const trimmedName = input.name?.trim();
       const leafName = path.split("/").filter((part) => part !== "").at(-1);
@@ -138,10 +222,10 @@ export class ProjectStore {
         id: randomUUID(),
         name: trimmedName !== undefined && trimmedName !== "" ? trimmedName : leafName ?? path,
         path,
-        createdAt: new Date().toISOString(),
+        createdAt: this.now().toISOString(),
       };
       data.projects.push(project);
-      await this.write(data);
+      await this.write({ ...data, recentProjects: this.promote(data.recentProjects, project) });
       return project;
     });
   }
@@ -155,7 +239,7 @@ export class ProjectStore {
       const data = await this.read();
       const projects = data.projects.filter((p) => p.id !== id);
       if (projects.length === data.projects.length) return false;
-      await this.write({ projects });
+      await this.write({ ...data, projects });
       return true;
     });
   }
@@ -172,7 +256,7 @@ export class ProjectStore {
       if (!data.projects.some((project) => project.id === id)) return undefined;
       const removedIds = [id, ...projectDescendantIds(data.projects, id)];
       const removedIdSet = new Set(removedIds);
-      await this.write({ projects: data.projects.filter((project) => !removedIdSet.has(project.id)) });
+      await this.write({ ...data, projects: data.projects.filter((project) => !removedIdSet.has(project.id)) });
       return removedIds;
     });
   }
@@ -195,7 +279,7 @@ export class ProjectStore {
         ...(pinned ? { pinned: true } : {}),
       };
       const projects = [updated, ...data.projects.filter((p) => p.id !== id)];
-      await this.write({ projects });
+      await this.write({ ...data, projects });
       return projects;
     });
   }
@@ -205,7 +289,7 @@ export class ProjectStore {
       const value: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
       return parseProjectFile(value);
     } catch (error: unknown) {
-      if (isNodeErrorWithCode(error, "ENOENT")) return { projects: [] };
+      if (isNodeErrorWithCode(error, "ENOENT")) return { projects: [], recentProjects: [] };
       throw error;
     }
   }
@@ -229,8 +313,14 @@ export class ProjectStore {
     // when the configured path is a symlink. The `exclusive` queue remains
     // necessary because it prevents lost updates rather than torn files.
     const tempPath = join(dirname(target.path), `.${basename(target.path)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
+    // A quarantined history is written back verbatim: a parser defect must never
+    // silently replace a user's history with an empty list.
+    const recentProjects = data.invalidRecentProjects ?? data.recentProjects;
+    const document = data.invalidRecentProjects === undefined && data.recentProjects.length === 0
+      ? { projects: data.projects }
+      : { projects: data.projects, recentProjects };
     try {
-      const content = `${JSON.stringify(data, null, 2)}\n`;
+      const content = `${JSON.stringify(document, null, 2)}\n`;
       if (target.mode === undefined) {
         await writeFile(tempPath, content, "utf8");
       } else {
