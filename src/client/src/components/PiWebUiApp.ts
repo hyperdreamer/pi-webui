@@ -2862,7 +2862,7 @@ export class PiWebUiApp extends LitElement {
     return projectId === undefined ? undefined : { machineId, projectId };
   }
 
-  private recordProjectWork(target = this.selectedProjectWorkTarget()): void {
+  private recordProjectWork(target: ProjectWorkTarget | undefined): void {
     if (target === undefined) return;
     this.recentProjects.recordWork(target.projectId, target.machineId);
   }

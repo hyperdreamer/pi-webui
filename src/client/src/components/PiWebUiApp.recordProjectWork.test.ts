@@ -95,7 +95,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 function recordProjectWork(app: PiWebUiApp): void {
   const record: unknown = Reflect.get(app, "recordProjectWork");
   if (typeof record !== "function") throw new Error("Expected recordProjectWork");
-  record.call(app);
+  record.call(app, invokePrivate(app, "selectedProjectWorkTarget"));
 }
 
 function setState(app: PiWebUiApp, patch: Record<string, unknown>): void {
@@ -332,6 +332,18 @@ describe("PiWebUiApp.recordProjectWork", () => {
     modalCallbacks.onStarted();
 
     expect(modalRecorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("records nothing when the modal captured no work target", () => {
+    const app = createApp();
+    const recorded = installRecorder(app);
+    const callbacks = terminalModalCallbacks(app);
+    setState(app, { selectedProject: project, selectedWorkspace: workspace });
+
+    callbacks.onStarted();
+    sendTerminalInput(callbacks.onInput, { readyState: WebSocket.OPEN, send: vi.fn() });
+
+    expect(recorded).toEqual([]);
   });
 
   it("records successful socket input against the workspace-tab and modal origins", () => {
