@@ -1,6 +1,6 @@
-import { LitElement, html } from "lit";
+import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type RecentProjectEntry, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, StarterModelPolicyPreference } from "../api";
@@ -21,6 +21,7 @@ import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
 import { ProjectCatalogController } from "../controllers/projectCatalogController";
+import { RecentProjectController } from "../controllers/recentProjectController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
 import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
@@ -89,7 +90,9 @@ import type { MachineDialogSubmit } from "./MachineDialog";
 import "./SettingsDialog";
 import "./SystemPromptDialog";
 import "./WorkspacePanel";
-import type { WorkspacePanelEmptyState } from "./WorkspacePanel";
+import type { ResolvedWorkspacePanelTab, WorkspacePanelEmptyState } from "./WorkspacePanel";
+import "./RecentProjectsPanel";
+import "./ClosedRecentProjectDialog";
 import "./TerminalPanel";
 import "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
@@ -102,6 +105,7 @@ import "./PluginActivityDialog";
 import "./GitUpdateManagerPanel";
 import { DEFAULT_RAIL_ORDER, readRailOrder, writeRailOrder, type ReorderableRailItem } from "../activityRailOrder";
 import { appStyles } from "./shared";
+import { renderBuiltinTabIcon } from "./tabIcons";
 
 
 const PI_WEBUI_STATUS_REFRESH_MS = 15 * 60 * 1000;
@@ -316,6 +320,11 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
   );
+  private readonly recentProjects = new RecentProjectController({
+    machineId: () => selectedMachineId(this.state),
+    onChange: () => { this.requestUpdate(); },
+    onBackgroundError: (operation, error) => { console.warn(`Failed to ${operation}`, error); },
+  });
   private readonly keyboard = new KeyboardShortcutDispatcher();
   private readonly realtime = new RealtimeSocket();
   private readonly machineRealtimeSockets = new Map<string, RealtimeSocket>();
@@ -366,6 +375,7 @@ export class PiWebUiApp extends LitElement {
   @state() private isRefreshingApp = false;
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
+  @state() private closedRecentProjectEntry: RecentProjectEntry | undefined;
   @state() private starterSessionDefaults: SessionDefaultsResponse | SessionDefaultsV2Response | undefined;
   private starterSessionDefaultsSeq = 0;
   @state() private starterModelPolicyPreferenceReadError = "";
@@ -593,7 +603,8 @@ export class PiWebUiApp extends LitElement {
       || this.state.themeDialog !== undefined
       || this.state.authDialog !== undefined
       || this.gitUpdateManagerPanelOpen
-      || this.terminalModalOpen;
+      || this.terminalModalOpen
+      || this.closedRecentProjectEntry !== undefined;
   }
 
   override connectedCallback(): void {
@@ -611,6 +622,7 @@ export class PiWebUiApp extends LitElement {
     void this.renegotiateUnreadMachines();
     this.piWebUiStatusTimer = window.setInterval(() => { this.schedulePiWebUiStatusRefresh(); }, PI_WEBUI_STATUS_REFRESH_MS);
     void this.refreshWorkspaceActivity();
+    void this.recentProjects.load();
     void this.loadClientConfig();
     void this.ensureGatewayPluginsLoaded();
     void this.loadProjectsAndRestoreRoute().finally(() => { this.schedulePiWebUiStatusRefresh(); });
@@ -1442,6 +1454,7 @@ export class PiWebUiApp extends LitElement {
     this.sessionCleanupDialog = undefined;
     this.setState({ piWebUiStatus: undefined });
     this.git.updatePolling();
+    void this.recentProjects.load();
     void this.loadPluginsForSelectedMachine();
     const workspace = next.selectedWorkspace;
     if (workspace !== undefined && this.shouldShowSessionStartScreen(next)) {
@@ -1455,20 +1468,60 @@ export class PiWebUiApp extends LitElement {
   }
 
   private renderWorkspacePanel() {
-    const workspace = this.state.selectedWorkspace;
-    const panelContext = workspace === undefined ? undefined : this.createWorkspacePanelContext(workspace);
-    const emptyState = workspace === undefined ? this.workspacePanelEmptyState() : undefined;
+    const emptyState = this.state.selectedWorkspace === undefined ? this.workspacePanelEmptyState() : undefined;
     return html`
       <workspace-panel
         id="workspace-panel"
-        .workspace=${workspace}
-        .panelContext=${panelContext}
         .emptyState=${emptyState}
         .tool=${this.state.workspaceTool}
-        .panels=${this.workspacePanels()}
+        .tabs=${this.resolvedWorkspacePanelTabs()}
         .hiddenTools=${this.hiddenWorkspacePanelTools()}
         .onSelectTool=${(tool: QualifiedContributionId) => { this.openWorkspaceTool(tool); }}
       ></workspace-panel>
+    `;
+  }
+
+  /**
+   * Recent Projects is machine-level, so it is offered whenever a machine is
+   * selected and must not depend on a WorkspacePanelContext. Workspace and plugin
+   * tabs still require a selected workspace and keep their existing context.
+   */
+  private resolvedWorkspacePanelTabs(): ResolvedWorkspacePanelTab[] {
+    const tabs: ResolvedWorkspacePanelTab[] = [{
+      id: "core:recent-projects",
+      title: "Recent Projects",
+      icon: renderBuiltinTabIcon("history"),
+      render: () => this.renderRecentProjectsTab(),
+    }];
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) return tabs;
+    const context = this.createWorkspacePanelContext(workspace);
+    for (const panel of this.plugins.getWorkspacePanels()) {
+      if (!(panel.visible?.(context) ?? true)) continue;
+      const badge = panel.badge?.(context);
+      tabs.push({
+        id: panel.id,
+        title: panel.title,
+        ...(panel.icon === undefined ? {} : { icon: panel.icon }),
+        ...(badge === undefined ? {} : { badge }),
+        render: () => panel.render(context),
+      });
+    }
+    return tabs;
+  }
+
+  private renderRecentProjectsTab(): TemplateResult {
+    return html`
+      <recent-projects-panel
+        .state=${this.recentProjects.state}
+        .projects=${this.state.projects}
+        .workspacesByProjectId=${this.state.workspacesByProjectId}
+        .activities=${this.state.workspaceActivities}
+        .selectedProjectId=${this.state.selectedProject?.id}
+        .onOpenRegistered=${(project: Project) => { void this.workspaces.selectProject(project); }}
+        .onOpenClosed=${(entry: RecentProjectEntry) => { this.closedRecentProjectEntry = entry; }}
+        .onRetry=${() => { void this.recentProjects.retry(); }}
+      ></recent-projects-panel>
     `;
   }
 
@@ -2344,6 +2397,22 @@ export class PiWebUiApp extends LitElement {
         .onAbort=${() => this.sessions.abortTreeNavigation()}
         .onCancel=${() => { this.closeSessionTreeNavigator(); }}
       ></session-tree-navigator>
+    `;
+  }
+
+  private renderClosedRecentProjectDialog(): TemplateResult | null {
+    const entry = this.closedRecentProjectEntry;
+    if (entry === undefined) return null;
+    return html`
+      <closed-recent-project-dialog
+        .entry=${entry}
+        .onReopen=${async (target: RecentProjectEntry) => {
+          await this.projects.addProject(target.path);
+          await this.recentProjects.load();
+        }}
+        .onRemove=${(target: RecentProjectEntry) => this.recentProjects.removeEntry(target.id)}
+        .onClose=${() => { this.closedRecentProjectEntry = undefined; }}
+      ></closed-recent-project-dialog>
     `;
   }
 
@@ -4422,6 +4491,7 @@ export class PiWebUiApp extends LitElement {
         ${activeActivity === undefined ? null : html`<plugin-activity-dialog .activity=${activeActivity.activity} .context=${activeActivity.context} .onClose=${() => { this.closeActivityRailItem(activeActivity.activity.id, activeActivity.generation); }} .onReportError=${this.reportActivityRailError}></plugin-activity-dialog>`}
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
+        ${this.renderClosedRecentProjectDialog()}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
     `;

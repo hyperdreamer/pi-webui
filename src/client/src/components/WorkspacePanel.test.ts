@@ -1,26 +1,14 @@
 import { html } from "lit";
 import { describe, expect, it } from "vitest";
-import type { Workspace } from "../api";
-import type { QualifiedWorkspacePanelContribution } from "../plugins/types";
+import type { QualifiedContributionId } from "../plugins/types";
 import { templateText } from "../templateInspection.testSupport";
-import { WorkspacePanel } from "./WorkspacePanel";
+import { WorkspacePanel, type ResolvedWorkspacePanelTab } from "./WorkspacePanel";
 
-const workspace: Workspace = {
-  id: "workspace-a",
-  projectId: "project-a",
-  path: "/work/project-a",
-  label: "project-a",
-  isMain: true,
-  isGitRepo: true,
-  isGitWorktree: false,
-};
-
-function panel(id: "core:workspace.files" | "core:workspace.info" | "core:workspace.terminal", title: string, content: string): QualifiedWorkspacePanelContribution {
+function tab(id: QualifiedContributionId, title: string, content: string, badge?: string | number): ResolvedWorkspacePanelTab {
   return {
     id,
-    pluginId: "core",
-    localId: id.slice("core:".length),
     title,
+    ...(badge === undefined ? {} : { badge }),
     render: () => html`<span>${content}</span>`,
   };
 }
@@ -28,14 +16,12 @@ function panel(id: "core:workspace.files" | "core:workspace.info" | "core:worksp
 describe("WorkspacePanel", () => {
   it("renders a selected hidden panel without showing its tab", () => {
     const element = new WorkspacePanel();
-    element.workspace = workspace;
-    if (!Reflect.set(element, "panelContext", {})) throw new Error("Could not supply workspace panel context");
-    element.panels = [
-      panel("core:workspace.files", "Files", "files-content"),
-      panel("core:workspace.info", "System details", "hidden-info-content"),
+    element.tabs = [
+      tab("core:workspace.files", "Files", "files-content"),
+      tab("core:workspace.info", "System details", "hidden-info-content"),
     ];
     element.tool = "core:workspace.info";
-    Reflect.set(element, "hiddenTools", ["core:workspace.info"]);
+    element.hiddenTools = ["core:workspace.info"];
 
     const text = templateText(element.render());
 
@@ -46,14 +32,12 @@ describe("WorkspacePanel", () => {
 
   it("renders a selected hidden Terminal panel without showing its tab", () => {
     const element = new WorkspacePanel();
-    element.workspace = workspace;
-    if (!Reflect.set(element, "panelContext", {})) throw new Error("Could not supply workspace panel context");
-    element.panels = [
-      panel("core:workspace.files", "Files", "files-content"),
-      panel("core:workspace.terminal", "Terminal", "hidden-terminal-content"),
+    element.tabs = [
+      tab("core:workspace.files", "Files", "files-content"),
+      tab("core:workspace.terminal", "Terminal", "hidden-terminal-content"),
     ];
     element.tool = "core:workspace.terminal";
-    Reflect.set(element, "hiddenTools", ["core:workspace.terminal"]);
+    element.hiddenTools = ["core:workspace.terminal"];
 
     const text = templateText(element.render());
 
@@ -62,13 +46,9 @@ describe("WorkspacePanel", () => {
     expect(text).not.toContain("Terminal");
   });
 
-  it("renders a tab-badge and accessible numeric label when badge returns a positive count", () => {
+  it("renders a tab-badge and accessible numeric label when badge is a positive count", () => {
     const element = new WorkspacePanel();
-    element.workspace = workspace;
-    if (!Reflect.set(element, "panelContext", {})) throw new Error("Could not supply workspace panel context");
-    element.panels = [
-      { id: "plugin:memory", pluginId: "plugin", localId: "memory", title: "Memory", badge: () => 3, render: () => html`<span>content</span>` },
-    ];
+    element.tabs = [tab("plugin:memory", "Memory", "content", 3)];
     element.tool = "plugin:memory";
 
     const text = templateText(element.render());
@@ -78,13 +58,9 @@ describe("WorkspacePanel", () => {
     expect(text).toContain("Memory, 3");
   });
 
-  it("renders no tab-badge when badge returns undefined (empty data)", () => {
+  it("renders no tab-badge when badge is undefined (empty data)", () => {
     const element = new WorkspacePanel();
-    element.workspace = workspace;
-    if (!Reflect.set(element, "panelContext", {})) throw new Error("Could not supply workspace panel context");
-    element.panels = [
-      { id: "plugin:memory", pluginId: "plugin", localId: "memory", title: "Memory", badge: () => undefined, render: () => html`<span>content</span>` },
-    ];
+    element.tabs = [tab("plugin:memory", "Memory", "content")];
     element.tool = "plugin:memory";
 
     const text = templateText(element.render());

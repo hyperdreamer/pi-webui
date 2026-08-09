@@ -30,7 +30,7 @@ describe("PiWebUiApp workspace tab visibility", () => {
     const rendered = renderWorkspacePanel(app);
 
     expect(templateValueAfterMarker(rendered, ".hiddenTools=")).toEqual(["core:workspace.info"]);
-    expect(templateValueAfterMarker(rendered, ".panels=")).toEqual(expect.arrayContaining([
+    expect(templateValueAfterMarker(rendered, ".tabs=")).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "core:workspace.files" }),
       expect.objectContaining({ id: "core:workspace.info" }),
     ]));
@@ -46,7 +46,7 @@ describe("PiWebUiApp workspace tab visibility", () => {
     const rendered = renderWorkspacePanel(app);
 
     expect(templateValueAfterMarker(rendered, ".hiddenTools=")).toEqual(["core:workspace.terminal"]);
-    expect(templateValueAfterMarker(rendered, ".panels=")).toEqual(expect.arrayContaining([
+    expect(templateValueAfterMarker(rendered, ".tabs=")).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "core:workspace.files" }),
       expect.objectContaining({ id: "core:workspace.terminal" }),
     ]));

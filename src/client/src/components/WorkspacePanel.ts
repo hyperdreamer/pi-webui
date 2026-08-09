@@ -1,7 +1,6 @@
 import { LitElement, html, type TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import type { Workspace } from "../api";
-import type { QualifiedContributionId, QualifiedWorkspacePanelContribution, WorkspacePanelContext } from "../plugins/types";
+import type { QualifiedContributionId } from "../plugins/types";
 import { workspacePanelStyles } from "./shared";
 
 export interface WorkspacePanelEmptyState {
@@ -9,15 +8,26 @@ export interface WorkspacePanelEmptyState {
   body?: string;
 }
 
+/**
+ * A workspace-panel tab with its rendering already bound by the app shell. This
+ * exists so a machine-level tab (Recent Projects) can appear with no selected
+ * workspace, instead of the panel having to fabricate a WorkspacePanelContext.
+ */
+export interface ResolvedWorkspacePanelTab {
+  id: QualifiedContributionId;
+  title: string;
+  icon?: TemplateResult;
+  badge?: string | number | TemplateResult;
+  render: () => TemplateResult;
+}
+
 type WorkspacePanelBadge = string | number | TemplateResult | undefined;
 
 @customElement("workspace-panel")
 export class WorkspacePanel extends LitElement {
-  @property({ attribute: false }) workspace: Workspace | undefined;
-  @property({ attribute: false }) panelContext: WorkspacePanelContext | undefined;
+  @property({ attribute: false }) tabs: ResolvedWorkspacePanelTab[] = [];
   @property({ attribute: false }) emptyState: WorkspacePanelEmptyState | undefined;
   @property() tool: QualifiedContributionId = "core:workspace.files";
-  @property({ attribute: false }) panels: QualifiedWorkspacePanelContribution[] = [];
   @property({ attribute: false }) hiddenTools: QualifiedContributionId[] = [];
   @property({ type: Boolean }) hideToolTabs = false;
   @property({ attribute: false }) onSelectTool: (tool: QualifiedContributionId) => void = () => undefined;
@@ -49,32 +59,27 @@ export class WorkspacePanel extends LitElement {
   }
 
   override render() {
-    const workspace = this.workspace;
-    if (workspace === undefined) return this.renderEmptyState(this.emptyState ?? {
-      title: "Select a workspace",
-      body: "Choose a workspace to inspect files, Git, or terminals.",
-    });
-    const context = this.panelContext;
-    if (context === undefined) return this.renderEmptyState({
-      title: "Workspace tools unavailable",
-      body: "Try selecting the workspace again.",
-    });
-    const panels = this.panels;
-    const visiblePanels = panels.filter((panel) => !this.hiddenTools.includes(panel.id));
-    const selectedPanel = panels.find((panel) => panel.id === this.tool) ?? panels[0];
+    const tabs = this.tabs;
+    if (tabs.length === 0) {
+      return this.renderEmptyState(this.emptyState ?? {
+        title: "Select a workspace",
+        body: "Choose a workspace to inspect files, Git, or terminals.",
+      });
+    }
+    const visibleTabs = tabs.filter((tab) => !this.hiddenTools.includes(tab.id));
+    const selectedTab = tabs.find((tab) => tab.id === this.tool) ?? visibleTabs[0] ?? tabs[0];
     return html`
       ${this.hideToolTabs ? null : html`
         <header>
           <div class=${this.workspaceHeaderFrameClass()}>
             <div class="workspace-header-strip" @scroll=${this.onWorkspaceHeaderScroll}>
               <div class="tabs">
-                ${visiblePanels.map((panel) => {
-                  const selected = selectedPanel?.id === panel.id;
-                  const badge = panel.badge?.(context);
-                  const ariaLabel = this.panelTabAriaLabel(panel, badge);
+                ${visibleTabs.map((tab) => {
+                  const selected = selectedTab?.id === tab.id;
+                  const ariaLabel = this.panelTabAriaLabel(tab, tab.badge);
                   return html`
-                    <button class=${this.panelTabClass(panel, selected)} title=${ariaLabel} aria-label=${ariaLabel} aria-pressed=${String(selected)} @click=${() => { this.onSelectTool(panel.id); }}>
-                      ${this.renderPanelTabContent(panel, badge)}
+                    <button class=${this.panelTabClass(tab, selected)} title=${ariaLabel} aria-label=${ariaLabel} aria-pressed=${String(selected)} @click=${() => { this.onSelectTool(tab.id); }}>
+                      ${this.renderPanelTabContent(tab, tab.badge)}
                     </button>
                   `;
                 })}
@@ -83,34 +88,34 @@ export class WorkspacePanel extends LitElement {
           </div>
         </header>
       `}
-      ${selectedPanel === undefined ? this.renderEmptyState({
+      ${selectedTab === undefined ? this.renderEmptyState({
         title: "No workspace tools available",
         body: "No tools are available for this workspace.",
       }) : html`
         <div class="panel-content">
-          ${selectedPanel.render(context)}
+          ${selectedTab.render()}
         </div>
       `}
     `;
   }
 
-  private panelTabClass(panel: QualifiedWorkspacePanelContribution, selected: boolean): string {
+  private panelTabClass(tab: Pick<ResolvedWorkspacePanelTab, "icon">, selected: boolean): string {
     return [
-      ...(panel.icon === undefined ? [] : ["icon-tab"]),
+      ...(tab.icon === undefined ? [] : ["icon-tab"]),
       ...(selected ? ["selected"] : []),
     ].join(" ");
   }
 
-  private panelTabAriaLabel(panel: QualifiedWorkspacePanelContribution, badge: WorkspacePanelBadge): string {
-    if (typeof badge !== "string" && typeof badge !== "number") return panel.title;
+  private panelTabAriaLabel(tab: Pick<ResolvedWorkspacePanelTab, "title">, badge: WorkspacePanelBadge): string {
+    if (typeof badge !== "string" && typeof badge !== "number") return tab.title;
     const trimmedBadge = String(badge).trim();
-    return trimmedBadge === "" ? panel.title : `${panel.title}, ${trimmedBadge}`;
+    return trimmedBadge === "" ? tab.title : `${tab.title}, ${trimmedBadge}`;
   }
 
-  private renderPanelTabContent(panel: QualifiedWorkspacePanelContribution, badge: WorkspacePanelBadge): TemplateResult {
+  private renderPanelTabContent(tab: Pick<ResolvedWorkspacePanelTab, "icon" | "title">, badge: WorkspacePanelBadge): TemplateResult {
     return html`
-      ${panel.icon === undefined ? null : html`<span class="tab-custom-icon" aria-hidden="true">${panel.icon}</span>`}
-      <span class="tab-label">${panel.title}</span>
+      ${tab.icon === undefined ? null : html`<span class="tab-custom-icon" aria-hidden="true">${tab.icon}</span>`}
+      <span class="tab-label">${tab.title}</span>
       ${this.isEmptyBadge(badge) ? null : html`<span class="tab-badge">${badge}</span>`}
     `;
   }
