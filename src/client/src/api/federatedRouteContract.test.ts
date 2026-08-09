@@ -45,6 +45,15 @@ describe("federated route contract", () => {
     expect(FEDERATED_WEBSOCKET_ROUTES.some((path) => path.includes("notifications"))).toBe(false);
   });
 
+  it("allowlists the recent-project history routes without adding a socket", () => {
+    expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("recent"))).toEqual([
+      { method: "GET", path: "/recent-projects" },
+      { method: "POST", path: "/projects/:projectId/recent" },
+      { method: "DELETE", path: "/recent-projects/:entryId" },
+    ]);
+    expect(FEDERATED_WEBSOCKET_ROUTES.some((path) => path.includes("recent"))).toBe(false);
+  });
+
   it("allowlists daemon-authoritative unread HTTP routes on the existing global socket", () => {
     expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path.includes("unread"))).toEqual([
       { method: "GET", path: "/sessions/unread" },
