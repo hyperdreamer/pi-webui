@@ -1,6 +1,6 @@
 import { html, svg, type TemplateResult } from "lit";
 
-export type AppTabBuiltinIcon = "navigation" | "chat" | "files" | "git" | "terminal" | "info";
+export type AppTabBuiltinIcon = "navigation" | "chat" | "files" | "git" | "terminal" | "info" | "history";
 export type AppTabIcon = AppTabBuiltinIcon | TemplateResult;
 
 export function renderAppTabIcon(icon: AppTabIcon): TemplateResult {
@@ -60,6 +60,14 @@ export function renderBuiltinTabIcon(icon: AppTabBuiltinIcon): TemplateResult {
           <rect x="2" y="3" width="20" height="14" rx="2"></rect>
           <path d="M8 21h8"></path>
           <path d="M12 17v4"></path>
+        </svg>
+      `;
+    case "history":
+      return svg`
+        <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M3.5 12a8.5 8.5 0 1 0 2.8-6.3"></path>
+          <path d="M3 4.5V9h4.5"></path>
+          <path d="M12 8v4.5l3 2"></path>
         </svg>
       `;
   }
