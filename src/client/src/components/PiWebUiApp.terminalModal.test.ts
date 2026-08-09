@@ -125,7 +125,7 @@ function createTerminalModalHarness(): TerminalModalHarness {
     resizeHandle,
     movePointerDown: templateEventHandlerNearMarker(modal, 'class="terminal-modal-drag-handle"'),
     movePointerDownFromSpacer: templatePointerHandlerAfterMarker(modal, 'class="terminal-modal-drag-spacer"'),
-    resizePointerDown: templateEventHandlerNearMarker(modal, 'class="terminal-modal-resize-handle"'),
+    resizePointerDown: templatePointerHandlerAfterMarker(modal, 'class="terminal-modal-resize-handle"'),
     pointerMove: templatePointerHandlerAfterMarker(modal, "@pointermove="),
     pointerUp: templatePointerHandlerAfterMarker(modal, "@pointerup="),
   };

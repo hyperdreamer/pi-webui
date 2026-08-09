@@ -1,3 +1,4 @@
+import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, terminalsApi } from "../api";
 import type { GitStatusResponse, Machine, Project, StarterModelPolicyPreference, TerminalCommandRun, Workspace } from "../api";
@@ -7,6 +8,7 @@ import { WorkspaceController } from "../controllers/workspaceController";
 import type { WorkspacePanelTerminal } from "../plugins/types";
 import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
+import { TerminalPanel } from "./TerminalPanel";
 
 const project: Project = {
   id: "p1",
@@ -145,7 +147,12 @@ function isWorkspacePanelTerminal(value: unknown): value is WorkspacePanelTermin
     && typeof Reflect.get(value, "runCommand") === "function";
 }
 
-function terminalTabOnInput(app: PiWebUiApp): () => void {
+interface TerminalWorkCallbacks {
+  onStarted: () => void;
+  onInput: () => void;
+}
+
+function terminalTabCallbacks(app: PiWebUiApp): TerminalWorkCallbacks {
   const resolve: unknown = Reflect.get(app, "resolvedWorkspacePanelTabs");
   if (typeof resolve !== "function") throw new Error("Expected resolvedWorkspacePanelTabs");
   const tabs: unknown = resolve.call(app);
@@ -158,9 +165,31 @@ function terminalTabOnInput(app: PiWebUiApp): () => void {
   if (typeof render !== "function") throw new Error("Expected the terminal tab renderer");
   const rendered: unknown = render.call(terminalTab);
   if (!isTemplateResult(rendered)) throw new Error("Terminal tab renderer did not return a template");
+  return terminalWorkCallbacks(rendered);
+}
+
+function terminalModalCallbacks(app: PiWebUiApp): TerminalWorkCallbacks {
+  const rendered = invokePrivate(app, "renderTerminalModal");
+  if (!isTemplateResult(rendered)) throw new Error("Terminal modal renderer did not return a template");
+  return terminalWorkCallbacks(rendered);
+}
+
+// Direct extraction is proportionate here because these tests pin only the two
+// host-to-TerminalPanel callback bindings; TerminalPanel behavior stays real.
+function terminalWorkCallbacks(rendered: TemplateResult): TerminalWorkCallbacks {
+  const onStarted: unknown = templateValueAfterMarker(rendered, ".onStarted=");
   const onInput: unknown = templateValueAfterMarker(rendered, ".onInput=");
-  if (!isVoidFunction(onInput)) throw new Error("Expected the terminal panel onInput binding");
-  return () => { onInput(); };
+  if (!isVoidFunction(onStarted) || !isVoidFunction(onInput)) throw new Error("Expected terminal work callbacks");
+  return { onStarted, onInput };
+}
+
+function sendTerminalInput(onInput: () => void, socket: { readyState: number; send: (data: string) => void }): void {
+  const panel = new TerminalPanel();
+  panel.onInput = onInput;
+  Reflect.set(panel, "socket", socket);
+  const send: unknown = Reflect.get(panel, "send");
+  if (typeof send !== "function") throw new Error("Expected TerminalPanel.send");
+  send.call(panel, { type: "input", data: "accepted" });
 }
 
 function isVoidFunction(value: unknown): value is () => void {
@@ -232,7 +261,7 @@ describe("PiWebUiApp.recordProjectWork", () => {
     });
   });
 
-  it("records work when a runtime terminal is opened", async () => {
+  it("does not record merely opening the runtime terminal surface", async () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project, selectedWorkspace: workspace });
@@ -240,20 +269,19 @@ describe("PiWebUiApp.recordProjectWork", () => {
 
     await invokePrivate(app, "openRuntimeTerminal", "local", workspace);
 
-    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    expect(recorded).toEqual([]);
   });
 
-  it("records work once when a plugin terminal is opened", async () => {
+  it("does not record merely opening a plugin terminal surface", async () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project, selectedWorkspace: workspace });
     vi.spyOn(api, "gitStatus").mockResolvedValue(gitStatus);
 
     workspacePanelTerminal(app).open({});
+    await Promise.resolve();
 
-    await vi.waitFor(() => {
-      expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
-    });
+    expect(recorded).toEqual([]);
   });
 
   it("records a terminal command only after launch succeeds and keeps its origin", async () => {
@@ -284,14 +312,64 @@ describe("PiWebUiApp.recordProjectWork", () => {
     expect(recorded).toEqual([]);
   });
 
-  it("records work when the terminal tab reports input", () => {
+  it("records accepted starts against the workspace-tab and modal origins", () => {
+    const workspaceApp = createApp();
+    const workspaceRecorded = installRecorder(workspaceApp);
+    setState(workspaceApp, { selectedProject: project, selectedWorkspace: workspace });
+    const workspaceCallbacks = terminalTabCallbacks(workspaceApp);
+    setState(workspaceApp, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+
+    workspaceCallbacks.onStarted();
+
+    expect(workspaceRecorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+
+    const modalApp = createApp();
+    const modalRecorded = installRecorder(modalApp);
+    setState(modalApp, { selectedProject: project, selectedWorkspace: workspace });
+    const modalCallbacks = terminalModalCallbacks(modalApp);
+    setState(modalApp, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+
+    modalCallbacks.onStarted();
+
+    expect(modalRecorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("records successful socket input against the workspace-tab and modal origins", () => {
+    const workspaceApp = createApp();
+    const workspaceRecorded = installRecorder(workspaceApp);
+    setState(workspaceApp, { selectedProject: project, selectedWorkspace: workspace });
+    const workspaceCallbacks = terminalTabCallbacks(workspaceApp);
+    setState(workspaceApp, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+
+    sendTerminalInput(workspaceCallbacks.onInput, { readyState: WebSocket.OPEN, send: vi.fn() });
+
+    expect(workspaceRecorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+
+    const modalApp = createApp();
+    const modalRecorded = installRecorder(modalApp);
+    setState(modalApp, { selectedProject: project, selectedWorkspace: workspace });
+    const modalCallbacks = terminalModalCallbacks(modalApp);
+    setState(modalApp, { selectedMachine: remoteMachine, selectedProject: projectBeta });
+
+    sendTerminalInput(modalCallbacks.onInput, { readyState: WebSocket.OPEN, send: vi.fn() });
+
+    expect(modalRecorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+  });
+
+  it("does not record disconnected workspace input or throwing modal input", () => {
     const app = createApp();
     const recorded = installRecorder(app);
     setState(app, { selectedProject: project, selectedWorkspace: workspace });
 
-    terminalTabOnInput(app)();
+    sendTerminalInput(terminalTabCallbacks(app).onInput, { readyState: WebSocket.CONNECTING, send: vi.fn() });
+    expect(() => {
+      sendTerminalInput(terminalModalCallbacks(app).onInput, {
+        readyState: WebSocket.OPEN,
+        send: () => { throw new Error("socket send failed"); },
+      });
+    }).toThrow("socket send failed");
 
-    expect(recorded).toEqual([{ projectId: "p1", machineId: "local" }]);
+    expect(recorded).toEqual([]);
   });
 
   it("records a successful legacy starter prompt and ignores a failed one", async () => {

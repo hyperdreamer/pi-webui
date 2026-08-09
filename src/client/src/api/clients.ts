@@ -60,7 +60,7 @@ import {
   parseProject,
   parseProjectUsageCountResponse,
   parseProjectUsageResponse,
-  parseRecentProjectEntry,
+  parseRecentProjectEntries,
   parseReloaded,
   parseRestored,
   parseSavedAttachments,
@@ -322,9 +322,9 @@ export const projectsApi = {
 };
 
 export const recentProjectsApi = {
-  recentProjects: (machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects`, arrayOf(parseRecentProjectEntry)),
-  recordRecentProject: (projectId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/recent`, arrayOf(parseRecentProjectEntry), { method: "POST" }),
-  removeRecentProject: (entryId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects/${encodeURIComponent(entryId)}`, arrayOf(parseRecentProjectEntry), { method: "DELETE" }),
+  recentProjects: (machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects`, parseRecentProjectEntries),
+  recordRecentProject: (projectId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/recent`, parseRecentProjectEntries, { method: "POST" }),
+  removeRecentProject: (entryId: string, machineId = "local"): Promise<RecentProjectEntry[]> => request(`${machinePrefix(machineId)}/recent-projects/${encodeURIComponent(entryId)}`, parseRecentProjectEntries, { method: "DELETE" }),
 };
 
 export const workspacesApi = {

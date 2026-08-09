@@ -366,6 +366,9 @@ export const appStyles = css`
     opacity: .7;
   }
   .terminal-modal-resize-handle:hover::after { border-color: var(--pi-text); opacity: 1; }
+  @media (max-width: 360px) {
+    .terminal-modal-header { gap: 6px; padding-inline: 8px; }
+  }
 `;
 
 export const workspacePanelStyles = css`

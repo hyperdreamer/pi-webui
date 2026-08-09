@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RECENT_PROJECT_LIMIT } from "../../../shared/apiTypes";
 import { recentProjectsApi } from "./clients";
 
 const entry = { id: "e 1", name: "alpha", path: "/work/alpha", lastUsedAt: "2026-01-01T00:00:00.000Z" };
+
+function entries(count: number): typeof entry[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `entry-${String(index)}`,
+    name: `project-${String(index)}`,
+    path: `/work/project-${String(index)}`,
+    lastUsedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+  }));
+}
 
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type FetchMock = ReturnType<typeof vi.fn<FetchLike>>;
@@ -67,5 +77,34 @@ describe("recentProjectsApi", () => {
     stubJsonFetch([{ id: "e1" }]);
 
     await expect(recentProjectsApi.recentProjects()).rejects.toThrow();
+  });
+
+  it.each([
+    ["a malformed timestamp", [{ ...entry, lastUsedAt: "not-a-timestamp" }]],
+    ["a noncanonical timestamp", [{ ...entry, lastUsedAt: "2026-01-01T00:00:00Z" }]],
+    ["an oversized collection", entries(RECENT_PROJECT_LIMIT + 1)],
+    ["a duplicate id", [entry, { ...entry, path: "/work/beta" }]],
+    ["a duplicate path", [entry, { ...entry, id: "entry-2" }]],
+  ])("rejects %s", async (_label, response) => {
+    stubJsonFetch(response);
+
+    await expect(recentProjectsApi.recentProjects()).rejects.toThrow();
+  });
+
+  it("accepts exactly the maximum valid collection size", async () => {
+    const response = entries(RECENT_PROJECT_LIMIT);
+    stubJsonFetch(response);
+
+    await expect(recentProjectsApi.recentProjects()).resolves.toEqual(response);
+  });
+
+  it.each([
+    ["list", () => recentProjectsApi.recentProjects()],
+    ["record", () => recentProjectsApi.recordRecentProject("project-1")],
+    ["remove", () => recentProjectsApi.removeRecentProject("entry-1")],
+  ])("uses strict collection parsing for the %s response", async (_label, requestHistory) => {
+    stubJsonFetch([entry, { ...entry, path: "/work/beta" }]);
+
+    await expect(requestHistory()).rejects.toThrow();
   });
 });

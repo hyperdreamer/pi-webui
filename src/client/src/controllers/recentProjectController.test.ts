@@ -21,7 +21,7 @@ function harness(overrides: Partial<{
   recentProjects: (machineId?: string) => Promise<RecentProjectEntry[]>;
   recordRecentProject: (projectId: string, machineId?: string) => Promise<RecentProjectEntry[]>;
   removeRecentProject: (entryId: string, machineId?: string) => Promise<RecentProjectEntry[]>;
-}> = {}, machineId = "local", reconcileProjects: (machineId: string) => Promise<void> = () => Promise.resolve()) {
+}> = {}, machineId = "local", reconcileProjects: (machineId: string) => Promise<boolean | undefined> = () => Promise.resolve(undefined)) {
   const states: RecentProjectsState[] = [];
   const errors: string[] = [];
   let current = machineId;
@@ -175,6 +175,72 @@ describe("RecentProjectController recording work", () => {
     });
   });
 
+  it("preserves every distinct A-B-A intent in API issue order", async () => {
+    const betaTouch = deferred<RecentProjectEntry[]>();
+    const issued: string[] = [];
+    const recordRecentProject = vi.fn((projectId: string) => {
+      issued.push(projectId);
+      if (issued.length === 1) return Promise.resolve([entry("/work/alpha"), entry("/work/beta")]);
+      if (projectId === "project-beta") return betaTouch.promise;
+      return Promise.resolve([entry("/work/alpha"), entry("/work/beta")]);
+    });
+    const { controller } = harness({
+      recentProjects: () => Promise.resolve([entry("/work/alpha"), entry("/work/beta")]),
+      recordRecentProject,
+    });
+    await controller.load();
+
+    controller.recordWork("project-alpha");
+    await vi.waitFor(() => { expect(issued).toEqual(["project-alpha"]); });
+
+    controller.recordWork("project-beta");
+    await vi.waitFor(() => { expect(issued).toEqual(["project-alpha", "project-beta"]); });
+    controller.recordWork("project-alpha");
+
+    expect(issued).toEqual(["project-alpha", "project-beta"]);
+    betaTouch.resolve([entry("/work/beta"), entry("/work/alpha")]);
+
+    await vi.waitFor(() => {
+      expect(issued).toEqual(["project-alpha", "project-beta", "project-alpha"]);
+      expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] });
+    });
+  });
+
+  it("collapses a failed same-project burst without clearing a newer queued intent", async () => {
+    const betaTouch = deferred<RecentProjectEntry[]>();
+    const issued: string[] = [];
+    const recordRecentProject = vi.fn((projectId: string) => {
+      issued.push(projectId);
+      if (projectId === "project-alpha") return Promise.resolve([entry("/work/alpha"), entry("/work/beta")]);
+      if (projectId === "project-beta" && issued.filter((id) => id === projectId).length === 1) return betaTouch.promise;
+      if (projectId === "project-beta") return Promise.resolve([entry("/work/beta"), entry("/work/alpha")]);
+      return Promise.resolve([entry("/work/gamma"), entry("/work/alpha"), entry("/work/beta")]);
+    });
+    const { controller, errors } = harness({
+      recentProjects: () => Promise.resolve([entry("/work/alpha"), entry("/work/beta")]),
+      recordRecentProject,
+    });
+    await controller.load();
+    controller.recordWork("project-alpha");
+    await vi.waitFor(() => { expect(issued).toEqual(["project-alpha"]); });
+
+    controller.recordWork("project-beta");
+    await vi.waitFor(() => { expect(issued).toEqual(["project-alpha", "project-beta"]); });
+    controller.recordWork("project-beta");
+    controller.recordWork("project-beta");
+    controller.recordWork("project-gamma");
+    betaTouch.reject(new Error("offline"));
+
+    await vi.waitFor(() => {
+      expect(errors).toEqual(["record recent project"]);
+      expect(issued).toEqual(["project-alpha", "project-beta", "project-gamma"]);
+      expect(controller.state).toEqual({
+        kind: "ready",
+        entries: [entry("/work/gamma"), entry("/work/alpha"), entry("/work/beta")],
+      });
+    });
+  });
+
   it("retries a touch after the previous attempt failed", async () => {
     const recordRecentProject = vi.fn()
       .mockRejectedValueOnce(new Error("offline"))
@@ -224,7 +290,7 @@ describe("RecentProjectController removing entries", () => {
     });
     await controller.load();
 
-    await controller.removeEntry("/work/alpha");
+    await expect(controller.removeEntry("/work/alpha")).resolves.toEqual({ kind: "removed" });
 
     expect(removeRecentProject).toHaveBeenCalledWith("/work/alpha", "local");
     expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta")] });
@@ -252,7 +318,7 @@ describe("RecentProjectController removing entries", () => {
     expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/beta")] });
   });
 
-  it("reconciles history and registered projects before rethrowing a removal conflict", async () => {
+  it("returns a fully reconciled registered conflict without treating it as removal", async () => {
     const calls: string[] = [];
     const conflict = new HttpRequestError("Recent project is registered", 409);
     const recentProjects = vi.fn()
@@ -263,7 +329,7 @@ describe("RecentProjectController removing entries", () => {
       });
     const reconcileProjects = vi.fn(() => {
       calls.push("catalog");
-      return Promise.resolve();
+      return Promise.resolve(undefined);
     });
     const { controller } = harness({
       recentProjects,
@@ -274,7 +340,7 @@ describe("RecentProjectController removing entries", () => {
     }, "local", reconcileProjects);
     await controller.load();
 
-    await expect(controller.removeEntry("/work/alpha")).rejects.toBe(conflict);
+    await expect(controller.removeEntry("/work/alpha")).resolves.toEqual({ kind: "registered-conflict", error: conflict });
 
     expect(calls).toEqual(["remove", "catalog", "history"]);
     expect(recentProjects).toHaveBeenCalledTimes(2);
@@ -282,12 +348,19 @@ describe("RecentProjectController removing entries", () => {
     expect(controller.state).toEqual({ kind: "ready", entries: [entry("/work/alpha")] });
   });
 
-  it("preserves the original conflict when both reconciliation attempts fail", async () => {
+  it.each([
+    ["catalog", false, true],
+    ["history", true, false],
+  ])("preserves the original conflict when %s reconciliation fails", async (_label, catalogSucceeds, historySucceeds) => {
     const conflict = new HttpRequestError("Recent project is registered", 409);
     const recentProjects = vi.fn()
       .mockResolvedValueOnce([entry("/work/alpha")])
-      .mockRejectedValueOnce(new Error("history offline"));
-    const reconcileProjects = vi.fn(() => Promise.reject(new Error("catalog offline")));
+      .mockImplementationOnce(() => historySucceeds
+        ? Promise.resolve([entry("/work/alpha")])
+        : Promise.reject(new Error("history offline")));
+    const reconcileProjects = vi.fn(() => catalogSucceeds
+      ? Promise.resolve(undefined)
+      : Promise.reject(new Error("catalog offline")));
     const { controller } = harness({
       recentProjects,
       removeRecentProject: () => Promise.reject(conflict),
@@ -303,7 +376,7 @@ describe("RecentProjectController removing entries", () => {
   it("does not reconcile a non-conflict removal failure", async () => {
     const failure = new HttpRequestError("Machine offline", 503);
     const recentProjects = vi.fn().mockResolvedValue([entry("/work/alpha")]);
-    const reconcileProjects = vi.fn(() => Promise.resolve());
+    const reconcileProjects = vi.fn(() => Promise.resolve(undefined));
     const { controller } = harness({
       recentProjects,
       removeRecentProject: () => Promise.reject(failure),

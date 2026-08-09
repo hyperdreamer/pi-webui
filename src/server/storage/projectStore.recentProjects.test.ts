@@ -24,6 +24,19 @@ async function readRaw(): Promise<Record<string, unknown>> {
   return parsed;
 }
 
+function storedEntry(index: number): { id: string; name: string; path: string; lastUsedAt: string } {
+  return {
+    id: `entry-${String(index)}`,
+    name: `project-${String(index)}`,
+    path: `/work/project-${String(index)}`,
+    lastUsedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+  };
+}
+
+function storedEntries(count: number): ReturnType<typeof storedEntry>[] {
+  return Array.from({ length: count }, (_, index) => storedEntry(index));
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "pi-webui-recent-projects-"));
   filePath = join(tempDir, "projects.json");
@@ -147,6 +160,34 @@ describe("ProjectStore malformed recent history", () => {
     await writeFile(filePath, `${JSON.stringify(corrupt)}\n`, "utf8");
 
     await expect(storeWithClock().listRecent()).rejects.toThrow(/recent/i);
+  });
+
+  it.each([
+    ["a malformed timestamp", [{ ...storedEntry(0), lastUsedAt: "not-a-timestamp" }]],
+    ["a noncanonical timestamp", [{ ...storedEntry(0), lastUsedAt: "2026-01-01T00:00:00Z" }]],
+    ["more than the history limit", storedEntries(RECENT_PROJECT_LIMIT + 1)],
+    ["a duplicate id", [storedEntry(0), { ...storedEntry(1), id: storedEntry(0).id }]],
+    ["a duplicate path", [storedEntry(0), { ...storedEntry(1), path: storedEntry(0).path }]],
+  ])("quarantines %s without hiding registered projects or rewriting raw history", async (_label, recentProjects) => {
+    const document = { ...corrupt, recentProjects };
+    await writeFile(filePath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+    const store = storeWithClock();
+
+    expect((await store.list()).map((project) => project.path)).toEqual(["/work/alpha"]);
+    await expect(store.listRecent()).rejects.toThrow(/recent projects.*malformed/i);
+
+    await store.add({ path: "/work/beta" });
+
+    const raw = await readRaw();
+    expect(raw["recentProjects"]).toEqual(recentProjects);
+    expect((await store.list()).map((project) => project.path)).toEqual(["/work/alpha", "/work/beta"]);
+  });
+
+  it("accepts exactly the maximum number of valid unique history entries", async () => {
+    const recentProjects = storedEntries(RECENT_PROJECT_LIMIT);
+    await writeFile(filePath, `${JSON.stringify({ projects: [], recentProjects })}\n`, "utf8");
+
+    await expect(storeWithClock().listRecent()).resolves.toEqual(recentProjects);
   });
 
   it.each([

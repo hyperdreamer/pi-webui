@@ -333,7 +333,8 @@ export class PiWebUiApp extends LitElement {
     onChange: () => { this.requestUpdate(); },
     onBackgroundError: (operation, error) => { console.warn(`Failed to ${operation}`, error); },
     reconcileProjects: async (machineId) => {
-      if (selectedMachineId(this.state) === machineId) await this.projects.loadProjects();
+      if (selectedMachineId(this.state) !== machineId) return false;
+      return await this.projects.loadProjects();
     },
   });
   private readonly keyboard = new KeyboardShortcutDispatcher();
@@ -1150,9 +1151,6 @@ export class PiWebUiApp extends LitElement {
   }
 
   private async openRuntimeTerminal(machineId: string, workspace: Workspace | undefined, options?: { terminalId?: string | undefined }): Promise<boolean> {
-    const workTarget = workspace === undefined
-      ? this.selectedProjectWorkTarget(machineId)
-      : { machineId, projectId: workspace.projectId };
     if (selectedMachineId(this.state) !== machineId || (workspace !== undefined && (this.state.selectedWorkspace?.id !== workspace.id || this.state.selectedProject?.id !== workspace.projectId))) {
       if (!this.routeRestoreInProgress) this.rememberCurrentMachineNavigation();
       await this.restoreRouteFor({
@@ -1169,7 +1167,6 @@ export class PiWebUiApp extends LitElement {
       }
     }
     this.openTerminal(options);
-    this.recordProjectWork(workTarget);
     return true;
   }
 
@@ -1537,11 +1534,13 @@ export class PiWebUiApp extends LitElement {
   }
 
   /**
-   * The app shell owns the terminal tab render so it can bind work recording on
-   * terminal input without widening the plugin panel context.
+   * The app shell owns the terminal tab render so it can bind accepted terminal
+   * work without widening the public plugin panel context.
    */
   private renderWorkspaceTerminalTab(context: WorkspacePanelContext): TemplateResult {
-    return html`<terminal-panel .workspace=${context.workspace} .machineId=${context.machine.id} .selectedTerminalId=${context.selectedTerminalId} .autoStart=${context.terminalAutoStart} .onSelectTerminal=${context.onSelectTerminal} .onInput=${this.handleRecordProjectWork}></terminal-panel>`;
+    const workTarget: ProjectWorkTarget = { machineId: context.machine.id, projectId: context.workspace.projectId };
+    const recordWork = () => { this.recordProjectWork(workTarget); };
+    return html`<terminal-panel .workspace=${context.workspace} .machineId=${context.machine.id} .selectedTerminalId=${context.selectedTerminalId} .autoStart=${context.terminalAutoStart} .onSelectTerminal=${context.onSelectTerminal} .onStarted=${recordWork} .onInput=${recordWork}></terminal-panel>`;
   }
 
   private renderRecentProjectsTab(): TemplateResult {
@@ -2437,15 +2436,19 @@ export class PiWebUiApp extends LitElement {
   private renderClosedRecentProjectDialog(): TemplateResult | null {
     const entry = this.closedRecentProjectEntry;
     if (entry === undefined) return null;
+    const generation = this.closedRecentProjectDialogGeneration;
     return html`
       <closed-recent-project-dialog
         .entry=${entry}
-        .onReopen=${async (target: RecentProjectEntry) => {
-          await this.projects.addRegisteredProject(target.path, target.name);
+        .onReopen=${async () => {
+          await this.projects.addRegisteredProject(entry.path, entry.name);
           await this.recentProjects.load();
         }}
-        .onRemove=${(target: RecentProjectEntry) => this.recentProjects.removeEntry(target.id)}
-        .onClose=${() => { this.closeClosedRecentProjectDialog(); }}
+        .onRemove=${async () => {
+          const outcome = await this.recentProjects.removeEntry(entry.id);
+          if (outcome.kind === "registered-conflict") this.setState({ error: outcome.error.message });
+        }}
+        .onClose=${() => { this.closeClosedRecentProjectDialog(entry, generation); }}
       ></closed-recent-project-dialog>
     `;
   }
@@ -2456,8 +2459,8 @@ export class PiWebUiApp extends LitElement {
     this.closedRecentProjectEntry = entry;
   }
 
-  private closeClosedRecentProjectDialog(): void {
-    const generation = this.closedRecentProjectDialogGeneration;
+  private closeClosedRecentProjectDialog(entry: RecentProjectEntry, generation: number): void {
+    if (this.closedRecentProjectEntry !== entry || this.closedRecentProjectDialogGeneration !== generation) return;
     const restoreFocus = this.closedRecentProjectRestoreFocus;
     this.closedRecentProjectRestoreFocus = undefined;
     const dialog = this.renderRoot.querySelector<ClosedRecentProjectDialog>("closed-recent-project-dialog");
@@ -2863,10 +2866,6 @@ export class PiWebUiApp extends LitElement {
     if (target === undefined) return;
     this.recentProjects.recordWork(target.projectId, target.machineId);
   }
-
-  private readonly handleRecordProjectWork = (): void => {
-    this.recordProjectWork();
-  };
 
   private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
     const workspace = this.state.selectedWorkspace;
@@ -4385,6 +4384,10 @@ export class PiWebUiApp extends LitElement {
   private renderTerminalModal() {
     const state = this.state;
     const machineId = selectedMachineId(state);
+    const workTarget: ProjectWorkTarget | undefined = state.selectedWorkspace === undefined
+      ? undefined
+      : { machineId, projectId: state.selectedWorkspace.projectId };
+    const recordWork = () => { this.recordProjectWork(workTarget); };
     return html`
       <div
         class="terminal-modal-backdrop"
@@ -4450,6 +4453,8 @@ export class PiWebUiApp extends LitElement {
               .autoStart=${true}
               .fontSize=${this.terminalModalFontSize}
               .bgOpacity=${this.terminalModalOpacity}
+              .onStarted=${recordWork}
+              .onInput=${recordWork}
             ></terminal-panel>
           </div>
           <div

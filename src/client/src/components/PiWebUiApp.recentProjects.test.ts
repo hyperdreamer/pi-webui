@@ -123,7 +123,7 @@ describe("PiWebUiApp recent projects tab", () => {
     });
   });
 
-  it("refreshes the registered-project catalog before surfacing a removal conflict", async () => {
+  it("reports a fully reconciled removal conflict without rejecting the dialog action", async () => {
     const app = createApp();
     setClosedEntry(app);
     const conflict = new HttpRequestError("Recent project is registered", 409);
@@ -133,10 +133,11 @@ describe("PiWebUiApp recent projects tab", () => {
     await recentProjectsController(app).load();
 
     const onRemove = dialogRemoveHandler(app);
-    await expect(onRemove(closedEntry)).rejects.toBe(conflict);
+    await expect(onRemove(closedEntry)).resolves.toBeUndefined();
 
     expect(loadProjects).toHaveBeenCalledWith("local");
     expect(appState(app).projects).toEqual([projectAlpha]);
+    expect(appState(app).error).toBe("Recent project is registered");
   });
 });
 

@@ -110,15 +110,27 @@ function parseProjectFile(value: unknown): ProjectFile {
 
 function parseRecentProjects(value: unknown): RecentProjectEntry[] {
   if (!Array.isArray(value)) throw new Error("Invalid recent projects");
-  return value.map((entry) => {
+  if (value.length > RECENT_PROJECT_LIMIT) throw new Error("Recent project history exceeds its limit");
+  const entries = value.map((entry) => {
     if (!isRecord(entry)) throw new Error("Invalid recent project");
     const id = entry["id"];
     const name = entry["name"];
     const path = entry["path"];
     const lastUsedAt = entry["lastUsedAt"];
     if (typeof id !== "string" || typeof name !== "string" || typeof path !== "string" || typeof lastUsedAt !== "string") throw new Error("Invalid recent project");
+    const lastUsedDate = new Date(lastUsedAt);
+    if (!Number.isFinite(lastUsedDate.getTime()) || lastUsedDate.toISOString() !== lastUsedAt) throw new Error("Invalid recent project timestamp");
     return { id, name, path, lastUsedAt };
   });
+  const ids = new Set<string>();
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (ids.has(entry.id)) throw new Error("Duplicate recent project id");
+    if (paths.has(entry.path)) throw new Error("Duplicate recent project path");
+    ids.add(entry.id);
+    paths.add(entry.path);
+  }
+  return entries;
 }
 
 function parseProject(value: unknown): Project {

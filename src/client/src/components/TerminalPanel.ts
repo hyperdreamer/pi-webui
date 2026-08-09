@@ -37,6 +37,7 @@ export class TerminalPanel extends LitElement {
   @property({ type: Number }) fontSize = 13;
   @property({ type: Number }) bgOpacity = 100;
   @property({ attribute: false }) onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => void = () => undefined;
+  @property({ attribute: false }) onStarted?: () => void;
   @property({ attribute: false }) onInput?: () => void;
   @query(".terminal-host") private terminalHost?: HTMLDivElement | null;
   @query(".terminal-copy-content") private terminalCopyContent?: HTMLPreElement | null;
@@ -220,13 +221,17 @@ export class TerminalPanel extends LitElement {
   }
 
   private async startTerminal(): Promise<void> {
-    if (this.workspace === undefined) return;
+    const workspace = this.workspace;
+    if (workspace === undefined) return;
+    const machineId = this.machineId;
+    const onStarted = this.onStarted;
     this.error = undefined;
     try {
       const size = this.measureTerminalSize() ?? DEFAULT_TERMINAL_SIZE;
-      const terminal = await terminalsApi.startTerminal(this.workspace.projectId, this.workspace.id, size, this.machineId);
+      const terminal = await terminalsApi.startTerminal(workspace.projectId, workspace.id, size, machineId);
       this.terminals = [...this.terminals, terminal];
       this.selectTerminal(terminal.id);
+      onStarted?.();
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
     }

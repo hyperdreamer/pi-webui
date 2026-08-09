@@ -1035,6 +1035,35 @@ describe("addProject catalog ordering", () => {
 });
 
 describe("addRegisteredProject catalog ordering", () => {
+  it("preserves a server-authored path ending in whitespace", async () => {
+    const savedPath = "/work/alpha ";
+    const alpha = project("alpha", savedPath);
+    let state: AppState = { ...initialAppState(), projects: [] };
+    const addProject = vi.fn().mockResolvedValue(alpha);
+    const selectProject = vi.fn().mockResolvedValue(undefined);
+    const controller = new ProjectController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { selectProject, forgetProject: vi.fn(), clearSelection: vi.fn() },
+      {
+        api: {
+          projects: vi.fn(),
+          addProject,
+          closeProject: vi.fn(),
+          pinProject: vi.fn(),
+          unpinProject: vi.fn(),
+          closeProjectTree: vi.fn(),
+        },
+      },
+    );
+
+    await controller.addRegisteredProject(savedPath, "Alpha");
+
+    expect(addProject).toHaveBeenCalledWith(savedPath, "Alpha", false, "local");
+    expect(state.projects).toEqual([alpha]);
+    expect(selectProject).toHaveBeenCalledWith(alpha);
+  });
+
   it("reconciles a reopen superseded by a newer same-machine catalog operation", async () => {
     const alpha = project("alpha", "/work/alpha");
     const beta = project("beta", "/work/beta");

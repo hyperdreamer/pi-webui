@@ -3,6 +3,10 @@ import type { RecentProjectEntry } from "../../../shared/apiTypes";
 
 const RECORD_OPERATION = "record recent project";
 
+interface RecordWorkIntent {
+  projectId: string;
+}
+
 export type RecentProjectsState =
   | { kind: "loading" }
   | { kind: "ready"; entries: RecentProjectEntry[] }
@@ -14,12 +18,16 @@ export interface RecentProjectApi {
   removeRecentProject(entryId: string, machineId?: string): Promise<RecentProjectEntry[]>;
 }
 
+export type RecentProjectRemovalOutcome =
+  | { kind: "removed" }
+  | { kind: "registered-conflict"; error: HttpRequestError };
+
 export interface RecentProjectControllerDependencies {
   api?: RecentProjectApi;
   machineId: () => string;
   onChange: (state: RecentProjectsState) => void;
   onBackgroundError?: (operation: string, error: unknown) => void;
-  reconcileProjects?: (machineId: string) => void | Promise<void>;
+  reconcileProjects?: (machineId: string) => boolean | undefined | Promise<boolean | undefined>;
 }
 
 /**
@@ -31,7 +39,8 @@ export class RecentProjectController {
   private readonly api: RecentProjectApi;
   private current: RecentProjectsState = { kind: "loading" };
   private readonly queuesByMachine = new Map<string, Promise<void>>();
-  private readonly newestProjectIdByMachine = new Map<string, string>();
+  private readonly authoritativeProjectIdByMachine = new Map<string, string>();
+  private readonly latestIntentByMachine = new Map<string, RecordWorkIntent>();
   private generation = 0;
 
   constructor(private readonly deps: RecentProjectControllerDependencies) {
@@ -45,14 +54,16 @@ export class RecentProjectController {
   async load(): Promise<void> {
     const machineId = this.deps.machineId();
     const generation = ++this.generation;
-    // Invalidate the pre-load newest belief synchronously so later accepted
+    // Invalidate pre-load intent and authority synchronously so later accepted
     // work joins the queue instead of being discarded before it can be issued.
-    this.newestProjectIdByMachine.delete(machineId);
+    this.latestIntentByMachine.delete(machineId);
+    this.authoritativeProjectIdByMachine.delete(machineId);
     this.publish({ kind: "loading" });
     await this.enqueue(machineId, async () => {
       // An operation queued before this load may complete after load issuance
-      // and set the marker again; clear it once more before the GET attempt.
-      this.newestProjectIdByMachine.delete(machineId);
+      // and restore authority; clear it once more before the GET attempt. Do not
+      // clear a work intent accepted after this load was issued.
+      this.authoritativeProjectIdByMachine.delete(machineId);
       try {
         const entries = await this.api.recentProjects(machineId);
         if (this.isStale(generation, machineId)) return;
@@ -74,19 +85,21 @@ export class RecentProjectController {
    * is only an optimization: the store dedupes by path when this belief is stale.
    */
   recordWork(projectId: string, machineId = this.deps.machineId()): void {
-    if (this.isAlreadyNewest(projectId, machineId)) return;
+    if (this.latestIntentByMachine.get(machineId)?.projectId === projectId) return;
+    const intent: RecordWorkIntent = { projectId };
+    this.latestIntentByMachine.set(machineId, intent);
     const generation = this.generation;
     void this.enqueue(machineId, async () => {
-      // A burst of calls for the same project can be queued before the first
-      // response publishes the newest-project belief; re-check at run time so
-      // no redundant request is ever issued.
-      if (this.isAlreadyNewest(projectId, machineId)) return;
+      // Call-time intent and completed authority are deliberately separate: an
+      // operation must not mistake its own queued intent for completed work.
+      if (this.authoritativeProjectIdByMachine.get(machineId) === projectId) return;
       try {
         const entries = await this.api.recordRecentProject(projectId, machineId);
-        this.newestProjectIdByMachine.set(machineId, projectId);
+        this.authoritativeProjectIdByMachine.set(machineId, projectId);
         if (this.isStale(generation, machineId)) return;
         this.publish({ kind: "ready", entries });
       } catch (error) {
+        if (this.latestIntentByMachine.get(machineId) === intent) this.latestIntentByMachine.delete(machineId);
         // Recording is secondary to the work that succeeded; never surface it as
         // a blocking failure or discard the order we already have.
         this.deps.onBackgroundError?.(RECORD_OPERATION, error);
@@ -94,40 +107,46 @@ export class RecentProjectController {
     });
   }
 
-  async removeEntry(entryId: string): Promise<void> {
+  async removeEntry(entryId: string): Promise<RecentProjectRemovalOutcome> {
     const machineId = this.deps.machineId();
+    this.latestIntentByMachine.delete(machineId);
+    this.authoritativeProjectIdByMachine.delete(machineId);
     const generation = this.generation;
+    let outcome: RecentProjectRemovalOutcome | undefined;
     let failure: Error | undefined;
     await this.enqueue(machineId, async () => {
       try {
         const entries = await this.api.removeRecentProject(entryId, machineId);
-        this.newestProjectIdByMachine.delete(machineId);
-        if (this.isStale(generation, machineId)) return;
-        this.publish({ kind: "ready", entries });
+        this.authoritativeProjectIdByMachine.delete(machineId);
+        if (!this.isStale(generation, machineId)) this.publish({ kind: "ready", entries });
+        outcome = { kind: "removed" };
       } catch (error) {
         if (error instanceof HttpRequestError && error.status === 409) {
-          await this.reconcileRemovalConflict(machineId);
+          const reconciled = await this.reconcileRemovalConflict(machineId);
+          if (reconciled) {
+            outcome = { kind: "registered-conflict", error };
+            return;
+          }
         }
         failure = error instanceof Error ? error : new Error(String(error));
       }
     });
     if (failure !== undefined) throw failure;
+    if (outcome === undefined) throw new Error("Recent project removal completed without an outcome");
+    return outcome;
   }
 
-  private isAlreadyNewest(projectId: string, machineId: string): boolean {
-    return this.newestProjectIdByMachine.get(machineId) === projectId;
-  }
-
-  private async reconcileRemovalConflict(machineId: string): Promise<void> {
+  private async reconcileRemovalConflict(machineId: string): Promise<boolean> {
     const catalog = Promise.resolve().then(() => this.deps.reconcileProjects?.(machineId));
     const history = Promise.resolve().then(() => this.api.recentProjects(machineId));
     const results = await Promise.allSettled([catalog, history]);
-    const historyResult = results[1];
-    if (historyResult.status !== "fulfilled") return;
-    this.newestProjectIdByMachine.delete(machineId);
+    const [catalogResult, historyResult] = results;
+    if (catalogResult.status !== "fulfilled" || catalogResult.value === false || historyResult.status !== "fulfilled") return false;
+    this.authoritativeProjectIdByMachine.delete(machineId);
     if (machineId === this.deps.machineId()) {
       this.publish({ kind: "ready", entries: historyResult.value });
     }
+    return true;
   }
 
   private enqueue(machineId: string, operation: () => Promise<void>): Promise<void> {

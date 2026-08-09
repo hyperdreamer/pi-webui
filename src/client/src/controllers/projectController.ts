@@ -27,17 +27,17 @@ export class ProjectController {
     this.onProjectsApplied = deps.onProjectsApplied;
   }
 
-  async loadProjects() {
+  async loadProjects(): Promise<boolean> {
     const machineId = selectedMachineId(this.getState());
     const sequence = ++this.projectCatalogOperationSequence;
     this.setState({ error: "", isLoadingProjects: true });
     try {
       let projects = await this.api.projects(machineId);
-      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return;
+      if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return false;
       let defaultProject: typeof projects[number] | undefined;
       if (projects.length === 0) {
         defaultProject = await this.api.addProject(DEFAULT_PROJECT_PATH, undefined, true, machineId);
-        if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return;
+        if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) return false;
         projects = [defaultProject];
       }
       const projectIds = new Set(projects.map((project) => project.id));
@@ -49,8 +49,10 @@ export class ProjectController {
       if (selectedProjectPathChanged) this.workspaces.clearSelection();
       this.onProjectsApplied?.(machineId);
       if (defaultProject !== undefined) await this.workspaces.selectProject(defaultProject);
+      return true;
     } catch (error) {
       if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ error: String(error) });
+      return false;
     } finally {
       if (this.isCurrentProjectCatalogOperation(machineId, sequence)) this.setState({ isLoadingProjects: false });
     }
@@ -93,7 +95,7 @@ export class ProjectController {
     // The registration supersedes any in-flight load, so its finalizer no longer owns loading state.
     this.setState({ isLoadingProjects: false });
     try {
-      const project = await this.api.addProject(path.trim(), name, false, machineId);
+      const project = await this.api.addProject(path, name, false, machineId);
       if (selectedMachineId(this.getState()) !== machineId) return project;
       if (!this.isCurrentProjectCatalogOperation(machineId, sequence)) {
         // A newer same-machine catalog operation superseded this response, so the

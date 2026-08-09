@@ -53,4 +53,10 @@ describe("terminal modal header", () => {
     expect(styles).toMatch(/\.terminal-modal-drag-spacer\s*\{[^}]*flex:\s*1 1 auto;/);
     expect(styles).toMatch(/\.terminal-modal-close\s*\{[^}]*flex:\s*0 0 auto;/);
   });
+
+  it("tightens header spacing inside the narrowest terminal modal", () => {
+    const styles = appStyles.cssText;
+
+    expect(styles).toMatch(/@media \(max-width:\s*360px\)\s*\{[\s\S]*?\.terminal-modal-header\s*\{[^}]*gap:\s*6px;[^}]*padding-inline:\s*8px;[^}]*\}/);
+  });
 });

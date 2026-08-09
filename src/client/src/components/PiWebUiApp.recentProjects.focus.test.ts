@@ -3,7 +3,7 @@
 import { LitElement } from "lit";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
-import type { Machine, Project, RecentProjectEntry } from "../api";
+import { api, HttpRequestError, recentProjectsApi, type Machine, type Project, type RecentProjectEntry } from "../api";
 import { ProjectController } from "../controllers/projectController";
 import { RecentProjectController } from "../controllers/recentProjectController";
 
@@ -32,6 +32,13 @@ const entry: RecentProjectEntry = {
   lastUsedAt: "2026-01-01T00:00:00.000Z",
 };
 
+const entryBeta: RecentProjectEntry = {
+  id: "entry-beta",
+  name: "Beta",
+  path: "/work/beta",
+  lastUsedAt: "2026-01-01T00:00:01.000Z",
+};
+
 const project: Project = {
   id: "project-alpha",
   name: "Alpha",
@@ -45,6 +52,22 @@ const originalClose = Object.getOwnPropertyDescriptor(dialogPrototype, "close");
 const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
 const closeConnections: boolean[] = [];
 let mountedApp: PiWebUiAppElement | undefined;
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function restoreDialogMethod(name: "showModal" | "close", descriptor: PropertyDescriptor | undefined): void {
   if (descriptor === undefined) Reflect.deleteProperty(dialogPrototype, name);
@@ -155,6 +178,125 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     expect(closeConnections).toEqual([true, true]);
   });
 
+  it("closes and reports a fully reconciled conflict after the row renders registered", async () => {
+    const app = await mountApp();
+    const conflict = new HttpRequestError("Recent project is registered", 409);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
+    vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([entry]);
+    vi.spyOn(api, "projects").mockResolvedValue([project]);
+
+    let panel = await recentPanel(app);
+    recentRow(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".closed-recent-remove").click();
+
+    await vi.waitFor(() => {
+      expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
+    });
+    panel = await settledRecentPanel(app);
+
+    expect(panel.renderRoot.textContent).not.toContain("Closed");
+    expect(appState(app).projects).toEqual([project]);
+    expect(appState(app).error).toBe("Recent project is registered");
+    expect(closeConnections).toEqual([true]);
+  });
+
+  it("keeps a partially reconciled conflict open with the original actionable error", async () => {
+    const app = await mountApp();
+    const conflict = new HttpRequestError("Recent project is registered", 409);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
+    vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([entry]);
+    vi.spyOn(api, "projects").mockRejectedValue(new Error("catalog offline"));
+
+    const panel = await recentPanel(app);
+    recentRow(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".closed-recent-remove").click();
+
+    await vi.waitFor(() => {
+      expect(dialog.renderRoot.textContent).toContain("Recent project is registered");
+    });
+
+    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialog);
+    expect(nativeDialog(dialog).open).toBe(true);
+    expect(appState(app).projects).toEqual([]);
+    expect(closeConnections).toEqual([]);
+  });
+
+  it("keeps a generic removal failure open", async () => {
+    const app = await mountApp();
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(new HttpRequestError("Machine offline", 503));
+
+    const panel = await recentPanel(app);
+    recentRow(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".closed-recent-remove").click();
+
+    await vi.waitFor(() => {
+      expect(dialog.renderRoot.textContent).toContain("Machine offline");
+    });
+
+    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialog);
+    expect(nativeDialog(dialog).open).toBe(true);
+    expect(closeConnections).toEqual([]);
+  });
+
+  it.each([
+    ["Reopen", "cancel"],
+    ["Remove", "escape"],
+    ["Remove", "backdrop"],
+  ] as const)("keeps dialog B open when pending %s in dialog A settles after %s", async (action, dismissal) => {
+    const app = await mountApp([entry, entryBeta]);
+    const projects = projectsController(app);
+    const recent = recentProjectsController(app);
+    const pendingReopen = deferred<Project>();
+    const pendingRemove = deferred<{ kind: "removed" }>();
+    const reopen = vi.spyOn(projects, "addRegisteredProject").mockReturnValue(pendingReopen.promise);
+    const remove = vi.spyOn(recent, "removeEntry").mockReturnValue(pendingRemove.promise);
+
+    let panel = await recentPanel(app);
+    const alphaRow = recentRow(panel, entry.id);
+    alphaRow.click();
+    const dialogA = await openedDialog(app);
+    const closeA = dialogA.onClose;
+    const onCloseA = vi.fn(() => { closeA(); });
+    dialogA.onClose = onCloseA;
+    dialogButton(dialogA, action === "Reopen" ? ".closed-recent-reopen" : ".closed-recent-remove").click();
+
+    await vi.waitFor(() => {
+      expect(dialogButton(dialogA, ".closed-recent-reopen").disabled).toBe(true);
+      expect(dialogButton(dialogA, ".closed-recent-remove").disabled).toBe(true);
+      expect(dialogButton(dialogA, ".closed-recent-cancel").disabled).toBe(false);
+    });
+
+    if (dismissal === "cancel") dialogButton(dialogA, ".closed-recent-cancel").click();
+    else if (dismissal === "escape") nativeDialog(dialogA).dispatchEvent(new Event("cancel", { cancelable: true }));
+    else nativeDialog(dialogA).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    await vi.waitFor(() => { expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull(); });
+    panel = await settledRecentPanel(app);
+    recentRow(panel, entryBeta.id).click();
+    const dialogB = await openedDialog(app);
+    const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
+    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+
+    if (action === "Reopen") {
+      pendingReopen.resolve(project);
+    } else {
+      await setRecentEntries(app, [entryBeta]);
+      pendingRemove.resolve({ kind: "removed" });
+    }
+
+    await vi.waitFor(() => { expect(onCloseA).toHaveBeenCalledTimes(2); });
+    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialogB);
+    expect(nativeDialog(dialogB).open).toBe(true);
+    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+    panel = await settledRecentPanel(app);
+    expect(panel.shadowRoot?.activeElement).not.toBe(alphaRow);
+    if (action === "Reopen") expect(reopen).toHaveBeenCalledWith(entry.path, entry.name);
+    else expect(remove).toHaveBeenCalledWith(entry.id);
+  });
+
   it("restores focus after Reopen but never focuses a row removed from history", async () => {
     const app = await mountApp();
     const projects = projectsController(app);
@@ -176,7 +318,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     vi.spyOn(recent, "removeEntry").mockImplementation(() => {
       Reflect.set(recent, "current", { kind: "ready", entries: [] });
       app.requestUpdate();
-      return Promise.resolve();
+      return Promise.resolve({ kind: "removed" });
     });
     dialogButton(dialog, ".closed-recent-remove").click();
     panel = await settledRecentPanel(app);
@@ -188,7 +330,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
   });
 });
 
-async function mountApp(): Promise<PiWebUiAppElement> {
+async function mountApp(entries: RecentProjectEntry[] = [entry]): Promise<PiWebUiAppElement> {
   const app = new PiWebUiApp();
   setAppState(app, {
     ...initialAppState(),
@@ -197,7 +339,7 @@ async function mountApp(): Promise<PiWebUiAppElement> {
     mainView: "core:recent-projects",
   });
   const recent = recentProjectsController(app);
-  Reflect.set(recent, "current", { kind: "ready", entries: [entry] });
+  Reflect.set(recent, "current", { kind: "ready", entries });
   vi.spyOn(recent, "load").mockResolvedValue();
   for (const methodName of [
     "renegotiateUnreadMachines",
@@ -246,9 +388,9 @@ async function settledRecentPanel(app: PiWebUiAppElement): Promise<RecentProject
   return recentPanel(app);
 }
 
-function recentRow(panel: RecentProjectsPanelElement): HTMLElement {
-  const row = panel.renderRoot.querySelector<HTMLElement>(".recent-project-row");
-  if (row === null) throw new Error("Expected recent project row");
+function recentRow(panel: RecentProjectsPanelElement, entryId = entry.id): HTMLElement {
+  const row = panel.renderRoot.querySelector<HTMLElement>(`[data-recent-project-id="${entryId}"]`);
+  if (row === null) throw new Error(`Expected recent project row ${entryId}`);
   return row;
 }
 
@@ -270,6 +412,18 @@ function dialogButton(dialog: ClosedDialogElement, selector: string): HTMLButton
   const button = dialog.renderRoot.querySelector<HTMLButtonElement>(selector);
   if (button === null) throw new Error(`Expected ${selector}`);
   return button;
+}
+
+function appState(app: PiWebUiAppElement): AppState {
+  const state: unknown = Reflect.get(app, "state");
+  if (!isAppState(state)) throw new Error("App state unavailable");
+  return state;
+}
+
+function isAppState(value: unknown): value is AppState {
+  return typeof value === "object" && value !== null
+    && Array.isArray(Reflect.get(value, "projects"))
+    && typeof Reflect.get(value, "error") === "string";
 }
 
 function setAppState(app: PiWebUiAppElement, state: AppState): void {

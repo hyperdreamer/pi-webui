@@ -1,6 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ProjectStore } from "../storage/projectStore.js";
 import { ProjectNotFoundError, ProjectService, RecentProjectRegisteredError } from "./projectService.js";
@@ -32,6 +32,40 @@ describe("ProjectService recent history", () => {
     await store.add({ path: "/work/beta" });
 
     expect((await service.recordRecent(alpha.id)).map((entry) => entry.path)).toEqual(["/work/alpha", "/work/beta"]);
+  });
+
+  it("reopens a trailing-separator input through one canonical history entry", async () => {
+    const projectDir = join(tempDir, "alpha");
+    await mkdir(projectDir);
+    const canonicalPath = await realpath(projectDir);
+    const first = await service.add({ path: projectDir });
+    const firstHistory = await service.listRecent();
+    await service.close(first.id);
+
+    const reopened = await service.add({ path: `${projectDir}${sep}` });
+    const history = await service.listRecent();
+
+    expect(reopened.path).toBe(canonicalPath);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ id: firstHistory[0]?.id, path: canonicalPath });
+  });
+
+  it.skipIf(process.platform === "win32")("reopens a symlink input through one canonical history entry", async () => {
+    const projectDir = join(tempDir, "alpha");
+    const linkedProjectDir = join(tempDir, "linked-alpha");
+    await mkdir(projectDir);
+    await symlink(projectDir, linkedProjectDir, "dir");
+    const canonicalPath = await realpath(projectDir);
+    const first = await service.add({ path: projectDir });
+    const firstHistory = await service.listRecent();
+    await service.close(first.id);
+
+    const reopened = await service.add({ path: linkedProjectDir });
+    const history = await service.listRecent();
+
+    expect(reopened.path).toBe(canonicalPath);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ id: firstHistory[0]?.id, path: canonicalPath });
   });
 
   it("rejects recording work for an unknown project", async () => {

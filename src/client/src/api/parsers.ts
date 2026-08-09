@@ -6,7 +6,7 @@ import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelP
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
-import { MODEL_TIERS, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
+import { MODEL_TIERS, RECENT_PROJECT_LIMIT, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
@@ -215,12 +215,30 @@ export function parseProject(value: unknown): Project {
 
 export function parseRecentProjectEntry(value: unknown): RecentProjectEntry {
   const record = requireRecord(value);
+  const lastUsedAt = requireString(record, "lastUsedAt");
+  const lastUsedDate = new Date(lastUsedAt);
+  if (!Number.isFinite(lastUsedDate.getTime()) || lastUsedDate.toISOString() !== lastUsedAt) {
+    throw new Error("Invalid canonical recent project timestamp");
+  }
   return {
     id: requireString(record, "id"),
     name: requireString(record, "name"),
     path: requireString(record, "path"),
-    lastUsedAt: requireString(record, "lastUsedAt"),
+    lastUsedAt,
   };
+}
+
+export function parseRecentProjectEntries(value: unknown): RecentProjectEntry[] {
+  const entries = boundedArrayOf(value, parseRecentProjectEntry, RECENT_PROJECT_LIMIT, "recentProjects");
+  const ids = new Set<string>();
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (ids.has(entry.id)) throw new Error("Duplicate recent project id");
+    if (paths.has(entry.path)) throw new Error("Duplicate recent project path");
+    ids.add(entry.id);
+    paths.add(entry.path);
+  }
+  return entries;
 }
 
 export function parseWorkspace(value: unknown): Workspace {
