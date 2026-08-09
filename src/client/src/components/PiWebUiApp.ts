@@ -1148,6 +1148,7 @@ export class PiWebUiApp extends LitElement {
       }
     }
     this.openTerminal(options);
+    this.recordProjectWork();
   }
 
   private selectTerminal(terminalId: string | undefined, options?: { replace?: boolean | undefined }): void {
@@ -1507,10 +1508,18 @@ export class PiWebUiApp extends LitElement {
         title: panel.title,
         ...(panel.icon === undefined ? {} : { icon: panel.icon }),
         ...(badge === undefined ? {} : { badge }),
-        render: () => panel.render(context),
+        render: () => panel.id === "core:workspace.terminal" ? this.renderWorkspaceTerminalTab(context) : panel.render(context),
       });
     }
     return tabs;
+  }
+
+  /**
+   * The app shell owns the terminal tab render so it can bind work recording on
+   * terminal input without widening the plugin panel context.
+   */
+  private renderWorkspaceTerminalTab(context: WorkspacePanelContext): TemplateResult {
+    return html`<terminal-panel .workspace=${context.workspace} .machineId=${context.machine.id} .selectedTerminalId=${context.selectedTerminalId} .autoStart=${context.terminalAutoStart} .onSelectTerminal=${context.onSelectTerminal} .onInput=${this.handleRecordProjectWork}></terminal-panel>`;
   }
 
   private renderRecentProjectsTab(): TemplateResult {
@@ -2796,6 +2805,22 @@ export class PiWebUiApp extends LitElement {
     this.starterModelPolicy = undefined;
   }
 
+  /**
+   * Record meaningful user work on the selected project. Called only from
+   * user-initiated boundaries: prompt submission, terminal start, terminal input,
+   * and task or terminal-command dispatch. Selection, browsing, polling, and
+   * streaming must never call this.
+   */
+  private recordProjectWork(): void {
+    const projectId = this.state.selectedProject?.id;
+    if (projectId === undefined) return;
+    this.recentProjects.recordWork(projectId);
+  }
+
+  private readonly handleRecordProjectWork = (): void => {
+    this.recordProjectWork();
+  };
+
   private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return undefined;
@@ -2856,8 +2881,15 @@ export class PiWebUiApp extends LitElement {
   private createWorkspacePanelTerminal(workspace: Workspace, machineId: string, origin: string): WorkspacePanelTerminal {
     const terminalCommandRuns = this.terminalCommandRunsForOrigin(origin, machineId);
     return {
-      open: (options) => { void this.openRuntimeTerminal(machineId, workspace, options); },
-      runCommand: (input) => terminalCommandRuns.runCommand({ ...input, workspace }),
+      open: (options) => {
+        void this.openRuntimeTerminal(machineId, workspace, options);
+        this.recordProjectWork();
+      },
+      runCommand: (input) => {
+        const run = terminalCommandRuns.runCommand({ ...input, workspace });
+        this.recordProjectWork();
+        return run;
+      },
     };
   }
 
@@ -3780,6 +3812,7 @@ export class PiWebUiApp extends LitElement {
     const hasAttachments = attachments !== undefined && attachments.length > 0;
     if (!hasAttachments && streamingBehavior === undefined && this.auth.handleSlashCommand(text)) return;
     void this.sessions.send(text, streamingBehavior, attachments, delivery);
+    this.recordProjectWork();
   }
 
   // Stable handler identities for child components. Inlined arrow closures

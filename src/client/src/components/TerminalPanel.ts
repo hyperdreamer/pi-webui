@@ -37,6 +37,7 @@ export class TerminalPanel extends LitElement {
   @property({ type: Number }) fontSize = 13;
   @property({ type: Number }) bgOpacity = 100;
   @property({ attribute: false }) onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => void = () => undefined;
+  @property({ attribute: false }) onInput?: () => void;
   @query(".terminal-host") private terminalHost?: HTMLDivElement | null;
   @query(".terminal-copy-content") private terminalCopyContent?: HTMLPreElement | null;
   @query(".terminal-copy-selector") private terminalCopySelector?: HTMLTextAreaElement | null;
@@ -469,6 +470,7 @@ export class TerminalPanel extends LitElement {
   }
 
   private send(message: { type: "input"; data: string } | { type: "resize"; cols: number; rows: number }): void {
+    if (message.type === "input") this.onInput?.();
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
   }
 
