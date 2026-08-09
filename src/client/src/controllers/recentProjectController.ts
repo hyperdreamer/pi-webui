@@ -45,11 +45,16 @@ export class RecentProjectController {
   async load(): Promise<void> {
     const machineId = this.deps.machineId();
     const generation = ++this.generation;
+    // Invalidate the pre-load newest belief synchronously so later accepted
+    // work joins the queue instead of being discarded before it can be issued.
+    this.newestProjectIdByMachine.delete(machineId);
     this.publish({ kind: "loading" });
     await this.enqueue(machineId, async () => {
+      // An operation queued before this load may complete after load issuance
+      // and set the marker again; clear it once more before the GET attempt.
+      this.newestProjectIdByMachine.delete(machineId);
       try {
         const entries = await this.api.recentProjects(machineId);
-        this.newestProjectIdByMachine.delete(machineId);
         if (this.isStale(generation, machineId)) return;
         this.publish({ kind: "ready", entries });
       } catch (error) {

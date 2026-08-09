@@ -145,6 +145,36 @@ describe("RecentProjectController recording work", () => {
     });
   });
 
+  it("records later work when an earlier reload invalidates the newest belief", async () => {
+    const reload = deferred<RecentProjectEntry[]>();
+    const recordRecentProject = vi.fn()
+      .mockResolvedValueOnce([entry("/work/alpha"), entry("/work/beta")])
+      .mockResolvedValueOnce([entry("/work/alpha"), entry("/work/beta")]);
+    const recentProjects = vi.fn()
+      .mockResolvedValueOnce([entry("/work/alpha"), entry("/work/beta")])
+      .mockReturnValueOnce(reload.promise);
+    const { controller } = harness({ recentProjects, recordRecentProject });
+
+    await controller.load();
+    controller.recordWork("project-alpha");
+    await vi.waitFor(() => { expect(recordRecentProject).toHaveBeenCalledTimes(1); });
+
+    const loading = controller.load();
+    controller.recordWork("project-alpha");
+    await Promise.resolve();
+
+    expect(recordRecentProject).toHaveBeenCalledTimes(1);
+    reload.resolve([entry("/work/beta"), entry("/work/alpha")]);
+    await loading;
+    await vi.waitFor(() => { expect(recordRecentProject).toHaveBeenCalledTimes(2); });
+
+    expect(recordRecentProject).toHaveBeenLastCalledWith("project-alpha", "local");
+    expect(controller.state).toEqual({
+      kind: "ready",
+      entries: [entry("/work/alpha"), entry("/work/beta")],
+    });
+  });
+
   it("retries a touch after the previous attempt failed", async () => {
     const recordRecentProject = vi.fn()
       .mockRejectedValueOnce(new Error("offline"))
