@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.11.5
+
+### Patch Changes
+
+- da9aad8: Avoid rebuilding session activity indexes for every row when rendering large session lists.
+- b83c921: Place project hierarchy markers before disclosure controls and align descendant guides with their parent controls.
+- 3cc7ba2: Keep unsubmitted prompt attachments with the session they were added to, so switching sessions no longer shows another session's pending files.
+
 ## 1.11.4
 
 ### Patch Changes
