@@ -156,7 +156,8 @@ export class AppContextBar extends LitElement {
 
   private contextItemsElement(): HTMLElement | undefined {
     const contextItems = this.contextItems;
-    return contextItems instanceof HTMLElement ? contextItems : undefined;
+    if (typeof HTMLElement === "undefined" || !(contextItems instanceof HTMLElement)) return undefined;
+    return contextItems;
   }
 
   private readonly onContextScroll = () => {
