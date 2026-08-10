@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.0
+
+### Minor Changes
+
+- bd4c33d: Add a Recent Projects tab to the workspace panel. It lists the projects you have most recently registered or worked in on the selected machine, keeps up to 20 of them across restarts, and stays available when no workspace is selected. Selecting an entry whose project is no longer registered offers to reopen it or remove it from the history.
+
 ## 1.11.6
 
 ### Patch Changes
