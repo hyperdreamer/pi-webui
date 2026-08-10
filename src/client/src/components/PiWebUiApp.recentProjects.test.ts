@@ -142,7 +142,9 @@ describe("PiWebUiApp recent projects tab", () => {
 });
 
 function setClosedEntry(app: PiWebUiApp): void {
-  if (!Reflect.set(app, "closedRecentProjectEntry", closedEntry)) throw new Error("Could not set closed entry");
+  const open: unknown = Reflect.get(app, "openClosedRecentProject");
+  if (typeof open !== "function") throw new Error("Could not open closed entry");
+  open.call(app, closedEntry, () => undefined);
 }
 
 function dialogReopenHandler(app: PiWebUiApp): (entry: RecentProjectEntry) => Promise<void> {

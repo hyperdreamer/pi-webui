@@ -388,6 +388,7 @@ export class PiWebUiApp extends LitElement {
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private closedRecentProjectEntry: RecentProjectEntry | undefined;
+  private closedRecentProjectMachineId: string | undefined;
   private closedRecentProjectRestoreFocus: (() => void) | undefined;
   private closedRecentProjectDialogGeneration = 0;
   @state() private starterSessionDefaults: SessionDefaultsResponse | SessionDefaultsV2Response | undefined;
@@ -1463,6 +1464,7 @@ export class PiWebUiApp extends LitElement {
 
   private handleMachineChange(previous: AppState, next: AppState): void {
     if ((previous.selectedMachine?.id ?? "local") === (next.selectedMachine?.id ?? "local")) return;
+    this.closeClosedRecentProjectDialogForMachineChange();
     this.closeProjectStatistics();
     this.projectActivityOwnership.handleSelectedMachineChanged();
     const pendingMachineId = this.pendingRemoteRouteRestore?.machineId ?? "local";
@@ -2435,20 +2437,25 @@ export class PiWebUiApp extends LitElement {
 
   private renderClosedRecentProjectDialog(): TemplateResult | null {
     const entry = this.closedRecentProjectEntry;
-    if (entry === undefined) return null;
+    const machineId = this.closedRecentProjectMachineId;
+    if (entry === undefined || machineId === undefined) return null;
     const generation = this.closedRecentProjectDialogGeneration;
     return html`
       <closed-recent-project-dialog
         .entry=${entry}
         .onReopen=${async () => {
+          if (selectedMachineId(this.state) !== machineId) return;
           await this.projects.addRegisteredProject(entry.path, entry.name);
+          if (selectedMachineId(this.state) !== machineId) return;
           await this.recentProjects.load();
         }}
         .onRemove=${async () => {
+          if (selectedMachineId(this.state) !== machineId) return;
           const outcome = await this.recentProjects.removeEntry(entry.id);
+          if (selectedMachineId(this.state) !== machineId) return;
           if (outcome.kind === "registered-conflict") this.setState({ error: outcome.error.message });
         }}
-        .onClose=${() => { this.closeClosedRecentProjectDialog(entry, generation); }}
+        .onClose=${() => { this.closeClosedRecentProjectDialog(machineId, entry, generation); }}
       ></closed-recent-project-dialog>
     `;
   }
@@ -2456,18 +2463,34 @@ export class PiWebUiApp extends LitElement {
   private openClosedRecentProject(entry: RecentProjectEntry, restoreFocus: () => void): void {
     this.closedRecentProjectDialogGeneration += 1;
     this.closedRecentProjectRestoreFocus = restoreFocus;
+    this.closedRecentProjectMachineId = selectedMachineId(this.state);
     this.closedRecentProjectEntry = entry;
   }
 
-  private closeClosedRecentProjectDialog(entry: RecentProjectEntry, generation: number): void {
-    if (this.closedRecentProjectEntry !== entry || this.closedRecentProjectDialogGeneration !== generation) return;
-    const restoreFocus = this.closedRecentProjectRestoreFocus;
+  private closeClosedRecentProjectDialogForMachineChange(): void {
+    const machineId = this.closedRecentProjectMachineId;
+    const entry = this.closedRecentProjectEntry;
+    if (machineId === undefined || entry === undefined) return;
+    this.closeClosedRecentProjectDialog(machineId, entry, this.closedRecentProjectDialogGeneration, false);
+  }
+
+  private closeClosedRecentProjectDialog(machineId: string, entry: RecentProjectEntry, generation: number, shouldRestoreFocus = true): void {
+    if (this.closedRecentProjectMachineId !== machineId
+      || this.closedRecentProjectEntry !== entry
+      || this.closedRecentProjectDialogGeneration !== generation) return;
+    if (shouldRestoreFocus && selectedMachineId(this.state) !== machineId) return;
+    const restoreFocus = shouldRestoreFocus ? this.closedRecentProjectRestoreFocus : undefined;
     this.closedRecentProjectRestoreFocus = undefined;
     const dialog = this.renderRoot.querySelector<ClosedRecentProjectDialog>("closed-recent-project-dialog");
     dialog?.close();
+    this.closedRecentProjectMachineId = undefined;
     this.closedRecentProjectEntry = undefined;
+    if (!shouldRestoreFocus) return;
     void this.updateComplete.then(() => {
-      if (this.closedRecentProjectEntry === undefined && this.closedRecentProjectDialogGeneration === generation) {
+      if (this.closedRecentProjectMachineId === undefined
+        && this.closedRecentProjectEntry === undefined
+        && this.closedRecentProjectDialogGeneration === generation
+        && selectedMachineId(this.state) === machineId) {
         restoreFocus?.();
       }
     });

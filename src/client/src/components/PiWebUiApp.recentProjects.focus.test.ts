@@ -4,14 +4,17 @@ import { LitElement } from "lit";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
 import { api, HttpRequestError, recentProjectsApi, type Machine, type Project, type RecentProjectEntry } from "../api";
+import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
 import { RecentProjectController } from "../controllers/recentProjectController";
+import { WorkspaceController } from "../controllers/workspaceController";
 
 vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
 const { PiWebUiApp } = await import("./PiWebUiApp");
 const { ClosedRecentProjectDialog } = await import("./ClosedRecentProjectDialog");
 const { RecentProjectsPanel } = await import("./RecentProjectsPanel");
 const { WorkspacePanel } = await import("./WorkspacePanel");
+const { AppNavigationPanel } = await import("./appShell/AppNavigationPanel");
 
 type PiWebUiAppElement = InstanceType<typeof PiWebUiApp>;
 type ClosedDialogElement = InstanceType<typeof ClosedRecentProjectDialog>;
@@ -21,6 +24,15 @@ const localMachine: Machine = {
   id: "local",
   name: "Local",
   kind: "local",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+const remoteMachine: Machine = {
+  id: "remote-b",
+  name: "Remote B",
+  kind: "remote",
+  baseUrl: "http://remote-b.test",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
@@ -241,6 +253,79 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     expect(closeConnections).toEqual([]);
   });
 
+  it("closes without restoring local row focus when the navigation selector changes machines", async () => {
+    const app = await mountApp([entry], [localMachine, remoteMachine]);
+    const panel = await recentPanel(app);
+    const restoreLocalFocus = vi.fn();
+    Reflect.set(panel, "focusEntry", restoreLocalFocus);
+    recentRow(panel).click();
+    await openedDialog(app);
+
+    await selectMachineFromNavigation(app, remoteMachine);
+    await app.updateComplete;
+
+    expect(appState(app).selectedMachine).toBe(remoteMachine);
+    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
+    expect(closeConnections).toEqual([true]);
+    expect(restoreLocalFocus).not.toHaveBeenCalled();
+  });
+
+  it("does not run retained local actions against the newly selected remote machine", async () => {
+    const app = await mountApp([entry], [localMachine, remoteMachine]);
+    vi.spyOn(workspaceController(app), "selectProject").mockResolvedValue();
+    const addProject = vi.spyOn(api, "addProject").mockResolvedValue(project);
+    const removeRecentProject = vi.spyOn(recentProjectsApi, "removeRecentProject").mockResolvedValue([]);
+
+    const panel = await recentPanel(app);
+    recentRow(panel).click();
+    const dialogA = await openedDialog(app);
+    const reopenA = dialogA.onReopen;
+    const removeA = dialogA.onRemove;
+
+    await selectMachineFromNavigation(app, remoteMachine);
+    await reopenA(entry);
+    await removeA(entry);
+
+    expect(appState(app).selectedMachine).toBe(remoteMachine);
+    expect(addProject).not.toHaveBeenCalled();
+    expect(removeRecentProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps remote dialog B open when a deferred local action settles", async () => {
+    const app = await mountApp([entry, entryBeta], [localMachine, remoteMachine]);
+    const pendingReopen = deferred<Project>();
+    const reopen = vi.spyOn(projectsController(app), "addRegisteredProject").mockReturnValue(pendingReopen.promise);
+
+    let panel = await recentPanel(app);
+    const restoreLocalFocus = vi.fn();
+    Reflect.set(panel, "focusEntry", restoreLocalFocus);
+    recentRow(panel, entry.id).click();
+    const dialogA = await openedDialog(app);
+    const closeAttempted = observeNextDialogClose(dialogA);
+    dialogButton(dialogA, ".closed-recent-reopen").click();
+
+    await vi.waitFor(() => {
+      expect(dialogButton(dialogA, ".closed-recent-reopen").disabled).toBe(true);
+    });
+
+    await selectMachineFromNavigation(app, remoteMachine);
+    panel = await settledRecentPanel(app);
+    recentRow(panel, entryBeta.id).click();
+    const dialogB = await openedDialog(app);
+    const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
+    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+
+    pendingReopen.resolve(project);
+    await closeAttempted;
+    await app.updateComplete;
+
+    expect(reopen).toHaveBeenCalledWith(entry.path, entry.name);
+    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialogB);
+    expect(nativeDialog(dialogB).open).toBe(true);
+    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+    expect(restoreLocalFocus).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["Reopen", "cancel"],
     ["Remove", "escape"],
@@ -330,10 +415,11 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
   });
 });
 
-async function mountApp(entries: RecentProjectEntry[] = [entry]): Promise<PiWebUiAppElement> {
+async function mountApp(entries: RecentProjectEntry[] = [entry], machines: Machine[] = [localMachine]): Promise<PiWebUiAppElement> {
   const app = new PiWebUiApp();
   setAppState(app, {
     ...initialAppState(),
+    machines,
     selectedMachine: localMachine,
     workspaceTool: "core:recent-projects",
     mainView: "core:recent-projects",
@@ -346,6 +432,7 @@ async function mountApp(entries: RecentProjectEntry[] = [entry]): Promise<PiWebU
     "refreshWorkspaceActivity",
     "loadClientConfig",
     "ensureGatewayPluginsLoaded",
+    "loadPluginsForSelectedMachine",
     "loadProjectsAndRestoreRoute",
   ]) {
     Reflect.set(app, methodName, () => Promise.resolve());
@@ -414,6 +501,38 @@ function dialogButton(dialog: ClosedDialogElement, selector: string): HTMLButton
   return button;
 }
 
+function observeNextDialogClose(dialog: ClosedDialogElement): Promise<void> {
+  const attempted = deferred<undefined>();
+  let onClose = dialog.onClose;
+  Object.defineProperty(dialog, "onClose", {
+    configurable: true,
+    get: () => () => {
+      try {
+        onClose();
+      } finally {
+        attempted.resolve(undefined);
+      }
+    },
+    set: (next: () => void) => { onClose = next; },
+  });
+  return attempted.promise;
+}
+
+async function selectMachineFromNavigation(app: PiWebUiAppElement, machine: Machine): Promise<void> {
+  vi.spyOn(projectsController(app), "loadProjects").mockResolvedValue(true);
+  vi.spyOn(machineController(app), "refreshMachineHealth").mockResolvedValue(undefined);
+  vi.spyOn(machineController(app), "refreshMachineRuntime").mockResolvedValue(undefined);
+  Reflect.set(app, "focusNavigationTarget", () => Promise.resolve());
+
+  const navigation = app.renderRoot.querySelector("app-navigation-panel");
+  if (!(navigation instanceof AppNavigationPanel)) throw new Error("Expected app navigation panel");
+  await navigation.updateComplete;
+  if (navigation.onSelectMachine === undefined) throw new Error("Expected machine selection callback");
+  await navigation.onSelectMachine(machine);
+  await app.updateComplete;
+  await Promise.resolve();
+}
+
 function appState(app: PiWebUiAppElement): AppState {
   const state: unknown = Reflect.get(app, "state");
   if (!isAppState(state)) throw new Error("App state unavailable");
@@ -446,5 +565,17 @@ function recentProjectsController(app: PiWebUiAppElement): RecentProjectControll
 function projectsController(app: PiWebUiAppElement): ProjectController {
   const controller: unknown = Reflect.get(app, "projects");
   if (!(controller instanceof ProjectController)) throw new Error("Project controller unavailable");
+  return controller;
+}
+
+function machineController(app: PiWebUiAppElement): MachineController {
+  const controller: unknown = Reflect.get(app, "machines");
+  if (!(controller instanceof MachineController)) throw new Error("Machine controller unavailable");
+  return controller;
+}
+
+function workspaceController(app: PiWebUiAppElement): WorkspaceController {
+  const controller: unknown = Reflect.get(app, "workspaces");
+  if (!(controller instanceof WorkspaceController)) throw new Error("Workspace controller unavailable");
   return controller;
 }
