@@ -2,6 +2,7 @@ import { api as defaultApi, type Project, type SessionInfo, type Workspace } fro
 import { resetWorkspaceScopedState, type AppState } from "../appState";
 import { mergeCachedNewSessions } from "../cachedNewSessions";
 import { machineProjectKey } from "../machineKeys";
+import { CancellableLoadScope, isLoadCancellation } from "./cancellableLoadScope";
 import { selectedMachineId, type GetState, type RouteTarget, type SetState, type UpdateUrl } from "./types";
 import type {
   ProjectCatalogSnapshot,
@@ -39,6 +40,14 @@ interface WorkspaceSelectionTarget {
   preserveError?: boolean | undefined;
   catalogScope?: CatalogWorkspaceSelectionScope | undefined;
   catalogFallback?: CatalogFallbackSelection | undefined;
+  /**
+   * Internal: this selection continues the foreground load that is already
+   * open (a project selection choosing its workspace) rather than starting a
+   * new one. It must inherit that load's cancellation instead of restarting it,
+   * or completing a project selection would abort the project read it belongs
+   * to when background catalog topology arrives first.
+   */
+  continuesSelectionLoad?: boolean | undefined;
 }
 
 interface ReconcileProjectCatalogOptions {
@@ -55,6 +64,14 @@ export class WorkspaceController {
   private readonly onBackgroundError: WorkspaceControllerDependencies["onBackgroundError"];
   private readonly unhydratedWorkspaceKeys = new Set<string>();
   private readonly latestTopologyRequestOrderByScope = new Map<string, number>();
+  /**
+   * Cancellation for the foreground selection's reads. Switching projects or
+   * workspaces abandons the previous selection, and identity guards alone cannot
+   * stop its response from arriving and being parsed first. Background catalog
+   * reconciliation deliberately does not use this scope: it must not cancel the
+   * foreground selection the user is waiting on.
+   */
+  private readonly selectionLoad = new CancellableLoadScope();
   private nextTopologyRequestOrder = 0;
   private projectSessionsRequest = 0;
   private projectSelectionRequest = 0;
@@ -74,6 +91,7 @@ export class WorkspaceController {
 
   clearSelection(options?: { updateUrl?: boolean | undefined; preserveError?: boolean | undefined }) {
     this.invalidatePendingProjectSelection();
+    this.selectionLoad.abort();
     const error = this.getState().error;
     this.projectSessionsRequest += 1;
     this.sessions.clearActiveSession();
@@ -104,14 +122,17 @@ export class WorkspaceController {
   async selectProject(project: Project, target?: RouteTarget) {
     this.projectSessionsRequest += 1;
     const pending = this.beginProjectSelection(project, target);
+    const signal = this.selectionLoad.restart();
     this.sessions.clearActiveSession();
     this.setState({ selectedProject: project, selectedWorkspace: undefined, workspaces: [], isLoadingWorkspaces: true, ...resetWorkspaceScopedState() });
     try {
-      const workspaces = await this.api.workspaces(project.id, pending.machineId);
+      const workspaces = await this.api.workspaces(project.id, pending.machineId, signal);
       if (!this.isPendingProjectSelectionCurrent(pending)) return;
       this.applyProjectWorkspaceProjection(project, workspaces, pending.machineId);
       await this.completePendingProjectSelection(pending, workspaces);
     } catch (error) {
+      // A read abandoned by a newer selection is supersession, not failure.
+      if (isLoadCancellation(error)) return;
       if (!this.isPendingProjectSelectionCurrent(pending)) return;
       this.pendingProjectSelection = undefined;
       this.setState({ error: String(error), isLoadingWorkspaces: false });
@@ -124,6 +145,16 @@ export class WorkspaceController {
     const state = this.getState();
     const preserveMemory = isSameWorkspaceScope(state, workspace);
     const projectSessionsRequest = ++this.projectSessionsRequest;
+    // A catalog-driven fallback runs while the user's own selection may still be
+    // loading, so it neither restarts nor borrows the foreground scope; its own
+    // topology-token guards decide whether its result may be applied. A
+    // continuation inherits the open load. Any other selection is a new
+    // foreground action and supersedes whatever was loading before it.
+    const signal = target?.catalogScope !== undefined
+      ? undefined
+      : target?.continuesSelectionLoad === true
+        ? this.selectionLoad.signal
+        : this.selectionLoad.restart();
     const machineId = selectedMachineId(state);
     const error = state.error;
     this.workspaceSelection.rememberWorkspace({ ...workspace, projectId: machineProjectKey(machineId, workspace.projectId) });
@@ -139,7 +170,7 @@ export class WorkspaceController {
     });
     const catalogFallback = target?.catalogFallback;
     try {
-      const listedSessions = await this.api.sessions(workspace.path, machineId);
+      const listedSessions = await this.api.sessions(workspace.path, machineId, signal);
       if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
         if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
           workspace,
@@ -160,11 +191,14 @@ export class WorkspaceController {
       }
       const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
-      void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope);
+      void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope, signal);
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
       if (session) await this.sessions.selectSession(session, { updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
+      // Supersession by a newer selection: the newer selection owns the state,
+      // including its own loading indicator, so nothing is published here.
+      if (isLoadCancellation(error)) return;
       if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
         if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
           workspace,
@@ -197,6 +231,7 @@ export class WorkspaceController {
     currentSessions: SessionInfo[],
     machineId: string,
     catalogScope?: CatalogWorkspaceSelectionScope,
+    signal?: AbortSignal,
   ): Promise<void> {
     const state = this.getState();
     const projectWorkspaces = state.workspaces.filter((candidate) => candidate.projectId === workspace.projectId);
@@ -205,14 +240,15 @@ export class WorkspaceController {
     try {
       const sessionLists = await Promise.all(projectWorkspaces.map(async (candidate) => {
         if (candidate.id === workspace.id) return currentSessions;
-        return mergeCachedNewSessions(candidate.path, await this.api.sessions(candidate.path, machineId), machineId);
+        return mergeCachedNewSessions(candidate.path, await this.api.sessions(candidate.path, machineId, signal), machineId);
       }));
       if (!this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)
         || !this.isCatalogSelectionScopeCurrent(catalogScope)) return;
       this.setState({ projectSessions: uniqueSessionsByPath(sessionLists.flat()) });
     } catch {
       // Cross-workspace grouping is an enhancement; preserve the current
-      // workspace's already-loaded sessions if a sibling cannot be listed.
+      // workspace's already-loaded sessions if a sibling cannot be listed. A
+      // cancelled sibling read lands here too and is equally harmless.
     }
   }
 
@@ -384,6 +420,7 @@ export class WorkspaceController {
       await this.selectWorkspace(workspace, {
         sessionId: pending.target?.sessionId,
         updateUrl: pending.target?.updateUrl,
+        continuesSelectionLoad: true,
       });
       return;
     }

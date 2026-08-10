@@ -327,7 +327,7 @@ describe("WorkspaceController", () => {
       topologyRequest,
     });
     await vi.waitFor(() => {
-      expect(listSessions).toHaveBeenCalledWith(featureWorkspace.path, "local");
+      expect(listSessions).toHaveBeenCalledWith(featureWorkspace.path, "local", expect.any(AbortSignal));
     });
 
     controller.captureProjectCatalogTopologyRequest({
@@ -447,7 +447,7 @@ describe("WorkspaceController", () => {
     await vi.waitFor(() => {
       expect(state.projectSessions).toEqual([parentSession, spawnedSession]);
     });
-    expect(sessionsApi).toHaveBeenCalledWith(featureWorkspace.path, "local");
+    expect(sessionsApi).toHaveBeenCalledWith(featureWorkspace.path, "local", expect.any(AbortSignal));
   });
 
   it("applies a selected-project topology snapshot to both workspace projections and hydrates only added workspaces", async () => {
@@ -599,7 +599,7 @@ describe("WorkspaceController", () => {
       workspaces: [mainWorkspace],
     });
     await vi.waitFor(() => {
-      expect(listSessions).toHaveBeenCalledWith(mainWorkspace.path, "local");
+      expect(listSessions).toHaveBeenCalledWith(mainWorkspace.path, "local", undefined);
     });
 
     harness.apply({ projects: [{ ...project, path: "/workspace-moved" }] });

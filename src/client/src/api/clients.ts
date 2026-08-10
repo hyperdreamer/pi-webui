@@ -95,6 +95,13 @@ import { machineGitDiffPath, messagePath } from "./urls";
 
 const machinePrefix = (machineId = "local") => `api/machines/${encodeURIComponent(machineId)}`;
 
+/**
+ * Request options carrying a selection's cancellation signal. Selection-scoped
+ * reads accept one so switching away can abandon them at the transport instead
+ * of paying to receive and parse a response the user no longer wants.
+ */
+const abortable = (signal: AbortSignal | undefined): RequestInit | undefined => (signal === undefined ? undefined : { signal });
+
 type SessionLookup = SessionRef | string;
 
 function sessionId(session: SessionLookup): string {
@@ -328,7 +335,7 @@ export const recentProjectsApi = {
 };
 
 export const workspacesApi = {
-  workspaces: (projectId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces`, arrayOf(parseWorkspace)),
+  workspaces: (projectId: string, machineId = "local", signal?: AbortSignal) => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces`, arrayOf(parseWorkspace), abortable(signal)),
   deleteWorkspace: (projectId: string, workspaceId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, parseTerminalCommandRun, { method: "DELETE" }),
   workspaceTree: (projectId: string, workspaceId: string, path = "", machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/tree?path=${encodeURIComponent(path)}`, parseFileTreeResponse),
   workspaceFile: (projectId: string, workspaceId: string, path: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/file?path=${encodeURIComponent(path)}`, parseFileContentResponse),
@@ -361,7 +368,7 @@ export const workspacesApi = {
 };
 
 export const sessionsApi = {
-  sessions: (cwd: string, machineId = "local") => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo)),
+  sessions: (cwd: string, machineId = "local", signal?: AbortSignal) => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo), abortable(signal)),
   reorder: (session: SessionRef, input: SessionReorderRequest, machineId = "local") => request(sessionPath(session, "reorder", machineId), parseSessionReorderResponse, {
     method: "POST",
     body: JSON.stringify(input),
@@ -396,10 +403,10 @@ export const sessionsApi = {
   forceCleanup: (machineId = "local") => request(`${machinePrefix(machineId)}/sessions/cleanup/force`, parseSessionCleanupExecuteResponse, { method: "POST" }),
   archiveMany: (sessions: readonly SessionLookup[], machineId = "local") => request(`${machinePrefix(machineId)}/sessions/bulk/archive`, parseSessionBulkArchiveResponse, { method: "POST", body: sessionBulkMutationBody(sessions) }),
   deleteArchivedMany: (sessions: readonly SessionLookup[], machineId = "local") => request(`${machinePrefix(machineId)}/sessions/bulk/delete-archived`, parseSessionBulkDeleteArchivedResponse, { method: "POST", body: sessionBulkMutationBody(sessions) }),
-  messages: (session: SessionLookup, options?: { limit?: number; before?: number }, machineId = "local") => request(messagePath(session, options, machineId), parseMessagePage),
-  status: (session: SessionLookup, machineId = "local") => request(sessionQueryPath(session, "status", machineId), parseSessionStatus),
+  messages: (session: SessionLookup, options?: { limit?: number; before?: number }, machineId = "local", signal?: AbortSignal) => request(messagePath(session, options, machineId), parseMessagePage, abortable(signal)),
+  status: (session: SessionLookup, machineId = "local", signal?: AbortSignal) => request(sessionQueryPath(session, "status", machineId), parseSessionStatus, abortable(signal)),
   systemPrompt: (session: SessionLookup, machineId = "local") => request(sessionQueryPath(session, "system-prompt", machineId), parseSessionSystemPrompt),
-  streamSnapshot: (session: SessionLookup, machineId = "local") => request(sessionQueryPath(session, "stream-snapshot", machineId), parseSessionStreamSnapshot),
+  streamSnapshot: (session: SessionLookup, machineId = "local", signal?: AbortSignal) => request(sessionQueryPath(session, "stream-snapshot", machineId), parseSessionStreamSnapshot, abortable(signal)),
   clearQueue: (session: SessionLookup, machineId = "local") => request(sessionPath(session, "queue/clear", machineId), parseSessionStatus, { method: "POST", body: sessionBody(session) }),
   dismissWarning: (session: SessionLookup, dismissId: string, machineId = "local") => request(sessionPath(session, "warnings/dismiss", machineId), parseSessionStatus, { method: "POST", body: sessionBody(session, { dismissId }) }),
   modelPolicy: (session: SessionLookup, machineId = "local") => request(sessionQueryPath(session, "model-policy", machineId), parseSessionModelPolicyResponse),

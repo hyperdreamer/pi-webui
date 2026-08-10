@@ -17,6 +17,7 @@ import type { ClientSessionModelPolicyStatus, PromptAttachmentDelivery, SessionM
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
+import { CancellableLoadScope, isLoadCancellation } from "./cancellableLoadScope";
 
 const MESSAGE_PAGE_SIZE = 100;
 const OVERLOAD_RESYNC_MIN_INTERVAL_MS = 1_000;
@@ -235,6 +236,14 @@ export class SessionController {
   private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
   private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
   private readonly selectedSessionRefreshes = new TrailingRefreshCoordinator<string>();
+  /**
+   * Cancellation for the selected session's join reads. Selecting another session
+   * (or clearing the selection when the project/workspace changes) abandons the
+   * previous session's transcript, status, and snapshot reads; without this they
+   * still arrived and were parsed, which is most of the cost of switching away
+   * from a busy session.
+   */
+  private readonly selectionLoad = new CancellableLoadScope();
 
   constructor(
     private readonly getState: GetState,
@@ -274,6 +283,7 @@ export class SessionController {
 
   clearActiveSession() {
     this.selectionSeq += 1;
+    this.selectionLoad.abort();
     this.socket.close();
     this.notifications?.clearSelectedSession();
     this.streamWatermark = undefined;
@@ -419,6 +429,7 @@ export class SessionController {
     }
     this.sessionSelection.rememberSession({ ...session, cwd: this.workspaceSelectionKey(session.cwd) });
     const seq = ++this.selectionSeq;
+    this.selectionLoad.restart();
     this.socket.close();
     this.streamWatermark = undefined;
     this.clearPendingUpdates();
@@ -439,7 +450,7 @@ export class SessionController {
     let buffered: JoinEventCollector | undefined;
     try {
       if (session.archived === true) {
-        const page = await this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState()));
+        const page = await this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState()), this.selectionLoad.signal);
         if (seq !== this.selectionSeq || this.getState().selectedSession?.id !== session.id) return;
         const history = this.transcripts.mergeHistory(transcriptKey, page);
         this.setState({ ...history, isLoadingEarlierMessages: false, status: undefined, activity: undefined });
@@ -465,6 +476,9 @@ export class SessionController {
       this.onSelectedSessionReady?.({ machineId, session });
       if (options?.updateUrl !== false) this.updateUrl();
     } catch (error) {
+      // A join abandoned by a newer selection is supersession, not failure: the
+      // newer selection owns the socket and the displayed state.
+      if (isLoadCancellation(error)) return;
       if (seq !== this.selectionSeq || this.getState().selectedSession?.id !== session.id) {
         // Tree navigation still needs to know when a same-session reselection's
         // shared trailing refresh failed, even though this selection is stale.
@@ -1501,6 +1515,7 @@ export class SessionController {
 
   private refreshSelectedSessionTarget(target: SelectedSessionRefreshTarget): Promise<void> {
     return this.requestSelectedSessionRefresh(target).catch((error: unknown) => {
+      if (isLoadCancellation(error)) return;
       if (this.isCurrentRefreshTarget(target)) this.setState({ error: String(error) });
     });
   }
@@ -1510,16 +1525,26 @@ export class SessionController {
     return this.selectedSessionRefreshes.request(key, async () => {
       if (!this.isCurrentRefreshTarget(target)) return;
       this.flushPendingUpdates();
+      // Read per attempt, never captured: the coordinator re-runs a trailing pass
+      // for this key, and a signal captured when this closure was built could
+      // already belong to a superseded load, which would cancel the live
+      // selection's own refresh.
+      const signal = this.selectionLoad.signal;
       const [page, status, streamSnapshot] = await Promise.all([
-        this.api.messages(target.session, { limit: MESSAGE_PAGE_SIZE }, target.machineId),
-        this.api.status(target.session, target.machineId),
+        this.api.messages(target.session, { limit: MESSAGE_PAGE_SIZE }, target.machineId, signal),
+        this.api.status(target.session, target.machineId, signal),
         // The stream snapshot is a progressive enhancement. An older/not-yet-
         // restarted session daemon or a remote machine on an older pi-webui has no
         // `stream-snapshot` route and returns 404; treat any failure as "no
         // partial to seed". A `seq: 0` watermark drops nothing (live events start
         // at seq 1, and un-stamped events fail open), so the core transcript
         // still loads and streams normally.
-        this.api.streamSnapshot(target.session, target.machineId).catch((): SessionStreamSnapshot => ({ seq: 0, partial: null })),
+        this.api.streamSnapshot(target.session, target.machineId, signal).catch((error: unknown): SessionStreamSnapshot => {
+          // A cancelled snapshot must not be mistaken for "no partial to seed":
+          // rethrow so the whole superseded join unwinds as supersession.
+          if (isLoadCancellation(error)) throw error;
+          return { seq: 0, partial: null };
+        }),
         this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve(),
       ]);
       if (!this.isCurrentRefreshTarget(target)) return;

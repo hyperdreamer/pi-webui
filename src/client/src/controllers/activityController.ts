@@ -28,6 +28,11 @@ export class ActivityController {
     const state = this.getState();
     const isSelectedMachine = selectedMachineId(state) === machineId;
     const currentMachineActivities = state.machineActivities[machineId] ?? (isSelectedMachine ? state.workspaceActivities : {});
+    // A busy session republishes its workspace activity continuously, but only
+    // the session/terminal flags are rendered. Rewriting both activity maps for
+    // a heartbeat that changes nothing visible rerendered the whole app; on a
+    // live tab every idle republish was such a no-op.
+    if (!changesVisibleWorkspaceActivity(currentMachineActivities, activity)) return;
     const nextMachineActivities = applyWorkspaceActivityToMap(currentMachineActivities, activity);
     this.setState({
       machineActivities: { ...state.machineActivities, [machineId]: nextMachineActivities },
@@ -61,4 +66,20 @@ export function applyWorkspaceActivityToMap(current: Record<string, WorkspaceAct
     return next;
   }
   return Object.fromEntries(Object.entries(next).filter(([cwd]) => cwd !== activity.cwd));
+}
+
+/**
+ * Whether applying this activity would change what the UI can show for its
+ * workspace. Only the session/terminal flags are rendered (see
+ * `workspaceActivityIndicator`); `updatedAt` is parsed but never used for
+ * ordering, staleness, or expiry, so a timestamp-only republish is invisible.
+ *
+ * Compared against the owning machine's map so a first observation for another
+ * machine is never mistaken for a duplicate of the selected machine's entry.
+ */
+function changesVisibleWorkspaceActivity(current: Record<string, WorkspaceActivity>, activity: WorkspaceActivity): boolean {
+  const existing = current[activity.cwd];
+  if (existing === undefined) return isWorkspaceActivityActive(activity);
+  return existing.hasSessionActivity !== activity.hasSessionActivity
+    || existing.hasTerminalActivity !== activity.hasTerminalActivity;
 }

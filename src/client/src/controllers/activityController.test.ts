@@ -105,4 +105,73 @@ describe("ActivityController", () => {
       { "/snapshot": activity("/snapshot"), "/live": activity("/live") },
     ]);
   });
+
+  // A busy background session republishes workspace activity continuously, but
+  // only the session/terminal flags are rendered. Applying a heartbeat whose
+  // flags are unchanged rewrote both activity maps and rerendered the whole app
+  // for no visible reason; measured on a live tab as 138 of 138 idle events.
+  it("ignores a heartbeat whose visible activity flags did not change", () => {
+    let state: AppState = { ...initialAppState(), selectedMachine: { id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" } };
+    let writes = 0;
+    const onActivityApplied = vi.fn();
+    const controller = new ActivityController(() => state, (patch) => { writes += 1; state = { ...state, ...patch }; }, { onActivityApplied });
+
+    controller.applyWorkspaceActivity(activity("/repo"), "local");
+    const afterFirstApply = writes;
+    const publishedActivities = state.workspaceActivities;
+
+    controller.applyWorkspaceActivity(activity("/repo", { updatedAt: "heartbeat-1" }), "local");
+    controller.applyWorkspaceActivity(activity("/repo", { updatedAt: "heartbeat-2" }), "local");
+
+    expect(writes).toBe(afterFirstApply);
+    expect(state.workspaceActivities).toBe(publishedActivities);
+    expect(onActivityApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a heartbeat that turns terminal activity on for an already-active workspace", () => {
+    let state: AppState = { ...initialAppState(), selectedMachine: { id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" } };
+    const controller = new ActivityController(() => state, (patch) => { state = { ...state, ...patch }; });
+
+    controller.applyWorkspaceActivity(activity("/repo"), "local");
+    controller.applyWorkspaceActivity(activity("/repo", { hasTerminalActivity: true }), "local");
+
+    expect(state.workspaceActivities["/repo"]).toEqual(activity("/repo", { hasTerminalActivity: true }));
+  });
+
+  it("applies a heartbeat that ends activity so the indicator can clear", () => {
+    let state: AppState = { ...initialAppState(), selectedMachine: { id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" } };
+    const controller = new ActivityController(() => state, (patch) => { state = { ...state, ...patch }; });
+
+    controller.applyWorkspaceActivity(activity("/repo"), "local");
+    controller.applyWorkspaceActivity(activity("/repo", { hasSessionActivity: false }), "local");
+
+    expect(state.workspaceActivities).toEqual({});
+  });
+
+  // An inactive heartbeat for a workspace that is already absent is also a
+  // no-op, and must not resurrect an entry or rewrite the maps.
+  it("ignores an inactive heartbeat for a workspace that is not tracked", () => {
+    let state: AppState = { ...initialAppState(), selectedMachine: { id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" } };
+    let writes = 0;
+    const controller = new ActivityController(() => state, (patch) => { writes += 1; state = { ...state, ...patch }; });
+
+    controller.applyWorkspaceActivity(activity("/idle", { hasSessionActivity: false }), "local");
+
+    expect(writes).toBe(0);
+    expect(state.workspaceActivities).toEqual({});
+  });
+
+  // The guard compares against the machine that owns the activity. A heartbeat
+  // for a non-selected machine must not be judged against the selected
+  // machine's map, or a real change would be dropped.
+  it("applies an unselected machine's first activity even when the selected machine tracks that cwd", () => {
+    let state: AppState = { ...initialAppState(), selectedMachine: { id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" } };
+    const controller = new ActivityController(() => state, (patch) => { state = { ...state, ...patch }; });
+
+    controller.applyWorkspaceActivity(activity("/repo"), "local");
+    controller.applyWorkspaceActivity(activity("/repo"), "remote");
+
+    expect(state.machineActivities["remote"]).toEqual({ "/repo": activity("/repo") });
+    expect(state.machineActivities["local"]).toEqual({ "/repo": activity("/repo") });
+  });
 });
