@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.2
+
+### Patch Changes
+
+- b9472e3: Use the xterm color 225 (`#FFD7FF`) for the E-Ink Color Paper theme's viewport handle.
+
 ## 1.12.1
 
 ### Patch Changes
