@@ -237,11 +237,11 @@ export class SessionController {
   private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
   private readonly selectedSessionRefreshes = new TrailingRefreshCoordinator<string>();
   /**
-   * Cancellation for the selected session's join reads. Selecting another session
-   * (or clearing the selection when the project/workspace changes) abandons the
-   * previous session's transcript, status, and snapshot reads; without this they
-   * still arrived and were parsed, which is most of the cost of switching away
-   * from a busy session.
+   * Cancellation for the selected session's join and history-page reads.
+   * Selecting another session (or clearing the selection when the project or
+   * workspace changes) abandons the previous session's transcript, status, and
+   * snapshot reads; without this they still arrive and are parsed, which is most
+   * of the cost of switching away from a busy session.
    */
   private readonly selectionLoad = new CancellableLoadScope();
 
@@ -277,6 +277,7 @@ export class SessionController {
   dispose() {
     this.disposed = true;
     this.selectionSeq += 1;
+    this.selectionLoad.abort();
     this.socket.close();
     this.clearPendingUpdates();
   }
@@ -508,16 +509,21 @@ export class SessionController {
     const state = this.getState();
     const session = state.selectedSession;
     if (!session || state.isLoadingEarlierMessages || state.messagePageStart <= 0) return;
+    const machineId = selectedMachineId(state);
+    const selectionSeq = this.selectionSeq;
+    const signal = this.selectionLoad.signal;
     this.setState({ isLoadingEarlierMessages: true });
     try {
-      const page = await this.api.messages(session, { before: state.messagePageStart, limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState()));
-      if (this.getState().selectedSession?.id !== session.id) return;
+      const page = await this.api.messages(session, { before: state.messagePageStart, limit: MESSAGE_PAGE_SIZE }, machineId, signal);
+      if (!this.isCurrentHistoryTarget(session.id, machineId, selectionSeq)) return;
       const history = this.transcripts.mergeHistory(this.sessionCacheKey(session.id), page);
       this.setState(history);
     } catch (error) {
-      this.setState({ error: String(error) });
+      if (!isLoadCancellation(error) && this.isCurrentHistoryTarget(session.id, machineId, selectionSeq)) {
+        this.setState({ error: String(error) });
+      }
     } finally {
-      if (this.getState().selectedSession?.id === session.id) this.setState({ isLoadingEarlierMessages: false });
+      if (this.isCurrentHistoryTarget(session.id, machineId, selectionSeq)) this.setState({ isLoadingEarlierMessages: false });
     }
   }
 
@@ -1572,7 +1578,14 @@ export class SessionController {
   }
 
   private isCurrentSessionSelection(sessionId: string, machineId: string, selectionSeq: number): boolean {
-    return selectionSeq === this.selectionSeq && this.isSelectedSessionIdentity(sessionId, machineId);
+    return this.isCurrentHistoryTarget(sessionId, machineId, selectionSeq)
+      && this.isSelectedSessionIdentity(sessionId, machineId);
+  }
+
+  private isCurrentHistoryTarget(sessionId: string, machineId: string, selectionSeq: number): boolean {
+    if (this.disposed || selectionSeq !== this.selectionSeq) return false;
+    const state = this.getState();
+    return selectedMachineId(state) === machineId && state.selectedSession?.id === sessionId;
   }
 
   private isCurrentSessionOrderScope(machineId: string, workspaceId: string | undefined, selectionSeq: number): boolean {
@@ -1675,6 +1688,7 @@ export class SessionController {
   private selectClientPendingStartSession(session: ClientPendingStartSessionInfo, options?: { updateUrl?: boolean | undefined; activity?: SessionActivity | undefined; sessions?: SessionInfo[] | undefined }): void {
     this.sessionSelection.rememberSession({ ...session, cwd: this.workspaceSelectionKey(session.cwd) });
     this.selectionSeq += 1;
+    this.selectionLoad.abort();
     this.socket.close();
     this.notifications?.clearSelectedSession();
     this.streamWatermark = undefined;

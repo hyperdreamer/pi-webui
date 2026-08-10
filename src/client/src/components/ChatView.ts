@@ -353,6 +353,9 @@ export class ChatView extends LitElement {
   private readonly disclosures = new ChatDisclosureController();
   private readonly scrollController = new ChatScrollController();
   private suppressScrollSave = false;
+  private nextScrollSaveSuppressionOwner = 0;
+  private readonly scrollSaveSuppressionOwners = new Set<number>();
+  private prependScrollSaveSuppressionOwner: number | undefined;
   private suppressLoadMoreRequests = false;
   private loadMoreCheckFrame: number | undefined;
   private scrollToBottomFrame: number | undefined;
@@ -506,6 +509,8 @@ export class ChatView extends LitElement {
     this.saveScrollPosition();
     this.scrollController.dispose();
     this.prependRestoreToken += 1;
+    this.clearScrollSaveSuppressions();
+    this.suppressLoadMoreRequests = false;
     if (this.restoreScrollFrame !== undefined) cancelAnimationFrame(this.restoreScrollFrame);
     if (this.loadMoreCheckFrame !== undefined) cancelAnimationFrame(this.loadMoreCheckFrame);
     if (this.scrollToBottomFrame !== undefined) cancelAnimationFrame(this.scrollToBottomFrame);
@@ -537,7 +542,7 @@ export class ChatView extends LitElement {
     this.retainedEmptyNotificationTrayTargetKey = undefined;
     this.sessionInfoOpen = false;
     this.scrollController.clearScheduledSave();
-    this.suppressScrollSave = false;
+    this.clearScrollSaveSuppressions();
     this.suppressLoadMoreRequests = false;
     this.pendingScrollRestoreSessionId = undefined;
     this.pendingScrollRestorePosition = undefined;
@@ -561,10 +566,13 @@ export class ChatView extends LitElement {
       this.retainedEmptyNotificationTrayTargetKey = undefined;
     }
     if (changed.has("sessionId") || changed.has("messages") || changed.has("messageStart")) {
+      const previousRenderedGroupCount = this.renderedGroupCountBeforePrepend(changed);
       const groups = this.groupedMessages();
       this.renderedGroupStart = changed.has("sessionId")
         ? initialRenderedGroupStart(groups)
-        : clampRenderedGroupStart(groups, this.renderedGroupStart);
+        : previousRenderedGroupCount === undefined
+          ? clampRenderedGroupStart(groups, this.renderedGroupStart)
+          : initialRenderedGroupStart(groups, previousRenderedGroupCount);
     }
     if (changed.has("messages")) this.pinnedToBottom = this.pinnedToBottom && (this.didChatHeightChange() || this.isNearBottom());
   }
@@ -1424,6 +1432,20 @@ export class ChatView extends LitElement {
       && this.renderedGroupStart < oldRenderedGroupStart;
   }
 
+  private renderedGroupCountBeforePrepend(changed: Map<string, unknown>): number | undefined {
+    if (changed.has("sessionId")) return undefined;
+    const oldMessageStart = changed.get("messageStart");
+    if (typeof oldMessageStart !== "number" || this.messageStart >= oldMessageStart) return undefined;
+    const oldMessageTotal = changed.get("messageTotal");
+    if (typeof oldMessageTotal === "number" && this.messageTotal < oldMessageTotal) return undefined;
+    // messageStart is a raw JSONL offset, while the rendered groups come from a
+    // normalized list that can coalesce raw entries. Preserve the visible suffix
+    // by count because its display indexes can shift when an earlier raw page is
+    // merged.
+    const count = renderedChatGroups(this.groupedMessagesCache, this.renderedGroupStart).length;
+    return count > 0 ? count : undefined;
+  }
+
   private requestLoadMoreIfNeeded(): void {
     if (this.loadMoreCheckFrame !== undefined) return;
     this.loadMoreCheckFrame = requestAnimationFrame(() => {
@@ -1594,7 +1616,7 @@ export class ChatView extends LitElement {
 
   private cancelPrependRestore(): void {
     this.prependRestoreToken += 1;
-    this.suppressScrollSave = false;
+    this.releasePrependScrollSaveSuppression();
     this.suppressLoadMoreRequests = false;
   }
 
@@ -1606,8 +1628,10 @@ export class ChatView extends LitElement {
 
   restorePrependScrollAnchor(anchor: PrependScrollAnchor | undefined): void {
     if (!this.chat || !anchor) return;
+    this.releasePrependScrollSaveSuppression();
+    const suppressionOwner = this.acquireScrollSaveSuppression();
+    this.prependScrollSaveSuppressionOwner = suppressionOwner;
     this.suppressLoadMoreRequests = true;
-    this.suppressScrollSave = true;
     const token = this.prependRestoreToken + 1;
     this.prependRestoreToken = token;
     let frames = 0;
@@ -1626,7 +1650,7 @@ export class ChatView extends LitElement {
       }
       requestAnimationFrame(() => {
         if (token !== this.prependRestoreToken) return;
-        this.suppressScrollSave = false;
+        this.releasePrependScrollSaveSuppression(suppressionOwner);
         this.suppressLoadMoreRequests = false;
       });
     };
@@ -1666,13 +1690,38 @@ export class ChatView extends LitElement {
   }
 
   private withSuppressedScrollSave(callback: () => void) {
-    this.suppressScrollSave = true;
-    callback();
-    requestAnimationFrame(() => {
+    const owner = this.acquireScrollSaveSuppression();
+    try {
+      callback();
+    } finally {
       requestAnimationFrame(() => {
-        this.suppressScrollSave = false;
+        requestAnimationFrame(() => { this.releaseScrollSaveSuppression(owner); });
       });
-    });
+    }
+  }
+
+  private acquireScrollSaveSuppression(): number {
+    const owner = ++this.nextScrollSaveSuppressionOwner;
+    this.scrollSaveSuppressionOwners.add(owner);
+    this.suppressScrollSave = true;
+    return owner;
+  }
+
+  private releaseScrollSaveSuppression(owner: number): void {
+    if (!this.scrollSaveSuppressionOwners.delete(owner)) return;
+    this.suppressScrollSave = this.scrollSaveSuppressionOwners.size > 0;
+  }
+
+  private releasePrependScrollSaveSuppression(owner = this.prependScrollSaveSuppressionOwner): void {
+    if (owner === undefined) return;
+    if (this.prependScrollSaveSuppressionOwner === owner) this.prependScrollSaveSuppressionOwner = undefined;
+    this.releaseScrollSaveSuppression(owner);
+  }
+
+  private clearScrollSaveSuppressions(): void {
+    this.scrollSaveSuppressionOwners.clear();
+    this.prependScrollSaveSuppressionOwner = undefined;
+    this.suppressScrollSave = false;
   }
 
   private groupDisclosureKey(startIndex: number, endIndex: number, defaultOpen: boolean): string {

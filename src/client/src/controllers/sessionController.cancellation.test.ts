@@ -94,6 +94,99 @@ describe("SessionController selection load cancellation", () => {
     expect(reads.messageSignals[0]?.aborted).toBe(true);
   });
 
+  it("aborts an unfinished earlier-history read when another session is selected", async () => {
+    const reads = emptyReads();
+    const earlierPage = deferred<MessagePage>();
+    let earlierSignal: AbortSignal | undefined;
+    const api: typeof defaultApi = {
+      ...pendingJoinApi(reads),
+      messages: (session, options, _machineId, signal) => {
+        if (sessionLookupId(session) === replacementSession.id) return Promise.resolve(emptyPage);
+        if (options?.before === undefined) return Promise.resolve({ messages: [{ role: "user", content: "loaded" }], start: 100, total: 200 });
+        earlierSignal = signal;
+        signal?.addEventListener("abort", () => { earlierPage.reject(asError(signal.reason)); }, { once: true });
+        return earlierPage.promise;
+      },
+    };
+    const { controller, state } = controllerWith(api);
+
+    await controller.selectSession(oldSession, { updateUrl: false });
+    const loadingEarlier = controller.loadEarlierMessages();
+    await Promise.resolve();
+
+    try {
+      await controller.selectSession(replacementSession, { updateUrl: false });
+
+      expect(earlierSignal).toBeDefined();
+      expect(earlierSignal?.aborted).toBe(true);
+      expect(state().error).toBe("");
+    } finally {
+      earlierPage.resolve(emptyPage);
+      await Promise.allSettled([loadingEarlier]);
+    }
+  });
+
+  it("does not let a late earlier-history failure overwrite the replacement session", async () => {
+    const reads = emptyReads();
+    const earlierPage = deferred<MessagePage>();
+    const api: typeof defaultApi = {
+      ...pendingJoinApi(reads),
+      messages: (session, options) => {
+        if (sessionLookupId(session) === replacementSession.id) return Promise.resolve(emptyPage);
+        if (options?.before === undefined) return Promise.resolve({ messages: [{ role: "user", content: "loaded" }], start: 100, total: 200 });
+        // Deliberately ignore AbortSignal to model a transport that wins the
+        // cancellation race and rejects with its own late failure.
+        return earlierPage.promise;
+      },
+    };
+    const { controller, state } = controllerWith(api);
+
+    await controller.selectSession(oldSession, { updateUrl: false });
+    const loadingEarlier = controller.loadEarlierMessages();
+    await Promise.resolve();
+    await controller.selectSession(replacementSession, { updateUrl: false });
+    earlierPage.reject(new Error("stale paging failure"));
+    await loadingEarlier;
+
+    expect(state().selectedSession?.id).toBe(replacementSession.id);
+    expect(state().error).toBe("");
+  });
+
+  it("aborts an unfinished join when a client-pending session is selected", async () => {
+    const reads = emptyReads();
+    const { controller } = controllerWith(pendingJoinApi(reads));
+    const pendingSession = { ...replacementSession, id: "pending-session", clientPendingStart: true as const, machineId: "local" };
+
+    const abandonedJoin = controller.selectSession(oldSession, { updateUrl: false });
+    await Promise.resolve();
+
+    try {
+      await controller.selectSession(pendingSession, { updateUrl: false });
+
+      expect(reads.messageSignals[0]?.aborted).toBe(true);
+    } finally {
+      controller.clearActiveSession();
+      await abandonedJoin;
+    }
+  });
+
+  it("aborts an unfinished join when the controller is disposed", async () => {
+    const reads = emptyReads();
+    const { controller } = controllerWith(pendingJoinApi(reads));
+
+    const abandonedJoin = controller.selectSession(oldSession, { updateUrl: false });
+    await Promise.resolve();
+
+    try {
+      controller.dispose();
+
+      expect(reads.messageSignals[0]?.aborted).toBe(true);
+    } finally {
+      controller.clearActiveSession();
+      await abandonedJoin;
+    }
+  });
+
   it("reports no error when a superseded join is aborted", async () => {
     const reads = emptyReads();
     const { controller, state } = controllerWith(pendingJoinApi(reads));

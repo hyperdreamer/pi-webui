@@ -479,6 +479,32 @@ describe("Pi package API", () => {
 });
 
 describe("session API compatibility", () => {
+  it("forwards one selection signal through every abortable session read", async () => {
+    const signal = new AbortController().signal;
+    const fetchMock = stubSequenceFetch([
+      jsonResponse([]),
+      jsonResponse({ messages: [], start: 0, total: 0 }),
+      jsonResponse({
+        sessionId: "s1",
+        isStreaming: false,
+        isCompacting: false,
+        isBashRunning: false,
+        pendingMessageCount: 0,
+        queuedMessages: [],
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        cost: 0,
+      }),
+      jsonResponse({ seq: 0, partial: null }),
+    ]);
+
+    await sessionsApi.sessions("/repo", "remote", signal);
+    await sessionsApi.messages("s1", undefined, "remote", signal);
+    await sessionsApi.status("s1", "remote", signal);
+    await sessionsApi.streamSnapshot("s1", "remote", signal);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.every((call) => call[1]?.signal === signal)).toBe(true);
+  });
   it("reads and updates session model policy through encoded nested-deployment routes", async () => {
     vi.stubEnv("BASE_URL", "./");
     vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
@@ -950,6 +976,15 @@ describe("machine-scoped file suggestion API", () => {
 });
 
 describe("machine-scoped workspace API", () => {
+  it("forwards the selection signal when listing workspaces", async () => {
+    const signal = new AbortController().signal;
+    const fetchMock = stubJsonFetch([]);
+
+    await workspacesApi.workspaces("project", "remote", signal);
+
+    expect(fetchCall(fetchMock, 0)[1]?.signal).toBe(signal);
+  });
+
   it("keeps project ids in one encoded route segment when listing workspaces", async () => {
     const fetchMock = stubJsonFetch([]);
 
