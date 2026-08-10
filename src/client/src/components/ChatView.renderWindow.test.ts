@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PREPEND_RESTORE_SETTLE_FRAMES } from "../chatScrollAnchoring";
 import { chatScrollStorageKey } from "../chatScrollPosition";
 import type { ChatLine } from "./shared";
 import { ChatView } from "./ChatView";
@@ -296,6 +297,19 @@ describe("ChatView bounded transcript rendering", () => {
     if (typeof cancelPrependRestore !== "function") throw new Error("ChatView.cancelPrependRestore is not callable");
     cancelPrependRestore.call(view);
     expect(Reflect.get(view, "suppressScrollSave")).toBe(false);
+  });
+
+  it("does not leak scroll-save suppression when a prepend restore is superseded", async () => {
+    const { view } = await mountTranscript();
+    await flushFrames();
+    await flushFrame();
+
+    view.restorePrependScrollAnchor({ distanceFromBottom: 0 });
+    view.restorePrependScrollAnchor({ distanceFromBottom: 0 });
+    for (let frame = 0; frame < PREPEND_RESTORE_SETTLE_FRAMES + 4; frame += 1) await flushFrame();
+
+    expect(Reflect.get(view, "suppressScrollSave")).toBe(false);
+    expect(Reflect.get(view, "suppressLoadMoreRequests")).toBe(false);
   });
 
   it("clears scroll-save suppression when the view disconnects", async () => {

@@ -566,6 +566,8 @@ export class ChatView extends LitElement {
       this.retainedEmptyNotificationTrayTargetKey = undefined;
     }
     if (changed.has("sessionId") || changed.has("messages") || changed.has("messageStart")) {
+      // Must read the old cache before groupedMessages() refreshes it; the helper
+      // measures the visible suffix from the pre-prepend window to preserve it.
       const previousRenderedGroupCount = this.renderedGroupCountBeforePrepend(changed);
       const groups = this.groupedMessages();
       this.renderedGroupStart = changed.has("sessionId")
