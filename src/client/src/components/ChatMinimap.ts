@@ -273,6 +273,12 @@ export class ChatMinimap extends LitElement {
       z-index: 1;
     }
 
+    :host-context([data-pi-web-ui-theme="themes:eink-color-paper"]) .viewport-indicator {
+      background: color-mix(in srgb, #FFD7FF 40%, transparent);
+      border-top-color: color-mix(in srgb, #FFD7FF 70%, transparent);
+      border-bottom-color: color-mix(in srgb, #FFD7FF 70%, transparent);
+    }
+
     .marker-container {
       position: absolute;
       left: 0;
