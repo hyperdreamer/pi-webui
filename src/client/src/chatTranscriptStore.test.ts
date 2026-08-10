@@ -19,6 +19,37 @@ function page(start: number, total: number, messages: unknown[]): RawMessagePage
 }
 
 describe("ChatTranscriptStore", () => {
+  it("reuses the normalized view for the same cached raw history", () => {
+    const cache = new MemoryChatHistoryCache();
+    cache.write("s1", page(0, 2, [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]));
+    const store = new ChatTranscriptStore(cache);
+
+    const first = store.cachedView("s1");
+    const second = store.cachedView("s1");
+
+    expect(second).toBe(first);
+    expect(second.messages).toBe(first.messages);
+  });
+
+  it("reuses a merged normalized view on the next cached read", () => {
+    const store = new ChatTranscriptStore(new MemoryChatHistoryCache());
+
+    const merged = store.mergeHistory("s1", page(0, 1, [{ role: "user", content: "hi" }]));
+
+    expect(store.cachedView("s1")).toBe(merged);
+  });
+
+  it("replaces the normalized view when merged raw history changes", () => {
+    const store = new ChatTranscriptStore(new MemoryChatHistoryCache());
+    const first = store.mergeHistory("s1", page(0, 1, [{ role: "user", content: "hi" }]));
+
+    const second = store.mergeHistory("s1", page(0, 2, [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]));
+
+    expect(second).not.toBe(first);
+    expect(second.messages).toHaveLength(2);
+    expect(store.cachedView("s1")).toBe(second);
+  });
+
   it("hydrates a visible transcript from cached raw history", () => {
     const cache = new MemoryChatHistoryCache();
     cache.write("s1", page(0, 2, [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }]));

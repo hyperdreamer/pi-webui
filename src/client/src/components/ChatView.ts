@@ -3,6 +3,16 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { ChatDisclosureController } from "../chatDisclosure";
 import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
+import {
+  boundedLiveEventMessages,
+  chatEventAnchorIndex,
+  clampRenderedGroupStart,
+  earlierRenderedGroupStart,
+  hasEarlierRenderedGroups,
+  initialRenderedGroupStart,
+  LIVE_EVENT_GROUP_MESSAGE_LIMIT,
+  renderedChatGroups,
+} from "../chatRenderWindow";
 import { writeClipboardText } from "../clipboard";
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
@@ -359,6 +369,8 @@ export class ChatView extends LitElement {
   private pendingScrollRestorePosition: ChatAnchorScrollPosition | undefined;
   private restoreScrollFrame: number | undefined;
   private prependRestoreToken = 0;
+  @state() private renderedGroupStart: number | undefined;
+  @state() private expandedLiveEventGroups: ReadonlySet<string> = new Set();
   @state() private loadMoreRequested = false;
   @state() private sessionInfoOpen = false;
   @state() private _minimapMarkers: MinimapMarker[] = [];
@@ -519,6 +531,8 @@ export class ChatView extends LitElement {
 
   private prepareSessionUiState(): void {
     this.disclosures.syncSession(this.sessionId);
+    this.renderedGroupStart = undefined;
+    this.expandedLiveEventGroups = new Set();
     this.pendingNotificationFocus = undefined;
     this.retainedEmptyNotificationTrayTargetKey = undefined;
     this.sessionInfoOpen = false;
@@ -546,11 +560,17 @@ export class ChatView extends LitElement {
       this.pendingNotificationFocus = undefined;
       this.retainedEmptyNotificationTrayTargetKey = undefined;
     }
+    if (changed.has("sessionId") || changed.has("messages") || changed.has("messageStart")) {
+      const groups = this.groupedMessages();
+      this.renderedGroupStart = changed.has("sessionId")
+        ? initialRenderedGroupStart(groups)
+        : clampRenderedGroupStart(groups, this.renderedGroupStart);
+    }
     if (changed.has("messages")) this.pinnedToBottom = this.pinnedToBottom && (this.didChatHeightChange() || this.isNearBottom());
   }
 
   protected override update(changed: Map<string, unknown>): void {
-    const prependAnchor = this.isPrependingMessages(changed) ? this.capturePrependScrollAnchor() : undefined;
+    const prependAnchor = !this.pinnedToBottom && this.isPrependingMessages(changed) ? this.capturePrependScrollAnchor() : undefined;
     super.update(changed);
     if (prependAnchor !== undefined) this.restorePrependScrollAnchor(prependAnchor);
   }
@@ -559,11 +579,11 @@ export class ChatView extends LitElement {
     if (changed.has("loadingMore") && !this.loadingMore) this.loadMoreRequested = false;
     if (changed.has("hasMore") && !this.hasMore) this.loadMoreRequested = false;
     if (changed.has("sessionId")) this.restoreScrollPosition();
-    if (!changed.has("sessionId") && changed.has("messages") && this.pinnedToBottom) this.scrollToBottom();
-    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore")) { this.scheduleMinimapViewportUpdate(); this._requestMinimapMeasure(); }
+    if (!changed.has("sessionId") && (changed.has("messages") || changed.has("renderedGroupStart")) && this.pinnedToBottom) this.scrollToBottom();
+    if (changed.has("messages") || changed.has("messageStart") || changed.has("messageTotal") || changed.has("hasMore") || changed.has("loadingMore") || changed.has("renderedGroupStart") || changed.has("expandedLiveEventGroups")) { this.scheduleMinimapViewportUpdate(); this._requestMinimapMeasure(); }
     if (changed.has("messages") && !changed.has("sessionId")) this._updateMinimapViewport();
-    if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore")) this.continuePendingScrollRestore();
-    if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
+    if (changed.has("messages") || changed.has("messageStart") || changed.has("hasMore") || changed.has("loadingMore") || changed.has("renderedGroupStart") || changed.has("expandedLiveEventGroups")) this.continuePendingScrollRestore();
+    if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore") || changed.has("renderedGroupStart")) this.requestLoadMoreIfNeeded();
     if (changed.has("notificationInbox") && this.pendingNotificationFocus !== undefined) this.focusPendingNotificationTarget();
     if (changed.has("zoomedImage")) this.syncImageZoomDialog();
     this.syncPopoverOutsideListener();
@@ -588,7 +608,8 @@ export class ChatView extends LitElement {
   }
 
   override render() {
-    const groups = this.groupedMessages();
+    const allGroups = this.groupedMessages();
+    const groups = renderedChatGroups(allGroups, this.renderedGroupStart);
     return html`
       ${this.renderTopNotices()}
       ${this.renderNotificationLiveRegions()}
@@ -599,8 +620,8 @@ export class ChatView extends LitElement {
           ${repeat(
             groups,
             (group) => group.kind === "group" ? this.groupRenderKey(group.startIndex) : this.messageAnchorKey(group.index),
-            (group, index) => {
-              const live = this.isLiveTailGroup(groups, index);
+            (group) => {
+              const live = this.isLiveTailGroup(allGroups, group);
               if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, live);
               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, group.toolName);
               return this.renderMessage(group.message, group.index, live);
@@ -877,8 +898,8 @@ export class ChatView extends LitElement {
     return this.groupedMessagesCache;
   }
 
-  private isLiveTailGroup(groups: ChatGroup[], index: number): boolean {
-    return index === groups.length - 1 && this.isSessionLive();
+  private isLiveTailGroup(groups: ChatGroup[], group: ChatGroup): boolean {
+    return group === groups.at(-1) && this.isSessionLive();
   }
 
   private isSessionLive(): boolean {
@@ -1067,6 +1088,13 @@ export class ChatView extends LitElement {
   private renderHistoryBoundary() {
     const range = this.historyRangeLabel();
     if (this.loadingMore) return html`<div class="history-boundary"><span>Loading earlier messages…</span>${range}</div>`;
+    if (this.hasHiddenLoadedGroups()) return html`
+      <div class="history-boundary">
+        <button type="button" class="history-load-button" @click=${() => { this.requestEarlierContent(); }}>Show earlier messages</button>
+        <span>Scroll up to show earlier messages</span>
+        ${range}
+      </div>
+    `;
     if (this.hasMore) return html`
       <div class="history-boundary">
         <button type="button" class="history-load-button" ?disabled=${this.loadMoreRequested} @click=${() => { this.requestLoadMore(); }}>Load earlier messages</button>
@@ -1080,6 +1108,11 @@ export class ChatView extends LitElement {
 
   private historyRangeLabel() {
     if (!this.messages.length || this.messageTotal <= 0) return null;
+    if (this.hasHiddenLoadedGroups()) {
+      const groups = this.groupedMessages();
+      const visible = renderedChatGroups(groups, this.renderedGroupStart);
+      return html`<small>Showing latest ${String(visible.length)} of ${String(groups.length)} loaded entries</small>`;
+    }
     const from = this.messageStart + 1;
     const to = this.loadedRawMessageEnd();
     const total = Math.max(this.messageTotal, to);
@@ -1126,9 +1159,35 @@ export class ChatView extends LitElement {
           <b class="label">${chatMessageGroupLabel(defaultOpen)}</b>
           <span>${summarizeChatGroup(messages)}</span>
         </summary>
-        ${open ? this.renderMessageGroupBody(messages, startIndex, defaultOpen) : null}
+        ${open ? this.renderBoundedMessageGroupBody(messages, startIndex, defaultOpen, disclosureKey) : null}
       </details>
     `;
+  }
+
+  private renderBoundedMessageGroupBody(messages: ChatLine[], startIndex: number, live: boolean, disclosureKey: string) {
+    const expanded = this.expandedLiveEventGroups.has(disclosureKey);
+    const canToggleWindow = live && messages.length > LIVE_EVENT_GROUP_MESSAGE_LIMIT;
+    const window = boundedLiveEventMessages(messages, !live || expanded);
+    return html`
+      ${!canToggleWindow ? null : html`
+        <div class="event-group-window-control">
+          <button
+            type="button"
+            class="event-group-expand"
+            aria-expanded=${String(expanded)}
+            @click=${() => { this.toggleLiveEventGroup(disclosureKey); }}
+          >${expanded ? `Show latest ${String(LIVE_EVENT_GROUP_MESSAGE_LIMIT)} events` : `Show all ${String(messages.length)} events`}</button>
+        </div>
+      `}
+      ${this.renderMessageGroupBody(window.messages, startIndex + window.startOffset, live)}
+    `;
+  }
+
+  private toggleLiveEventGroup(disclosureKey: string): void {
+    const expanded = new Set(this.expandedLiveEventGroups);
+    if (expanded.has(disclosureKey)) expanded.delete(disclosureKey);
+    else expanded.add(disclosureKey);
+    this.expandedLiveEventGroups = expanded;
   }
 
   private renderMessageGroupBody(messages: ChatLine[], startIndex: number, live = false) {
@@ -1356,26 +1415,50 @@ export class ChatView extends LitElement {
   }
 
   private isPrependingMessages(changed: Map<string, unknown>): boolean {
+    if (changed.has("sessionId")) return false;
     const oldMessageStart = changed.get("messageStart");
-    return typeof oldMessageStart === "number" && this.messageStart < oldMessageStart;
+    if (typeof oldMessageStart === "number" && this.messageStart < oldMessageStart) return true;
+    const oldRenderedGroupStart = changed.get("renderedGroupStart");
+    return typeof oldRenderedGroupStart === "number"
+      && this.renderedGroupStart !== undefined
+      && this.renderedGroupStart < oldRenderedGroupStart;
   }
 
   private requestLoadMoreIfNeeded(): void {
     if (this.loadMoreCheckFrame !== undefined) return;
     this.loadMoreCheckFrame = requestAnimationFrame(() => {
       this.loadMoreCheckFrame = undefined;
-      if (this.suppressLoadMoreRequests) return;
+      const hasHiddenLoadedGroups = this.hasHiddenLoadedGroups();
+      if (this.suppressLoadMoreRequests && !hasHiddenLoadedGroups) return;
       const chat = this.chat;
       if (!chat) return;
       if (shouldRequestEarlierMessages({
-        hasMore: this.hasMore,
+        hasMore: hasHiddenLoadedGroups || this.hasMore,
         loadingMore: this.loadingMore || this.loadMoreRequested,
-        canRequest: this.onLoadMore !== undefined,
+        canRequest: hasHiddenLoadedGroups || this.onLoadMore !== undefined,
         scrollTop: chat.scrollTop,
         scrollHeight: chat.scrollHeight,
         clientHeight: chat.clientHeight,
-      })) this.requestLoadMore();
+      })) this.requestEarlierContent();
     });
+  }
+
+  private requestEarlierContent(): void {
+    if (this.expandRenderedWindow()) return;
+    this.requestLoadMore();
+  }
+
+  private expandRenderedWindow(): boolean {
+    const groups = this.groupedMessages();
+    if (!hasEarlierRenderedGroups(groups, this.renderedGroupStart)) return false;
+    const earlierStart = earlierRenderedGroupStart(groups, this.renderedGroupStart);
+    if (earlierStart === undefined || earlierStart === this.renderedGroupStart) return false;
+    this.renderedGroupStart = earlierStart;
+    return true;
+  }
+
+  private hasHiddenLoadedGroups(): boolean {
+    return hasEarlierRenderedGroups(this.groupedMessages(), this.renderedGroupStart);
   }
 
   private requestLoadMore(): void {
@@ -1423,7 +1506,10 @@ export class ChatView extends LitElement {
       this.restoreScrollFrame = undefined;
       if (this.sessionId !== sessionId) return;
       this.withSuppressedScrollSave(() => {
-        const result = this.scrollController.restorePosition(sessionId, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor() });
+        const position = this.scrollController.readPosition(sessionId);
+        const result = position === undefined || position.mode === "bottom"
+          ? this.scrollController.scrollToBottom(this.chat)
+          : this.scrollController.restoreExplicitPosition(position, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor(position) });
         this.handleScrollRestoreResult(sessionId, result);
       });
     });
@@ -1437,7 +1523,7 @@ export class ChatView extends LitElement {
       this.restoreScrollFrame = undefined;
       if (this.sessionId !== sessionId) return;
       this.withSuppressedScrollSave(() => {
-        const result = this.scrollController.restoreExplicitPosition(position, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor() });
+        const result = this.scrollController.restoreExplicitPosition(position, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor(position) });
         this.handleScrollRestoreResult(sessionId, result);
       });
     });
@@ -1457,17 +1543,41 @@ export class ChatView extends LitElement {
     this.pendingScrollRestoreSessionId = sessionId;
     this.pendingScrollRestorePosition = result.position;
     const chat = this.chat;
-    if (chat === undefined || !this.hasMore || this.loadingMore) return;
+    if (chat === undefined) return;
+    if (this.revealBoundedLiveEventAnchor(result.position)) return;
+    if (this.loadingMore) return;
     chat.scrollTop = 0;
     this.syncScrollMetrics();
+    if (this.expandRenderedWindow()) return;
+    if (!this.hasMore) return;
     this.requestLoadMore();
   }
 
-  private shouldFallbackToBottomForMissingAnchor(): boolean {
+  private shouldFallbackToBottomForMissingAnchor(position: ChatAnchorScrollPosition): boolean {
     // Only fall back to the bottom once the full history is loaded; while earlier
     // pages can still load, a missing scroll anchor should keep retrying rather
     // than jump the user to the bottom.
-    return !this.hasMore;
+    return !this.hasMore
+      && !this.hasHiddenLoadedGroups()
+      && this.boundedLiveEventDisclosureKey(position) === undefined;
+  }
+
+  private revealBoundedLiveEventAnchor(position: ChatAnchorScrollPosition): boolean {
+    const disclosureKey = this.boundedLiveEventDisclosureKey(position);
+    if (disclosureKey === undefined) return false;
+    this.expandedLiveEventGroups = new Set([...this.expandedLiveEventGroups, disclosureKey]);
+    return true;
+  }
+
+  private boundedLiveEventDisclosureKey(position: ChatAnchorScrollPosition): string | undefined {
+    const eventIndex = chatEventAnchorIndex(position.anchorId);
+    if (eventIndex === undefined || !this.isSessionLive()) return undefined;
+    const groups = this.groupedMessages();
+    const group = groups.at(-1);
+    if (group?.kind !== "group" || group.messages.length <= LIVE_EVENT_GROUP_MESSAGE_LIMIT) return undefined;
+    if (eventIndex < group.startIndex || eventIndex > group.endIndex - LIVE_EVENT_GROUP_MESSAGE_LIMIT) return undefined;
+    const disclosureKey = this.groupDisclosureKey(group.startIndex, group.endIndex, true);
+    return this.expandedLiveEventGroups.has(disclosureKey) ? undefined : disclosureKey;
   }
 
   private updatePinnedToBottomAfterRestore(status: Exclude<ChatScrollRestoreResult["status"], "missing">): void {
@@ -1484,6 +1594,7 @@ export class ChatView extends LitElement {
 
   private cancelPrependRestore(): void {
     this.prependRestoreToken += 1;
+    this.suppressScrollSave = false;
     this.suppressLoadMoreRequests = false;
   }
 

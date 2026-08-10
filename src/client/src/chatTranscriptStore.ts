@@ -37,6 +37,7 @@ const browserChatHistoryCache: ChatHistoryCacheAdapter = {
 
 export class ChatTranscriptStore {
   private readonly rawHistoryPages = new Map<string, RawMessagePage>();
+  private readonly normalizedViews = new WeakMap<RawMessagePage, ChatTranscriptView>();
   private readonly pendingWrites = new Set<string>();
 
   constructor(
@@ -45,14 +46,14 @@ export class ChatTranscriptStore {
   ) {}
 
   cachedView(sessionId: string): ChatTranscriptView {
-    return transcriptViewFromHistory(this.rawHistoryPage(sessionId));
+    return this.viewFromHistory(this.rawHistoryPage(sessionId));
   }
 
   mergeHistory(sessionId: string, page: RawMessagePage): ChatTranscriptView {
     const history = mergeChatHistory(this.rawHistoryPage(sessionId), page);
     this.rawHistoryPages.set(sessionId, history);
     this.queueCacheWrite(sessionId);
-    return transcriptViewFromHistory(history);
+    return this.viewFromHistory(history);
   }
 
   applyLiveEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
@@ -91,6 +92,15 @@ export class ChatTranscriptStore {
     const cached = this.rawHistoryPages.get(sessionId) ?? this.cache.read(sessionId);
     if (cached !== undefined) this.rawHistoryPages.set(sessionId, cached);
     return cached;
+  }
+
+  private viewFromHistory(history: RawMessagePage | undefined): ChatTranscriptView {
+    if (history === undefined) return transcriptViewFromHistory(undefined);
+    const cached = this.normalizedViews.get(history);
+    if (cached !== undefined) return cached;
+    const view = transcriptViewFromHistory(history);
+    this.normalizedViews.set(history, view);
+    return view;
   }
 }
 
