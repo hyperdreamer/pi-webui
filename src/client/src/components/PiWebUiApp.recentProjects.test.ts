@@ -7,6 +7,7 @@ import { ProjectController } from "../controllers/projectController";
 import { RecentProjectController } from "../controllers/recentProjectController";
 import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
+import type { RecentProjectDialogView } from "./RecentProjectDialog";
 import type { ResolvedWorkspacePanelTab } from "./WorkspacePanel";
 
 const projectAlpha: Project = {
@@ -47,8 +48,9 @@ function isResolvedWorkspacePanelTab(value: unknown): value is ResolvedWorkspace
 }
 
 describe("PiWebUiApp recent projects tab", () => {
-  it("registers the closed recent-project dialog when the app module loads", () => {
-    expect(customElements.get("closed-recent-project-dialog")).toBeDefined();
+  it("registers the generalized recent-project dialog without the retired element", () => {
+    expect(customElements.get("recent-project-dialog")).toBeDefined();
+    expect(customElements.get("closed-recent-project-dialog")).toBeUndefined();
   });
 
   it("offers Recent Projects first when no workspace is selected", () => {
@@ -82,9 +84,20 @@ describe("PiWebUiApp recent projects tab", () => {
     expect(state.mainView).toBe("core:recent-projects");
   });
 
+  it("renders the generalized dialog with stable semantic bindings", () => {
+    const app = createApp();
+    openClosedEntry(app);
+
+    const rendered = renderRecentProjectDialog(app);
+
+    expect(templateValueAfterMarker(rendered, ".initialView=")).toBe("closed-actions");
+    expect(dialogAction(rendered, ".onReopen=")).toEqual(expect.any(Function));
+    expect(dialogAction(rendered, ".onRemove=")).toEqual(expect.any(Function));
+  });
+
   it("keeps the closed entry and surfaces the specific failure when reopening fails", async () => {
     const app = createApp();
-    setClosedEntry(app);
+    openClosedEntry(app);
     const addProject = vi.spyOn(api, "addProject").mockRejectedValue(new Error("Directory not found"));
     const loadRecentProjects = vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([]);
 
@@ -92,13 +105,13 @@ describe("PiWebUiApp recent projects tab", () => {
     await expect(onReopen(closedEntry)).rejects.toThrow("Directory not found");
 
     expect(addProject).toHaveBeenCalledWith("/work/alpha", "Alpha", false, "local");
-    expect(Reflect.get(app, "closedRecentProjectEntry")).toBe(closedEntry);
+    expect(Reflect.get(app, "recentProjectDialogEntry")).toBe(closedEntry);
     expect(loadRecentProjects).not.toHaveBeenCalled();
   });
 
   it("reopens with the saved name, selects the project, and reloads history on success", async () => {
     const app = createApp();
-    setClosedEntry(app);
+    openClosedEntry(app);
     const addProject = vi.spyOn(api, "addProject").mockResolvedValue(projectAlpha);
     vi.spyOn(api, "workspaces").mockResolvedValue([]);
     vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([closedEntry]);
@@ -127,10 +140,10 @@ describe("PiWebUiApp recent projects tab", () => {
     });
   });
 
-  it("passes a removal failure through without reconciliation or app-level error", async () => {
+  it("passes an ordinary removal failure through without an app-level error", async () => {
     const app = createApp();
-    setClosedEntry(app);
-    const failure = new HttpRequestError("Recent project is registered", 409);
+    openClosedEntry(app);
+    const failure = new HttpRequestError("Machine offline", 503);
     vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(failure);
     vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([closedEntry]);
     const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([projectAlpha]);
@@ -144,35 +157,35 @@ describe("PiWebUiApp recent projects tab", () => {
   });
 });
 
-function setClosedEntry(app: PiWebUiApp): void {
-  const open: unknown = Reflect.get(app, "openClosedRecentProject");
-  if (typeof open !== "function") throw new Error("Could not open closed entry");
-  open.call(app, closedEntry, () => undefined);
+function openClosedEntry(app: PiWebUiApp): void {
+  const open: unknown = Reflect.get(app, "openRecentProjectDialog");
+  if (typeof open !== "function") throw new Error("Could not open recent project dialog");
+  open.call(app, closedEntry, "closed-actions" satisfies RecentProjectDialogView, () => undefined, () => undefined);
 }
 
 function dialogReopenHandler(app: PiWebUiApp): (entry: RecentProjectEntry) => Promise<void> {
-  const rendered = renderClosedRecentProjectDialog(app);
-  const handler: unknown = templateValueAfterMarker(rendered, ".onReopen=");
-  if (!isReopenHandler(handler)) throw new Error("Expected onReopen handler");
-  return handler;
+  return dialogAction(renderRecentProjectDialog(app), ".onReopen=");
 }
 
 function dialogRemoveHandler(app: PiWebUiApp): (entry: RecentProjectEntry) => Promise<void> {
-  const rendered = renderClosedRecentProjectDialog(app);
-  const handler: unknown = templateValueAfterMarker(rendered, ".onRemove=");
-  if (!isReopenHandler(handler)) throw new Error("Expected onRemove handler");
+  return dialogAction(renderRecentProjectDialog(app), ".onRemove=");
+}
+
+function dialogAction(rendered: TemplateResult, marker: string): (entry: RecentProjectEntry) => Promise<void> {
+  const handler: unknown = templateValueAfterMarker(rendered, marker);
+  if (!isDialogAction(handler)) throw new Error(`Expected dialog action for ${marker}`);
   return handler;
 }
 
-function isReopenHandler(value: unknown): value is (entry: RecentProjectEntry) => Promise<void> {
+function isDialogAction(value: unknown): value is (entry: RecentProjectEntry) => Promise<void> {
   return typeof value === "function";
 }
 
-function renderClosedRecentProjectDialog(app: PiWebUiApp): TemplateResult {
-  const render: unknown = Reflect.get(app, "renderClosedRecentProjectDialog");
-  if (typeof render !== "function") throw new Error("Closed recent project dialog renderer was unavailable");
+function renderRecentProjectDialog(app: PiWebUiApp): TemplateResult {
+  const render: unknown = Reflect.get(app, "renderRecentProjectDialog");
+  if (typeof render !== "function") throw new Error("Recent project dialog renderer was unavailable");
   const result: unknown = render.call(app);
-  if (!isTemplateResult(result)) throw new Error("Closed recent project dialog renderer did not return a template");
+  if (!isTemplateResult(result)) throw new Error("Recent project dialog renderer did not return a template");
   return result;
 }
 

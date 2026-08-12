@@ -3,7 +3,7 @@
 import { LitElement } from "lit";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialAppState, type AppState } from "../appState";
-import { api, HttpRequestError, recentProjectsApi, type Machine, type Project, type RecentProjectEntry } from "../api";
+import { recentProjectsApi, type Machine, type Project, type RecentProjectEntry } from "../api";
 import { MachineController } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
 import { RecentProjectController } from "../controllers/recentProjectController";
@@ -11,13 +11,13 @@ import { WorkspaceController } from "../controllers/workspaceController";
 
 vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
 const { PiWebUiApp } = await import("./PiWebUiApp");
-const { ClosedRecentProjectDialog } = await import("./ClosedRecentProjectDialog");
+const { RecentProjectDialog } = await import("./RecentProjectDialog");
 const { RecentProjectsPanel } = await import("./RecentProjectsPanel");
 const { WorkspacePanel } = await import("./WorkspacePanel");
 const { AppNavigationPanel } = await import("./appShell/AppNavigationPanel");
 
 type PiWebUiAppElement = InstanceType<typeof PiWebUiApp>;
-type ClosedDialogElement = InstanceType<typeof ClosedRecentProjectDialog>;
+type RecentDialogElement = InstanceType<typeof RecentProjectDialog>;
 type RecentProjectsPanelElement = InstanceType<typeof RecentProjectsPanel>;
 
 const localMachine: Machine = {
@@ -114,14 +114,14 @@ beforeEach(() => {
     configurable: true,
     writable: true,
     value: (query: string): MediaQueryList => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    dispatchEvent: () => true,
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => true,
     }),
   });
   Object.defineProperty(dialogPrototype, "showModal", {
@@ -150,91 +150,206 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("PiWebUiApp closed recent-project focus restoration", () => {
-  it("returns focus to the current primary action after keyboard activation and Cancel", async () => {
-    const app = await mountApp();
+describe("PiWebUiApp recent-project dialog", () => {
+  it("selects a registered primary directly while its X opens removal confirmation", async () => {
+    const app = await mountApp([entry], [localMachine], [project]);
+    const selectProject = vi.spyOn(workspaceController(app), "selectProject").mockResolvedValue();
     const panel = await recentPanel(app);
-    const originalRow = recentRow(panel);
-    const originalPrimary = recentPrimary(panel);
-    originalPrimary.focus();
 
-    originalPrimary.click();
+    recentPrimary(panel).click();
+    await vi.waitFor(() => { expect(selectProject).toHaveBeenCalledWith(project); });
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBeNull();
+
+    recentRemove(panel).click();
     const dialog = await openedDialog(app);
-    await setRecentEntries(app, []);
-    expect(originalRow.isConnected).toBe(false);
-    await setRecentEntries(app, [entry]);
-    dialogButton(dialog, ".closed-recent-cancel").click();
 
-    const currentPanel = await settledRecentPanel(app);
-    const currentRow = recentRow(currentPanel);
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
-    expect(closeConnections).toEqual([true]);
-    expect(currentRow).not.toBe(originalRow);
-    expect(currentPanel.shadowRoot?.activeElement).toBe(recentPrimary(currentPanel));
+    expect(dialog.initialView).toBe("removal-confirmation");
+    expect(dialog.renderRoot.querySelector(".recent-project-confirm-remove")).not.toBeNull();
+    expect(dialog.renderRoot.querySelector(".recent-project-reopen")).toBeNull();
+    expect(selectProject).toHaveBeenCalledTimes(1);
   });
 
-  it("returns focus after pointer activation closes through Escape and backdrop", async () => {
+  it("opens a Closed row in Closed actions and transitions to confirmation without removing", async () => {
     const app = await mountApp();
-    let panel = await recentPanel(app);
-    recentPrimary(panel).click();
-    let dialog = await openedDialog(app);
-
-    nativeDialog(dialog).dispatchEvent(new Event("cancel", { cancelable: true }));
-    panel = await settledRecentPanel(app);
-    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
-
-    recentPrimary(panel).click();
-    dialog = await openedDialog(app);
-    nativeDialog(dialog).dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    panel = await settledRecentPanel(app);
-
-    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
-    expect(closeConnections).toEqual([true, true]);
-  });
-
-  it("keeps a former registered conflict open as an ordinary failure without reconciling", async () => {
-    const app = await mountApp();
-    const conflict = new HttpRequestError("Recent project is registered", 409);
-    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
-    vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([entry]);
-    const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([project]);
-
+    const removeEntry = vi.spyOn(recentProjectsController(app), "removeEntry");
     const panel = await recentPanel(app);
+
     recentPrimary(panel).click();
     const dialog = await openedDialog(app);
-    dialogButton(dialog, ".closed-recent-remove").click();
+    expect(dialog.initialView).toBe("closed-actions");
+    expect(dialog.renderRoot.querySelector(".recent-project-reopen")).not.toBeNull();
 
+    dialogButton(dialog, ".recent-project-remove-request").click();
     await vi.waitFor(() => {
-      expect(dialog.renderRoot.textContent).toContain("Recent project is registered");
+      expect(dialog.renderRoot.querySelector(".recent-project-confirm-remove")).not.toBeNull();
     });
 
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialog);
-    expect(nativeDialog(dialog).open).toBe(true);
-    expect(loadProjects).not.toHaveBeenCalled();
-    expect(appState(app).projects).toEqual([]);
-    expect(appState(app).error).toBe("");
-    expect(closeConnections).toEqual([]);
+    expect(removeEntry).not.toHaveBeenCalled();
   });
 
-  it("keeps a generic removal failure open", async () => {
+  it("opens a Closed row X in confirmation directly and returns focus to its current X on Cancel", async () => {
     const app = await mountApp();
-    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(new HttpRequestError("Machine offline", 503));
-
     const panel = await recentPanel(app);
-    recentPrimary(panel).click();
+    const remove = recentRemove(panel);
+    remove.focus();
+
+    remove.click();
     const dialog = await openedDialog(app);
-    dialogButton(dialog, ".closed-recent-remove").click();
+    expect(dialog.initialView).toBe("removal-confirmation");
+    expect(dialog.renderRoot.querySelector(".recent-project-reopen")).toBeNull();
+
+    dialogButton(dialog, ".recent-project-cancel").click();
+    const settled = await settledRecentPanel(app);
+
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBeNull();
+    expect(settled.shadowRoot?.activeElement).toBe(recentRemove(settled));
+  });
+
+  it("dismisses confirmation from a Closed flow rather than returning to Closed actions", async () => {
+    const app = await mountApp();
+    const panel = await recentPanel(app);
+    const primary = recentPrimary(panel);
+    primary.focus();
+
+    primary.click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-remove-request").click();
+    await vi.waitFor(() => {
+      expect(dialog.renderRoot.querySelector(".recent-project-confirm-remove")).not.toBeNull();
+    });
+    dialogButton(dialog, ".recent-project-cancel").click();
+
+    const settled = await settledRecentPanel(app);
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBeNull();
+    expect(settled.shadowRoot?.activeElement).toBe(recentPrimary(settled));
+  });
+
+  it("keeps confirmation open with the exact generic removal error and preserves registered projects", async () => {
+    const app = await mountApp([entry], [localMachine], [project]);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(new Error("Machine offline"));
+    const panel = await recentPanel(app);
+
+    recentRemove(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-confirm-remove").click();
 
     await vi.waitFor(() => {
       expect(dialog.renderRoot.textContent).toContain("Machine offline");
     });
 
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialog);
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBe(dialog);
     expect(nativeDialog(dialog).open).toBe(true);
-    expect(closeConnections).toEqual([]);
+    expect(appState(app).projects).toEqual([project]);
+    expect(appState(app).error).toBe("");
   });
 
-  it("closes without restoring local row focus when the navigation selector changes machines", async () => {
+  it("removes a registered history entry without changing registered projects", async () => {
+    const app = await mountApp([entry], [localMachine], [project]);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockResolvedValue([]);
+    const panel = await recentPanel(app);
+
+    recentRemove(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-confirm-remove").click();
+
+    const settled = await settledRecentPanel(app);
+    expect(settled.renderRoot.querySelector(".recent-project-row")).toBeNull();
+    expect(appState(app).projects).toEqual([project]);
+  });
+
+  it.each([
+    ["next primary", [entry, entryBeta], entry.id, [entryBeta], entryBeta.id],
+    ["previous primary", [entry, entryBeta], entryBeta.id, [entry], entry.id],
+  ] as const)("focuses the %s after successful removal", async (_label, initialEntries, removedId, remainingEntries, focusedId) => {
+    const app = await mountApp([...initialEntries]);
+    const recent = recentProjectsController(app);
+    vi.spyOn(recent, "removeEntry").mockImplementation(() => {
+      Reflect.set(recent, "current", { kind: "ready", entries: remainingEntries });
+      app.requestUpdate();
+      return Promise.resolve({ kind: "removed" } as const);
+    });
+    const panel = await recentPanel(app);
+
+    recentRemove(panel, removedId).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-confirm-remove").click();
+
+    const settled = await settledRecentPanel(app);
+    expect(settled.shadowRoot?.activeElement).toBe(recentPrimary(settled, focusedId));
+  });
+
+  it("focuses the empty state after successful removal of the final entry", async () => {
+    const app = await mountApp();
+    const recent = recentProjectsController(app);
+    vi.spyOn(recent, "removeEntry").mockImplementation(() => {
+      Reflect.set(recent, "current", { kind: "ready", entries: [] });
+      app.requestUpdate();
+      return Promise.resolve({ kind: "removed" } as const);
+    });
+    const panel = await recentPanel(app);
+
+    recentRemove(panel).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-confirm-remove").click();
+
+    const settled = await settledRecentPanel(app);
+    const empty = settled.renderRoot.querySelector<HTMLElement>(".recent-projects-empty");
+    expect(settled.shadowRoot?.activeElement).toBe(empty);
+  });
+
+  it("uses the Closed primary fallback after removal from Closed actions", async () => {
+    const app = await mountApp([entry, entryBeta]);
+    const recent = recentProjectsController(app);
+    vi.spyOn(recent, "removeEntry").mockImplementation(() => {
+      Reflect.set(recent, "current", { kind: "ready", entries: [entryBeta] });
+      app.requestUpdate();
+      return Promise.resolve({ kind: "removed" } as const);
+    });
+    const panel = await recentPanel(app);
+
+    recentPrimary(panel, entry.id).click();
+    const dialog = await openedDialog(app);
+    dialogButton(dialog, ".recent-project-remove-request").click();
+    await vi.waitFor(() => {
+      expect(dialog.renderRoot.querySelector(".recent-project-confirm-remove")).not.toBeNull();
+    });
+    dialogButton(dialog, ".recent-project-confirm-remove").click();
+
+    const settled = await settledRecentPanel(app);
+    expect(settled.shadowRoot?.activeElement).toBe(recentPrimary(settled, entryBeta.id));
+  });
+
+  it("keeps focus in the dialog after a failed Reopen and restores the primary after success", async () => {
+    const failedApp = await mountApp();
+    vi.spyOn(projectsController(failedApp), "addRegisteredProject").mockRejectedValue(new Error("Directory not found"));
+    let panel = await recentPanel(failedApp);
+    recentPrimary(panel).click();
+    let dialog = await openedDialog(failedApp);
+    const reopen = dialogButton(dialog, ".recent-project-reopen");
+    reopen.click();
+
+    await vi.waitFor(() => {
+      expect(dialog.renderRoot.textContent).toContain("Directory not found");
+    });
+    expect(appState(failedApp).error).toBe("");
+    expect(dialog.shadowRoot?.activeElement).toBe(reopen);
+
+    document.body.replaceChildren();
+    await failedApp.updateComplete;
+    const successfulApp = await mountApp();
+    vi.spyOn(projectsController(successfulApp), "addRegisteredProject").mockResolvedValue(project);
+    vi.spyOn(recentProjectsController(successfulApp), "load").mockResolvedValue();
+    panel = await recentPanel(successfulApp);
+    recentPrimary(panel).click();
+    dialog = await openedDialog(successfulApp);
+    dialogButton(dialog, ".recent-project-reopen").click();
+
+    const settled = await settledRecentPanel(successfulApp);
+    expect(successfulApp.renderRoot.querySelector("recent-project-dialog")).toBeNull();
+    expect(settled.shadowRoot?.activeElement).toBe(recentPrimary(settled));
+  });
+
+  it("closes on machine change without restoring a stale focus closure", async () => {
     const app = await mountApp([entry], [localMachine, remoteMachine]);
     const panel = await recentPanel(app);
     const restoreLocalFocus = vi.fn();
@@ -246,33 +361,12 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     await app.updateComplete;
 
     expect(appState(app).selectedMachine).toBe(remoteMachine);
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBeNull();
     expect(closeConnections).toEqual([true]);
     expect(restoreLocalFocus).not.toHaveBeenCalled();
   });
 
-  it("does not run retained local actions against the newly selected remote machine", async () => {
-    const app = await mountApp([entry], [localMachine, remoteMachine]);
-    vi.spyOn(workspaceController(app), "selectProject").mockResolvedValue();
-    const addProject = vi.spyOn(api, "addProject").mockResolvedValue(project);
-    const removeRecentProject = vi.spyOn(recentProjectsApi, "removeRecentProject").mockResolvedValue([]);
-
-    const panel = await recentPanel(app);
-    recentPrimary(panel).click();
-    const dialogA = await openedDialog(app);
-    const reopenA = dialogA.onReopen;
-    const removeA = dialogA.onRemove;
-
-    await selectMachineFromNavigation(app, remoteMachine);
-    await reopenA(entry);
-    await removeA(entry);
-
-    expect(appState(app).selectedMachine).toBe(remoteMachine);
-    expect(addProject).not.toHaveBeenCalled();
-    expect(removeRecentProject).not.toHaveBeenCalled();
-  });
-
-  it("keeps remote dialog B open when a deferred local action settles", async () => {
+  it("does not let a deferred local action close dialog B or restore old-machine focus", async () => {
     const app = await mountApp([entry, entryBeta], [localMachine, remoteMachine]);
     const pendingReopen = deferred<Project>();
     const reopen = vi.spyOn(projectsController(app), "addRegisteredProject").mockReturnValue(pendingReopen.promise);
@@ -282,127 +376,99 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     Reflect.set(panel, "restoreClosedFocus", restoreLocalFocus);
     recentPrimary(panel, entry.id).click();
     const dialogA = await openedDialog(app);
-    const closeAttempted = observeNextDialogClose(dialogA);
-    dialogButton(dialogA, ".closed-recent-reopen").click();
-
-    await vi.waitFor(() => {
-      expect(dialogButton(dialogA, ".closed-recent-reopen").disabled).toBe(true);
-    });
+    dialogButton(dialogA, ".recent-project-reopen").click();
+    await vi.waitFor(() => { expect(dialogButton(dialogA, ".recent-project-reopen").disabled).toBe(true); });
 
     await selectMachineFromNavigation(app, remoteMachine);
     panel = await settledRecentPanel(app);
     recentPrimary(panel, entryBeta.id).click();
     const dialogB = await openedDialog(app);
-    const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
-    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+    const reopenB = dialogButton(dialogB, ".recent-project-reopen");
 
     pendingReopen.resolve(project);
-    await closeAttempted;
+    await vi.waitFor(() => { expect(reopen).toHaveBeenCalledWith(entry.path, entry.name); });
     await app.updateComplete;
+    await Promise.resolve();
 
-    expect(reopen).toHaveBeenCalledWith(entry.path, entry.name);
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialogB);
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBe(dialogB);
     expect(nativeDialog(dialogB).open).toBe(true);
     expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
     expect(restoreLocalFocus).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["Reopen", "cancel"],
-    ["Remove", "escape"],
-    ["Remove", "backdrop"],
-  ] as const)("keeps dialog B open when pending %s in dialog A settles after %s", async (action, dismissal) => {
+  it("does not let a deferred action from dialog A close a newer same-machine dialog", async () => {
     const app = await mountApp([entry, entryBeta]);
-    const projects = projectsController(app);
-    const recent = recentProjectsController(app);
     const pendingReopen = deferred<Project>();
-    const pendingRemove = deferred<{ kind: "removed" }>();
-    const reopen = vi.spyOn(projects, "addRegisteredProject").mockReturnValue(pendingReopen.promise);
-    const remove = vi.spyOn(recent, "removeEntry").mockReturnValue(pendingRemove.promise);
+    vi.spyOn(projectsController(app), "addRegisteredProject").mockReturnValue(pendingReopen.promise);
+    const staleFocus = vi.fn();
+    const currentFocus = vi.fn();
+    const panel = await recentPanel(app);
 
-    let panel = await recentPanel(app);
-    const alphaPrimary = recentPrimary(panel, entry.id);
-    alphaPrimary.click();
+    recentPrimary(panel, entry.id).click();
     const dialogA = await openedDialog(app);
-    const closeA = dialogA.onClose;
-    const onCloseA = vi.fn(() => { closeA(); });
-    dialogA.onClose = onCloseA;
-    dialogButton(dialogA, action === "Reopen" ? ".closed-recent-reopen" : ".closed-recent-remove").click();
+    dialogButton(dialogA, ".recent-project-reopen").click();
+    await vi.waitFor(() => { expect(dialogButton(dialogA, ".recent-project-reopen").disabled).toBe(true); });
+
+    openRecentProjectDialog(app, entryBeta, staleFocus, currentFocus);
+    const dialogB = await openedDialog(app);
+    expect(dialogB.entry).toBe(entryBeta);
+
+    pendingReopen.resolve(project);
+    await app.updateComplete;
+    await Promise.resolve();
+
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBe(dialogB);
+    expect(nativeDialog(dialogB).open).toBe(true);
+    expect(staleFocus).not.toHaveBeenCalled();
+    expect(currentFocus).not.toHaveBeenCalled();
+  });
+
+  it("disables every button while busy, ignores dismissal, then leaves dialog B untouched after completion", async () => {
+    const app = await mountApp([entry, entryBeta]);
+    const pendingReopen = deferred<Project>();
+    vi.spyOn(projectsController(app), "addRegisteredProject").mockReturnValue(pendingReopen.promise);
+    vi.spyOn(recentProjectsController(app), "load").mockResolvedValue();
+    let panel = await recentPanel(app);
+    recentPrimary(panel, entry.id).click();
+    const dialogA = await openedDialog(app);
+    const staleClose = dialogA.onClose;
+    dialogButton(dialogA, ".recent-project-reopen").click();
 
     await vi.waitFor(() => {
-      expect(dialogButton(dialogA, ".closed-recent-reopen").disabled).toBe(true);
-      expect(dialogButton(dialogA, ".closed-recent-remove").disabled).toBe(true);
-      expect(dialogButton(dialogA, ".closed-recent-cancel").disabled).toBe(false);
+      expect(Array.from(dialogA.renderRoot.querySelectorAll("button")).every((button) => button.disabled)).toBe(true);
     });
+    dialogButton(dialogA, ".recent-project-cancel").click();
+    nativeDialog(dialogA).dispatchEvent(new Event("cancel", { cancelable: true }));
+    nativeDialog(dialogA).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBe(dialogA);
 
-    if (dismissal === "cancel") dialogButton(dialogA, ".closed-recent-cancel").click();
-    else if (dismissal === "escape") nativeDialog(dialogA).dispatchEvent(new Event("cancel", { cancelable: true }));
-    else nativeDialog(dialogA).dispatchEvent(new MouseEvent("click", { bubbles: true }));
-
-    await vi.waitFor(() => { expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull(); });
+    pendingReopen.resolve(project);
+    await vi.waitFor(() => { expect(app.renderRoot.querySelector("recent-project-dialog")).toBeNull(); });
     panel = await settledRecentPanel(app);
     recentPrimary(panel, entryBeta.id).click();
     const dialogB = await openedDialog(app);
-    const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
-    expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
+    const reopenB = dialogButton(dialogB, ".recent-project-reopen");
 
-    if (action === "Reopen") {
-      pendingReopen.resolve(project);
-    } else {
-      await setRecentEntries(app, [entryBeta]);
-      pendingRemove.resolve({ kind: "removed" });
-    }
+    staleClose();
+    await app.updateComplete;
 
-    await vi.waitFor(() => { expect(onCloseA).toHaveBeenCalledTimes(2); });
-    expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialogB);
+    expect(app.renderRoot.querySelector("recent-project-dialog")).toBe(dialogB);
     expect(nativeDialog(dialogB).open).toBe(true);
     expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
-    panel = await settledRecentPanel(app);
-    expect(panel.shadowRoot?.activeElement).not.toBe(alphaPrimary);
-    if (action === "Reopen") expect(reopen).toHaveBeenCalledWith(entry.path, entry.name);
-    else expect(remove).toHaveBeenCalledWith(entry.id);
-  });
-
-  it("restores focus after Reopen but never focuses a row removed from history", async () => {
-    const app = await mountApp();
-    const projects = projectsController(app);
-    const recent = recentProjectsController(app);
-    vi.spyOn(projects, "addRegisteredProject").mockResolvedValue(project);
-    vi.spyOn(recent, "load").mockResolvedValue();
-
-    let panel = await recentPanel(app);
-    recentPrimary(panel).click();
-    let dialog = await openedDialog(app);
-    dialogButton(dialog, ".closed-recent-reopen").click();
-    panel = await settledRecentPanel(app);
-
-    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
-
-    const rowRemovedByAction = recentRow(panel);
-    const primaryRemovedByAction = recentPrimary(panel);
-    primaryRemovedByAction.click();
-    dialog = await openedDialog(app);
-    vi.spyOn(recent, "removeEntry").mockImplementation(() => {
-      Reflect.set(recent, "current", { kind: "ready", entries: [] });
-      app.requestUpdate();
-      return Promise.resolve({ kind: "removed" });
-    });
-    dialogButton(dialog, ".closed-recent-remove").click();
-    panel = await settledRecentPanel(app);
-
-    expect(panel.renderRoot.querySelector(".recent-project-row")).toBeNull();
-    expect(rowRemovedByAction.isConnected).toBe(false);
-    expect(panel.shadowRoot?.activeElement).not.toBe(primaryRemovedByAction);
-    expect(closeConnections).toEqual([true, true]);
   });
 });
 
-async function mountApp(entries: RecentProjectEntry[] = [entry], machines: Machine[] = [localMachine]): Promise<PiWebUiAppElement> {
+async function mountApp(
+  entries: RecentProjectEntry[] = [entry],
+  machines: Machine[] = [localMachine],
+  projects: Project[] = [],
+): Promise<PiWebUiAppElement> {
   const app = new PiWebUiApp();
   setAppState(app, {
     ...initialAppState(),
     machines,
     selectedMachine: localMachine,
+    projects,
     workspaceTool: "core:recent-projects",
     mainView: "core:recent-projects",
   });
@@ -452,9 +518,6 @@ async function recentPanel(app: PiWebUiAppElement): Promise<RecentProjectsPanelE
 }
 
 async function settledRecentPanel(app: PiWebUiAppElement): Promise<RecentProjectsPanelElement> {
-  // The panel's focus closures settle on the element update cascade after the
-  // dialog action completes, so flush enough microtask rounds for restored
-  // focus to land before assertions.
   for (let round = 0; round < 3; round += 1) {
     await app.updateComplete;
     await Promise.resolve();
@@ -476,41 +539,41 @@ function recentPrimary(panel: RecentProjectsPanelElement, entryId = entry.id): H
   return primary;
 }
 
-async function openedDialog(app: PiWebUiAppElement): Promise<ClosedDialogElement> {
+function recentRemove(panel: RecentProjectsPanelElement, entryId = entry.id): HTMLButtonElement {
+  const remove = recentRow(panel, entryId).querySelector<HTMLButtonElement>("button.recent-project-remove");
+  if (remove === null) throw new Error(`Expected recent project remove action ${entryId}`);
+  return remove;
+}
+
+function openRecentProjectDialog(
+  app: PiWebUiAppElement,
+  entryToOpen: RecentProjectEntry,
+  cancelFocus: () => void,
+  removalFocus: () => void,
+): void {
+  const open: unknown = Reflect.get(app, "openRecentProjectDialog");
+  if (typeof open !== "function") throw new Error("Expected recent project dialog opener");
+  open.call(app, entryToOpen, "closed-actions", cancelFocus, removalFocus);
+}
+
+async function openedDialog(app: PiWebUiAppElement): Promise<RecentDialogElement> {
   await app.updateComplete;
-  const dialog = app.renderRoot.querySelector("closed-recent-project-dialog");
-  if (!(dialog instanceof ClosedRecentProjectDialog)) throw new Error("Expected closed recent-project dialog");
+  const dialog = app.renderRoot.querySelector("recent-project-dialog");
+  if (!(dialog instanceof RecentProjectDialog)) throw new Error("Expected recent project dialog");
   await dialog.updateComplete;
   return dialog;
 }
 
-function nativeDialog(dialog: ClosedDialogElement): HTMLDialogElement {
+function nativeDialog(dialog: RecentDialogElement): HTMLDialogElement {
   const native = dialog.renderRoot.querySelector<HTMLDialogElement>("dialog");
   if (native === null) throw new Error("Expected native dialog");
   return native;
 }
 
-function dialogButton(dialog: ClosedDialogElement, selector: string): HTMLButtonElement {
+function dialogButton(dialog: RecentDialogElement, selector: string): HTMLButtonElement {
   const button = dialog.renderRoot.querySelector<HTMLButtonElement>(selector);
   if (button === null) throw new Error(`Expected ${selector}`);
   return button;
-}
-
-function observeNextDialogClose(dialog: ClosedDialogElement): Promise<void> {
-  const attempted = deferred<undefined>();
-  let onClose = dialog.onClose;
-  Object.defineProperty(dialog, "onClose", {
-    configurable: true,
-    get: () => () => {
-      try {
-        onClose();
-      } finally {
-        attempted.resolve(undefined);
-      }
-    },
-    set: (next: () => void) => { onClose = next; },
-  });
-  return attempted.promise;
 }
 
 async function selectMachineFromNavigation(app: PiWebUiAppElement, machine: Machine): Promise<void> {
@@ -542,13 +605,6 @@ function isAppState(value: unknown): value is AppState {
 
 function setAppState(app: PiWebUiAppElement, state: AppState): void {
   if (!Reflect.set(app, "state", state)) throw new Error("Could not set app state");
-}
-
-async function setRecentEntries(app: PiWebUiAppElement, entries: RecentProjectEntry[]): Promise<void> {
-  Reflect.set(recentProjectsController(app), "current", { kind: "ready", entries });
-  app.requestUpdate();
-  await app.updateComplete;
-  await recentPanel(app);
 }
 
 function recentProjectsController(app: PiWebUiAppElement): RecentProjectController {
