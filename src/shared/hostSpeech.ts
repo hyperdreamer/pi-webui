@@ -14,10 +14,10 @@ export function effectivePiWebUiTtsConfig(config: PiWebUiTtsConfig | undefined):
 }
 
 export function truncateHostSpeechText(text: string): string {
-  // Normalize CRLF/CR to LF, remove NUL and control chars except LF (\n) and Tab (\t)
+  // Normalize CRLF/CR to LF, remove NUL and control chars (Cc) except LF (\n) and Tab (\t)
   const normalized = text
     .replace(/\r\n|\r/gu, "\n")
-    .replace(/[^\t\n\x20-\uFFFF]/gu, "");
+    .replace(/(?!\t|\n)\p{Cc}/gu, "");
   const sliced = normalized.slice(0, HOST_SPEECH_MAX_TEXT_CHARS);
   return sliced.trimEnd();
 }

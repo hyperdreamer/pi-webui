@@ -27,6 +27,14 @@ describe("host speech contracts", () => {
     expect(result).toHaveLength(HOST_SPEECH_MAX_TEXT_CHARS);
   });
 
+  it("removes Unicode Cc controls except LF and Tab while preserving non-BMP characters and DEL/C1 controls handling", () => {
+    // \u0007 (BEL, Cc), \u0009 (\t, Cc - keep), \u000A (\n, Cc - keep), \u007F (DEL, Cc - remove), \u0085 (NEL, Cc - remove), \u009F (C1 control, Cc - remove)
+    // 😀 (\uD83D\uDE00, non-BMP - keep)
+    const text = "Hello\u0007\tWorld\n😀!\u007F\u0085\u009F";
+    const result = truncateHostSpeechText(text);
+    expect(result).toBe("Hello\tWorld\n😀!");
+  });
+
   it.each(["run-1", "550e8400-e29b-41d4-a716-446655440000", "tab:run_2.3"])("accepts opaque run id %s", (runId) => {
     expect(isHostSpeechRunId(runId)).toBe(true);
   });
