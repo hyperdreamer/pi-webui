@@ -15,8 +15,17 @@ import type { PiPackageService } from "./piPackageService.js";
 import type { PiPackagePluginsConfigService } from "./piPackagePluginsConfigService.js";
 import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { PI_WEBUI_CAPABILITIES } from "../shared/capabilities.js";
-import type { ActiveAgentProfileDescriptor, PiPackageInfo, PiPackagePluginMutationRequest, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import type { ActiveAgentProfileDescriptor, HostSpeechSpeakRequest, HostSpeechStatus, PiPackageInfo, PiPackagePluginMutationRequest, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import type { SessionDaemonAgentProfileResult } from "../sessiond/sessionDaemonClient.js";
+import type { HostSpeech } from "./tts/hostSpeech.js";
+
+/** App-test fake HostSpeech: captured calls, mutable status, idempotent close spy. */
+export interface FakeHostSpeech extends HostSpeech {
+  statusValue: HostSpeechStatus;
+  speakCalls: HostSpeechSpeakRequest[];
+  stopCalls: string[];
+  closeCalls: number;
+}
 
 interface AppTestContext {
   readonly app: FastifyInstance;
@@ -28,12 +37,14 @@ interface AppTestContext {
   readonly piPackagePluginRequests: CapturedPiPackagePluginRequest[];
   piWebUiConfig: PiWebUiConfigValues;
   agentProfileResult: SessionDaemonAgentProfileResult;
+  readonly hostSpeech: FakeHostSpeech;
 }
 
 let app: FastifyInstance | undefined;
 let tempDir: string | undefined;
 let projectDir: string | undefined;
 let remoteClient: MachineClient | undefined;
+let hostSpeech: FakeHostSpeech | undefined;
 let sessionDaemonRequests: CapturedSessionDaemonRequest[] = [];
 let piPackageRequests: CapturedPiPackageRequest[] = [];
 let piPackagePluginRequests: CapturedPiPackagePluginRequest[] = [];
@@ -80,6 +91,10 @@ export const appTestContext: AppTestContext = {
   set agentProfileResult(result) {
     agentProfileResult = result;
   },
+  get hostSpeech() {
+    if (hostSpeech === undefined) throw new Error("App test harness was not initialized");
+    return hostSpeech;
+  },
 };
 
 export function registerAppTestHooks(): void {
@@ -92,6 +107,7 @@ export function registerAppTestHooks(): void {
     piPackagePluginRequests = [];
     piWebUiConfig = {};
     agentProfileResult = { status: "available", profile: appTestAgentProfile(join(tempDir, "agent")) };
+    hostSpeech = createFakeHostSpeech();
     app = await buildApp({
       projects: new ProjectService(new ProjectStore(join(tempDir, "projects.json"))),
       workspaces: new WorkspaceService(),
@@ -123,6 +139,7 @@ export function registerAppTestHooks(): void {
       },
       clientDist: false,
       logger: false,
+      hostSpeech,
     });
   });
 
@@ -138,6 +155,7 @@ export function registerAppTestHooks(): void {
     piPackagePluginRequests = [];
     piWebUiConfig = {};
     agentProfileResult = { status: "invalid", error: "App test harness was not initialized" };
+    hostSpeech = undefined;
 
     if (appToClose !== undefined) await appToClose.close();
     if (tempDirToRemove !== undefined) await rm(tempDirToRemove, { recursive: true, force: true });
@@ -149,6 +167,31 @@ function fakePiWebUiPluginAsset(pluginId: string, assetPath: string): Promise<{ 
   if (assetPath === "plugin.js") return Promise.resolve({ content: Buffer.from("export default {};"), contentType: "application/javascript; charset=utf-8" });
   if (assetPath === "assets/icon.svg") return Promise.resolve({ content: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), contentType: "image/svg+xml" });
   return Promise.resolve(undefined);
+}
+
+function createFakeHostSpeech(): FakeHostSpeech {
+  const fake: FakeHostSpeech = {
+    statusValue: { available: true, voices: [{ name: "default", language: "en" }] },
+    speakCalls: [],
+    stopCalls: [],
+    closeCalls: 0,
+    status: () => Promise.resolve(fake.statusValue),
+    speak: (input) => {
+      fake.speakCalls.push(input);
+      return Promise.resolve({ runId: input.runId, outcome: "ended" });
+    },
+    stop: (runId) => {
+      fake.stopCalls.push(runId);
+      return Promise.resolve(fake.speakCalls.some((call) => call.runId === runId)
+        ? { runId, outcome: "canceled" }
+        : undefined);
+    },
+    close: () => {
+      fake.closeCalls += 1;
+      return Promise.resolve();
+    },
+  };
+  return fake;
 }
 
 export interface CapturedSessionDaemonRequest {

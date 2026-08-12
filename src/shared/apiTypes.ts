@@ -275,6 +275,11 @@ export interface HostSpeechTerminalResult {
   outcome: "ended" | "canceled";
 }
 
+export interface HostSpeechStopResponse {
+  runId: string;
+  stopped: boolean;
+}
+
 export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
