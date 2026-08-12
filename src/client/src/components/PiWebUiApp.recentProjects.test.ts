@@ -47,6 +47,10 @@ function isResolvedWorkspacePanelTab(value: unknown): value is ResolvedWorkspace
 }
 
 describe("PiWebUiApp recent projects tab", () => {
+  it("registers the closed recent-project dialog when the app module loads", () => {
+    expect(customElements.get("closed-recent-project-dialog")).toBeDefined();
+  });
+
   it("offers Recent Projects first when no workspace is selected", () => {
     const app = createApp();
 
