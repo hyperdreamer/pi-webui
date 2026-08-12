@@ -190,35 +190,12 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     expect(closeConnections).toEqual([true, true]);
   });
 
-  it("closes and reports a fully reconciled conflict after the row renders registered", async () => {
+  it("keeps a former registered conflict open as an ordinary failure without reconciling", async () => {
     const app = await mountApp();
     const conflict = new HttpRequestError("Recent project is registered", 409);
     vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
     vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([entry]);
-    vi.spyOn(api, "projects").mockResolvedValue([project]);
-
-    let panel = await recentPanel(app);
-    recentRow(panel).click();
-    const dialog = await openedDialog(app);
-    dialogButton(dialog, ".closed-recent-remove").click();
-
-    await vi.waitFor(() => {
-      expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
-    });
-    panel = await settledRecentPanel(app);
-
-    expect(panel.renderRoot.textContent).not.toContain("Closed");
-    expect(appState(app).projects).toEqual([project]);
-    expect(appState(app).error).toBe("Recent project is registered");
-    expect(closeConnections).toEqual([true]);
-  });
-
-  it("keeps a partially reconciled conflict open with the original actionable error", async () => {
-    const app = await mountApp();
-    const conflict = new HttpRequestError("Recent project is registered", 409);
-    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
-    vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([entry]);
-    vi.spyOn(api, "projects").mockRejectedValue(new Error("catalog offline"));
+    const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([project]);
 
     const panel = await recentPanel(app);
     recentRow(panel).click();
@@ -231,7 +208,9 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
 
     expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBe(dialog);
     expect(nativeDialog(dialog).open).toBe(true);
+    expect(loadProjects).not.toHaveBeenCalled();
     expect(appState(app).projects).toEqual([]);
+    expect(appState(app).error).toBe("");
     expect(closeConnections).toEqual([]);
   });
 

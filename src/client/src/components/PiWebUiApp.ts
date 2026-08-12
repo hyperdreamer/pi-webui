@@ -333,10 +333,6 @@ export class PiWebUiApp extends LitElement {
     machineId: () => selectedMachineId(this.state),
     onChange: () => { this.requestUpdate(); },
     onBackgroundError: (operation, error) => { console.warn(`Failed to ${operation}`, error); },
-    reconcileProjects: async (machineId) => {
-      if (selectedMachineId(this.state) !== machineId) return false;
-      return await this.projects.loadProjects();
-    },
   });
   private readonly keyboard = new KeyboardShortcutDispatcher();
   private readonly realtime = new RealtimeSocket();
@@ -2452,9 +2448,7 @@ export class PiWebUiApp extends LitElement {
         }}
         .onRemove=${async () => {
           if (selectedMachineId(this.state) !== machineId) return;
-          const outcome = await this.recentProjects.removeEntry(entry.id);
-          if (selectedMachineId(this.state) !== machineId) return;
-          if (outcome.kind === "registered-conflict") this.setState({ error: outcome.error.message });
+          await this.recentProjects.removeEntry(entry.id);
         }}
         .onClose=${() => { this.closeClosedRecentProjectDialog(machineId, entry, generation); }}
       ></closed-recent-project-dialog>

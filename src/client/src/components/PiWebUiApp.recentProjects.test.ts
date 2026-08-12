@@ -127,21 +127,20 @@ describe("PiWebUiApp recent projects tab", () => {
     });
   });
 
-  it("reports a fully reconciled removal conflict without rejecting the dialog action", async () => {
+  it("passes a removal failure through without reconciliation or app-level error", async () => {
     const app = createApp();
     setClosedEntry(app);
-    const conflict = new HttpRequestError("Recent project is registered", 409);
-    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(conflict);
+    const failure = new HttpRequestError("Recent project is registered", 409);
+    vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(failure);
     vi.spyOn(recentProjectsApi, "recentProjects").mockResolvedValue([closedEntry]);
     const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([projectAlpha]);
     await recentProjectsController(app).load();
 
     const onRemove = dialogRemoveHandler(app);
-    await expect(onRemove(closedEntry)).resolves.toBeUndefined();
+    await expect(onRemove(closedEntry)).rejects.toBe(failure);
 
-    expect(loadProjects).toHaveBeenCalledWith("local");
-    expect(appState(app).projects).toEqual([projectAlpha]);
-    expect(appState(app).error).toBe("Recent project is registered");
+    expect(loadProjects).not.toHaveBeenCalled();
+    expect(appState(app).error).toBe("");
   });
 });
 

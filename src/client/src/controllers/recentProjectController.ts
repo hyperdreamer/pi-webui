@@ -1,4 +1,4 @@
-import { HttpRequestError, recentProjectsApi as defaultApi } from "../api";
+import { recentProjectsApi as defaultApi } from "../api";
 import type { RecentProjectEntry } from "../../../shared/apiTypes";
 
 const RECORD_OPERATION = "record recent project";
@@ -18,16 +18,15 @@ export interface RecentProjectApi {
   removeRecentProject(entryId: string, machineId?: string): Promise<RecentProjectEntry[]>;
 }
 
-export type RecentProjectRemovalOutcome =
-  | { kind: "removed" }
-  | { kind: "registered-conflict"; error: HttpRequestError };
+export interface RecentProjectRemovalOutcome {
+  kind: "removed";
+}
 
 export interface RecentProjectControllerDependencies {
   api?: RecentProjectApi;
   machineId: () => string;
   onChange: (state: RecentProjectsState) => void;
   onBackgroundError?: (operation: string, error: unknown) => void;
-  reconcileProjects?: (machineId: string) => boolean | undefined | Promise<boolean | undefined>;
 }
 
 /**
@@ -112,41 +111,18 @@ export class RecentProjectController {
     this.latestIntentByMachine.delete(machineId);
     this.authoritativeProjectIdByMachine.delete(machineId);
     const generation = this.generation;
-    let outcome: RecentProjectRemovalOutcome | undefined;
     let failure: Error | undefined;
     await this.enqueue(machineId, async () => {
       try {
         const entries = await this.api.removeRecentProject(entryId, machineId);
         this.authoritativeProjectIdByMachine.delete(machineId);
         if (!this.isStale(generation, machineId)) this.publish({ kind: "ready", entries });
-        outcome = { kind: "removed" };
       } catch (error) {
-        if (error instanceof HttpRequestError && error.status === 409) {
-          const reconciled = await this.reconcileRemovalConflict(machineId);
-          if (reconciled) {
-            outcome = { kind: "registered-conflict", error };
-            return;
-          }
-        }
         failure = error instanceof Error ? error : new Error(String(error));
       }
     });
     if (failure !== undefined) throw failure;
-    if (outcome === undefined) throw new Error("Recent project removal completed without an outcome");
-    return outcome;
-  }
-
-  private async reconcileRemovalConflict(machineId: string): Promise<boolean> {
-    const catalog = Promise.resolve().then(() => this.deps.reconcileProjects?.(machineId));
-    const history = Promise.resolve().then(() => this.api.recentProjects(machineId));
-    const results = await Promise.allSettled([catalog, history]);
-    const [catalogResult, historyResult] = results;
-    if (catalogResult.status !== "fulfilled" || catalogResult.value === false || historyResult.status !== "fulfilled") return false;
-    this.authoritativeProjectIdByMachine.delete(machineId);
-    if (machineId === this.deps.machineId()) {
-      this.publish({ kind: "ready", entries: historyResult.value });
-    }
-    return true;
+    return { kind: "removed" };
   }
 
   private enqueue(machineId: string, operation: () => Promise<void>): Promise<void> {
