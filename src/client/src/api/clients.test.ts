@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
-import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, utilityModelsApi, workspacesApi } from "./clients";
+import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
+import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -49,6 +49,35 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe("host speech API", () => {
+  it("uses only local gateway TTS paths with exact request options under a nested base", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const input: HostSpeechSpeakRequest = { runId: "run-1", text: "Hello", voice: "Ada", rate: 20 };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse({ available: true, voices: [{ name: "Ada", language: "en-US" }] }),
+      jsonResponse({ runId: "run-1", outcome: "ended" }),
+      jsonResponse({ runId: "run-1", stopped: true }),
+    ]);
+    const signal = new AbortController().signal;
+
+    await expect(ttsApi.status()).resolves.toEqual({ available: true, voices: [{ name: "Ada", language: "en-US" }] });
+    await expect(ttsApi.speak(input, signal)).resolves.toEqual({ runId: "run-1", outcome: "ended" });
+    await expect(ttsApi.stop("run-1")).resolves.toEqual({ runId: "run-1", stopped: true });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/tts",
+      "https://pi.example.test/nested/pi-webui/api/tts/speak",
+      "https://pi.example.test/nested/pi-webui/api/tts/stop",
+    ]);
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
+    expect(fetchCall(fetchMock, 1)[1]).toMatchObject({ method: "POST", signal });
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual(input);
+    expect(fetchCall(fetchMock, 2)[1]?.method).toBe("POST");
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 2)[1]))).toEqual({ runId: "run-1" });
+    expect(fetchMock.mock.calls.some(([url]) => toUrl(url).pathname.includes("/machines/"))).toBe(false);
+  });
+});
 describe("machine-scoped runtime API", () => {
   it("reads machine PI WEBUI status through the gateway route", async () => {
     const fetchMock = stubJsonFetch(piWebUiStatusResponse());

@@ -1,9 +1,77 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
+  it("strictly parses host speech status documents", () => {
+    const available = {
+      available: true,
+      voices: [
+        { name: "Ada", language: "en-US" },
+        { name: "Marta", language: "de-DE", variant: "female" },
+      ],
+    };
+    const unavailable = {
+      available: false,
+      reason: "Speech Dispatcher is unavailable.",
+      voices: [],
+    };
+
+    expect(parseHostSpeechStatus(available)).toEqual(available);
+    expect(parseHostSpeechStatus({ available: true, voices: [] })).toEqual({ available: true, voices: [] });
+    expect(parseHostSpeechStatus(unavailable)).toEqual(unavailable);
+  });
+
+  it("rejects malformed host speech status fields and nested voice entries", () => {
+    const available = { available: true, voices: [{ name: "Ada", language: "en-US" }] };
+
+    for (const value of [
+      null,
+      [],
+      { voices: [] },
+      { available: true },
+      { ...available, available: "yes" },
+      { ...available, extra: true },
+      { available: false, voices: [] },
+      { available: false, reason: "   ", voices: [] },
+      { ...available, reason: 7 },
+      { available: true, voices: [{ name: "Ada", language: "en-US", extra: true }] },
+      { available: true, voices: [{ language: "en-US" }] },
+      { available: true, voices: [{ name: "Ada" }] },
+      { available: true, voices: [{ name: "", language: "en-US" }] },
+      { available: true, voices: [{ name: "Ada", language: "" }] },
+      { available: true, voices: [{ name: "Ada", language: "en-US", variant: "" }] },
+      { available: true, voices: [{ name: "Ada", language: "en-US" }, { name: "Ada", language: "en-GB" }] },
+    ]) {
+      expect(() => parseHostSpeechStatus(value)).toThrow();
+    }
+  });
+
+  it("strictly parses host speech terminal and stop responses", () => {
+    expect(parseHostSpeechTerminalResult({ runId: "run-1", outcome: "ended" })).toEqual({ runId: "run-1", outcome: "ended" });
+    expect(parseHostSpeechTerminalResult({ runId: "run-2", outcome: "canceled" })).toEqual({ runId: "run-2", outcome: "canceled" });
+    expect(parseHostSpeechStopResponse({ runId: "run-1", stopped: true })).toEqual({ runId: "run-1", stopped: true });
+    expect(parseHostSpeechStopResponse({ runId: "run-2", stopped: false })).toEqual({ runId: "run-2", stopped: false });
+
+    for (const value of [
+      {},
+      { runId: "bad run", outcome: "ended" },
+      { runId: "run-1", outcome: "unknown" },
+      { runId: "run-1", outcome: "ended", extra: true },
+    ]) {
+      expect(() => parseHostSpeechTerminalResult(value)).toThrow();
+    }
+    for (const value of [
+      {},
+      { runId: "bad run", stopped: true },
+      { runId: "run-1", stopped: "yes" },
+      { runId: "run-1", stopped: true, extra: true },
+    ]) {
+      expect(() => parseHostSpeechStopResponse(value)).toThrow();
+    }
+  });
+
   it("parses dynamic memory and network metrics", () => {
     expect(parseSystemMetricsResponse({
       generatedAt: "2026-03-10T12:00:00.000Z",
