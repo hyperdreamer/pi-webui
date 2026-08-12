@@ -1,4 +1,4 @@
-import { LitElement, html } from "lit";
+import { LitElement, css, html } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { ChatDisclosureController } from "../chatDisclosure";
@@ -14,11 +14,12 @@ import {
   renderedChatGroups,
 } from "../chatRenderWindow";
 import { writeClipboardText } from "../clipboard";
+import { assistantSpeechMessageKey, assistantSpeechText } from "../hostSpeechText";
 import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
 import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
 import { ChatScrollController, distanceFromScrollBottom, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
 import { clampRatio, computeMinimapViewport, extractMinimapScrollRatio, messageTopRatio, minimapViewportsEqual, type MinimapMarker } from "../chatMinimapGeometry";
-import type { QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionWarningSeverity } from "../api";
+import type { QueuedSessionMessage, SessionActivity, SessionInfo, SessionStatus, SessionWarningSeverity, HostSpeechStatus } from "../api";
 import { formatCost, formatTokenCount } from "../utils/format";
 import { computeMessageCounts, sessionUsageDetail, sessionUsageTooltip, type DetailRow, type SessionUsageDetail } from "./sessionUsageDisplay";
 import {
@@ -60,6 +61,24 @@ function renderNotificationCloseIcon() {
     <svg class="notification-icon notification-close-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M6 6l12 12"></path>
       <path d="M18 6 6 18"></path>
+    </svg>
+  `;
+}
+
+function renderHostSpeechSpeakerIcon() {
+  return html`
+    <svg class="host-speech-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+    </svg>
+  `;
+}
+
+function renderHostSpeechStopIcon() {
+  return html`
+    <svg class="host-speech-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <rect x="5" y="5" width="14" height="14" rx="2"></rect>
     </svg>
   `;
 }
@@ -287,6 +306,58 @@ export function chatUserMessageActionAvailability(
   };
 }
 
+/** The fixed-position Listen/Stop action for one assistant reply. */
+export interface ChatAssistantSpeechAction {
+  /** Projected prose that would be spoken. */
+  text: string;
+  /** True when this reply is the message the host is currently reading. */
+  active: boolean;
+  /** True when host speech is unavailable; the control stays discoverable but inert. */
+  disabled: boolean;
+  label: "Listen to assistant reply" | "Stop reading assistant reply";
+  /** Tooltip text; carries the availability reason when the action is disabled. */
+  title: string;
+}
+
+/**
+ * Derives the speech action for one assistant reply, or `undefined` when the
+ * reply cannot be spoken or the feature is not wired. Listen requires the
+ * toggle callback, a finalized reply, and readable prose; the exact active
+ * reply keeps an enabled Stop even when it is no longer finalized or host
+ * speech availability is unknown.
+ */
+export function chatAssistantSpeechAction(
+  message: ChatLine,
+  key: string,
+  options: {
+    enabled: boolean;
+    finalized: boolean;
+    status: HostSpeechStatus | undefined;
+    activeMessageKey?: string;
+  },
+): ChatAssistantSpeechAction | undefined {
+  const text = assistantSpeechText(message);
+  if (!options.enabled || text === "") return undefined;
+  if (options.activeMessageKey === key) {
+    return {
+      text,
+      active: true,
+      disabled: false,
+      label: "Stop reading assistant reply",
+      title: "Stop reading assistant reply",
+    };
+  }
+  if (!options.finalized) return undefined;
+  const available = options.status?.available === true;
+  return {
+    text,
+    active: false,
+    disabled: !available,
+    label: "Listen to assistant reply",
+    title: available ? "Listen to assistant reply" : `Listen to assistant reply — ${options.status?.reason ?? "Host speech is unavailable."}`,
+  };
+}
+
 /** Text restored to the composer by "Edit from here"; image parts intentionally remain attachments only. */
 export function chatMessageEditText(message: ChatLine): string {
   return message.parts
@@ -333,6 +404,10 @@ export class ChatView extends LitElement {
   @property({ type: Boolean }) canMessageActions = false;
   @property({ attribute: false }) onEditFromHere?: (assistantEntryId: string, editorText: string) => void | Promise<void>;
   @property({ attribute: false }) onForkFromHere?: (userEntryId: string) => void | Promise<void>;
+  @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
+  @property() activeHostSpeechMessageKey = "";
+  @property() hostSpeechError = "";
+  @property({ attribute: false }) onToggleHostSpeech?: (target: { message: ChatLine; messageKey: string; text: string }) => void;
   @property({ attribute: false }) onClearServerQueue?: () => void;
   @property({ attribute: false }) onDismissWarning?: (dismissId: string) => void;
   @property({ attribute: false }) onDismissNotification?: (notificationId: string) => void;
@@ -620,6 +695,8 @@ export class ChatView extends LitElement {
   override render() {
     const allGroups = this.groupedMessages();
     const groups = renderedChatGroups(allGroups, this.renderedGroupStart);
+    const lastGroup = groups.at(-1);
+    const lastRenderedIndex = lastGroup === undefined ? undefined : lastGroup.kind === "group" ? lastGroup.endIndex : lastGroup.index;
     return html`
       ${this.renderTopNotices()}
       ${this.renderNotificationLiveRegions()}
@@ -634,7 +711,7 @@ export class ChatView extends LitElement {
               const live = this.isLiveTailGroup(allGroups, group);
               if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, live);
               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, group.toolName);
-              return this.renderMessage(group.message, group.index, live);
+              return this.renderMessage(group.message, group.index, live, group.index === lastRenderedIndex);
             },
           )}
           ${this.renderQueuedMessages()}
@@ -649,8 +726,14 @@ export class ChatView extends LitElement {
   private renderTopNotices() {
     const warnings = this.renderWarnings();
     const notifications = this.renderNotificationTray();
-    if (warnings === null && notifications === null) return null;
-    return html`<div class="top-notices">${warnings}${notifications}</div>`;
+    const speechError = this.renderHostSpeechError();
+    if (warnings === null && notifications === null && speechError === null) return null;
+    return html`<div class="top-notices">${warnings}${notifications}${speechError}</div>`;
+  }
+
+  private renderHostSpeechError() {
+    if (this.hostSpeechError === "") return null;
+    return html`<p class="host-speech-error" role="status">${this.hostSpeechError}</p>`;
   }
 
   private renderNotificationTray() {
@@ -1133,12 +1216,12 @@ export class ChatView extends LitElement {
     return Math.max(this.messageEnd, this.messageStart + this.messages.length);
   }
 
-  private renderMessage(message: ChatLine, index: number, live = false) {
+  private renderMessage(message: ChatLine, index: number, live = false, isLast = false) {
     const toolOnly = this.isToolExecutionOnlyMessage(message);
     return html`
       ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
       <article class=${toolOnly ? "msg tool-execution-shell" : `msg ${message.role}`} data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
-        ${toolOnly ? null : this.renderMessageHeader(message, String(index))}
+        ${toolOnly ? null : this.renderMessageHeader(message, String(index), message.role, { key: assistantSpeechMessageKey(message, index), isLast })}
         ${message.parts.map((part) => this.renderPart(part, message, live))}
       </article>
     `;
@@ -1149,7 +1232,7 @@ export class ChatView extends LitElement {
     return html`
       ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
       <article class="msg tool-image-output" data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
-        ${this.renderMessageHeader(message, String(index), label)}
+        ${this.renderMessageHeader(message, String(index), label, { key: assistantSpeechMessageKey(message, index), isLast: false })}
         ${message.parts.map((part) => this.renderPart(part, message))}
       </article>
     `;
@@ -1207,7 +1290,7 @@ export class ChatView extends LitElement {
           const toolOnly = this.isToolExecutionOnlyMessage(message);
           return html`
             <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
-              ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
+              ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`, message.role, { key: assistantSpeechMessageKey(message, startIndex + offset), isLast: false })}
               ${message.parts.map((part) => this.renderPart(part, message, live))}
             </section>
           `;
@@ -1220,21 +1303,22 @@ export class ChatView extends LitElement {
     return html`<span class="scroll-marker" data-marker-id=${markerId} aria-hidden="true"></span>`;
   }
 
-  private renderMessageHeader(message: ChatLine, key: string, label: string = message.role) {
+  private renderMessageHeader(message: ChatLine, key: string, label: string = message.role, speech?: { key: string; isLast: boolean }) {
     const meta = this.messageMetaLabel(message);
     const expanded = this.expandedMetaKey === key;
     return html`
       <div class="msg-header">
         <b class="label">${label}</b>
         <div class="msg-header-trailing">
-          ${this.renderMessageActions(message, key)}
+          ${this.renderMessageActions(message, key, speech)}
           <span class=${expanded ? "msg-meta expanded" : "msg-meta"} role="button" tabindex="0" title=${meta} aria-label=${meta} aria-expanded=${String(expanded)} @click=${() => { this.expandedMetaKey = expanded ? undefined : key; }} @keydown=${(event: KeyboardEvent) => { this.onMetaKeydown(event, key, expanded); }}>${meta}</span>
         </div>
       </div>
     `;
   }
 
-  private renderMessageActions(message: ChatLine, key: string) {
+  private renderMessageActions(message: ChatLine, key: string, speech?: { key: string; isLast: boolean }) {
+    const speechAction = this.hostSpeechAction(message, speech);
     const copyable = this.isCopyableMessage(message);
     const available = chatUserMessageActionAvailability(message, {
       enabled: this.canMessageActions,
@@ -1242,39 +1326,79 @@ export class ChatView extends LitElement {
     });
     const editEntryId = this.onEditFromHere === undefined ? undefined : available.editFromHereEntryId;
     const forkEntryId = this.onForkFromHere === undefined ? undefined : available.forkEntryId;
-    if (!copyable && editEntryId === undefined && forkEntryId === undefined) return null;
+    if (speechAction === undefined && !copyable && editEntryId === undefined && forkEntryId === undefined) return null;
 
     const copied = this.copiedMessageKey === key;
     const forking = forkEntryId !== undefined && this.forkingEntryId === forkEntryId;
     return html`
-      <div class=${`msg-actions${forking ? " forking" : ""}`} aria-label="Message actions">
-        ${copyable ? html`
-          <button type="button" class="msg-action" title=${copied ? "Copied" : "Copy message"} aria-label=${`${copied ? "Copied" : "Copy"} ${message.role} message`} @click=${(event: MouseEvent) => { void this.copyMessage(message, key, event); }}>
-            <span aria-hidden="true">${copied ? "✓" : "⧉"}</span>
-          </button>
-        ` : null}
-        ${editEntryId === undefined ? null : html`
-          <button type="button" class="msg-action msg-history-action" data-message-action="edit-from-here" title="Edit from here — branches within this session" @click=${() => { void this.editFromHere(editEntryId, chatMessageEditText(message)); }}>
-            <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="15 10 20 15 15 20"></polyline>
-              <path d="M4 4v7a4 4 0 0 0 4 4h12"></path>
-            </svg>
-            Edit from here
-          </button>
-        `}
-        ${forkEntryId === undefined ? null : html`
-          <button type="button" class="msg-action msg-history-action" title=${forking ? "Creating new session…" : "New session — creates an independent copy from here"} ?disabled=${forking} data-message-action="new-session" @click=${() => { void this.forkFromHere(forkEntryId); }}>
-            <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="6" y1="3" x2="6" y2="15"></line>
-              <circle cx="18" cy="6" r="3"></circle>
-              <circle cx="6" cy="18" r="3"></circle>
-              <path d="M18 9a9 9 0 0 1-9 9"></path>
-            </svg>
-            ${forking ? "Creating…" : "New session"}
-          </button>
-        `}
+      ${speechAction === undefined ? null : this.renderHostSpeechAction(speechAction, message)}
+      ${!copyable && editEntryId === undefined && forkEntryId === undefined ? null : html`
+        <div class=${`msg-actions${forking ? " forking" : ""}`} aria-label="Message actions">
+          ${copyable ? html`
+            <button type="button" class="msg-action" title=${copied ? "Copied" : "Copy message"} aria-label=${`${copied ? "Copied" : "Copy"} ${message.role} message`} @click=${(event: MouseEvent) => { void this.copyMessage(message, key, event); }}>
+              <span aria-hidden="true">${copied ? "✓" : "⧉"}</span>
+            </button>
+          ` : null}
+          ${editEntryId === undefined ? null : html`
+            <button type="button" class="msg-action msg-history-action" data-message-action="edit-from-here" title="Edit from here — branches within this session" @click=${() => { void this.editFromHere(editEntryId, chatMessageEditText(message)); }}>
+              <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="15 10 20 15 15 20"></polyline>
+                <path d="M4 4v7a4 4 0 0 0 4 4h12"></path>
+              </svg>
+              Edit from here
+            </button>
+          `}
+          ${forkEntryId === undefined ? null : html`
+            <button type="button" class="msg-action msg-history-action" title=${forking ? "Creating new session…" : "New session — creates an independent copy from here"} ?disabled=${forking} data-message-action="new-session" @click=${() => { void this.forkFromHere(forkEntryId); }}>
+              <svg class="msg-history-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="6" y1="3" x2="6" y2="15"></line>
+                <circle cx="18" cy="6" r="3"></circle>
+                <circle cx="6" cy="18" r="3"></circle>
+                <path d="M18 9a9 9 0 0 1-9 9"></path>
+              </svg>
+              ${forking ? "Creating…" : "New session"}
+            </button>
+          `}
+        </div>
+      `}
+    `;
+  }
+
+  private hostSpeechAction(message: ChatLine, speech: { key: string; isLast: boolean } | undefined): { action: ChatAssistantSpeechAction; key: string } | undefined {
+    if (speech === undefined) return undefined;
+    const action = chatAssistantSpeechAction(message, speech.key, {
+      enabled: this.onToggleHostSpeech !== undefined,
+      finalized: this.isFinalizedAssistantReply(speech.isLast),
+      status: this.hostSpeechStatus,
+      ...(this.activeHostSpeechMessageKey === "" ? {} : { activeMessageKey: this.activeHostSpeechMessageKey }),
+    });
+    return action === undefined ? undefined : { action, key: speech.key };
+  }
+
+  private isFinalizedAssistantReply(isLast: boolean): boolean {
+    return !isLast || this.status?.isStreaming !== true;
+  }
+
+  private renderHostSpeechAction(speech: { action: ChatAssistantSpeechAction; key: string }, message: ChatLine) {
+    const { action, key } = speech;
+    return html`
+      <div class="msg-speech-action">
+        <button
+          type="button"
+          class="msg-action host-speech-action"
+          title=${action.title}
+          aria-label=${action.label}
+          ?disabled=${action.disabled}
+          data-message-action="host-speech"
+          @click=${(event: MouseEvent) => { this.toggleHostSpeech(action, message, key, event); }}
+        >${action.active ? renderHostSpeechStopIcon() : renderHostSpeechSpeakerIcon()}</button>
       </div>
     `;
+  }
+
+  private toggleHostSpeech(action: ChatAssistantSpeechAction, message: ChatLine, messageKey: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.onToggleHostSpeech?.({ message, messageKey, text: action.text });
   }
 
   private messageActionsBusy(): boolean {
@@ -1860,5 +1984,17 @@ export class ChatView extends LitElement {
     this.pinnedToBottom = isNearScrollBottom(chat);
   }
 
-  static override styles = chatStyles;
+  static override styles = [
+    chatStyles,
+    css`
+      .msg-speech-action { flex: 0 0 auto; display: inline-flex; opacity: 0; transition: opacity .12s ease; }
+      .msg:hover > .msg-header .msg-speech-action, .msg:focus-within > .msg-header .msg-speech-action, .group-msg:hover > .msg-header .msg-speech-action, .group-msg:focus-within > .msg-header .msg-speech-action { opacity: 1; }
+      .host-speech-action { box-sizing: border-box; width: 24px; height: 24px; }
+      .host-speech-icon { width: 16px; height: 16px; display: block; }
+      .host-speech-action:disabled { color: var(--pi-dim); cursor: not-allowed; }
+      .host-speech-action:disabled:hover, .host-speech-action:disabled:focus { color: var(--pi-dim); border-color: var(--pi-border); }
+      .host-speech-error { box-sizing: border-box; flex: 0 0 auto; margin: 0; padding: 8px 16px; color: var(--pi-warning); font-size: 12px; }
+      @media (hover: none) { .msg-speech-action { opacity: 1; } }
+    `,
+  ];
 }
