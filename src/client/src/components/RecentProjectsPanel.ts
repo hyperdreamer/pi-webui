@@ -24,15 +24,20 @@ export class RecentProjectsPanel extends LitElement {
   @property({ attribute: false }) selectedProjectId: string | undefined;
   @property({ attribute: false }) onOpenRegistered?: (project: Project) => void;
   @property({ attribute: false }) onOpenClosed?: (entry: RecentProjectEntry, restoreFocus: () => void) => void;
+  @property({ attribute: false }) onRemoveRequested?: (
+    entry: RecentProjectEntry,
+    cancelFocus: () => void,
+    removalFocus: () => void,
+  ) => void;
   @property({ attribute: false }) onRetry?: () => void;
 
   override render(): TemplateResult {
     if (this.state.kind === "loading") return html`<p class="muted" role="status">Loading recent projects…</p>`;
     if (this.state.kind === "failed") return this.renderFailure(this.state.message);
-    if (this.state.entries.length === 0) return html`<p class="muted" role="status">No recent projects</p>`;
+    if (this.state.entries.length === 0) return html`<p class="muted recent-projects-empty" role="status" tabindex="-1">No recent projects</p>`;
     return html`
       <div class="list-body recent-projects-list">
-        ${this.state.entries.map((entry) => this.renderEntry(entry))}
+        ${this.state.entries.map((entry, index) => this.renderEntry(entry, index))}
       </div>
     `;
   }
@@ -46,28 +51,37 @@ export class RecentProjectsPanel extends LitElement {
     `;
   }
 
-  private renderEntry(entry: RecentProjectEntry): TemplateResult {
+  private renderEntry(entry: RecentProjectEntry, index: number): TemplateResult {
     const project = registeredProjectForEntry(entry, this.projects);
     const selected = project !== undefined && project.id === this.selectedProjectId;
+    const removeLabel = `Remove ${entry.name} from Recent Projects`;
     return html`
-      <div
-        class=${`action-row recent-project-row ${selected ? "selected" : ""}`}
-        tabindex="0"
-        role="button"
-        data-recent-project-id=${entry.id}
-        title=${entry.path}
-        aria-label=${project === undefined ? `${entry.name}, closed, ${entry.path}` : `${entry.name}, ${entry.path}`}
-        @click=${() => { this.open(entry, project); }}
-        @keydown=${(event: KeyboardEvent) => { this.handleKeydown(event, entry, project); }}
-      >
-        <div class="action-main">
+      <div class=${`action-row recent-project-row ${selected ? "selected" : ""}`} data-recent-project-id=${entry.id}>
+        <button
+          class="action-main recent-project-open"
+          type="button"
+          title=${entry.path}
+          aria-label=${project === undefined ? `${entry.name}, closed, ${entry.path}` : `${entry.name}, ${entry.path}`}
+          @click=${() => { this.open(entry, project, index); }}
+        >
           <span class="recent-project-primary">
             <span class="recent-project-name">${entry.name}</span>
             ${project === undefined ? html`<span class="recent-project-status">Closed</span>` : null}
           </span>
           <small class="recent-project-path">${entry.path}</small>
           ${project === undefined ? null : this.renderActivity(project)}
-        </div>
+        </button>
+        <button
+          class="recent-project-remove"
+          type="button"
+          title=${removeLabel}
+          aria-label=${removeLabel}
+          @click=${(event: MouseEvent) => { this.requestRemoval(event, entry, index); }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m6 6 12 12M18 6 6 18"></path>
+          </svg>
+        </button>
       </div>
     `;
   }
@@ -77,27 +91,97 @@ export class RecentProjectsPanel extends LitElement {
     return renderActionActivityIndicator(kind, kind === "terminal" ? "Project terminal active" : "Project active");
   }
 
-  private handleKeydown(event: KeyboardEvent, entry: RecentProjectEntry, project: Project | undefined): void {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    this.open(entry, project);
+  private open(entry: RecentProjectEntry, project: Project | undefined, index: number): void {
+    if (project === undefined) {
+      this.onOpenClosed?.(entry, () => { void this.restoreClosedFocus(entry.id, index); });
+    } else {
+      this.onOpenRegistered?.(project);
+    }
   }
 
-  private open(entry: RecentProjectEntry, project: Project | undefined): void {
-    if (project === undefined) this.onOpenClosed?.(entry, () => { this.focusEntry(entry.id); });
-    else this.onOpenRegistered?.(project);
+  private requestRemoval(event: MouseEvent, entry: RecentProjectEntry, index: number): void {
+    event.stopPropagation();
+    this.onRemoveRequested?.(
+      entry,
+      () => { void this.focusAfterSettle(() => { this.focusRemoveForEntry(entry.id); }); },
+      () => { void this.focusAfterSettle(() => { this.focusPrimaryNear(index); }); },
+    );
   }
 
-  private focusEntry(entryId: string): void {
+  /** Focus the original primary action; once it disappears, fall back by original index. */
+  private async restoreClosedFocus(entryId: string, originalIndex: number): Promise<void> {
     if (!this.isConnected) return;
-    const row = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".recent-project-row"))
-      .find((candidate) => candidate.dataset["recentProjectId"] === entryId);
-    row?.focus();
+    await this.updateComplete;
+    if (this.focusPrimaryForEntry(entryId)) return;
+    this.focusPrimaryNear(originalIndex);
+  }
+
+  /** Re-query the rendered rows after the current update settles instead of retaining stale elements. */
+  private async focusAfterSettle(focus: () => void): Promise<void> {
+    if (!this.isConnected) return;
+    await this.updateComplete;
+    focus();
+  }
+
+  private rowForEntry(entryId: string): HTMLElement | undefined {
+    return Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".recent-project-row"))
+      .find((row) => row.dataset["recentProjectId"] === entryId);
+  }
+
+  private focusPrimaryForEntry(entryId: string): boolean {
+    const primary = this.rowForEntry(entryId)?.querySelector<HTMLElement>(".recent-project-open");
+    if (primary == null) return false;
+    primary.focus();
+    return true;
+  }
+
+  private focusRemoveForEntry(entryId: string): boolean {
+    const remove = this.rowForEntry(entryId)?.querySelector<HTMLElement>(".recent-project-remove");
+    if (remove == null) return false;
+    remove.focus();
+    return true;
+  }
+
+  /** Focus the primary action at the original index, otherwise the one before it, otherwise the empty state. */
+  private focusPrimaryNear(originalIndex: number): void {
+    const primaries = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".recent-project-row .recent-project-open"));
+    const target = primaries[originalIndex] ?? primaries[originalIndex - 1];
+    if (target !== undefined) {
+      target.focus();
+      return;
+    }
+    this.renderRoot.querySelector<HTMLElement>(".recent-projects-empty")?.focus();
   }
 
   static override styles = [listStyles, css`
     /* The shared small rule truncates with ellipsis; history paths must wrap. */
     .recent-project-path { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; white-space: normal; }
     .recent-project-status { flex: 0 0 auto; color: var(--pi-warning); font-size: 12px; }
+    /* A non-interactive grid container keeps a fixed trailing slot for the remove control. */
+    .recent-project-row { grid-template-columns: minmax(0, 1fr) 32px; }
+    .recent-project-open { font: inherit; }
+    .recent-project-remove {
+      width: 32px;
+      min-width: 32px;
+      height: 100%;
+      padding: 0;
+      border-left: 0;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      display: grid;
+      place-items: center;
+      color: var(--pi-muted);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .recent-project-remove svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .recent-project-row:hover .recent-project-remove,
+    .recent-project-row:focus-within .recent-project-remove { opacity: 1; pointer-events: auto; }
+    .recent-project-remove:hover { color: var(--pi-text); background: var(--pi-surface-hover); }
+    .recent-project-row.selected .recent-project-remove { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
+    .recent-project-open:focus-visible, .recent-project-remove:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
+    @media (hover: none) {
+      .recent-project-remove { opacity: 1; pointer-events: auto; }
+    }
   `];
 }

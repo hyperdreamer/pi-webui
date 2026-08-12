@@ -151,12 +151,14 @@ afterEach(async () => {
 });
 
 describe("PiWebUiApp closed recent-project focus restoration", () => {
-  it("returns focus to the current row after keyboard activation and Cancel", async () => {
+  it("returns focus to the current primary action after keyboard activation and Cancel", async () => {
     const app = await mountApp();
-    const originalRow = recentRow(await recentPanel(app));
-    originalRow.focus();
+    const panel = await recentPanel(app);
+    const originalRow = recentRow(panel);
+    const originalPrimary = recentPrimary(panel);
+    originalPrimary.focus();
 
-    originalRow.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    originalPrimary.click();
     const dialog = await openedDialog(app);
     await setRecentEntries(app, []);
     expect(originalRow.isConnected).toBe(false);
@@ -168,25 +170,25 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull();
     expect(closeConnections).toEqual([true]);
     expect(currentRow).not.toBe(originalRow);
-    expect(currentPanel.shadowRoot?.activeElement).toBe(currentRow);
+    expect(currentPanel.shadowRoot?.activeElement).toBe(recentPrimary(currentPanel));
   });
 
   it("returns focus after pointer activation closes through Escape and backdrop", async () => {
     const app = await mountApp();
     let panel = await recentPanel(app);
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     let dialog = await openedDialog(app);
 
     nativeDialog(dialog).dispatchEvent(new Event("cancel", { cancelable: true }));
     panel = await settledRecentPanel(app);
-    expect(panel.shadowRoot?.activeElement).toBe(recentRow(panel));
+    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
 
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     dialog = await openedDialog(app);
     nativeDialog(dialog).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     panel = await settledRecentPanel(app);
 
-    expect(panel.shadowRoot?.activeElement).toBe(recentRow(panel));
+    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
     expect(closeConnections).toEqual([true, true]);
   });
 
@@ -198,7 +200,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     const loadProjects = vi.spyOn(api, "projects").mockResolvedValue([project]);
 
     const panel = await recentPanel(app);
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     const dialog = await openedDialog(app);
     dialogButton(dialog, ".closed-recent-remove").click();
 
@@ -219,7 +221,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     vi.spyOn(recentProjectsApi, "removeRecentProject").mockRejectedValue(new HttpRequestError("Machine offline", 503));
 
     const panel = await recentPanel(app);
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     const dialog = await openedDialog(app);
     dialogButton(dialog, ".closed-recent-remove").click();
 
@@ -236,8 +238,8 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     const app = await mountApp([entry], [localMachine, remoteMachine]);
     const panel = await recentPanel(app);
     const restoreLocalFocus = vi.fn();
-    Reflect.set(panel, "focusEntry", restoreLocalFocus);
-    recentRow(panel).click();
+    Reflect.set(panel, "restoreClosedFocus", restoreLocalFocus);
+    recentPrimary(panel).click();
     await openedDialog(app);
 
     await selectMachineFromNavigation(app, remoteMachine);
@@ -256,7 +258,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     const removeRecentProject = vi.spyOn(recentProjectsApi, "removeRecentProject").mockResolvedValue([]);
 
     const panel = await recentPanel(app);
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     const dialogA = await openedDialog(app);
     const reopenA = dialogA.onReopen;
     const removeA = dialogA.onRemove;
@@ -277,8 +279,8 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
 
     let panel = await recentPanel(app);
     const restoreLocalFocus = vi.fn();
-    Reflect.set(panel, "focusEntry", restoreLocalFocus);
-    recentRow(panel, entry.id).click();
+    Reflect.set(panel, "restoreClosedFocus", restoreLocalFocus);
+    recentPrimary(panel, entry.id).click();
     const dialogA = await openedDialog(app);
     const closeAttempted = observeNextDialogClose(dialogA);
     dialogButton(dialogA, ".closed-recent-reopen").click();
@@ -289,7 +291,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
 
     await selectMachineFromNavigation(app, remoteMachine);
     panel = await settledRecentPanel(app);
-    recentRow(panel, entryBeta.id).click();
+    recentPrimary(panel, entryBeta.id).click();
     const dialogB = await openedDialog(app);
     const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
     expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
@@ -319,8 +321,8 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     const remove = vi.spyOn(recent, "removeEntry").mockReturnValue(pendingRemove.promise);
 
     let panel = await recentPanel(app);
-    const alphaRow = recentRow(panel, entry.id);
-    alphaRow.click();
+    const alphaPrimary = recentPrimary(panel, entry.id);
+    alphaPrimary.click();
     const dialogA = await openedDialog(app);
     const closeA = dialogA.onClose;
     const onCloseA = vi.fn(() => { closeA(); });
@@ -339,7 +341,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
 
     await vi.waitFor(() => { expect(app.renderRoot.querySelector("closed-recent-project-dialog")).toBeNull(); });
     panel = await settledRecentPanel(app);
-    recentRow(panel, entryBeta.id).click();
+    recentPrimary(panel, entryBeta.id).click();
     const dialogB = await openedDialog(app);
     const reopenB = dialogButton(dialogB, ".closed-recent-reopen");
     expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
@@ -356,7 +358,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     expect(nativeDialog(dialogB).open).toBe(true);
     expect(dialogB.shadowRoot?.activeElement).toBe(reopenB);
     panel = await settledRecentPanel(app);
-    expect(panel.shadowRoot?.activeElement).not.toBe(alphaRow);
+    expect(panel.shadowRoot?.activeElement).not.toBe(alphaPrimary);
     if (action === "Reopen") expect(reopen).toHaveBeenCalledWith(entry.path, entry.name);
     else expect(remove).toHaveBeenCalledWith(entry.id);
   });
@@ -369,15 +371,16 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
     vi.spyOn(recent, "load").mockResolvedValue();
 
     let panel = await recentPanel(app);
-    recentRow(panel).click();
+    recentPrimary(panel).click();
     let dialog = await openedDialog(app);
     dialogButton(dialog, ".closed-recent-reopen").click();
     panel = await settledRecentPanel(app);
 
-    expect(panel.shadowRoot?.activeElement).toBe(recentRow(panel));
+    expect(panel.shadowRoot?.activeElement).toBe(recentPrimary(panel));
 
     const rowRemovedByAction = recentRow(panel);
-    rowRemovedByAction.click();
+    const primaryRemovedByAction = recentPrimary(panel);
+    primaryRemovedByAction.click();
     dialog = await openedDialog(app);
     vi.spyOn(recent, "removeEntry").mockImplementation(() => {
       Reflect.set(recent, "current", { kind: "ready", entries: [] });
@@ -389,7 +392,7 @@ describe("PiWebUiApp closed recent-project focus restoration", () => {
 
     expect(panel.renderRoot.querySelector(".recent-project-row")).toBeNull();
     expect(rowRemovedByAction.isConnected).toBe(false);
-    expect(panel.shadowRoot?.activeElement).not.toBe(rowRemovedByAction);
+    expect(panel.shadowRoot?.activeElement).not.toBe(primaryRemovedByAction);
     expect(closeConnections).toEqual([true, true]);
   });
 });
@@ -449,15 +452,28 @@ async function recentPanel(app: PiWebUiAppElement): Promise<RecentProjectsPanelE
 }
 
 async function settledRecentPanel(app: PiWebUiAppElement): Promise<RecentProjectsPanelElement> {
-  await app.updateComplete;
+  // The panel's focus closures settle on the element update cascade after the
+  // dialog action completes, so flush enough microtask rounds for restored
+  // focus to land before assertions.
+  for (let round = 0; round < 3; round += 1) {
+    await app.updateComplete;
+    await Promise.resolve();
+  }
+  const panel = await recentPanel(app);
   await Promise.resolve();
-  return recentPanel(app);
+  return panel;
 }
 
 function recentRow(panel: RecentProjectsPanelElement, entryId = entry.id): HTMLElement {
   const row = panel.renderRoot.querySelector<HTMLElement>(`[data-recent-project-id="${entryId}"]`);
   if (row === null) throw new Error(`Expected recent project row ${entryId}`);
   return row;
+}
+
+function recentPrimary(panel: RecentProjectsPanelElement, entryId = entry.id): HTMLButtonElement {
+  const primary = recentRow(panel, entryId).querySelector<HTMLButtonElement>("button.recent-project-open");
+  if (primary === null) throw new Error(`Expected recent project primary action ${entryId}`);
+  return primary;
 }
 
 async function openedDialog(app: PiWebUiAppElement): Promise<ClosedDialogElement> {

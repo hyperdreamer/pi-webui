@@ -16,10 +16,6 @@ function workspace(projectId: string, path: string): Workspace {
   return { id: `w-${projectId}`, projectId, path, label: "main", isMain: true, isGitRepo: true, isGitWorktree: false };
 }
 
-function renderedText(panel: RecentProjectsPanel): string {
-  return JSON.stringify(panel.render());
-}
-
 describe("registeredProjectForEntry", () => {
   it("matches a registered project by path", () => {
     const alpha = project("p1", "/work/alpha");
@@ -43,6 +39,20 @@ async function mount(overrides: Partial<RecentProjectsPanel>): Promise<{ panel: 
 
 function rows(panel: RecentProjectsPanel): HTMLElement[] {
   return [...panel.renderRoot.querySelectorAll<HTMLElement>(".recent-project-row")];
+}
+
+function primary(panel: RecentProjectsPanel, rowIndex = 0): HTMLButtonElement | undefined {
+  return rows(panel)[rowIndex]?.querySelector<HTMLButtonElement>("button.recent-project-open") ?? undefined;
+}
+
+function removeButton(panel: RecentProjectsPanel, rowIndex = 0): HTMLButtonElement | undefined {
+  return rows(panel)[rowIndex]?.querySelector<HTMLButtonElement>("button.recent-project-remove") ?? undefined;
+}
+
+function panelStyles(): string {
+  const styles = RecentProjectsPanel.styles;
+  const styleResults = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
 }
 
 describe("recent-projects-panel rendering", () => {
@@ -82,7 +92,7 @@ describe("recent-projects-panel rendering", () => {
     await panel.updateComplete;
 
     expect(panel.renderRoot.textContent).not.toContain("Closed");
-    expect(rows(panel)[0]?.getAttribute("aria-label")).toBe("alpha, /work/alpha");
+    expect(primary(panel)?.getAttribute("aria-label")).toBe("alpha, /work/alpha");
     teardown();
   });
 
@@ -114,18 +124,60 @@ describe("recent-projects-panel rendering", () => {
     failed.teardown();
   });
 
-  it("renders no per-row removal control", async () => {
+  it("renders sibling primary and remove buttons inside a non-interactive row container", async () => {
+    const onOpenRegistered = vi.fn();
+    const onOpenClosed = vi.fn();
+    const onRemoveRequested = vi.fn();
     const { panel, teardown } = await mount({
-      state: { kind: "ready", entries: [entry("/work/alpha")] },
+      state: { kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] },
       projects: [project("p1", "/work/alpha")],
+      onOpenRegistered,
+      onOpenClosed,
+      onRemoveRequested,
     });
 
-    expect(panel.renderRoot.querySelectorAll(".action-menu-toggle")).toHaveLength(0);
-    expect(panel.renderRoot.querySelectorAll("button")).toHaveLength(0);
-    expect(panel.renderRoot.textContent).not.toContain("Remove");
-    expect(renderedText(panel)).not.toContain("Remove");
+    const [row, closedRow] = rows(panel);
+    expect(row?.getAttribute("role")).toBeNull();
+    expect(row?.hasAttribute("tabindex")).toBe(false);
+    expect(row?.getAttribute("data-recent-project-id")).toBe("entry-/work/alpha");
+
+    // The primary action owns the path title, accessible label, and keyboard focus.
+    const open = primary(panel);
+    expect(open?.tagName).toBe("BUTTON");
+    expect(open?.getAttribute("title")).toBe("/work/alpha");
+    expect(open?.getAttribute("aria-label")).toBe("alpha, /work/alpha");
+    expect(open?.tabIndex).toBe(0);
+    expect(closedRow?.querySelector("button.recent-project-open")?.getAttribute("aria-label")).toBe("beta, closed, /work/beta");
+
+    const removes = [...panel.renderRoot.querySelectorAll<HTMLButtonElement>("button.recent-project-remove")];
+    expect(removes).toHaveLength(2);
+    expect(removes[0]?.getAttribute("title")).toBe("Remove alpha from Recent Projects");
+    expect(removes[0]?.getAttribute("aria-label")).toBe("Remove alpha from Recent Projects");
+    expect(removes[0]?.tabIndex).toBe(0);
+    expect(removes[1]?.getAttribute("aria-label")).toBe("Remove beta from Recent Projects");
+    expect(panel.renderRoot.querySelector(".recent-project-remove svg path")?.getAttribute("d")).toBe("m6 6 12 12M18 6 6 18");
+
+    // The row container itself is inert; pointer and keyboard activation live on the buttons.
+    row?.click();
+    expect(onOpenRegistered).not.toHaveBeenCalled();
+    expect(onOpenClosed).not.toHaveBeenCalled();
+    expect(onRemoveRequested).not.toHaveBeenCalled();
 
     teardown();
+  });
+
+  it("reserves a fixed action slot with hover, focus, and non-hover visibility rules", () => {
+    const styles = panelStyles();
+
+    expect(styles).toMatch(/\.recent-project-row\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*32px;/);
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*min-width:\s*32px;/);
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*width:\s*32px;/);
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*opacity:\s*0;/);
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*pointer-events:\s*none;/);
+    expect(styles).toMatch(/\.recent-project-row:hover \.recent-project-remove,\s*\.recent-project-row:focus-within \.recent-project-remove\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto;/);
+
+    const nonHover = styles.slice(styles.indexOf("@media (hover: none)"));
+    expect(nonHover).toMatch(/\.recent-project-remove\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto;/);
   });
 });
 
@@ -139,7 +191,7 @@ describe("recent-projects-panel activation", () => {
       onOpenRegistered,
     });
 
-    rows(panel)[0]?.click();
+    primary(panel)?.click();
 
     expect(onOpenRegistered).toHaveBeenCalledWith(alpha);
     teardown();
@@ -156,14 +208,14 @@ describe("recent-projects-panel activation", () => {
       onOpenRegistered,
     });
 
-    rows(panel)[0]?.click();
+    primary(panel)?.click();
 
     expect(onOpenClosed).toHaveBeenCalledWith(closed, expect.any(Function));
     expect(onOpenRegistered).not.toHaveBeenCalled();
     teardown();
   });
 
-  it("activates a row from the keyboard and retries from the failed state", async () => {
+  it("activates the primary action from the keyboard and retries from the failed state", async () => {
     const onOpenRegistered = vi.fn();
     const alpha = project("p1", "/work/alpha");
     const opened = await mount({
@@ -172,7 +224,10 @@ describe("recent-projects-panel activation", () => {
       onOpenRegistered,
     });
 
-    rows(opened.panel)[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    const primaryButton = primary(opened.panel);
+    primaryButton?.focus();
+    expect(opened.panel.shadowRoot?.activeElement).toBe(primaryButton);
+    primaryButton?.click();
     expect(onOpenRegistered).toHaveBeenCalledWith(alpha);
     opened.teardown();
 
@@ -183,5 +238,176 @@ describe("recent-projects-panel activation", () => {
 
     expect(onRetry).toHaveBeenCalledTimes(1);
     failed.teardown();
+  });
+
+  it("requests removal from either row type without opening the entry", async () => {
+    const onOpenRegistered = vi.fn<(project: Project) => void>();
+    const onOpenClosed = vi.fn<(entry: RecentProjectEntry, restoreFocus: () => void) => void>();
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const alpha = project("p1", "/work/alpha");
+    const beta = entry("/work/beta");
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha"), beta] },
+      projects: [alpha],
+      onOpenRegistered,
+      onOpenClosed,
+      onRemoveRequested,
+    });
+
+    removeButton(panel, 0)?.click();
+    removeButton(panel, 1)?.click();
+
+    expect(onRemoveRequested).toHaveBeenCalledTimes(2);
+    expect(onOpenRegistered).not.toHaveBeenCalled();
+    expect(onOpenClosed).not.toHaveBeenCalled();
+
+    const firstCall = onRemoveRequested.mock.calls[0];
+    expect(firstCall?.[0]).toEqual(entry("/work/alpha"));
+    expect(firstCall?.[1]).toEqual(expect.any(Function));
+    expect(firstCall?.[2]).toEqual(expect.any(Function));
+
+    expect(onRemoveRequested.mock.calls[1]?.[0]).toEqual(beta);
+    teardown();
+  });
+
+  it("activates removal from the keyboard-focus path", async () => {
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha")] },
+      projects: [],
+      onRemoveRequested,
+    });
+
+    const remove = removeButton(panel);
+    remove?.focus();
+    expect(panel.shadowRoot?.activeElement).toBe(remove);
+    remove?.click();
+
+    expect(onRemoveRequested).toHaveBeenCalledTimes(1);
+    expect(onRemoveRequested.mock.calls[0]?.[0]).toEqual(entry("/work/alpha"));
+    teardown();
+  });
+
+  it("restores focus to the originating remove button when the direct-remove flow cancels", async () => {
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha")] },
+      projects: [],
+      onRemoveRequested,
+    });
+
+    const remove = removeButton(panel);
+    remove?.click();
+    const cancelFocus = onRemoveRequested.mock.calls[0]?.[1];
+    expect(cancelFocus).toEqual(expect.any(Function));
+
+    cancelFocus?.();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.activeElement).toBe(remove);
+    teardown();
+  });
+
+  it("restores focus to the primary action when the Closed flow is cancelled", async () => {
+    const onOpenClosed = vi.fn<(entry: RecentProjectEntry, restoreFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha")] },
+      projects: [],
+      onOpenClosed,
+    });
+
+    const primaryButton = primary(panel);
+    primaryButton?.focus();
+    expect(panel.shadowRoot?.activeElement).toBe(primaryButton);
+    primaryButton?.click();
+    const restoreFocus = onOpenClosed.mock.calls[0]?.[1];
+
+    restoreFocus?.();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.activeElement).toBe(primary(panel));
+    teardown();
+  });
+
+  it("falls back to the next primary action when the Closed row disappears before cancel", async () => {
+    const onOpenClosed = vi.fn<(entry: RecentProjectEntry, restoreFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] },
+      projects: [],
+      onOpenClosed,
+    });
+
+    primary(panel, 0)?.click();
+    const restoreFocus = onOpenClosed.mock.calls[0]?.[1];
+
+    panel.state = { kind: "ready", entries: [entry("/work/beta")] };
+    await panel.updateComplete;
+    restoreFocus?.();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.activeElement).toBe(primary(panel, 0));
+    teardown();
+  });
+
+  it("moves focus to the next entry's primary action after removal", async () => {
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] },
+      projects: [],
+      onRemoveRequested,
+    });
+
+    removeButton(panel, 0)?.click();
+    const removalFocus = onRemoveRequested.mock.calls[0]?.[2];
+
+    panel.state = { kind: "ready", entries: [entry("/work/beta")] };
+    await panel.updateComplete;
+    removalFocus?.();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.activeElement).toBe(primary(panel, 0));
+    teardown();
+  });
+
+  it("moves focus to the previous entry's primary action when the last entry is removed", async () => {
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] },
+      projects: [],
+      onRemoveRequested,
+    });
+
+    removeButton(panel, 1)?.click();
+    const removalFocus = onRemoveRequested.mock.calls[0]?.[2];
+
+    panel.state = { kind: "ready", entries: [entry("/work/alpha")] };
+    await panel.updateComplete;
+    removalFocus?.();
+    await panel.updateComplete;
+
+    expect(panel.shadowRoot?.activeElement).toBe(primary(panel, 0));
+    teardown();
+  });
+
+  it("moves focus to the focusable empty state when the sole entry is removed", async () => {
+    const onRemoveRequested = vi.fn<(entry: RecentProjectEntry, cancelFocus: () => void, removalFocus: () => void) => void>();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha")] },
+      projects: [],
+      onRemoveRequested,
+    });
+
+    removeButton(panel, 0)?.click();
+    const removalFocus = onRemoveRequested.mock.calls[0]?.[2];
+
+    panel.state = { kind: "ready", entries: [] };
+    await panel.updateComplete;
+    removalFocus?.();
+    await panel.updateComplete;
+
+    const empty = panel.renderRoot.querySelector<HTMLElement>(".recent-projects-empty");
+    expect(panel.shadowRoot?.activeElement).toBe(empty);
+    expect(empty?.getAttribute("tabindex")).toBe("-1");
+    teardown();
   });
 });
