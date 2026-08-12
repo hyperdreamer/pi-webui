@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { CSSResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostSpeechStatus, SessionStatus } from "../api";
 import type { ChatLine } from "./shared";
@@ -62,6 +63,29 @@ function hostSpeechButton(view: ChatView): HTMLButtonElement {
   return button;
 }
 
+/** The composed shadow styles ChatView actually applies, so geometry assertions prove the rule lives in this component. */
+function chatViewStylesText(): string {
+  const styles = ChatView.styles;
+  const styleResults: CSSResult[] = Array.isArray(styles) ? styles : [styles];
+  return styleResults.map((style) => style.cssText).join("\n");
+}
+
+/** The declaration block of the first rule whose selector list contains exactly `selector`. */
+function cssDeclarationBlock(cssText: string, selector: string): string | undefined {
+  for (const match of cssText.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1]?.split(",").map((part) => part.trim()) ?? [];
+    if (selectors.includes(selector)) return match[2];
+  }
+  return undefined;
+}
+
+/** The ChatView-owned `.host-speech-action` rule, so the hit-area geometry is proven from production styles. */
+function hostSpeechGeometryRule(cssText: string): string {
+  const block = cssDeclarationBlock(cssText, ".host-speech-action");
+  if (block === undefined) throw new Error("Expected a .host-speech-action stylesheet rule");
+  return block;
+}
+
 describe("ChatView host speech controls", () => {
   it("renders an enabled icon-only Listen action for the finalized assistant reply", async () => {
     const onToggleHostSpeech = vi.fn();
@@ -78,6 +102,20 @@ describe("ChatView host speech controls", () => {
     expect(button.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(button.querySelector("svg")?.getAttribute("focusable")).toBe("false");
     expect(button.querySelector("svg path")).not.toBeNull();
+  });
+
+  it("fixes the host-speech control to an exact 24px by 24px hit area", async () => {
+    const view = await mountChatView({ hostSpeechStatus: availableStatus, onToggleHostSpeech: vi.fn() });
+
+    // The rendered control carries the production geometry class…
+    const button = hostSpeechButton(view);
+    expect(button.classList.contains("msg-action")).toBe(true);
+    expect(button.classList.contains("host-speech-action")).toBe(true);
+
+    // …and ChatView's own stylesheet rule for that class declares both dimensions.
+    const rule = hostSpeechGeometryRule(chatViewStylesText());
+    expect(rule).toMatch(/(?:^|;)\s*width:\s*24px\s*(?:;|$)/);
+    expect(rule).toMatch(/(?:^|;)\s*height:\s*24px\s*(?:;|$)/);
   });
 
   it("calls the toggle callback with the message, absolute-index key, and projected prose on click", async () => {
