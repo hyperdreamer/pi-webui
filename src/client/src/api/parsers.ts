@@ -1723,6 +1723,7 @@ function parsePiWebUiConfigValues(value: unknown): PiWebUiConfigValues {
     ...optionalField("uploads", optionalUploads(record["uploads"])),
     ...optionalField("maxUploadBytes", optionalNumber(record, "maxUploadBytes")),
     ...optionalField("agent", optionalAgent(record["agent"])),
+    ...optionalField("tts", optionalTts(record["tts"])),
     ...optionalField("spawnSessions", optionalBoolean(record, "spawnSessions")),
     ...optionalField("subsessions", optionalBoolean(record, "subsessions")),
   };
@@ -1734,6 +1735,21 @@ function optionalAgent(value: unknown): PiWebUiConfigValues["agent"] | undefined
   return {
     ...optionalField("command", optionalString(value, "command")),
     ...optionalField("dir", optionalString(value, "dir")),
+  };
+}
+
+function optionalTts(value: unknown): PiWebUiConfigValues["tts"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEBUI tts field");
+  const voice = optionalString(value, "voice")?.trim();
+  if (voice === "") throw new Error("Invalid PI WEBUI tts voice field");
+  const rate = optionalNumber(value, "rate");
+  if (rate !== undefined && (!Number.isInteger(rate) || rate < -100 || rate > 100)) {
+    throw new Error("Invalid PI WEBUI tts rate field");
+  }
+  return {
+    ...optionalField("voice", voice),
+    ...optionalField("rate", rate),
   };
 }
 

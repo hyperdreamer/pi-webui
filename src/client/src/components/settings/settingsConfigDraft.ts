@@ -102,6 +102,7 @@ function preservedGatewayConfigRemainder(baseConfig: PiWebUiConfigValues): PiWeb
     ...(baseConfig.spawnSessions === undefined ? {} : { spawnSessions: baseConfig.spawnSessions }),
     ...(baseConfig.subsessions === undefined ? {} : { subsessions: baseConfig.subsessions }),
     ...(baseConfig.agent === undefined ? {} : { agent: baseConfig.agent }),
+    ...(baseConfig.tts === undefined ? {} : { tts: baseConfig.tts }),
   };
 }
 

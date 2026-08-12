@@ -63,6 +63,7 @@ describe("settings config drafts", () => {
       spawnSessions: true,
       subsessions: false,
       agent: { command: "agent-lab", dir: "~/agent-profiles/lab" },
+      tts: { voice: "en-US-Test", rate: 20 },
     })).toEqual({
       host: "gateway.local",
       port: 9000,
@@ -75,6 +76,7 @@ describe("settings config drafts", () => {
       spawnSessions: true,
       subsessions: false,
       agent: { command: "agent-lab", dir: "~/agent-profiles/lab" },
+      tts: { voice: "en-US-Test", rate: 20 },
     });
 
     expect(gatewayServerConfigFromDraft({

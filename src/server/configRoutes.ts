@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, savePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, savePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
 import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
 
@@ -136,6 +136,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
   const spawnSessions = value["spawnSessions"];
   const subsessions = value["subsessions"];
   const agent = value["agent"];
+  const tts = value["tts"];
   if (host !== undefined) {
     if (typeof host !== "string") throw new Error("PI WEBUI config host must be a string");
     config.host = host;
@@ -160,6 +161,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
     config.subsessions = subsessions;
   }
   if (agent !== undefined) config.agent = parseAgentRequest(agent, agentPathHost);
+  if (tts !== undefined) config.tts = parseTtsConfig(tts, "request");
   return config;
 }
 

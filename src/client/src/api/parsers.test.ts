@@ -294,6 +294,31 @@ describe("API parsers", () => {
     })).toThrow("Invalid PI WEBUI agentDirSource field");
   });
 
+  it("parses TTS config and rejects invalid nested TTS fields", () => {
+    const response = {
+      path: "/tmp/config.json",
+      exists: true,
+      config: { tts: { voice: "en-US-Test", rate: 50 } },
+      effectiveConfig: { tts: { voice: "en-US-Test", rate: 50 } },
+      envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+    };
+
+    expect(parsePiWebUiConfigResponse(response)).toMatchObject({
+      config: { tts: { voice: "en-US-Test", rate: 50 } },
+      effectiveConfig: { tts: { voice: "en-US-Test", rate: 50 } },
+    });
+
+    expect(() => parsePiWebUiConfigResponse({
+      ...response,
+      config: { tts: { voice: "" } },
+    })).toThrow("Invalid PI WEBUI tts voice field");
+
+    expect(() => parsePiWebUiConfigResponse({
+      ...response,
+      config: { tts: { rate: 101 } },
+    })).toThrow("Invalid PI WEBUI tts rate field");
+  });
+
   it("parses Pi package list and mutation responses", () => {
     const packages = [
       { source: "npm:@acme/tools", scope: "user", filtered: false, installedPath: "/home/test/.pi/packages/tools" },
