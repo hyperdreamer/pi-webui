@@ -102,6 +102,7 @@
             <a href="#models-and-skills">Models and skills</a>
             <a href="#utility-models">Utility models</a>
             <a href="#model-tiers">Model tiers</a>
+            <a href="#tts">Text to speech</a>
             <a href="#session-tools">Session tools</a>
             <a href="#completion-tools">Completion tools</a>
           </aside>
@@ -177,6 +178,7 @@
                 <li><code>agent.command</code> / <code>agent.dir</code> / <code>spawnSessions</code> / <code>subsessions</code>: restart the session daemon on that machine.</li>
                 <li><code>modelTiers</code>: saved settings apply immediately in <strong>Settings → Model tiers</strong>; validates all six ladder rows atomically.</li>
                 <li><code>utilityModels</code>: saved settings apply immediately in <strong>Settings → Utility models</strong>; existing sessions use updated values on their next utility operation.</li>
+                <li><code>tts</code>: saved voice/rate settings apply to the next utterance; no service restart required.</li>
                 <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
                 <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
                 <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
@@ -232,6 +234,10 @@
       "provider": "anthropic",
       "id": "claude-sonnet"
     }
+  },
+  "tts": {
+    "voice": "en-US-Test",
+    "rate": 20
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -405,6 +411,14 @@
                       <td>Global</td>
                       <td>Not supported locally</td>
                       <td>Saved settings apply immediately on the next utility operation; requires remote peer capability <code>settings.utilityModels</code></td>
+                    </tr>
+                    <tr>
+                      <td>Local gateway text to speech</td>
+                      <td><code>tts</code></td>
+                      <td>—</td>
+                      <td>Global</td>
+                      <td>Not supported locally</td>
+                      <td>Next utterance after settings save; no service restart</td>
                     </tr>
                     <tr>
                       <td>PI WEBUI plugin enablement/settings</td>
@@ -717,6 +731,69 @@
                 <li><strong>Starting and persistence:</strong> The selected policy is carried into root-session creation from both the first-prompt and <strong>New Session</strong> paths, persists with that session, and remains selected after a failed creation so a retry uses the same choice.</li>
                 <li><strong>Scope and installation:</strong> This release does not add <code>/tier-*</code> commands, and editing the tier ladder later does not automatically remap an existing Tiered session. Installing this change requires one manual <code>pi-webui-sessiond.service</code> restart; ordinary UI/API autoreload does not load session-daemon changes.</li>
               </ul>
+            </section>
+
+            <section id="tts">
+              <h2>Local gateway text-to-speech</h2>
+              <p>
+                PI WEBUI can read assistant replies aloud through the operating-system speech service on the machine
+                running the local gateway. The browser is only the control surface: it sends the controls, and audio is
+                audible on the gateway host, not in the browser. The capability is opt-in and local-gateway-only —
+                there is no text-to-speech for remote machines or remote sessions, no browser-native synthesis or
+                browser audio, no audio-file generation, and no online provider account, API key, or engine picker.
+              </p>
+              <p>
+                On Linux, the gateway host must run the Speech Dispatcher service, and the PI WEBUI web/API process must
+                be able to reach its local socket. If the service is missing or unreachable, the
+                <strong>Listen to assistant reply</strong> action and the settings card stay visible but disabled with the
+                availability reason. PI WEBUI treats speech as an opaque OS capability: Speech Dispatcher output modules
+                may use network-backed services, so playback is not guaranteed to work offline, and PI WEBUI does not
+                report whether the backend is offline or network-backed.
+              </p>
+              <p>
+                The <strong>Text to speech</strong> card in <strong>Settings → General</strong> appears only while the
+                local gateway is selected:
+              </p>
+              <ul>
+                <li><strong>OS voice</strong> selects an installed Speech Dispatcher voice or <strong>System default</strong>.</li>
+                <li><strong>Speech rate</strong> is an integer from <code>-100</code> to <code>100</code>; <code>0</code> is the system's normal rate.</li>
+                <li>Eligible assistant replies show a <strong>Listen to assistant reply</strong> icon action that starts speech immediately; the same position becomes <strong>Stop reading assistant reply</strong> while that utterance is active. Stop affects only the utterance PI WEBUI started.</li>
+              </ul>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>tts settings</strong>
+                  <button class="copy-button" data-copy="#tts-config-example">Copy</button>
+                </div>
+                <pre id="tts-config-example"><code>{
+  "tts": {
+    "voice": "en-US-Test",
+    "rate": 20
+  }
+}</code></pre>
+              </div>
+              <p>
+                The <code>tts</code> key is a gateway-only setting in <code>$PI_WEBUI_CONFIG</code> or
+                <code>~/.config/pi-webui/config.json</code>. It is not a selected-machine key and never applies to
+                remote machines. Omitting the whole object or any field means the system default voice and rate
+                <code>0</code>. The object accepts only <code>voice</code> (a nonempty string) and <code>rate</code> (an
+                integer from <code>-100</code> to <code>100</code>); unknown keys are rejected. A saved named voice that
+                the OS speech service no longer reports stays configured but is not used: playback falls back to the
+                system default and the settings card marks the saved voice unavailable until you choose another voice.
+                Saving settings does not alter an utterance already in progress; the next utterance uses the saved
+                values, with no service restart required.
+              </p>
+              <p>Operational notes:</p>
+              <ul>
+                <li><code>SPEECHD_ADDRESS</code> (Unix hosts only) overrides the Speech Dispatcher socket and must be <code>unix:</code> or <code>unix_socket:</code> followed by an absolute path; otherwise PI WEBUI uses the standard runtime/cache socket path.</li>
+                <li>PI WEBUI speaks at Speech Dispatcher's normal <code>text</code> priority. Its speech can cancel lower-priority <code>notification</code> or <code>progress</code> speech from other Speech Dispatcher clients, and higher-priority speech from another client (such as a screen reader) can cancel PI WEBUI's utterance. That external cancellation returns the message action to Listen and is not an error. PI WEBUI never issues a global Speech Dispatcher stop/cancel that would affect other clients' speech.</li>
+              </ul>
+              <div class="callout warning">
+                PI WEBUI has no authentication layer: any client that can reach the gateway HTTP surface can trigger
+                audible speech on the host and enumerate its installed voices. Keep the gateway on a trusted network,
+                VPN, tunnel, or behind an authenticated reverse proxy; see
+                <a href="install#remote-access">Remote access</a> and the
+                <a href="install#reverse-proxy-prefix">reverse proxy deployment example</a>.
+              </div>
             </section>
 
             <section id="session-tools">

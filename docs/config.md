@@ -42,6 +42,7 @@ Process restarts depend on the key:
 - `agent.command` / `agent.dir` / `spawnSessions` / `subsessions`: restart the session daemon on that machine.
 - `modelTiers`: saved settings apply immediately in **Settings → Model tiers**; validates all six ladder rows atomically.
 - `utilityModels`: saved settings apply immediately in **Settings → Utility models**; existing sessions use updated values on their next utility operation.
+- `tts`: saved voice/rate settings apply to the next utterance; no service restart required.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
 - `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
 - `plugins`: reload the browser tab after changing PI WEBUI plugin enablement.
@@ -83,6 +84,10 @@ Process restarts depend on the key:
       "provider": "anthropic",
       "id": "claude-sonnet"
     }
+  },
+  "tts": {
+    "voice": "en-US-Test",
+    "rate": 20
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -139,6 +144,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Tracked subsessions (beta) | `subsessions` | `PI_WEBUI_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon on that machine |
 | Model tier routing ladder | `modelTiers` | — | Global | Not supported locally | Saved settings apply immediately on save; requires remote peer capability `settings.modelTiers` |
 | Utility model routing | `utilityModels` | — | Global | Not supported locally | Saved settings apply immediately on the next utility operation; requires remote peer capability `settings.utilityModels` |
+| Local gateway text to speech | `tts` | — | Global | Not supported locally | Next utterance after settings save; no service restart |
 | Plugin enablement/settings | `plugins.<id>.enabled`, `plugins.<id>.settings` | — | Global | Not core local config; plugins may read their own project files | Reload browser tab |
 | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
 | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
@@ -280,6 +286,35 @@ Sessions can also use a per-session model policy from the composer:
 - **Managed state and concurrency:** Preferences live in `$PI_WEBUI_DATA_DIR/starter-model-policy-preferences.json` on the selected machine. One daemon serializes complete read-modify-write operations; atomic file replacement prevents partial JSON. Concurrent tabs therefore use last-successful-write-wins semantics in daemon queue order, not browser click order or cross-process locking.
 - **Starting and persistence:** The selected policy is carried into root-session creation from both the first-prompt and **New Session** paths, persists with that session, and remains selected after a failed creation so a retry uses the same choice.
 - **Scope and installation:** This release does not add `/tier-*` commands, and editing the tier ladder later does not automatically remap an existing Tiered session. Installing this change requires one manual `pi-webui-sessiond.service` restart; ordinary UI/API autoreload does not load session-daemon changes.
+
+### Local gateway text-to-speech
+
+PI WEBUI can read assistant replies aloud through the operating-system speech service on the machine running the local gateway. The browser is only the control surface: it sends the controls, and audio is audible on the gateway host, not in the browser. The capability is opt-in and local-gateway-only — there is no text-to-speech for remote machines or remote sessions, no browser-native synthesis or browser audio, no audio-file generation, and no online provider account, API key, or engine picker.
+
+On Linux, the gateway host must run the Speech Dispatcher service, and the PI WEBUI web/API process must be able to reach its local socket. If the service is missing or unreachable, the **Listen to assistant reply** action and the settings card stay visible but disabled with the availability reason. PI WEBUI treats speech as an opaque OS capability: Speech Dispatcher output modules may use network-backed services, so playback is not guaranteed to work offline, and PI WEBUI does not report whether the backend is offline or network-backed.
+
+The **Text to speech** card in **Settings → General** appears only while the local gateway is selected:
+
+- **OS voice** selects an installed Speech Dispatcher voice or **System default**.
+- **Speech rate** is an integer from `-100` to `100`; `0` is the system's normal rate.
+- Eligible assistant replies show a **Listen to assistant reply** icon action that starts speech immediately; the same position becomes **Stop reading assistant reply** while that utterance is active. Stop affects only the utterance PI WEBUI started.
+
+```json
+{
+  "tts": {
+    "voice": "en-US-Test",
+    "rate": 20
+  }
+}
+```
+
+The `tts` key is a gateway-only setting in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. It is not a selected-machine key and never applies to remote machines. Omitting the whole object or any field means the system default voice and rate `0`. The object accepts only `voice` (a nonempty string) and `rate` (an integer from `-100` to `100`); unknown keys are rejected. A saved named voice that the OS speech service no longer reports stays configured but is not used: playback falls back to the system default and the settings card marks the saved voice unavailable until you choose another voice. Saving settings does not alter an utterance already in progress; the next utterance uses the saved values, with no service restart required.
+
+Operational notes:
+
+- `SPEECHD_ADDRESS` (Unix hosts only) overrides the Speech Dispatcher socket and must be `unix:` or `unix_socket:` followed by an absolute path; otherwise PI WEBUI uses the standard runtime/cache socket path.
+- PI WEBUI speaks at Speech Dispatcher's normal `text` priority. Its speech can cancel lower-priority `notification` or `progress` speech from other Speech Dispatcher clients, and higher-priority speech from another client (such as a screen reader) can cancel PI WEBUI's utterance. That external cancellation returns the message action to Listen and is not an error. PI WEBUI never issues a global Speech Dispatcher stop/cancel that would affect other clients' speech.
+- PI WEBUI has no authentication layer: any client that can reach the gateway HTTP surface can trigger audible speech on the host and enumerate its installed voices. Keep the gateway on a trusted network, VPN, tunnel, or behind an authenticated reverse proxy; see [Remote access](https://pi-webui.dev/install#remote-access) and the [reverse proxy deployment example](https://pi-webui.dev/install#reverse-proxy-prefix).
 
 ### Session daemon tools
 
