@@ -3,8 +3,12 @@ import {
   agentProfileConfigPatchFromDraft,
   agentProfileDraftFromConfig,
   agentProfileDraftMatchesConfig,
+  emptyHostSpeechConfigDraft,
   gatewayServerConfigFromDraft,
   gatewayServerDraftFromConfig,
+  hostSpeechConfigFromDraft,
+  hostSpeechDraftFromConfig,
+  hostSpeechDraftMatchesConfig,
   machineAccessConfigPatchFromDraft,
   machineAccessDraftFromConfig,
 } from "./settingsConfigDraft";
@@ -117,5 +121,47 @@ describe("settings config drafts", () => {
       allowedPathsText: "relative/path",
       uploadDefaultFolder: "",
     })).toThrow("Allowed external paths must be absolute paths or start with ~");
+  });
+
+  it("round-trips host speech defaults, configured values, and stale configured voices", () => {
+    expect(emptyHostSpeechConfigDraft()).toEqual({ voice: "", rate: "" });
+    expect(hostSpeechDraftFromConfig({ tts: { voice: "Ada", rate: 25 } })).toEqual({ voice: "Ada", rate: "25" });
+    expect(hostSpeechDraftFromConfig({ tts: { voice: "Retired system voice" } })).toEqual({ voice: "Retired system voice", rate: "" });
+  });
+
+  it("builds complete host speech gateway saves, including an explicit all-default reset", () => {
+    expect(hostSpeechConfigFromDraft({ voice: " Ada ", rate: " -15 " }, {
+      host: "127.0.0.1",
+      shortcuts: { "core:view.chat": "mod+1" },
+      modelTiers: {
+        economy: { model: { provider: "openai", id: "gpt-economy" }, thinkingLevel: "low" },
+        fast: { model: { provider: "openai", id: "gpt-fast" }, thinkingLevel: "low" },
+        standard: { model: { provider: "openai", id: "gpt-standard" }, thinkingLevel: "medium" },
+        advanced: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+        capable: { model: { provider: "openai", id: "gpt-capable" }, thinkingLevel: "high" },
+        frontier: { model: { provider: "openai", id: "gpt-frontier" }, thinkingLevel: "high" },
+      },
+      tts: { voice: "Old", rate: 20 },
+    })).toEqual({
+      host: "127.0.0.1",
+      shortcuts: { "core:view.chat": "mod+1" },
+      modelTiers: {
+        economy: { model: { provider: "openai", id: "gpt-economy" }, thinkingLevel: "low" },
+        fast: { model: { provider: "openai", id: "gpt-fast" }, thinkingLevel: "low" },
+        standard: { model: { provider: "openai", id: "gpt-standard" }, thinkingLevel: "medium" },
+        advanced: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+        capable: { model: { provider: "openai", id: "gpt-capable" }, thinkingLevel: "high" },
+        frontier: { model: { provider: "openai", id: "gpt-frontier" }, thinkingLevel: "high" },
+      },
+      tts: { voice: "Ada", rate: -15 },
+    });
+    expect(hostSpeechConfigFromDraft({ voice: " ", rate: "0" }, { tts: { voice: "Old", rate: 20 } })).toEqual({ tts: {} });
+  });
+
+  it("rejects invalid host speech rates and compares normalized drafts", () => {
+    expect(() => hostSpeechConfigFromDraft({ voice: "Ada", rate: "2.5" })).toThrow("Speech rate must be an integer from -100 to 100.");
+    expect(() => hostSpeechConfigFromDraft({ voice: "Ada", rate: "101" })).toThrow("Speech rate must be an integer from -100 to 100.");
+    expect(hostSpeechDraftMatchesConfig({ voice: " Ada ", rate: "0" }, { tts: { voice: "Ada" } })).toBe(true);
+    expect(hostSpeechDraftMatchesConfig({ voice: "Ada", rate: "10" }, { tts: { voice: "Ada", rate: 20 } })).toBe(false);
   });
 });

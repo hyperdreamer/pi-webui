@@ -17,6 +17,11 @@ export interface AgentProfileConfigDraft {
   dir: string;
 }
 
+export interface HostSpeechConfigDraft {
+  voice: string;
+  rate: string;
+}
+
 export function emptyGatewayServerConfigDraft(): GatewayServerConfigDraft {
   return { host: "", port: "", allowedHostsMode: "list", allowedHostsText: "" };
 }
@@ -27,6 +32,10 @@ export function emptyMachineAccessConfigDraft(): MachineAccessConfigDraft {
 
 export function emptyAgentProfileConfigDraft(): AgentProfileConfigDraft {
   return { command: "", dir: "" };
+}
+
+export function emptyHostSpeechConfigDraft(): HostSpeechConfigDraft {
+  return { voice: "", rate: "" };
 }
 
 export function gatewayServerDraftFromConfig(config: PiWebUiConfigValues): GatewayServerConfigDraft {
@@ -52,6 +61,13 @@ export function agentProfileDraftFromConfig(config: PiWebUiConfigValues): AgentP
   };
 }
 
+export function hostSpeechDraftFromConfig(config: PiWebUiConfigValues): HostSpeechConfigDraft {
+  return {
+    voice: config.tts?.voice ?? "",
+    rate: config.tts?.rate === undefined ? "" : String(config.tts.rate),
+  };
+}
+
 export function agentProfileConfigPatchFromDraft(draft: AgentProfileConfigDraft): PiWebUiConfigValues {
   const command = draft.command.trim();
   const dir = draft.dir.trim();
@@ -67,6 +83,29 @@ export function agentProfileDraftMatchesConfig(draft: AgentProfileConfigDraft, c
   const normalizedDraft = agentProfileConfigPatchFromDraft(draft).agent ?? {};
   const configured = config.agent ?? {};
   return normalizedDraft.command === configured.command && normalizedDraft.dir === configured.dir;
+}
+
+export function hostSpeechConfigFromDraft(draft: HostSpeechConfigDraft, baseConfig: PiWebUiConfigValues = {}): PiWebUiConfigValues {
+  const voice = draft.voice.trim();
+  const rate = parseHostSpeechRate(draft.rate);
+  return {
+    ...baseConfig,
+    tts: {
+      ...(voice === "" ? {} : { voice }),
+      ...(rate === 0 ? {} : { rate }),
+    },
+  };
+}
+
+export function hostSpeechDraftMatchesConfig(draft: HostSpeechConfigDraft, config: PiWebUiConfigValues): boolean {
+  try {
+    const normalizedDraft = hostSpeechConfigFromDraft(draft).tts ?? {};
+    const configured = config.tts ?? {};
+    return normalizedDraft.voice === configured.voice
+      && (normalizedDraft.rate ?? 0) === (configured.rate ?? 0);
+  } catch {
+    return false;
+  }
 }
 
 export function gatewayServerConfigFromDraft(draft: GatewayServerConfigDraft, baseConfig: PiWebUiConfigValues = {}): PiWebUiConfigValues {
@@ -108,6 +147,16 @@ function preservedGatewayConfigRemainder(baseConfig: PiWebUiConfigValues): PiWeb
 
 function parseAllowedHostsText(value: string): string[] {
   return value.split(/[\n,]/u).map((host) => host.trim()).filter((host) => host !== "");
+}
+
+function parseHostSpeechRate(value: string): number {
+  const trimmed = value.trim();
+  if (trimmed === "") return 0;
+  const rate = Number(trimmed);
+  if (!Number.isInteger(rate) || rate < -100 || rate > 100) {
+    throw new Error("Speech rate must be an integer from -100 to 100.");
+  }
+  return rate;
 }
 
 function parseAllowedPathsText(value: string): string[] {
