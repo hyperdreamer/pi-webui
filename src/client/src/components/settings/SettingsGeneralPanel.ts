@@ -194,7 +194,8 @@ export class SettingsGeneralPanel extends LitElement {
   private renderHostSpeechSettings(): TemplateResult {
     const status = this.hostSpeechStatus;
     const available = status?.available === true;
-    const disabled = this.saving || this.hostSpeechStatusLoading || !available;
+    const gatewayConfigUnavailable = this.configResponse === undefined;
+    const disabled = this.saving || this.hostSpeechStatusLoading || !available || this.loading || gatewayConfigUnavailable;
     const configuredVoice = this.hostSpeechDraft.voice.trim();
     const voices = hostSpeechVoiceOptions(status?.voices ?? [], configuredVoice, available);
     const hasConfiguredVoice = status?.voices.some((voice) => voice.name === configuredVoice) === true;
@@ -209,6 +210,7 @@ export class SettingsGeneralPanel extends LitElement {
           <p>Text to speech plays through audio on this gateway host. It does not play on a selected remote machine.</p>
         </div>
         ${available ? null : html`<div class="host-speech-unavailable" role="status">${unavailableReason}</div>`}
+        ${gatewayConfigUnavailable ? html`<div class="loading-card" role="status">${this.loading ? "Gateway configuration is still loading. Text to speech settings cannot be saved yet." : "Gateway configuration is unavailable. Reload before saving text to speech settings."}</div>` : null}
         <form class="config-form" @submit=${(event: Event) => { void this.saveHostSpeechConfig(event); }}>
           <label class="field">
             <span class="field-heading"><span>OS voice</span></span>
@@ -333,8 +335,13 @@ export class SettingsGeneralPanel extends LitElement {
   private async saveHostSpeechConfig(event: Event): Promise<void> {
     event.preventDefault();
     this.hostSpeechLocalError = "";
+    const configResponse = this.configResponse;
+    if (configResponse === undefined) {
+      this.hostSpeechLocalError = "Reload gateway configuration before saving text to speech settings.";
+      return;
+    }
     try {
-      await this.onSave?.(hostSpeechConfigFromDraft(this.hostSpeechDraft, this.configResponse?.config ?? {}));
+      await this.onSave?.(hostSpeechConfigFromDraft(this.hostSpeechDraft, configResponse.config));
     } catch (error) {
       this.hostSpeechLocalError = errorMessage(error);
     }

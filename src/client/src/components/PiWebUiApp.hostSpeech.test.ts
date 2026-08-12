@@ -130,8 +130,11 @@ describe("PiWebUiApp host speech component wiring", () => {
     const controller = hostSpeechController(app);
     const refresh = vi.spyOn(controller, "refreshStatus").mockResolvedValue(undefined);
     const configure = vi.spyOn(controller, "configure");
+    const stop = vi.spyOn(controller, "stop").mockResolvedValue(undefined);
+    const startManual = vi.spyOn(controller, "startManual").mockResolvedValue(undefined);
     const status = { available: true, voices: [{ name: "Ada", language: "en-US" }] };
-    vi.spyOn(controller, "snapshot", "get").mockReturnValue({ status, loadingStatus: true });
+    const active = { runId: "run-1", sessionId: localSession.id, messageKey: "assistant-index:2" };
+    vi.spyOn(controller, "snapshot", "get").mockReturnValue({ status, loadingStatus: true, active });
 
     const localDialog = settingsDialogTemplate(app);
     expect(templateValueAfterMarker(localDialog, ".showHostSpeechSettings=")).toBe(true);
@@ -143,6 +146,9 @@ describe("PiWebUiApp host speech component wiring", () => {
     const onConfigSaved = templateCallback(localDialog, ".onConfigSaved=");
     onConfigSaved({ tts: { voice: "Ada", rate: -10 } });
     expect(configure).toHaveBeenCalledExactlyOnceWith({ voice: "Ada", rate: -10 });
+    expect(controller.snapshot.active).toEqual(active);
+    expect(stop).not.toHaveBeenCalled();
+    expect(startManual).not.toHaveBeenCalled();
     expect(appState(app).error).toBe("Unrelated application error");
 
     setAppState(app, { ...state, selectedMachine: remoteMachine });
