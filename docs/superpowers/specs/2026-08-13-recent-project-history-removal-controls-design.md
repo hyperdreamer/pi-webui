@@ -46,7 +46,7 @@ A Closed-row activation opens the modal in Closed-actions view. A row-end `X` op
 
 The confirmation copy must state that only the Recent Projects entry will be removed, no project files will be deleted, an open project will remain registered, and future work can add it to Recent Projects again. It must not imply that a Closed directory is missing or that an open project will be closed.
 
-Cancel, Escape, and backdrop dismissal close the entire modal when no operation is running. They do not return from confirmation to Closed actions. Modal actions are disabled while Reopen or Remove is running.
+Cancel, Escape, and backdrop dismissal close the entire modal when no operation is running. They do not return from confirmation to Closed actions. Modal actions are disabled while Reopen or Remove is running. While an operation is running, Escape and backdrop clicks are ignored; only the Cancel button is rendered disabled to make this state visible without silently trapping the user.
 
 ### Focus behavior
 
@@ -62,13 +62,15 @@ Focus restoration is best-effort when the panel, entry, or triggering control no
 
 ## Component and application boundaries
 
-`RecentProjectsPanel` owns row rendering and row-level interaction. Add an `onRemoveRequested(entry, restoreFocus)` callback alongside the existing registered and Closed activation callbacks. For a direct-remove cancellation, the callback's focus-restoration closure targets the originating remove button while it exists. The panel also owns successful-removal fallback by entry order: focus the next remaining primary row action, otherwise the previous one, otherwise a programmatically focusable empty-state target. The panel does not perform HTTP mutations or own modal state.
+`RecentProjectsPanel` owns row rendering and row-level interaction. Keep `onOpenRegistered` and `onOpenClosed` as-is. `onOpenClosed` continues to supply a focus-restoration closure that returns focus to the row, and `PiWebUiApp` continues to use it to open the Closed-actions view of the new modal. Add a new `onRemoveRequested(entry, cancelFocus: () => void, removalFocus: () => void)` callback triggered exclusively by `X` button clicks. `cancelFocus` returns focus to the originating remove button; `removalFocus` focuses the nearest remaining row after a confirmed removal — next entry's primary action, otherwise previous entry's primary action, otherwise the empty-state element. `PiWebUiApp` calls `cancelFocus` when the user cancels from a direct-remove flow, and `removalFocus` after `RecentProjectController.removeEntry` resolves successfully. The panel does not perform HTTP mutations or own modal state.
 
-`PiWebUiApp` owns the active recent-project modal state: entry, selected machine, initial view, generation, and focus restoration. It wires Reopen to project registration and removal to `RecentProjectController.removeEntry`. Machine changes dismiss the modal, and generation checks prevent an older modal completion from closing or mutating a newer one.
+The empty-state paragraph must carry `tabindex="-1"` so `removalFocus` can direct focus to it when the list becomes empty after removal.
 
-The generalized modal component owns presentation state within one interaction: Closed actions versus removal confirmation, busy state, visible failure, focus containment, and Escape/backdrop handling. It receives injected Reopen, Remove, and Close callbacks. This keeps transport and catalog reconciliation outside the Lit component while centralizing confirmation behavior.
+`PiWebUiApp` owns the active recent-project modal state: entry, selected machine, initial view (`initialView: "closed-actions" | "removal-confirmation"`), generation, cancel-focus closure, and removal-focus closure. Closed-row activation (`onOpenClosed`) opens the modal with `initialView: "closed-actions"` and stores the row's focus-restoration closure as the cancel target. `X` activation (`onRemoveRequested`) opens the modal with `initialView: "removal-confirmation"` and stores the two panel-provided closures for cancel and post-removal focus. It wires Reopen to project registration and removal to `RecentProjectController.removeEntry`. After `removeEntry` resolves successfully the app calls the stored removal-focus closure before clearing modal state. Machine changes dismiss the modal without restoring stale focus, and generation checks prevent an older modal completion from closing or mutating a newer one.
 
-Use a component and custom-element name that reflects both entry states, such as `RecentProjectDialog`, rather than extending a Closed-only name with unrelated semantics. This is an internal component rename, not a public plugin API change.
+The generalized modal component owns presentation state within one interaction: current view (Closed actions versus removal confirmation), busy state, visible failure, focus containment, and Escape/backdrop handling. It accepts an `initialView: "closed-actions" | "removal-confirmation"` property that the app sets each time it opens the modal, and transitions internally to `"removal-confirmation"` when the user chooses **Remove from history** in Closed-actions view. It receives injected `onReopen`, `onRemove`, and `onClose` callbacks. Escape and backdrop clicks call `onClose` only when no operation is running; they are ignored while busy. This keeps transport and catalog reconciliation outside the Lit component while centralizing confirmation behavior.
+
+Rename the component and its custom element from `ClosedRecentProjectDialog` / `closed-recent-project-dialog` to `RecentProjectDialog` / `recent-project-dialog`. This is an internal rename; no public plugin API changes. Update the `customElements.get("closed-recent-project-dialog")` registration test added in commit `a78620c` to assert `customElements.get("recent-project-dialog")` instead.
 
 ## Persistence and server semantics
 
@@ -86,7 +88,7 @@ Concurrent clients follow serialized server order. If a touch is processed after
 
 `RecentProjectController.removeEntry` remains serialized with loads and work-recording for each machine. It clears both latest intent and completed-authority shortcuts before removal, including for registered entries. This is necessary so the next meaningful-work event is not incorrectly skipped as already newest after the server removed the record.
 
-The controller applies the authoritative DELETE response when it still belongs to the selected machine and generation. Registered-entry removal no longer has a conflict outcome or catalog-reconciliation branch because registration is no longer a reason to reject removal. Ordinary removal failures propagate to the modal, which keeps the entry and displays the specific error.
+The controller applies the authoritative DELETE response when it still belongs to the selected machine and generation. Registered-entry removal no longer has a conflict outcome or catalog-reconciliation branch because registration is no longer a reason to reject removal. Simplify the `RecentProjectRemovalOutcome` type to `{ kind: "removed" }` only; remove the `{ kind: "registered-conflict"; error: HttpRequestError }` variant and the corresponding `PiWebUiApp` handler that sets an app-level error for it. Ordinary removal failures throw and propagate to the modal, which keeps the entry and displays the specific error.
 
 Stale responses from a previous machine or modal generation cannot replace current history or close the current modal. Removal remains a history operation; it must not call the project-close controller or mutate project navigation state.
 
@@ -132,6 +134,7 @@ Follow test-driven development and use real DOM interaction for row controls, fo
 
 ### Component tests
 
+- Delete or invert the existing `"renders no per-row removal control"` test in `RecentProjectsPanel.test.ts`; it directly asserts the absence of buttons and "Remove" text and will fail immediately under the new design.
 - Render a remove button for registered and Closed entries with the expected tooltip and accessible name.
 - Keep a stable action slot and verify hover, `:focus-within`, and non-hover visibility rules.
 - Prove remove-button pointer and keyboard activation do not trigger registered selection or the Closed decision flow.
