@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.3
+
+### Patch Changes
+
+- a78620c: Restore the closed-project dialog so recent-project entries can be removed from history.
+
 ## 1.12.2
 
 ### Patch Changes
