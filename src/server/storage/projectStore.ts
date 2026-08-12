@@ -161,8 +161,7 @@ export function projectStorePath(env: NodeJS.ProcessEnv = process.env, cwd = pro
 
 export type RecentRemoval =
   | { kind: "removed"; entries: RecentProjectEntry[] }
-  | { kind: "not-found" }
-  | { kind: "registered" };
+  | { kind: "not-found" };
 
 export class ProjectStore {
   private operationQueue: Promise<void> = Promise.resolve();
@@ -201,7 +200,6 @@ export class ProjectStore {
       if (data.invalidRecentProjects !== undefined) throw new Error("Stored recent projects are malformed");
       const target = data.recentProjects.find((entry) => entry.id === entryId);
       if (target === undefined) return { kind: "not-found" };
-      if (data.projects.some((project) => project.path === target.path)) return { kind: "registered" };
       const recentProjects = data.recentProjects.filter((entry) => entry.id !== entryId);
       await this.write({ ...data, recentProjects });
       return { kind: "removed", entries: recentProjects };

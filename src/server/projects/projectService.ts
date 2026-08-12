@@ -12,14 +12,6 @@ export class ProjectNotFoundError extends Error {
   }
 }
 
-/** Thrown when a history entry cannot be removed because its path is registered again. */
-export class RecentProjectRegisteredError extends Error {
-  constructor() {
-    super("Recent project is registered");
-    this.name = "RecentProjectRegisteredError";
-  }
-}
-
 export class ProjectService {
   constructor(private readonly store: ProjectStore) {}
 
@@ -61,7 +53,6 @@ export class ProjectService {
   async removeRecent(entryId: string): Promise<RecentProjectEntry[]> {
     const removal = await this.store.removeRecent(entryId);
     if (removal.kind === "not-found") throw new ProjectNotFoundError();
-    if (removal.kind === "registered") throw new RecentProjectRegisteredError();
     return removal.entries;
   }
 

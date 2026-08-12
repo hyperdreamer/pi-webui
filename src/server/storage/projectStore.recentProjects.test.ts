@@ -129,21 +129,40 @@ describe("ProjectStore recent history retention", () => {
     expect(child.id).not.toBe(root.id);
   });
 
-  it("removes a closed entry but refuses to remove a registered one", async () => {
+  it("removes a registered entry and recreates it after meaningful work", async () => {
     const store = storeWithClock();
     const alpha = await store.add({ path: "/work/alpha" });
     await store.add({ path: "/work/beta" });
-    const registeredEntry = (await store.listRecent()).find((entry) => entry.path === "/work/alpha");
-    if (registeredEntry === undefined) throw new Error("expected an entry for the registered project");
+    const entry = (await store.listRecent()).find((candidate) => candidate.path === "/work/alpha");
+    if (entry === undefined) throw new Error("expected an entry for the registered project");
 
-    expect(await store.removeRecent(registeredEntry.id)).toEqual({ kind: "registered" });
-    expect(await store.removeRecent("missing")).toEqual({ kind: "not-found" });
+    const removal = await store.removeRecent(entry.id);
 
+    expect(removal).toEqual({
+      kind: "removed",
+      entries: [expect.objectContaining({ path: "/work/beta" })],
+    });
+    expect((await store.list()).map((project) => project.path)).toEqual(["/work/alpha", "/work/beta"]);
+    expect(await store.removeRecent(entry.id)).toEqual({ kind: "not-found" });
+
+    const recreated = await store.touchRecent(alpha.id);
+
+    expect(recreated?.map((candidate) => candidate.path)).toEqual(["/work/alpha", "/work/beta"]);
+    expect(recreated?.[0]?.id).not.toBe(entry.id);
+  });
+
+  it("removes a closed entry", async () => {
+    const store = storeWithClock();
+    const alpha = await store.add({ path: "/work/alpha" });
+    await store.add({ path: "/work/beta" });
+    const entry = (await store.listRecent()).find((candidate) => candidate.path === "/work/alpha");
+    if (entry === undefined) throw new Error("expected an entry for the registered project");
     await store.remove(alpha.id);
-    const removal = await store.removeRecent(registeredEntry.id);
+
+    const removal = await store.removeRecent(entry.id);
 
     expect(removal.kind).toBe("removed");
-    expect((await store.listRecent()).map((entry) => entry.path)).toEqual(["/work/beta"]);
+    expect((await store.listRecent()).map((candidate) => candidate.path)).toEqual(["/work/beta"]);
   });
 });
 

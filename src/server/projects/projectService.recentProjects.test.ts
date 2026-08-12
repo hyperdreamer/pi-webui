@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ProjectStore } from "../storage/projectStore.js";
-import { ProjectNotFoundError, ProjectService, RecentProjectRegisteredError } from "./projectService.js";
+import { ProjectNotFoundError, ProjectService } from "./projectService.js";
 
 let tempDir = "";
 let service: ProjectService;
@@ -72,15 +72,27 @@ describe("ProjectService recent history", () => {
     await expect(service.recordRecent("missing")).rejects.toBeInstanceOf(ProjectNotFoundError);
   });
 
-  it("removes a closed entry and rejects removing a registered or unknown one", async () => {
+  it("removes a registered entry, keeps the project registered, and recreates the entry after work", async () => {
     const alpha = await store.add({ path: "/work/alpha" });
     await store.add({ path: "/work/beta" });
     const entry = (await service.listRecent()).find((candidate) => candidate.path === "/work/alpha");
     if (entry === undefined) throw new Error("expected an entry for the registered project");
 
-    await expect(service.removeRecent(entry.id)).rejects.toBeInstanceOf(RecentProjectRegisteredError);
+    expect((await service.removeRecent(entry.id)).map((candidate) => candidate.path)).toEqual(["/work/beta"]);
+    expect((await service.list()).map((project) => project.path)).toEqual(["/work/alpha", "/work/beta"]);
     await expect(service.removeRecent("missing")).rejects.toBeInstanceOf(ProjectNotFoundError);
 
+    const recreated = await service.recordRecent(alpha.id);
+
+    expect(recreated.map((candidate) => candidate.path)).toEqual(["/work/alpha", "/work/beta"]);
+    expect(recreated[0]?.id).not.toBe(entry.id);
+  });
+
+  it("removes a closed entry", async () => {
+    const alpha = await store.add({ path: "/work/alpha" });
+    await store.add({ path: "/work/beta" });
+    const entry = (await service.listRecent()).find((candidate) => candidate.path === "/work/alpha");
+    if (entry === undefined) throw new Error("expected an entry for the registered project");
     await service.close(alpha.id);
 
     expect((await service.removeRecent(entry.id)).map((candidate) => candidate.path)).toEqual(["/work/beta"]);

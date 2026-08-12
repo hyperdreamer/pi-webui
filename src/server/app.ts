@@ -6,7 +6,7 @@ import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import fastifyWebsocket from "@fastify/websocket";
 import { ProjectStore } from "./storage/projectStore.js";
-import { ProjectNotFoundError, ProjectService, RecentProjectRegisteredError } from "./projects/projectService.js";
+import { ProjectNotFoundError, ProjectService } from "./projects/projectService.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import { isAbsoluteishFileSuggestionQuery, listFileSuggestions, listPathSuggestions } from "./workspaces/fileSuggestions.js";
 import { pathAccessForCwd } from "./workspaces/effectivePathAccess.js";
@@ -156,9 +156,7 @@ function sendProjectRouteError(reply: FastifyReply, error: unknown): FastifyRepl
   // resolveWorkspaceContext consumers (git, workspace explorer, terminal, and
   // workspace deletion routes) deliberately keep their own catch-all mapping
   // instead of this instanceof split, so the asymmetry is not an oversight.
-  // A history entry whose path was registered again is a conflict, not a
-  // failure: the client refreshes and renders it as registered.
-  const status = error instanceof ProjectNotFoundError ? 404 : error instanceof RecentProjectRegisteredError ? 409 : 500;
+  const status = error instanceof ProjectNotFoundError ? 404 : 500;
   return reply.code(status).send({ error: error instanceof Error ? error.message : String(error) });
 }
 
