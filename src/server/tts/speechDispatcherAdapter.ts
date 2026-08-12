@@ -142,10 +142,10 @@ export class SpeechDispatcherAdapter implements HostSpeechProvider {
       }
     }
 
-    await this.sendCommand("SET SELF PRIORITY text", 250, COMMAND_TIMEOUT_MS);
-    await this.sendCommand(`SET SELF RATE ${String(input.rate)}`, 250, COMMAND_TIMEOUT_MS);
+    await this.sendCommand("SET SELF PRIORITY text", 202, COMMAND_TIMEOUT_MS);
+    await this.sendCommand(`SET SELF RATE ${String(input.rate)}`, 203, COMMAND_TIMEOUT_MS);
     if (input.voice !== undefined) {
-      await this.sendCommand(`SET SELF SYNTHESIS_VOICE ${input.voice}`, 250, COMMAND_TIMEOUT_MS);
+      await this.sendCommand(`SET SELF SYNTHESIS_VOICE ${input.voice}`, 209, COMMAND_TIMEOUT_MS);
       this.hasNamedVoice = true;
     }
     await this.sendCommand("SPEAK", 230, COMMAND_TIMEOUT_MS);
@@ -176,14 +176,14 @@ export class SpeechDispatcherAdapter implements HostSpeechProvider {
 
   private async initialize(): Promise<void> {
     await this.ensureTransport();
-    await this.sendCommand("SET SELF CLIENT_NAME pi-webui:tts:main", 250, COMMAND_TIMEOUT_MS);
-    const clientIdReply = await this.sendCommand("HISTORY GET CLIENT_ID", 250, COMMAND_TIMEOUT_MS);
+    await this.sendCommand("SET SELF CLIENT_NAME pi-webui:tts:main", 208, COMMAND_TIMEOUT_MS);
+    const clientIdReply = await this.sendCommand("HISTORY GET CLIENT_ID", 245, COMMAND_TIMEOUT_MS);
     if (parseClientId(clientIdReply.data[0]) === undefined) {
       throw new Error("Malformed Speech Dispatcher client id reply.");
     }
-    await this.sendCommand("SET SELF NOTIFICATION BEGIN on", 250, COMMAND_TIMEOUT_MS);
-    await this.sendCommand("SET SELF NOTIFICATION END on", 250, COMMAND_TIMEOUT_MS);
-    await this.sendCommand("SET SELF NOTIFICATION CANCEL on", 250, COMMAND_TIMEOUT_MS);
+    await this.sendCommand("SET SELF NOTIFICATION BEGIN on", 220, COMMAND_TIMEOUT_MS);
+    await this.sendCommand("SET SELF NOTIFICATION END on", 220, COMMAND_TIMEOUT_MS);
+    await this.sendCommand("SET SELF NOTIFICATION CANCEL on", 220, COMMAND_TIMEOUT_MS);
   }
 
   private async ensureTransport(): Promise<SsipTransport> {

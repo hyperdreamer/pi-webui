@@ -46,6 +46,22 @@ describe("SpeechDispatcherAdapter", () => {
     ]);
   });
 
+  it("accepts Speech Dispatcher command-specific initialization reply codes", async () => {
+    const fixture = scriptedFactory([
+      [
+        "208 OK\r\n",
+        "245-7\r\n245 OK\r\n",
+        "220 OK\r\n",
+        "220 OK\r\n",
+        "220 OK\r\n",
+      ],
+      ["249 OK\r\n"],
+    ]);
+    const adapter = new SpeechDispatcherAdapter({ platform: "linux", createTransport: fixture.factory });
+
+    await expect(adapter.status()).resolves.toEqual({ available: true, voices: [] });
+  });
+
   it("falls back to cache/home and accepts only absolute Unix SPEECHD_ADDRESS overrides", async () => {
     const cacheFixture = scriptedFactory([initializationReplies(), ["249 OK\r\n"]]);
     const cacheAdapter = new SpeechDispatcherAdapter({
@@ -151,9 +167,9 @@ describe("SpeechDispatcherAdapter", () => {
     const fixture = scriptedFactory([
       initializationReplies(),
       ["249-Alice\ten\tfemale1\r\n249 OK\r\n"],
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
+      ["209 OK\r\n"],
       ["230 OK\r\n"],
       ["225-42\r\n225 OK MESSAGE QUEUED\r\n"],
     ]);
@@ -196,15 +212,15 @@ describe("SpeechDispatcherAdapter", () => {
     const fixture = scriptedFactory([
       initializationReplies(),
       ["249-Alice\ten\t\r\n249 OK\r\n"],
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
+      ["209 OK\r\n"],
       ["230 OK\r\n"],
       ["225-1\r\n225 OK\r\n"],
     ], [
       initializationReplies(),
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
       ["230 OK\r\n"],
       ["225-2\r\n225 OK\r\n"],
     ]);
@@ -229,8 +245,8 @@ describe("SpeechDispatcherAdapter", () => {
   it("consumes early and late terminal cancellation events by message id", async () => {
     const earlyFixture = scriptedFactory([
       initializationReplies(),
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
       ["230 OK\r\n"],
       ["703-42\r\n703-7\r\n703 CANCEL\r\n225-42\r\n225 OK\r\n"],
     ]);
@@ -242,8 +258,8 @@ describe("SpeechDispatcherAdapter", () => {
 
     const lateFixture = scriptedFactory([
       initializationReplies(),
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
       ["230 OK\r\n"],
       ["225-43\r\n225 OK\r\n"],
     ]);
@@ -272,7 +288,7 @@ describe("SpeechDispatcherAdapter", () => {
   it("rejects pending work and reconnects when a socket drops", async () => {
     const fixture = scriptedFactory([
       initializationReplies(),
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
     ], [
       initializationReplies(),
       ["249 OK\r\n"],
@@ -337,8 +353,8 @@ describe("SpeechDispatcherAdapter", () => {
 
     const terminalFixture = scriptedFactory([
       initializationReplies(),
-      ["250 OK\r\n"],
-      ["250 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
       ["230 OK\r\n"],
       ["225-42\r\n225 OK\r\n"],
     ]);
@@ -505,10 +521,10 @@ function manualScheduler(): { schedule: DeadlineScheduler; delays: number[]; fir
 
 function initializationReplies(): string[] {
   return [
-    "250 OK\r\n",
-    "250-7\r\n250 OK\r\n",
-    "250 OK\r\n",
-    "250 OK\r\n",
-    "250 OK\r\n",
+    "208 OK\r\n",
+    "245-7\r\n245 OK\r\n",
+    "220 OK\r\n",
+    "220 OK\r\n",
+    "220 OK\r\n",
   ];
 }
