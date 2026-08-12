@@ -1,4 +1,15 @@
-import type { HostSpeechStatus } from "../../shared/apiTypes.js";
+import type {
+  HostSpeechSpeakRequest,
+  HostSpeechStatus,
+  HostSpeechTerminalResult,
+} from "../../shared/apiTypes.js";
+
+export interface HostSpeech {
+  status(): Promise<HostSpeechStatus>;
+  speak(input: HostSpeechSpeakRequest): Promise<HostSpeechTerminalResult>;
+  stop(runId: string): Promise<HostSpeechTerminalResult | undefined>;
+  close(): Promise<void>;
+}
 
 export type HostSpeechProviderTerminalOutcome = "ended" | "canceled";
 

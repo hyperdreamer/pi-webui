@@ -263,6 +263,18 @@ export interface HostSpeechStatus {
   voices: HostSpeechVoice[];
 }
 
+export interface HostSpeechSpeakRequest {
+  runId: string;
+  text: string;
+  voice?: string;
+  rate: number;
+}
+
+export interface HostSpeechTerminalResult {
+  runId: string;
+  outcome: "ended" | "canceled";
+}
+
 export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
