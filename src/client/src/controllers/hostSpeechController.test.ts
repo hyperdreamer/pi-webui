@@ -14,6 +14,34 @@ const AVAILABLE: HostSpeechStatus = {
 const TARGET = { machineId: "local", sessionId: "session-a", messageKey: "message-a", text: "Hello there" };
 
 describe("HostSpeechController", () => {
+  it("uses getRandomValues for a valid default run ID when randomUUID is unavailable", async () => {
+    const expectedRunId = "r000102030405060708090a0b0c0d0e0f";
+    const getRandomValues = vi.fn((values: Uint8Array) => {
+      values.set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+      return values;
+    });
+    const speak = vi.fn<HostSpeechClientApi["speak"]>().mockResolvedValue({ runId: expectedRunId, outcome: "ended" });
+    const api: HostSpeechClientApi = {
+      status: vi.fn<HostSpeechClientApi["status"]>().mockResolvedValue(AVAILABLE),
+      speak,
+      stop: vi.fn<HostSpeechClientApi["stop"]>().mockResolvedValue({ runId: expectedRunId, stopped: true }),
+    };
+    let controller: HostSpeechController | undefined;
+    vi.stubGlobal("crypto", { getRandomValues });
+
+    try {
+      controller = new HostSpeechController({ api });
+      controller.select({ machineId: "local", sessionId: "session-a" });
+      await controller.refreshStatus();
+      await controller.startManual(TARGET);
+
+      expect(getRandomValues).toHaveBeenCalledOnce();
+      expect(speak.mock.calls[0]?.[0]?.runId).toBe(expectedRunId);
+    } finally {
+      controller?.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
   it("starts unavailable and ignores stale status refreshes", async () => {
     const first = deferred<HostSpeechStatus>();
     const second = deferred<HostSpeechStatus>();

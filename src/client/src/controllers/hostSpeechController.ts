@@ -306,5 +306,8 @@ function defaultScheduleErrorClear(callback: () => void, delayMs: number): () =>
 }
 
 function defaultRunId(): string {
-  return crypto.randomUUID();
+  const browserCrypto = globalThis.crypto;
+  if (typeof browserCrypto.randomUUID === "function") return browserCrypto.randomUUID();
+  const bytes = browserCrypto.getRandomValues(new Uint8Array(16));
+  return `r${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
