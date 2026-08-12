@@ -251,6 +251,18 @@ export interface PiWebUiTtsConfig {
   rate?: number;
 }
 
+export interface HostSpeechVoice {
+  name: string;
+  language: string;
+  variant?: string;
+}
+
+export interface HostSpeechStatus {
+  available: boolean;
+  reason?: string;
+  voices: HostSpeechVoice[];
+}
+
 export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
