@@ -323,6 +323,54 @@ describe("registerTtsRoutes", () => {
     });
   });
 
+  it("stops the exact run when a request aborts during a deferred status lookup", async () => {
+    let resolveStatus: ((status: HostSpeechStatus) => void) | undefined;
+    let markStatusStarted: (() => void) | undefined;
+    const statusStarted = new Promise<void>((resolve) => {
+      markStatusStarted = resolve;
+    });
+    speech.status = vi.fn((): Promise<HostSpeechStatus> => {
+      markStatusStarted?.();
+      return new Promise<HostSpeechStatus>((resolve) => {
+        resolveStatus = resolve;
+      });
+    });
+
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP listener address");
+
+    const controller = new AbortController();
+    const requestPromise = fetch(`http://127.0.0.1:${String(address.port)}/api/tts/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: "run-window", text: "hello", rate: 0 }),
+      signal: controller.signal,
+    });
+    await statusStarted;
+    controller.abort();
+    await expect(requestPromise).rejects.toBeInstanceOf(DOMException);
+
+    // The close listener must be installed before the status await, so the
+    // abort must already have issued the exact run-scoped stop.
+    await vi.waitFor(() => {
+      expect(speech.stop).toHaveBeenCalledTimes(1);
+      expect(speech.stop).toHaveBeenCalledWith("run-window");
+    });
+
+    // Resolving the status gate must not start speech for the abandoned request.
+    resolveStatus?.({ available: true, voices: [{ name: "default", language: "en" }] });
+    await vi.waitFor(() => {
+      expect(speech.speak).not.toHaveBeenCalled();
+    });
+
+    // Let the handler unwind and drop its listener, then prove the stop count
+    // never grows.
+    await vi.waitFor(() => {
+      expect(speech.stop).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("does not stop a speak request that resolves normally", async () => {
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();

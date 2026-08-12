@@ -32,23 +32,14 @@ export function registerTtsRoutes(app: FastifyInstance, speech: TtsRouteService,
     const input = parseSpeakBody(request.body);
     if (input === undefined) return reply.code(400).send({ error: "Invalid speak request" });
 
-    let status: HostSpeechStatus;
-    try {
-      status = await speech.status();
-    } catch (error) {
-      return mapSpeechError(reply, error);
-    }
-    if (!status.available) return reply.code(503).send({ error: status.reason ?? UNAVAILABLE_MESSAGE });
-    if (input.voice !== undefined && !status.voices.some((voice) => voice.name === input.voice)) {
-      return reply.code(400).send({ error: `Unknown speech voice: ${input.voice}` });
-    }
-
     // The speak response stays open until the run reaches a terminal state, so a
     // client disconnect must cancel the matching run instead of leaving it
     // speaking. `reply.raw` emits "close" both for a client disconnect (with
     // `writableEnded` false) and after a normal response write; only the former
     // should stop the run, and only once. The flag lives on an object so the
-    // event callback's mutation stays visible to the handler.
+    // event callback's mutation stays visible to the handler. The listener is
+    // installed before the first await so an abort during the status lookup
+    // still cancels the run instead of letting it start speaking later.
     const settled = { value: false };
     const onClose = () => {
       if (settled.value || reply.raw.writableEnded) return;
@@ -56,12 +47,19 @@ export function registerTtsRoutes(app: FastifyInstance, speech: TtsRouteService,
       void speech.stop(input.runId).catch(() => undefined);
     };
     reply.raw.on("close", onClose);
+    const isSettled = (): boolean => settled.value;
     try {
+      const status = await speech.status();
+      if (isSettled()) return undefined;
+      if (!status.available) return await reply.code(503).send({ error: status.reason ?? UNAVAILABLE_MESSAGE });
+      if (input.voice !== undefined && !status.voices.some((voice) => voice.name === input.voice)) {
+        return await reply.code(400).send({ error: `Unknown speech voice: ${input.voice}` });
+      }
       const result = await speech.speak(input);
-      if (settled.value) return undefined;
+      if (isSettled()) return undefined;
       return result;
     } catch (error) {
-      if (settled.value) return undefined;
+      if (isSettled()) return undefined;
       return await mapSpeechError(reply, error);
     } finally {
       reply.raw.removeListener("close", onClose);
