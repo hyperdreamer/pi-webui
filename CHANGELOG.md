@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.1
+
+### Patch Changes
+
+- 3613ccd: Polish Project History entries with balanced side spacing and an inline remove action that stays hidden until hover or focus.
+
 ## 1.13.0
 
 ### Minor Changes
