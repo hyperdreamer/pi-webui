@@ -29,7 +29,7 @@ The first release supports browser speech recognition and gateway-mediated OpenA
 - While listening, the control is **Stop dictation**. Stopping asks the provider to finalize the current speech and then commits a nonempty final transcript.
 - Browser recognition may finish naturally after silence; a nonempty accumulated final transcript is committed when it ends.
 - While cloud audio is being uploaded or transcribed, the same control is **Cancel transcription**. This gives touch users the same cancellation path as keyboard users.
-- `Escape` cancels permission, listening, or transcription, discards all interim/final output from that run, prevents default handling, and restores the composer.
+- `Escape` cancels permission, listening, or transcription, discards all interim/final output from that run, and restores the composer. While a run is active, dictation cancellation takes precedence over the editor's existing `Escape` completion-close binding and over global keyboard shortcuts; see Editor boundary for the required listener phase. Idle `Escape` behavior is unchanged.
 - The UI shows `Listening · Browser`, `Listening · Cloud · mm:ss`, or `Transcribing · Cloud` in a bounded status area. Provider errors appear as concise wrapping composer feedback with `aria-live` semantics.
 - Browser interim text is shown as a subdued CodeMirror decoration at the captured insertion range. It is never written to the document, draft storage, prompt history, or network by PI WEBUI.
 - Only a final nonempty transcript changes the draft. Dictation never invokes Send, Queue, or Steer.
@@ -116,7 +116,15 @@ The controller owns timers and generation checks rather than relying on provider
 - verify and apply the final insertion transaction;
 - focus the editor after terminal cleanup.
 
-A temporary document-level keydown listener exists only while dictation is active so `Escape` still works after the microphone button takes focus. It is removed on every terminal path and component disposal.
+`Escape` already has two established owners that a naive listener would fight. `PromptEditor.createEditor` binds `{ key: "Escape", run: () => this.closeCompletions() }` inside its CodeMirror keymap, and `PiWebUiApp` registers a `window` keydown listener with `{ capture: true }` that dispatches user-configurable shortcuts, including a bindable `escape` token.
+
+Dictation therefore registers a `window` keydown listener with `{ capture: true }` that exists only while a run is active. While active it:
+
+- cancels the run on `Escape`, then calls `preventDefault()` and `stopPropagation()` so neither the app shortcut dispatcher nor the CodeMirror completion binding also acts on that keypress;
+- ignores every other key, leaving existing shortcut behavior untouched;
+- is removed on every terminal path, including success, failure, cancellation, navigation, and `disconnectedCallback`.
+
+Because the app shell's listener is also capture-phase on `window`, registration order alone is not a reliable tiebreak. The dictation listener must be attached while active and removed when idle, rather than attached permanently and gated by internal state, so an idle composer can never intercept `Escape` from a dialog, the action palette, or completion dismissal.
 
 ### Browser adapter
 
@@ -192,7 +200,7 @@ interface PiWebUiSpeechInputConfig {
 }
 ```
 
-Unknown keys are rejected. The canonical stored limits are: language tag 128 characters, base URL 2,048 characters, model 256 characters, and credential source 8 KiB of UTF-8 text. Language validation uses `Intl.getCanonicalLocales` and persists its one canonical result. Provider and model strings must be nonempty after trimming. The cloud URL must use HTTPS and have no username, password, query, or fragment. HTTP loopback endpoints are reserved for a future explicit Local provider rather than weakening the cloud credential boundary.
+Unknown keys are rejected. The canonical stored limits are: language tag 128 characters, base URL 2,048 characters, model 256 characters, and credential source 8 KiB of UTF-8 text. Language validation uses `Intl.getCanonicalLocales` and persists its one canonical result. That check is syntactic only: it normalizes case and structure (`en-us` becomes `en-US`) but accepts well-formed tags for languages that do not exist, so a tag such as `qq-ZZ` is stored and forwarded to the provider, which decides whether it is usable. Provider and model strings must be nonempty after trimming. The cloud URL must use HTTPS and have no username, password, query, or fragment. HTTP loopback endpoints are reserved for a future explicit Local provider rather than weakening the cloud credential boundary.
 
 ### Pi-compatible credential values
 
@@ -283,7 +291,7 @@ Blank password input maps to `preserve`. A nonblank input maps to `replace`. A s
 
 The route:
 
-- has a per-route 20 MiB body limit;
+- sets its own Fastify per-route `bodyLimit` of 20 MiB, independent of the server-wide `bodyLimit` that `src/server/index.ts` derives from `maxUploadBytes`. A gateway configured with a smaller `maxUploadBytes` must not shrink the dictation limit, and a larger one must not raise it;
 - rejects missing, empty, oversized, or unsupported audio with `400` or `413` as appropriate;
 - resolves the credential only after request validation;
 - forwards request cancellation to credential-command and provider operations;
@@ -336,6 +344,7 @@ Cloud fields remain editable in Auto because Cloud may be the fallback candidate
 - Audio, transcript text, credential sources, and resolved credentials are excluded from logs and error messages.
 - Provider error bodies are not forwarded to the browser. Status codes may be exposed when useful.
 - The `!command` form is explicitly documented as arbitrary command execution under the gateway account and should be used only with trusted commands.
+- PI WEBUI has no authentication layer, and this feature adds none. Any client that can reach the gateway HTTP surface can call the transcription endpoint, which means a configured cloud credential becomes a network-reachable spending capability and a configured `!command` source becomes a network-reachable trigger for that command. Neither the credential value nor the command text is exposed, but their effects are. Configure cloud transcription only on a gateway restricted to a trusted network, VPN, tunnel, or authenticated reverse proxy, and prefer an environment or command source over a stored literal key when the gateway is shared.
 - Microphone use requires a secure browser context. Non-loopback remote HTTP deployments must add HTTPS before Browser or Cloud input can be enabled.
 - Cancellation stops media tracks, aborts browser/gateway work where possible, invalidates all callbacks, clears interim decorations, and releases buffered references.
 
@@ -382,6 +391,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 ### Component tests
 
 - accessible microphone/Stop/Cancel labels, tooltips, disabled reasons, status text, and `aria-live` errors;
+- `Escape` canceling an active run without closing completions or firing a global shortcut, and idle `Escape` still closing completions once dictation has ended;
 - fixed action order immediately before Send and stable action dimensions;
 - starter and active-session identity changes canceling an active run;
 - captured selection replacement and caret placement;
@@ -390,6 +400,8 @@ Implementation follows test-driven development at the narrowest meaningful layer
 ### Gateway tests
 
 - strict settings parsers, defaults, unknown-key rejection, merge preservation, generic config omission, and credential non-disclosure;
+- syntactic-only language canonicalization, including `en-us` normalizing to `en-US` and a well-formed unknown tag being preserved rather than rejected;
+- the audio route's 20 MiB limit holding when the server-wide `bodyLimit` is configured both below and above it;
 - config mode `0600` after credential save on POSIX;
 - raw body MIME/empty/size validation, the exact MIME-to-filename mapping, and the 20 MiB route limit;
 - exact multipart fields and MIME-derived filename against an injected fake provider endpoint;
@@ -404,7 +416,7 @@ Run focused Vitest files first, then typecheck and lint for changed sources, and
 
 ## Documentation and Release
 
-Update the canonical `docs/config.md` and `docs/config.html` configuration references with:
+Update the canonical `docs/config.md` and `docs/config.html` configuration references, keeping their user-visible claims synchronized. Add a `speechInput` row to the `## Configuration matrix` table in `docs/config.md` alongside the existing `tts` row, using the established columns (JSON key, env var, scope, project-local behavior, applies/restart), and mirror it in `docs/config.html`. Then document:
 
 - persisted keys, defaults, and gateway ownership;
 - Browser versus Cloud processing/privacy boundaries;
@@ -414,7 +426,8 @@ Update the canonical `docs/config.md` and `docs/config.html` configuration refer
 - command-execution warning;
 - Auto ordering and no mid-run fallback;
 - ten-minute and 20 MiB limits;
-- unsupported-browser, permission, credential, and provider troubleshooting.
+- unsupported-browser, permission, credential, and provider troubleshooting;
+- the unauthenticated-gateway consequence for a configured cloud credential and command source.
 
 Add focused troubleshooting to `docs/faq.html` when it is not naturally configuration reference material. Keep `README.md` unchanged because detailed speech-provider setup is not part of the shortest install path.
 
