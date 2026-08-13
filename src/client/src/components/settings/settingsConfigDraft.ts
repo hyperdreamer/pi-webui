@@ -64,7 +64,7 @@ export function agentProfileDraftFromConfig(config: PiWebUiConfigValues): AgentP
 export function hostSpeechDraftFromConfig(config: PiWebUiConfigValues): HostSpeechConfigDraft {
   return {
     voice: config.tts?.voice ?? "",
-    rate: config.tts?.rate === undefined ? "" : String(config.tts.rate),
+    rate: String(config.tts?.rate ?? 0),
   };
 }
 

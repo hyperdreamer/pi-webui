@@ -166,6 +166,17 @@ describe("settings-general-panel host speech settings", () => {
     expect(templateValuesAfterMarker(card, ".value=").filter((value) => value === "25")).toHaveLength(2);
   });
 
+  it("shows the effective default rate in both controls and keeps the numeric field compact", () => {
+    const panel = hostSpeechPanel({ available: true, voices: [] });
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+
+    expect(templateValuesAfterMarker(card, ".value=").filter((value) => value === "0")).toHaveLength(2);
+    expect(SettingsGeneralPanel.styles.cssText).toMatch(/\.host-speech-rate-controls\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*76px;/u);
+    expect(SettingsGeneralPanel.styles.cssText).not.toMatch(/\.host-speech-rate-controls\s*\{[^}]*grid-template-columns:[^}]*84px;/u);
+  });
+
   it("disables host speech controls and shows the gateway reason when the service is unavailable", () => {
     const panel = hostSpeechPanel({ available: false, reason: "Speech Dispatcher is unavailable.", voices: [] }, { tts: { voice: "Configured voice" } });
     const card = hostSpeechCard(panel);

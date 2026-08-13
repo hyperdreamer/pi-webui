@@ -399,12 +399,11 @@ export class SettingsGeneralPanel extends LitElement {
     .muted { color: var(--pi-muted); }
     .form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
     .primary { border-color: var(--pi-accent); background: var(--pi-selection-bg); color: var(--pi-text-bright); }
-    .host-speech-rate-controls { display: grid; grid-template-columns: minmax(0, 1fr) 94px; gap: 10px; align-items: center; }
+    .host-speech-rate-controls { display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 10px; align-items: center; }
     .host-speech-rate-controls input[type="range"] { padding: 0; }
 
     @media (max-width: 760px) {
       .effective-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
-      .host-speech-rate-controls { grid-template-columns: minmax(0, 1fr) 84px; }
     }
   `;
 }

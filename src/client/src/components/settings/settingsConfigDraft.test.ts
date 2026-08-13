@@ -125,8 +125,9 @@ describe("settings config drafts", () => {
 
   it("round-trips host speech defaults, configured values, and stale configured voices", () => {
     expect(emptyHostSpeechConfigDraft()).toEqual({ voice: "", rate: "" });
+    expect(hostSpeechDraftFromConfig({})).toEqual({ voice: "", rate: "0" });
     expect(hostSpeechDraftFromConfig({ tts: { voice: "Ada", rate: 25 } })).toEqual({ voice: "Ada", rate: "25" });
-    expect(hostSpeechDraftFromConfig({ tts: { voice: "Retired system voice" } })).toEqual({ voice: "Retired system voice", rate: "" });
+    expect(hostSpeechDraftFromConfig({ tts: { voice: "Retired system voice" } })).toEqual({ voice: "Retired system voice", rate: "0" });
   });
 
   it("builds complete host speech gateway saves, including an explicit all-default reset", () => {
