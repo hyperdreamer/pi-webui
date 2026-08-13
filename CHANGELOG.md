@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.12.4
+
+### Minor Changes
+
+- aef1cd8: Add confirmed removal controls for open and Closed Recent Projects entries. Removed open projects stay registered and return to history after future meaningful work.
+
+### Patch Changes
+
+- 28de6cf: Use xterm palette color 75 for the E-Ink Color Paper accent color, including user-message labels.
+
 ## 1.12.3
 
 ### Patch Changes
