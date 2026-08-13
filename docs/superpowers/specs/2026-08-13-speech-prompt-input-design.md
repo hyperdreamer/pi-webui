@@ -76,7 +76,7 @@ Changing session, machine, project, or workspace cancels the active run and disc
 - Cloud recording stops and proceeds to transcription at ten minutes or 20 MiB (`20 * 1024 * 1024` bytes), whichever happens first. After capture, credential command resolution is bounded to ten seconds and the provider request to 120 seconds, so a cloud run has a hard maximum of 12 minutes 10 seconds from successful recording start, excluding user-controlled permission time.
 - Cloud recording starts `MediaRecorder` with a 1,000 ms timeslice so elapsed time and observed bytes update at least once per emitted chunk.
 - The MediaRecorder adapter requests Stop when the retained total reaches exactly 20 MiB. If any emitted or final chunk would make the retained blob exceed 20 MiB, it does not retain or upload that chunk; it discards the recording and reports `recording-limit`. Encoded media is never byte-truncated because that can corrupt its container.
-- The gateway admits at most two concurrent transcription requests. Admission happens in the route's `onRequest` hook before body parsing, so a third request receives `429` without buffering another 20 MiB body or resolving a credential. Response, error, and request-close paths release the admission exactly once.
+- The gateway admits at most two concurrent transcription requests. Admission happens in the route's `onRequest` hook before body parsing, so a third request receives `429` without buffering another 20 MiB body or resolving a credential. Each admitted request has one 130-second admission-to-body-completion deadline; a stalled/trickled upload is destroyed, aborted, and releases its slot exactly once. Response, error, parse-failure, timeout, and request-close paths release admission exactly once.
 - Provider credential command resolution has a ten-second deadline and captures at most 64 KiB of stdout. The deadline is one total monotonic budget, not a fresh timeout for subprocess startup, output collection, and cleanup.
 - The cloud provider request has a 120-second total monotonic deadline and is also aborted when the browser request closes. Response headers and bounded body streaming share that one deadline rather than receiving separate 120-second windows.
 - When Cloud enters Transcribing, the client controller starts one 130-second deadline covering gateway upload, credential resolution, provider request, and response delivery. Expiry cancels the Cloud adapter and aborts its fetch. Combined with the ten-minute capture bound, this enforces the 12-minute-10-second post-recording-start maximum even if the browser loses connectivity to the gateway.
@@ -86,7 +86,7 @@ Changing session, machine, project, or workspace cancels the active run and disc
 
 ### Provider-neutral controller
 
-The app shell owns the latest `SpeechInputSettingsResponse`. It loads that gateway snapshot at app startup, refreshes it on browser resume, replaces it after a successful Settings save, and also adopts a fresher successful Settings-dialog reload. It passes the same immutable snapshot into starter and active-session prompt editors, so composer remounts do not duplicate settings requests or retain stale credential availability. Browser capability checks remain local to each mounted editor because they depend on the current page APIs, not gateway configuration.
+The app shell owns the latest `SpeechInputSettingsResponse`. It loads that gateway snapshot at app startup, refreshes it on browser resume, replaces it after a successful Settings save, and also adopts a fresher successful Settings-dialog reload. A nonsecret `BroadcastChannel` notification containing only the new opaque speech revision tells other tabs to refetch; it never carries settings or credential material. Notifications received during an in-flight refetch request one trailing refetch, so a later revision cannot be lost through burst coalescing. Every successful speech mutation rotates the UUID revision even when the submitted settings are idempotent, so one expected revision authorizes at most one mutation. Unrelated coordinated config writes preserve it. An offline/manual file replacement or crash-recovery fingerprint mismatch rotates it conservatively. Each speech mutation must match it, so stale tabs receive `409` instead of silently restoring older provider, language, endpoint, model, or credential state. It passes the same immutable snapshot into starter and active-session prompt editors, so composer remounts do not duplicate settings requests or retain stale credential availability. Browser capability checks remain local to each mounted editor because they depend on the current page APIs, not gateway configuration.
 
 A focused client `SpeechInputController` owns exactly one active run for its mounted composer. `PromptEditor` owns the controller lifecycle but delegates browser APIs, cloud requests, state transitions, cancellation, and stale-result suppression to it.
 
@@ -158,9 +158,9 @@ The cloud adapter uses `navigator.mediaDevices.getUserMedia({ audio: true })` an
 
 The gateway accepts those exact MIME values after case-insensitive media-type normalization; arbitrary parameters or codecs are rejected. The client uses the recorder's actual resulting MIME type only when it remains in the allowlist.
 
-It starts the recorder with a 1,000 ms timeslice, collects only chunks that keep the retained total at or below 20 MiB, updates elapsed status from the injected monotonic clock, and stops at user request, ten minutes, or the observed byte limit. An incoming chunk that crosses the hard bound terminates and discards the recording rather than storing or truncating it. It stops every `MediaStreamTrack` on successful recording, cancellation, permission failure, recorder failure, component disposal, and navigation. Once recording stops within the limit, it constructs one final `Blob` and calls the gateway API with the exact MIME type and an abort signal.
+It starts the recorder with a 1,000 ms timeslice, collects only chunks that keep the retained total at or below 20 MiB, updates elapsed status from the injected monotonic clock, and stops at user request, ten minutes, or the observed byte limit. An incoming chunk that crosses the hard bound terminates and discards the recording rather than storing or truncating it. One idempotent terminal cleanup unsubscribes recorder listeners, stops every `MediaStreamTrack`, clears chunk/Blob/stream/recorder references, and suppresses late events on successful recording, cancellation, permission failure, recorder failure, component disposal, navigation, and the client Transcribing watchdog. Once recording stops within the limit, it constructs one final `Blob` and calls the gateway API with the exact MIME type and an abort signal.
 
-Cancellation during transcription aborts the browser request and suppresses any late response. No audio object URL, download, attachment, workspace file, IndexedDB record, browser storage entry, or session entry is created.
+Cancellation during transcription aborts the browser request and suppresses any late response. If a Fetch implementation resolves only after cancellation, its unconsumed late response body is canceled best-effort as soon as it becomes available. No audio object URL, download, attachment, workspace file, IndexedDB record, browser storage entry, or session entry is created.
 
 ### Gateway transcription service
 
@@ -215,11 +215,17 @@ The API key source accepts the same value language documented by Pi for provider
 - command: a leading `!command`, using trimmed stdout;
 - escapes: `$$` produces a literal `$` and `$!` produces a literal `!` without command execution.
 
-A plain `OPENAI_API_KEY` string is literal; the `$` is required to reference an environment variable. Missing or empty referenced variables make the source unresolved. Commands execute as the gateway service account only when a cloud transcription starts, are uncached, receive no audio or transcript data, capture at most 64 KiB of stdout, and are terminated after ten seconds or request cancellation.
+A plain `OPENAI_API_KEY` string is literal; the `$` is required to reference an environment variable. Missing or empty referenced variables make the source unresolved. Commands execute as the gateway service account only when a cloud transcription starts, are uncached, receive no audio or transcript data, capture at most 64 KiB of stdout, and make credential resolution fail after ten seconds or request cancellation. PI WEBUI best-effort terminates the spawned command's process group/tree, but arbitrary trusted shell commands can deliberately detach descendants (`setsid`, double-fork, services) beyond portable Node process ownership. Configure only trusted, short-lived commands that do not daemonize; detached descendants can outlive the request.
 
 Pi's current resolver implementation is an internal package subpath that is not part of its supported export map. PI WEBUI therefore implements a small asynchronous compatibility adapter rather than importing that private file. Compatibility tests pin literal, interpolation, escaping, missing-variable, command-success, empty-output, nonzero-exit, timeout, and cancellation behavior to Pi's documented contract. The asynchronous command runner must not block the gateway event loop.
 
-### Secret projection and file safety
+### Shared config persistence prerequisite and secret projection
+
+Speech capture and transcription do not use a database. PI WEBUI's JSON config remains the only user-editable config API. The SQLite file below is managed coordination state required because the autoreloading web/API process and long-lived session daemon both perform read-modify-write operations on that shared JSON file.
+
+Every production read-modify-write runs under a shared SQLite transaction mutex. Its database lives under the canonical real path of `$PI_WEBUI_DATA_DIR/config-mutations/`, named by a SHA-256 digest of the resolved global config path, rather than beside a possibly project-local config file. On POSIX, the canonical data root must belong to the effective user and must not be group/other-writable. The coordinator owns a `0700` child directory; it rejects child symlinks, wrong-owner/non-directory substitutions, and non-regular, wrong-owner, multi-link database files, then tightens an accepted database to `0600` before `node:sqlite` opens it. A symlink used as the configured data-root path is allowed only through one-time canonicalization to such a trusted target. The database stores only a random opaque speech-input revision plus a fingerprint of nonsecret config-file identity metadata; it stores no config, credential, audio, or transcript bytes and never hashes file contents. `BEGIN IMMEDIATE` uses nonblocking event-driven retry under one ten-second acquisition deadline, closes every busy attempt before retrying, and an OS process crash releases the transaction automatically. The fingerprint repairs revision state after offline replacement or a crash between JSON rename and database state update. The lock covers load, pure merge, symlink-preserving atomic temp-file replacement, authoritative reread, and revision maintenance. Speech mutations force revision rotation after successful CAS; other coordinated writes rotate it only if they actually alter raw `speechInput`, otherwise preserving it.
+
+Web generic/local-selected-machine/speech writes and sessiond model-tier/utility-model writes all use this coordinator. A remote selected-machine config proxy forwards the validated patch to the target gateway's local-machine config route, where that target's coordinator performs the merge; the proxy does not perform a stale GET/merge/PUT sequence. Low-level synchronous save helpers remain test/composition primitives and are not called directly by production writers. Both services must resolve the same `PI_WEBUI_CONFIG` and `PI_WEBUI_DATA_DIR`; when a nonempty `PI_WEBUI_DATA_DIR` is present during native-service installation, PI WEBUI resolves and pins that same path into both generated process-owner service definitions. Manual config editing while either service is running is unsupported; stop both first.
 
 The raw `apiKey` source is write-only at the browser API boundary:
 
@@ -257,11 +263,12 @@ Add gateway-only application-relative routes. Do not add selected-machine equiva
 
 ### Settings
 
-`GET api/speech-input/settings` returns a strict versioned response:
+`GET api/speech-input/settings` returns a strict versioned response with an opaque canonical lowercase UUID speech revision:
 
 ```typescript
 interface SpeechInputSettingsResponse {
   contractVersion: 1;
+  revision: string;
   settings: {
     provider: "auto" | "browser" | "cloud";
     language?: string;
@@ -282,12 +289,13 @@ type SpeechInputCredentialMutation =
   | { action: "clear" };
 
 interface SpeechInputSettingsUpdate {
+  expectedRevision: string;
   settings: SpeechInputSettingsResponse["settings"];
   credential: SpeechInputCredentialMutation;
 }
 ```
 
-Blank password input maps to `preserve`. A nonblank input maps to `replace`. A separate confirmed **Clear credential** action maps to `clear`. Preserve/replace apply the submitted complete nonsecret settings. Clear is credential-only: after strict body validation, the serialized update derives nonsecret settings from the latest gateway config and removes only `apiKey`, so unsaved form values or a stale cross-tab response cannot overwrite a newer Provider, Language, URL, or model. Every update preserves unrelated root keys, writes synchronously/atomically within the service boundary, and returns the same redacted response shape.
+Blank password input maps to `preserve`. A nonblank input maps to `replace`. A separate confirmed **Clear credential** action maps to `clear`. Every mutation must match the latest opaque response revision; a stale revision returns safe `409` and performs no write. Preserve/replace apply the submitted complete nonsecret settings. When a credential is configured, `preserve` may not change the effective cloud base URL; changing that credential destination requires re-entering a replacement source in the same save or clearing the credential first. Clear is credential-only: after strict body validation and revision check, the serialized update copies the latest raw `speechInput`/`cloud` subtree and removes only `apiKey`; defaults are derived only for the response. Unsaved form values or a stale cross-tab response therefore cannot overwrite a newer Provider, Language, URL, or model. Every successful update rotates the revision, preserves unrelated root keys, writes synchronously/atomically inside the cross-process coordinator, and returns the same redacted response shape. The saving tab broadcasts only that new revision; other tabs refetch. An open dirty form preserves its draft/password, marks itself stale, and must reload current nonsecret settings before retrying.
 
 ### Transcription
 
@@ -295,14 +303,15 @@ Blank password input maps to `preserve`. A nonblank input maps to `replace`. A s
 
 The route:
 
-- has a two-request admission guard acquired in `onRequest` before body parsing and released exactly once on response, error, or request close; an unadmitted request returns `429` without credential resolution or provider work;
+- has a two-request admission guard acquired in `onRequest` before body parsing and released exactly once on response, error, parse failure, upload deadline, or request close; an unadmitted request returns `429` without credential resolution or provider work;
+- applies one 130-second monotonic admission-to-body-completion deadline. Expiry aborts/destroys a partial request and releases admission even if a client keeps trickling bytes below the size limit;
 - sets its own Fastify per-route `bodyLimit` of 20 MiB, independent of the server-wide `bodyLimit` that `src/server/index.ts` derives from `maxUploadBytes`. A gateway configured with a smaller `maxUploadBytes` must not shrink the dictation limit, and a larger one must not raise it;
-- rejects missing, empty, oversized, or unsupported audio with `400` or `413` as appropriate; parameterized nonallowlisted media is normalized to the same safe `400` instead of Fastify's default `415`;
+- rejects missing, empty, oversized, or syntactically valid unsupported audio with `400` or `413` as appropriate; parameterized nonallowlisted media is normalized to the same safe `400`; a syntactically invalid `Content-Type` remains Fastify's pre-parser `415`;
 - resolves the credential only after request validation;
 - forwards request cancellation to credential-command and provider operations;
 - returns `{ "text": "..." }` only for a successful nonempty transcript;
 - maps an unavailable/unresolved credential to `503`;
-- maps provider authentication/rejection to a safe `502` response containing only a stable message and optional upstream status code;
+- maps provider authentication/rejection to a safe `502` response containing only a stable message and optional upstream status code, and best-effort cancels every unconsumed redirect/non-2xx response body before returning;
 - maps provider timeout to `504`;
 - treats user/request cancellation as terminal cleanup rather than a retry or fallback trigger.
 
@@ -348,8 +357,8 @@ Cloud fields remain editable in Auto because Cloud may be the selected fallback 
 - The configured endpoint is HTTPS-only, redirects are rejected, and credentials are never accepted from a transcription request.
 - Audio, transcript text, credential sources, and resolved credentials are excluded from logs and error messages.
 - Provider error bodies are not forwarded to the browser. Status codes may be exposed when useful.
-- The `!command` form is explicitly documented as arbitrary command execution under the gateway account and should be used only with trusted commands.
-- PI WEBUI has no authentication layer, and this feature adds none. Any client that can reach the gateway HTTP surface can call the transcription endpoint, which means a configured cloud credential becomes a network-reachable spending capability and a configured `!command` source becomes a network-reachable trigger for that command. Neither the credential value nor the command text is exposed, but their effects are. Configure cloud transcription only on a gateway restricted to a trusted network, VPN, tunnel, or authenticated reverse proxy, and prefer an environment or command source over a stored literal key when the gateway is shared.
+- The `!command` form is explicitly documented as arbitrary command execution under the gateway account and should be used only with trusted, short-lived commands that do not detach descendants. PI WEBUI bounds credential resolution and best-effort kills the tracked process group/tree, but portable Node APIs cannot reclaim intentionally daemonized descendants.
+- PI WEBUI has no authentication layer, and this feature adds none. Treat any client that can reach the gateway HTTP surface as an administrator: it can call transcription and mutate speech settings, including the configured endpoint and credential source. A configured cloud credential is therefore a network-reachable spending capability; an accepted endpoint receives the resolved credential; and a configured `!command` source is a network-reachable command trigger. The settings API prevents an accidental preserved credential from being redirected to a changed base URL, but it is not an authorization boundary. Configure cloud transcription only on a gateway restricted to a trusted network, VPN, tunnel, or authenticated reverse proxy, and prefer an environment or command source over a stored literal key when the gateway is shared.
 - Microphone use requires a secure browser context. Non-loopback remote HTTP deployments must add HTTPS before Browser or Cloud input can be enabled.
 - Cancellation stops media tracks, aborts browser/gateway work where possible, invalidates all callbacks, clears interim decorations, and releases buffered references.
 
@@ -390,7 +399,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 - interim results never changing the CodeMirror document or draft storage;
 - late events after cancel, navigation, disposal, or a newer generation being ignored;
 - browser result accumulation and no-speech/error normalization;
-- cloud permission denial, media track cleanup on every terminal path, ten-minute capture/20 MiB limits, the client-owned 130-second Transcribing timeout, the 12-minute-10-second maximum after recording starts, upload abort, and stale completion;
+- cloud permission denial, recorder listener/reference cleanup and media track cleanup on every terminal path, ten-minute capture/20 MiB limits, the client-owned 130-second Transcribing timeout, the 12-minute-10-second maximum after recording starts, upload abort, and stale completion;
 - composer locking and restoration without changing the external disabled state.
 
 ### Component tests
@@ -400,17 +409,18 @@ Implementation follows test-driven development at the narrowest meaningful layer
 - fixed action order immediately before Send and stable action dimensions;
 - starter and active-session identity changes canceling an active run;
 - captured selection replacement and caret placement;
-- Settings load/save, Auto/Browser/Cloud choices, language, credential preserve/replace/clear, cleared password input, and redacted statuses.
+- Settings load/save, Auto/Browser/Cloud choices, language, opaque revision/CAS conflict, cross-tab invalidation/refetch, credential preserve/replace/clear, retained password on failure/conflict, cleared password on success, and redacted statuses.
 
 ### Gateway tests
 
-- strict settings parsers, defaults, unknown-key rejection, merge preservation, generic config omission, and credential non-disclosure;
+- strict settings parsers, defaults, unknown-key rejection, revision/CAS conflicts, preserved-credential endpoint binding, cross-process merge preservation, generic config omission, and credential non-disclosure;
+- cross-process config coordination using managed private SQLite state without storing speech audio, transcripts, config JSON, or credential bytes, including target-gateway atomic selected-machine patching;
 - syntactic-only language canonicalization, including `en-us` normalizing to `en-US` and a well-formed unknown tag being preserved rather than rejected;
 - the audio route's 20 MiB limit holding when the server-wide `bodyLimit` is configured both below and above it;
-- two admitted requests holding the gate while a third receives `429` before its body is parsed, followed by admission recovery after success, error, and request-close terminal paths;
+- two admitted requests holding the gate while a third receives `429` before its body is parsed, followed by admission recovery after success, error, parse failure, request close, and a real TCP trickle upload exceeding the 130-second body deadline;
 - config mode `0600` after credential save on POSIX;
 - raw body MIME/empty/size validation, the exact MIME-to-filename mapping, and the 20 MiB route limit;
-- exact multipart fields and MIME-derived filename against an injected fake provider endpoint;
+- exact multipart fields and MIME-derived filename against an injected fake provider endpoint, including cancellation of endless redirect/non-2xx response bodies;
 - HTTPS URL validation, redirect rejection, authorization placement, optional language, and strict bounded `{ text }` parsing;
 - client abort, command deadline, provider deadline, safe `502`/`503`/`504` mapping, and no provider-body leakage.
 
@@ -428,16 +438,16 @@ Update the canonical `docs/config.md` and `docs/config.html` configuration refer
 - Browser versus Cloud processing/privacy boundaries;
 - HTTPS and microphone-permission requirements;
 - OpenAI-compatible endpoint behavior;
-- Pi-compatible literal/environment/command credential examples and escapes;
+- Pi-compatible literal/environment/command credential examples and escapes, including the trusted non-daemonizing command requirement and best-effort descendant cleanup limitation;
 - command-execution warning;
 - Auto ordering and no mid-run fallback;
-- ten-minute and 20 MiB limits;
+- ten-minute and 20 MiB capture limits plus the 130-second stalled-upload deadline;
 - unsupported-browser, permission, credential, and provider troubleshooting;
-- the unauthenticated-gateway consequence for a configured cloud credential and command source.
+- the unauthenticated administrative-gateway consequence for cloud endpoint/source mutation, configured credentials, and command sources.
 
 Add focused troubleshooting to `docs/faq.html` when it is not naturally configuration reference material. Keep `README.md` unchanged because detailed speech-provider setup is not part of the shortest install path.
 
-This is a backward-compatible user-facing capability and receives a **minor** Changeset. It affects only the web/API/client side. It adds no session daemon protocol or runtime ownership, so no manual session daemon restart is required.
+This is a backward-compatible user-facing capability and receives a **minor** Changeset. Cloud transcription remains web/API/client-owned and adds no speech route to sessiond, but the shared config mutation coordinator is loaded by both the web/API process and session daemon to prevent cross-process lost updates. Installing this change therefore requires one manual `pi-webui-sessiond.service` restart; ordinary web/UI autoreload does not load that daemon-side persistence change.
 
 ## Non-Goals
 
