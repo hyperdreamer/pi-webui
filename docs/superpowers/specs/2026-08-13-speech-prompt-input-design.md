@@ -79,13 +79,14 @@ Changing session, machine, project, or workspace cancels the active run and disc
 - The gateway admits at most two concurrent transcription requests. Admission happens in the route's `onRequest` hook before body parsing, so a third request receives `429` without buffering another 20 MiB body or resolving a credential. Response, error, and request-close paths release the admission exactly once.
 - Provider credential command resolution has a ten-second deadline and captures at most 64 KiB of stdout. The deadline is one total monotonic budget, not a fresh timeout for subprocess startup, output collection, and cleanup.
 - The cloud provider request has a 120-second total monotonic deadline and is also aborted when the browser request closes. Response headers and bounded body streaming share that one deadline rather than receiving separate 120-second windows.
+- When Cloud enters Transcribing, the client controller starts one 130-second deadline covering gateway upload, credential resolution, provider request, and response delivery. Expiry cancels the Cloud adapter and aborts its fetch. Combined with the ten-minute capture bound, this enforces the 12-minute-10-second post-recording-start maximum even if the browser loses connectivity to the gateway.
 - Every normalized final transcript, including Browser output, must be nonempty and no larger than 1 MiB of UTF-8 text. The gateway reads at most 1 MiB from a provider response before strict JSON parsing.
 
 ## Architecture
 
 ### Provider-neutral controller
 
-The app shell owns the latest `SpeechInputSettingsResponse`. It loads that gateway snapshot at app startup, refreshes it on browser resume, and replaces it after a successful Settings save. It passes the same immutable snapshot into starter and active-session prompt editors, so composer remounts do not duplicate settings requests or retain stale credential availability. Browser capability checks remain local to each mounted editor because they depend on the current page APIs, not gateway configuration.
+The app shell owns the latest `SpeechInputSettingsResponse`. It loads that gateway snapshot at app startup, refreshes it on browser resume, replaces it after a successful Settings save, and also adopts a fresher successful Settings-dialog reload. It passes the same immutable snapshot into starter and active-session prompt editors, so composer remounts do not duplicate settings requests or retain stale credential availability. Browser capability checks remain local to each mounted editor because they depend on the current page APIs, not gateway configuration.
 
 A focused client `SpeechInputController` owns exactly one active run for its mounted composer. `PromptEditor` owns the controller lifecycle but delegates browser APIs, cloud requests, state transitions, cancellation, and stale-result suppression to it.
 
@@ -337,7 +338,7 @@ General configuration gains a full-width **Speech input** card owned by the gate
 - separate **Clear credential** action;
 - **Save speech input settings** action.
 
-Cloud fields remain editable in Auto because Cloud may be the fallback candidate. The API key field is never prepopulated. Leaving it blank preserves the credential. Saving any replacement clears the field after completion. Settings explains that the feature runs on the UI gateway, not the selected coding machine.
+The API key field is never prepopulated and its text is not copied into reactive component state; the password DOM input and in-flight request are its only browser owners. Leaving it blank preserves the credential. Saving any replacement clears the field after completion. A failed save leaves the uncontrolled DOM value for correction. The separate Clear action clears only the currently saved credential and does not commit unsaved Provider, Language, URL, or model draft edits. Settings explains that the feature runs on the UI gateway, not the selected coding machine.
 
 ## Privacy and Security
 
@@ -389,7 +390,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 - interim results never changing the CodeMirror document or draft storage;
 - late events after cancel, navigation, disposal, or a newer generation being ignored;
 - browser result accumulation and no-speech/error normalization;
-- cloud permission denial, media track cleanup on every terminal path, ten-minute capture/20 MiB limits, the 12-minute-10-second maximum after recording starts, upload abort, and stale completion;
+- cloud permission denial, media track cleanup on every terminal path, ten-minute capture/20 MiB limits, the client-owned 130-second Transcribing timeout, the 12-minute-10-second maximum after recording starts, upload abort, and stale completion;
 - composer locking and restoration without changing the external disabled state.
 
 ### Component tests
