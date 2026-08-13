@@ -1110,7 +1110,7 @@ git commit -m "feat(speech-input): orchestrate dictation providers"
 - Create: `src/client/src/components/promptSpeechDecoration.ts`
 - Test: `src/client/src/components/promptSpeechDecoration.test.ts`
 - Modify: `src/client/src/components/promptEditorIcons.ts:1-85`
-- Modify: `src/client/src/components/PromptEditor.ts:1-220,413-475,637-748`
+- Modify: `src/client/src/components/PromptEditor.ts:1-220,413-750`
 - Create: `src/client/src/components/PromptEditor.speechInput.test.ts`
 - Modify: `src/client/src/components/shared.ts:918-990`
 - Test: `src/client/src/components/shared.test.ts:1-70`
@@ -1317,8 +1317,8 @@ git commit -m "feat(speech-input): add gateway dictation settings"
 
 **Files:**
 
-- Modify: `docs/config.md:1-335`
-- Modify: `docs/config.html:1-820`
+- Modify: `docs/config.md:1-380`
+- Modify: `docs/config.html:1-900`
 - Modify: `docs/faq.html`
 - Create: `.changeset/spoken-prompt-input.md`
 
