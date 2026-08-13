@@ -43,8 +43,10 @@ The run captures all of the following before starting asynchronous work:
 - composer identity;
 - complete editor document text;
 - selection `from` and `to` offsets;
-- selected provider and language settings;
+- selected provider and language settings as observed at start; Browser applies the captured language directly, while Cloud uses the gateway's authoritative language when transcription begins because the raw audio request carries no settings override;
 - a monotonically increasing run generation.
+
+The run captures the language setting observed in the browser snapshot for availability/status and applies it directly to Browser recognition. Cloud is different by design: the upload carries only audio and MIME type, so the gateway reads its current authoritative language/model/base URL when transcription begins. A Settings save in another tab during recording can therefore affect that Cloud transcription; it never changes the already selected provider or causes fallback.
 
 A final transcript is accepted only when the generation and composer identity still match and the editor document is byte-for-byte equal to the captured text. The editor is read-only during the run, but this additional comparison protects against plugin or programmatic draft replacement.
 
