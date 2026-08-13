@@ -287,7 +287,7 @@ interface SpeechInputSettingsUpdate {
 }
 ```
 
-Blank password input maps to `preserve`. A nonblank input maps to `replace`. A separate confirmed **Clear credential** action maps to `clear`. The update reads the latest gateway config, replaces only `speechInput`, preserves all unrelated keys, writes synchronously/atomically within the service boundary, and returns the same redacted response shape.
+Blank password input maps to `preserve`. A nonblank input maps to `replace`. A separate confirmed **Clear credential** action maps to `clear`. Preserve/replace apply the submitted complete nonsecret settings. Clear is credential-only: after strict body validation, the serialized update derives nonsecret settings from the latest gateway config and removes only `apiKey`, so unsaved form values or a stale cross-tab response cannot overwrite a newer Provider, Language, URL, or model. Every update preserves unrelated root keys, writes synchronously/atomically within the service boundary, and returns the same redacted response shape.
 
 ### Transcription
 
