@@ -166,15 +166,25 @@ describe("recent-projects-panel rendering", () => {
     teardown();
   });
 
-  it("reserves a fixed action slot with hover, focus, and non-hover visibility rules", () => {
+  it("lays out inset cards with an overlaid remove target and collision-free activity", () => {
     const styles = panelStyles();
 
-    expect(styles).toMatch(/\.recent-project-row\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*32px;/);
-    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*min-width:\s*32px;/);
-    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*width:\s*32px;/);
-    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*opacity:\s*0;/);
-    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*pointer-events:\s*none;/);
+    expect(styles).toMatch(/\.recent-projects-list\s*\{[^}]*box-sizing:\s*border-box;[^}]*padding-inline:\s*8px;/);
+    expect(styles).toMatch(/\.recent-project-row\s*\{[^}]*display:\s*block;/);
+    expect(styles).not.toMatch(/\.recent-project-row\s*\{[^}]*grid-template-columns:/);
+    expect(styles).toMatch(/\.recent-project-open\s*\{[^}]*width:\s*100%;[^}]*border-radius:\s*8px;[^}]*padding-right:\s*54px;[^}]*font:\s*inherit;/);
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*position:\s*absolute;[^}]*top:\s*0;[^}]*right:\s*0;[^}]*z-index:\s*2;[^}]*width:\s*32px;[^}]*min-width:\s*32px;[^}]*height:\s*100%;[^}]*padding:\s*0;[^}]*border:\s*0;[^}]*border-radius:\s*0 8px 8px 0;[^}]*background:\s*transparent;/);
+    expect(styles).toMatch(/\.action-activity\s*\{\s*right:\s*38px;\s*\}/);
+    expect(styles).not.toContain("!important");
+  });
+
+  it("reveals the inline remove action without tinting its target", () => {
+    const styles = panelStyles();
+
+    expect(styles).toMatch(/\.recent-project-remove\s*\{[^}]*color:\s*var\(--pi-muted\);[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/);
     expect(styles).toMatch(/\.recent-project-row:hover \.recent-project-remove,\s*\.recent-project-row:focus-within \.recent-project-remove\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto;/);
+    expect(styles).toMatch(/\.recent-project-remove:hover\s*\{\s*color:\s*var\(--pi-text\);\s*background:\s*transparent;\s*\}/);
+    expect(styles).not.toMatch(/\.recent-project-row\.selected \.recent-project-remove\s*\{[^}]*background:/);
 
     const nonHover = styles.slice(styles.indexOf("@media (hover: none)"));
     expect(nonHover).toMatch(/\.recent-project-remove\s*\{\s*opacity:\s*1;\s*pointer-events:\s*auto;/);

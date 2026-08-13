@@ -157,28 +157,33 @@ export class RecentProjectsPanel extends LitElement {
     /* The shared small rule truncates with ellipsis; history paths must wrap. */
     .recent-project-path { overflow: visible; text-overflow: clip; overflow-wrap: anywhere; white-space: normal; }
     .recent-project-status { flex: 0 0 auto; color: var(--pi-warning); font-size: 12px; }
-    /* A non-interactive grid container keeps a fixed trailing slot for the remove control. */
-    .recent-project-row { grid-template-columns: minmax(0, 1fr) 32px; }
-    .recent-project-open { font: inherit; }
+    /* The sibling remove action overlays the card so the row remains one visual surface. */
+    .recent-projects-list { box-sizing: border-box; padding-inline: 8px; }
+    .recent-project-row { display: block; }
+    .recent-project-open { width: 100%; border-radius: 8px; padding-right: 54px; font: inherit; }
     .recent-project-remove {
+      position: absolute;
+      top: 0;
+      right: 0;
+      z-index: 2;
       width: 32px;
       min-width: 32px;
       height: 100%;
       padding: 0;
-      border-left: 0;
-      border-top-left-radius: 0;
-      border-bottom-left-radius: 0;
+      border: 0;
+      border-radius: 0 8px 8px 0;
+      background: transparent;
       display: grid;
       place-items: center;
       color: var(--pi-muted);
       opacity: 0;
       pointer-events: none;
     }
+    .action-activity { right: 38px; }
     .recent-project-remove svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .recent-project-row:hover .recent-project-remove,
     .recent-project-row:focus-within .recent-project-remove { opacity: 1; pointer-events: auto; }
-    .recent-project-remove:hover { color: var(--pi-text); background: var(--pi-surface-hover); }
-    .recent-project-row.selected .recent-project-remove { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
+    .recent-project-remove:hover { color: var(--pi-text); background: transparent; }
     .recent-project-open:focus-visible, .recent-project-remove:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 2px; }
     @media (hover: none) {
       .recent-project-remove { opacity: 1; pointer-events: auto; }
