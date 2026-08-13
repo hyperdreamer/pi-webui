@@ -118,13 +118,14 @@ The controller owns timers and generation checks rather than relying on provider
 
 `Escape` already has two established owners that a naive listener would fight. `PromptEditor.createEditor` binds `{ key: "Escape", run: () => this.closeCompletions() }` inside its CodeMirror keymap, and `PiWebUiApp` registers a `window` keydown listener with `{ capture: true }` that dispatches user-configurable shortcuts, including a bindable `escape` token.
 
-Dictation therefore registers a `window` keydown listener with `{ capture: true }` that exists only while a run is active. While active it:
+A PromptEditor listener registered later on the same target cannot outrank that existing capture-phase app listener. Dictation therefore integrates through the app's existing `PiWebUiApp.onKeyDown` owner:
 
-- cancels the run on `Escape`, then calls `preventDefault()` and `stopPropagation()` so neither the app shortcut dispatcher nor the CodeMirror completion binding also acts on that keypress;
-- ignores every other key, leaving existing shortcut behavior untouched;
-- is removed on every terminal path, including success, failure, cancellation, navigation, and `disconnectedCallback`.
+- `PromptEditor.cancelSpeechInput(): boolean` returns `false` while idle; while active it cancels the run, performs terminal cleanup, and returns `true`;
+- before global shortcut dispatch, `PiWebUiApp.onKeyDown` checks `event.key === "Escape"` and delegates to the currently mounted `promptEditor?.cancelSpeechInput()`;
+- when delegation returns `true`, the app listener calls `preventDefault()` and `stopPropagation()` and returns, so neither a global shortcut nor the CodeMirror completion binding also acts on that keypress;
+- when delegation returns `false`, the existing shortcut and CodeMirror paths continue unchanged.
 
-Because the app shell's listener is also capture-phase on `window`, registration order alone is not a reliable tiebreak. The dictation listener must be attached while active and removed when idle, rather than attached permanently and gated by internal state, so an idle composer can never intercept `Escape` from a dialog, the action palette, or completion dismissal.
+No new global/document keydown listener is introduced, so there is no listener-order race or disposal obligation.
 
 ### Browser adapter
 
