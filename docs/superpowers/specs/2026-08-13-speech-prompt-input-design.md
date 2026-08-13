@@ -74,7 +74,7 @@ Changing session, machine, project, or workspace cancels the active run and disc
 - Cloud recording stops and proceeds to transcription at ten minutes or 20 MiB (`20 * 1024 * 1024` bytes), whichever happens first. After capture, credential command resolution is bounded to ten seconds and the provider request to 120 seconds, so a cloud run has a hard maximum of 12 minutes 10 seconds from successful recording start, excluding user-controlled permission time.
 - Cloud recording starts `MediaRecorder` with a 1,000 ms timeslice so elapsed time and observed bytes update at least once per emitted chunk.
 - The controller requests Stop when the retained total reaches 20 MiB. If any emitted or final chunk would make the retained blob exceed 20 MiB, it does not retain or upload that chunk; it discards the recording and reports the size limit. Encoded media is never byte-truncated because that can corrupt its container.
-- The browser refuses to upload an over-limit final blob. The gateway independently enforces the same 20 MiB body limit.
+- The gateway admits at most two concurrent transcription requests. Admission happens in the route's `onRequest` hook before body parsing, so a third request receives `429` without buffering another 20 MiB body or resolving a credential. Response, error, and request-close paths release the admission exactly once.
 - Provider credential command resolution has a ten-second deadline and captures at most 64 KiB of stdout. The deadline is one total monotonic budget, not a fresh timeout for subprocess startup, output collection, and cleanup.
 - The cloud provider request has a 120-second total monotonic deadline and is also aborted when the browser request closes. Response headers and bounded body streaming share that one deadline rather than receiving separate 120-second windows.
 - Every normalized final transcript, including Browser output, must be nonempty and no larger than 1 MiB of UTF-8 text. The gateway reads at most 1 MiB from a provider response before strict JSON parsing.
@@ -292,6 +292,7 @@ Blank password input maps to `preserve`. A nonblank input maps to `replace`. A s
 
 The route:
 
+- has a two-request admission guard acquired in `onRequest` before body parsing and released exactly once on response, error, or request close; an unadmitted request returns `429` without credential resolution or provider work;
 - sets its own Fastify per-route `bodyLimit` of 20 MiB, independent of the server-wide `bodyLimit` that `src/server/index.ts` derives from `maxUploadBytes`. A gateway configured with a smaller `maxUploadBytes` must not shrink the dictation limit, and a larger one must not raise it;
 - rejects missing, empty, oversized, or unsupported audio with `400` or `413` as appropriate;
 - resolves the credential only after request validation;
@@ -403,6 +404,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 - strict settings parsers, defaults, unknown-key rejection, merge preservation, generic config omission, and credential non-disclosure;
 - syntactic-only language canonicalization, including `en-us` normalizing to `en-US` and a well-formed unknown tag being preserved rather than rejected;
 - the audio route's 20 MiB limit holding when the server-wide `bodyLimit` is configured both below and above it;
+- two admitted requests holding the gate while a third receives `429` before its body is parsed, followed by admission recovery after success, error, and request-close terminal paths;
 - config mode `0600` after credential save on POSIX;
 - raw body MIME/empty/size validation, the exact MIME-to-filename mapping, and the 20 MiB route limit;
 - exact multipart fields and MIME-derived filename against an injected fake provider endpoint;
