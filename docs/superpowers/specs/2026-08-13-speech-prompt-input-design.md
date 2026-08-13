@@ -69,14 +69,14 @@ Changing session, machine, project, or workspace cancels the active run and disc
 
 ### Limits
 
-- Every dictation run has a hard ten-minute wall-clock limit.
-- Browser recognition is stopped and finalized at the time limit.
-- Cloud recording stops and proceeds to transcription at ten minutes or 20 MiB (`20 * 1024 * 1024` bytes), whichever happens first.
+- Every dictation capture/listening phase has a hard ten-minute wall-clock limit measured from the provider's successful listening/recording start; microphone-permission time is bounded by cancellation but is not charged against capture time.
+- Browser recognition is stopped and finalized at the ten-minute capture limit.
+- Cloud recording stops and proceeds to transcription at ten minutes or 20 MiB (`20 * 1024 * 1024` bytes), whichever happens first. After capture, credential command resolution is bounded to ten seconds and the provider request to 120 seconds, so a cloud run has a hard maximum of 12 minutes 10 seconds from successful recording start, excluding user-controlled permission time.
 - Cloud recording starts `MediaRecorder` with a 1,000 ms timeslice so elapsed time and observed bytes update at least once per emitted chunk.
 - The controller requests Stop when the retained total reaches 20 MiB. If any emitted or final chunk would make the retained blob exceed 20 MiB, it does not retain or upload that chunk; it discards the recording and reports the size limit. Encoded media is never byte-truncated because that can corrupt its container.
 - The browser refuses to upload an over-limit final blob. The gateway independently enforces the same 20 MiB body limit.
-- Provider credential command resolution has a ten-second deadline and captures at most 64 KiB of stdout.
-- The cloud provider request has a 120-second deadline and is also aborted when the browser request closes.
+- Provider credential command resolution has a ten-second deadline and captures at most 64 KiB of stdout. The deadline is one total monotonic budget, not a fresh timeout for subprocess startup, output collection, and cleanup.
+- The cloud provider request has a 120-second total monotonic deadline and is also aborted when the browser request closes. Response headers and bounded body streaming share that one deadline rather than receiving separate 120-second windows.
 - Every normalized final transcript, including Browser output, must be nonempty and no larger than 1 MiB of UTF-8 text. The gateway reads at most 1 MiB from a provider response before strict JSON parsing.
 
 ## Architecture
@@ -386,7 +386,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 - interim results never changing the CodeMirror document or draft storage;
 - late events after cancel, navigation, disposal, or a newer generation being ignored;
 - browser result accumulation and no-speech/error normalization;
-- cloud permission denial, media track cleanup on every terminal path, ten-minute/20 MiB limits, upload abort, and stale completion;
+- cloud permission denial, media track cleanup on every terminal path, ten-minute capture/20 MiB limits, the 12-minute-10-second maximum after recording starts, upload abort, and stale completion;
 - composer locking and restoration without changing the external disabled state.
 
 ### Component tests
