@@ -1,16 +1,21 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { DEFAULT_WORKSPACE_UPLOADS_FOLDER, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues } from "../../api";
+import { DEFAULT_WORKSPACE_UPLOADS_FOLDER, type HostSpeechStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues } from "../../api";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import {
   emptyGatewayServerConfigDraft,
+  emptyHostSpeechConfigDraft,
   emptyMachineAccessConfigDraft,
   gatewayServerConfigFromDraft,
   gatewayServerDraftFromConfig,
+  hostSpeechConfigFromDraft,
+  hostSpeechDraftFromConfig,
+  hostSpeechDraftMatchesConfig,
   machineAccessConfigPatchFromDraft,
   machineAccessDraftFromConfig,
   type GatewayServerConfigDraft,
+  type HostSpeechConfigDraft,
   type MachineAccessConfigDraft,
 } from "./settingsConfigDraft";
 
@@ -29,19 +34,37 @@ export class SettingsGeneralPanel extends LitElement {
   @property() machineError = "";
   @property() savedMessage = "";
   @property() targetLabel = "selected machine";
+  @property({ type: Boolean }) showHostSpeechSettings = false;
+  @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
+  @property({ type: Boolean }) hostSpeechStatusLoading = false;
   @property({ attribute: false }) onReload?: () => void | Promise<void>;
   @property({ attribute: false }) onReloadMachine?: () => void | Promise<void>;
+  @property({ attribute: false }) onReloadHostSpeech?: () => void | Promise<void>;
   @property({ attribute: false }) onSave?: (config: PiWebUiConfigValues) => void | Promise<void>;
   @property({ attribute: false }) onSaveMachineConfig?: (config: PiWebUiConfigValues) => void | Promise<void>;
   @state() private gatewayDraft: GatewayServerConfigDraft = emptyGatewayServerConfigDraft();
+  @state() private hostSpeechDraft: HostSpeechConfigDraft = emptyHostSpeechConfigDraft();
   @state() private machineDraft: MachineAccessConfigDraft = emptyMachineAccessConfigDraft();
   @state() private gatewayLocalError = "";
+  @state() private hostSpeechDraftDirty = false;
+  @state() private hostSpeechLocalError = "";
   @state() private machineLocalError = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has("configResponse") && this.configResponse !== undefined) {
       this.gatewayDraft = gatewayServerDraftFromConfig(this.configResponse.config);
       this.gatewayLocalError = "";
+    }
+    if (changed.has("configResponse")) {
+      if (this.configResponse === undefined) {
+        this.hostSpeechDraft = emptyHostSpeechConfigDraft();
+        this.hostSpeechDraftDirty = false;
+        this.hostSpeechLocalError = "";
+      } else if (!this.hostSpeechDraftDirty || hostSpeechDraftMatchesConfig(this.hostSpeechDraft, this.configResponse.config)) {
+        this.hostSpeechDraft = hostSpeechDraftFromConfig(this.configResponse.config);
+        this.hostSpeechDraftDirty = false;
+        this.hostSpeechLocalError = "";
+      }
     }
     if (changed.has("machineConfigResponse") && this.machineConfigResponse !== undefined) {
       this.machineDraft = machineAccessDraftFromConfig(this.machineConfigResponse.config);
@@ -61,6 +84,7 @@ export class SettingsGeneralPanel extends LitElement {
       >
         <div class="settings-sections">
           ${this.renderGatewayServerSettings()}
+          ${this.showHostSpeechSettings ? this.renderHostSpeechSettings() : null}
           ${this.renderSelectedMachineAccessSettings()}
         </div>
       </settings-panel-frame>
@@ -167,10 +191,79 @@ export class SettingsGeneralPanel extends LitElement {
     `;
   }
 
+  private renderHostSpeechSettings(): TemplateResult {
+    const status = this.hostSpeechStatus;
+    const available = status?.available === true;
+    const gatewayConfigUnavailable = this.configResponse === undefined;
+    const disabled = this.saving || this.hostSpeechStatusLoading || !available || this.loading || gatewayConfigUnavailable;
+    const configuredVoice = this.hostSpeechDraft.voice.trim();
+    const voices = hostSpeechVoiceOptions(status?.voices ?? [], configuredVoice, available);
+    const hasConfiguredVoice = status?.voices.some((voice) => voice.name === configuredVoice) === true;
+    const staleVoice = available && configuredVoice !== "" && !hasConfiguredVoice;
+    const unavailableReason = status?.reason ?? (this.hostSpeechStatusLoading
+      ? "Checking OS speech availability."
+      : "Host speech is unavailable on this gateway host.");
+    return html`
+      <section class="settings-card" aria-label="Text to speech settings">
+        <div class="card-heading">
+          <h3>Text to speech</h3>
+          <p>Text to speech plays through audio on this gateway host. It does not play on a selected remote machine.</p>
+        </div>
+        ${available ? null : html`<div class="host-speech-unavailable" role="status">${unavailableReason}</div>`}
+        ${gatewayConfigUnavailable ? html`<div class="loading-card" role="status">${this.loading ? "Gateway configuration is still loading. Text to speech settings cannot be saved yet." : "Gateway configuration is unavailable. Reload before saving text to speech settings."}</div>` : null}
+        <form class="config-form" @submit=${(event: Event) => { void this.saveHostSpeechConfig(event); }}>
+          <label class="field">
+            <span class="field-heading"><span>OS voice</span></span>
+            <select
+              .value=${configuredVoice}
+              ?disabled=${disabled}
+              @change=${(event: Event) => { this.updateHostSpeechDraft({ voice: selectValue(event) }); }}
+            >
+              <option value="">System default</option>
+              ${voices.map((voice) => html`<option .value=${voice.name}>${voice.label}</option>`)}
+            </select>
+            ${staleVoice ? html`<small>The saved voice is no longer available. Playback uses the system default until you choose another voice.</small>` : html`<small>Choose an OS voice, or keep the system default.</small>`}
+          </label>
+          <div class="field">
+            <span class="field-heading"><span>Speech rate</span></span>
+            <div class="host-speech-rate-controls">
+              <input
+                aria-label="Speech rate slider"
+                type="range"
+                min="-100"
+                max="100"
+                step="1"
+                .value=${String(hostSpeechRangeRate(this.hostSpeechDraft.rate))}
+                ?disabled=${disabled}
+                @input=${(event: Event) => { this.updateHostSpeechDraft({ rate: inputValue(event) }); }}
+              >
+              <input
+                aria-label="Speech rate"
+                type="number"
+                min="-100"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                .value=${this.hostSpeechDraft.rate}
+                ?disabled=${disabled}
+                @input=${(event: Event) => { this.updateHostSpeechDraft({ rate: inputValue(event) }); }}
+              >
+            </div>
+            <small>Set an integer from -100 to 100. Leave this at 0 for the system's normal rate.</small>
+          </div>
+          <footer class="form-actions">
+            <button class="primary" ?disabled=${disabled}>${this.saving ? "Saving…" : "Save text to speech settings"}</button>
+          </footer>
+        </form>
+      </section>
+    `;
+  }
+
   private panelNotices(): readonly SettingsNotice[] {
     const notices: SettingsNotice[] = [];
     const gatewayError = this.gatewayLocalError || this.error;
     if (gatewayError !== "") notices.push({ type: "error", title: "Gateway server", content: gatewayError });
+    if (this.hostSpeechLocalError !== "") notices.push({ type: "error", title: "Text to speech", content: this.hostSpeechLocalError });
     if (this.savedMessage !== "") notices.push({ type: "success", content: this.savedMessage });
     return notices;
   }
@@ -216,6 +309,7 @@ export class SettingsGeneralPanel extends LitElement {
   private reloadAll(): void {
     void this.onReload?.();
     void this.onReloadMachine?.();
+    if (this.showHostSpeechSettings) void this.onReloadHostSpeech?.();
   }
 
   private async saveGatewayConfig(event: Event): Promise<void> {
@@ -238,6 +332,21 @@ export class SettingsGeneralPanel extends LitElement {
     }
   }
 
+  private async saveHostSpeechConfig(event: Event): Promise<void> {
+    event.preventDefault();
+    this.hostSpeechLocalError = "";
+    const configResponse = this.configResponse;
+    if (configResponse === undefined) {
+      this.hostSpeechLocalError = "Reload gateway configuration before saving text to speech settings.";
+      return;
+    }
+    try {
+      await this.onSave?.(hostSpeechConfigFromDraft(this.hostSpeechDraft, configResponse.config));
+    } catch (error) {
+      this.hostSpeechLocalError = errorMessage(error);
+    }
+  }
+
   private updateGatewayDraft(patch: Partial<GatewayServerConfigDraft>): void {
     this.gatewayDraft = { ...this.gatewayDraft, ...patch };
     this.gatewayLocalError = "";
@@ -246,6 +355,12 @@ export class SettingsGeneralPanel extends LitElement {
   private updateMachineDraft(patch: Partial<MachineAccessConfigDraft>): void {
     this.machineDraft = { ...this.machineDraft, ...patch };
     this.machineLocalError = "";
+  }
+
+  private updateHostSpeechDraft(patch: Partial<HostSpeechConfigDraft>): void {
+    this.hostSpeechDraft = { ...this.hostSpeechDraft, ...patch };
+    this.hostSpeechDraftDirty = true;
+    this.hostSpeechLocalError = "";
   }
 
   static override styles = css`
@@ -258,11 +373,12 @@ export class SettingsGeneralPanel extends LitElement {
     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
     button:disabled { opacity: .55; cursor: not-allowed; }
     .settings-sections { display: grid; gap: 14px; }
-    .settings-card, .message, .loading-card, .config-path-card, .effective-card { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
+    .settings-card, .message, .loading-card, .config-path-card, .effective-card, .host-speech-unavailable { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
     .settings-card { display: grid; gap: 14px; }
     .message { margin-bottom: 12px; }
     .settings-card .message { margin-bottom: 0; }
     .error-message { border-color: var(--pi-danger); color: var(--pi-danger); background: color-mix(in srgb, var(--pi-danger) 10%, var(--pi-surface)); }
+    .host-speech-unavailable { border-color: var(--pi-warning-border); color: var(--pi-warning); background: var(--pi-warning-surface); }
     .loading-card { color: var(--pi-muted); }
     .config-path-card { display: grid; gap: 5px; }
     .config-path-card span, .field-heading, dt { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
@@ -283,9 +399,12 @@ export class SettingsGeneralPanel extends LitElement {
     .muted { color: var(--pi-muted); }
     .form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
     .primary { border-color: var(--pi-accent); background: var(--pi-selection-bg); color: var(--pi-text-bright); }
+    .host-speech-rate-controls { display: grid; grid-template-columns: minmax(0, 1fr) 94px; gap: 10px; align-items: center; }
+    .host-speech-rate-controls input[type="range"] { padding: 0; }
 
     @media (max-width: 760px) {
       .effective-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+      .host-speech-rate-controls { grid-template-columns: minmax(0, 1fr) 84px; }
     }
   `;
 }
@@ -299,6 +418,34 @@ function formatAllowedHosts(value: PiWebUiConfigValues["allowedHosts"]): string 
 function formatAllowedPaths(value: string[] | undefined): string | TemplateResult {
   if (value === undefined || value.length === 0) return html`<span class="muted">External paths denied</span>`;
   return value.join(", ");
+}
+
+function hostSpeechVoiceOptions(
+  voices: readonly NonNullable<HostSpeechStatus["voices"]>[number][],
+  configuredVoice: string,
+  voiceInventoryAvailable: boolean,
+): { name: string; label: string }[] {
+  const unique = new Map<string, { name: string; label: string }>();
+  for (const voice of voices) {
+    if (!unique.has(voice.name)) unique.set(voice.name, { name: voice.name, label: hostSpeechVoiceLabel(voice) });
+  }
+  const stale = configuredVoice.trim();
+  if (stale !== "" && !unique.has(stale)) {
+    unique.set(stale, {
+      name: stale,
+      label: voiceInventoryAvailable ? `${stale} (no longer available)` : `${stale} (configured)`,
+    });
+  }
+  return [...unique.values()];
+}
+
+function hostSpeechVoiceLabel(voice: NonNullable<HostSpeechStatus["voices"]>[number]): string {
+  return `${voice.name} (${voice.language}${voice.variant === undefined ? "" : `, ${voice.variant}`})`;
+}
+
+function hostSpeechRangeRate(value: string): number {
+  const rate = Number(value.trim());
+  return Number.isInteger(rate) && rate >= -100 && rate <= 100 ? rate : 0;
 }
 
 function inputValue(event: Event): string {

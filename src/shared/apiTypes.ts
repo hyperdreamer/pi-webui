@@ -246,6 +246,40 @@ export interface PiWebUiAgentConfig {
   dir?: string;
 }
 
+export interface PiWebUiTtsConfig {
+  voice?: string;
+  rate?: number;
+}
+
+export interface HostSpeechVoice {
+  name: string;
+  language: string;
+  variant?: string;
+}
+
+export interface HostSpeechStatus {
+  available: boolean;
+  reason?: string;
+  voices: HostSpeechVoice[];
+}
+
+export interface HostSpeechSpeakRequest {
+  runId: string;
+  text: string;
+  voice?: string;
+  rate: number;
+}
+
+export interface HostSpeechTerminalResult {
+  runId: string;
+  outcome: "ended" | "canceled";
+}
+
+export interface HostSpeechStopResponse {
+  runId: string;
+  stopped: boolean;
+}
+
 export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
@@ -273,6 +307,8 @@ export interface PiWebUiConfigValues {
   subsessions?: boolean;
   /** Desired Pi-compatible agent profile and companion CLI (Pi by default). */
   agent?: PiWebUiAgentConfig;
+  /** Host speech configuration for manual text-to-speech playback. */
+  tts?: PiWebUiTtsConfig;
 }
 
 export type PiWebUiPluginScope = "bundled" | "local" | "user" | "project";

@@ -1,4 +1,4 @@
-import type { DeleteWorkspaceFileResponse, FileSuggestion, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { DeleteWorkspaceFileResponse, FileSuggestion, HostSpeechSpeakRequest, HostSpeechStatus, HostSpeechStopResponse, HostSpeechTerminalResult, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
@@ -29,6 +29,9 @@ import {
   parseFileTreeResponse,
   parseGitDiffResponse,
   parseGitStatusResponse,
+  parseHostSpeechStatus,
+  parseHostSpeechStopResponse,
+  parseHostSpeechTerminalResult,
   parseMachine,
   parseMachineHealth,
   parseMachineRuntime,
@@ -158,6 +161,20 @@ export const piWebUiApi = {
   piWebUiRuntime: () => request("api/pi-webui/runtime", parsePiWebUiRuntimeResponse),
   systemInfo: (machineId = "local") => request(`${machinePrefix(machineId)}/pi-webui/system-info`, parseSystemInfoResponse),
   systemMetrics: (machineId = "local") => request(`${machinePrefix(machineId)}/pi-webui/system-metrics`, parseSystemMetricsResponse, { cache: "no-store" }),
+};
+
+export const ttsApi = {
+  status: (): Promise<HostSpeechStatus> => request("api/tts", parseHostSpeechStatus, { cache: "no-store" }),
+  speak: (input: HostSpeechSpeakRequest, signal?: AbortSignal): Promise<HostSpeechTerminalResult> => request(
+    "api/tts/speak",
+    parseHostSpeechTerminalResult,
+    { method: "POST", body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) },
+  ),
+  stop: (runId: string): Promise<HostSpeechStopResponse> => request(
+    "api/tts/stop",
+    parseHostSpeechStopResponse,
+    { method: "POST", body: JSON.stringify({ runId }) },
+  ),
 };
 
 export const machinesApi = {
@@ -537,6 +554,7 @@ export const gitApi = {
 
 export const api = {
   ...piWebUiApi,
+  ...ttsApi,
   ...machinesApi,
   ...memoryApi,
   learnedSkills: learnedSkillsApi,

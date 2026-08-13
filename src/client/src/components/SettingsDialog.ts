@@ -1,7 +1,7 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AppAction } from "../actions";
-import { configApi, modelTiersApi, piPackagesApi, pluginsApi, utilityModelsApi, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
+import { configApi, modelTiersApi, piPackagesApi, pluginsApi, utilityModelsApi, type HostSpeechStatus, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
 import "./settings/SettingsSessiondPanel";
@@ -28,6 +28,10 @@ export class SettingsDialog extends LitElement {
   @property({ attribute: false }) onConfigSaved?: (config: PiWebUiConfigValues) => void;
   @property({ attribute: false }) onRefreshMachineRuntime?: (machineId: string) => void | Promise<void>;
   @property({ attribute: false }) onModelTiersSaved?: (machineId: string, response: ModelTierSettingsResponse) => void;
+  @property({ type: Boolean }) showHostSpeechSettings = false;
+  @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
+  @property({ type: Boolean }) hostSpeechStatusLoading = false;
+  @property({ attribute: false }) onReloadHostSpeech?: () => void | Promise<void>;
   @state() private configResponse: PiWebUiConfigResponse | undefined;
   @state() private accessConfigResponse: PiWebUiConfigResponse | undefined;
   @state() private sessiondConfigResponse: PiWebUiConfigResponse | undefined;
@@ -249,6 +253,7 @@ export class SettingsDialog extends LitElement {
         ></settings-plugins-panel>
       `;
     }
+    const showHostSpeechSettings = this.showHostSpeechSettings && this.settingsTarget().kind === "local";
     return html`
       <settings-general-panel
         .configResponse=${this.configResponse}
@@ -260,8 +265,12 @@ export class SettingsDialog extends LitElement {
         .machineError=${this.accessError}
         .savedMessage=${this.savedMessage}
         .targetLabel=${settingsMachineTargetLabel(this.settingsTarget())}
+        .showHostSpeechSettings=${showHostSpeechSettings}
+        .hostSpeechStatus=${showHostSpeechSettings ? this.hostSpeechStatus : undefined}
+        .hostSpeechStatusLoading=${showHostSpeechSettings && this.hostSpeechStatusLoading}
         .onReload=${() => this.loadConfig()}
         .onReloadMachine=${() => this.loadAccessConfigForTarget()}
+        .onReloadHostSpeech=${showHostSpeechSettings ? this.onReloadHostSpeech : undefined}
         .onSave=${(config: PiWebUiConfigValues) => this.saveConfig(config)}
         .onSaveMachineConfig=${(config: PiWebUiConfigValues) => this.saveMachineAccessConfig(config)}
       ></settings-general-panel>

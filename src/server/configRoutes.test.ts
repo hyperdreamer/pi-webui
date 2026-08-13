@@ -112,6 +112,23 @@ describe("config routes", () => {
     expect(service.write).not.toHaveBeenCalled();
   });
 
+  it("accepts and retains valid tts, rejecting invalid tts payloads", async () => {
+    const validResponse = await app.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { tts: { voice: "en-US-Test", rate: 20 } } },
+    });
+    expect(validResponse.statusCode).toBe(200);
+    expect(savedConfig.tts).toEqual({ voice: "en-US-Test", rate: 20 });
+
+    const invalidResponse = await app.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { tts: { rate: 200 } } },
+    });
+    expect(invalidResponse.statusCode).toBe(400);
+  });
+
   it.each([
     { agent: { command: "./agent", dir: "/srv/agent" }, error: "safe bare executable name or host-absolute executable path" },
     { agent: { command: "agent", dir: "/srv/agent", futureSetting: true }, error: 'agent contains unknown key "futureSetting"' },
@@ -124,6 +141,18 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain(error);
+    expect(service.write).not.toHaveBeenCalled();
+  });
+
+  it("rejects tts in selected-machine config updates", async () => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/config",
+      payload: { config: { tts: {} } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toContain("selected-machine config key is not allowed: tts");
     expect(service.write).not.toHaveBeenCalled();
   });
 
@@ -260,6 +289,7 @@ function fullConfig(): PiWebUiConfigValues {
     spawnSessions: false,
     subsessions: false,
     agent: { command: "agent-lab", dir: "/srv/agent-lab" },
+    tts: { voice: "en-US-Test", rate: 20 },
   };
 }
 

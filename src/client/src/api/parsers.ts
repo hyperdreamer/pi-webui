@@ -1,4 +1,4 @@
-import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type ProjectUsageCountResponse, type ProjectUsageResponse, type ProjectUsageTotals, type QueuedSessionMessage, type RecentProjectEntry, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
+import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GitDiffResponse, type GitFileState, type GitStatusFile, type GitStatusResponse, type HostSpeechStatus, type HostSpeechStopResponse, type HostSpeechTerminalResult, type HostSpeechVoice, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelConnectionTestResponse, type ModelDiscoveryModel, type ModelDiscoveryResponse, type ModelSelectionResponse, type ModelsConfigDocument, type ModelsConfigModel, type ModelsConfigProvider, type ModelsConfigSaveResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebUiAgentDirEnvSource, type PiWebUiCapability, type PiWebUiComponentStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiInstallationInfo, type PiWebUiPluginConfigMap, type PiWebUiPluginInfo, type PiWebUiPluginsResponse, type PiWebUiPluginScope, type PiWebUiReleaseStatus, type PiWebUiRuntimeComponent, type PiWebUiRuntimeResponse, type PiWebUiServiceComponent, type PiWebUiShortcutConfig, type PiWebUiStatusMessage, type PiWebUiStatusResponse, type PiWebUiStatusSeverity, type Project, type ProjectUsageCountResponse, type ProjectUsageResponse, type ProjectUsageTotals, type QueuedSessionMessage, type RecentProjectEntry, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type SessionStatus, type SessionStreamSnapshot, type SessionSystemPrompt, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceActivity, type WorkspaceActivityResponse } from "../../../shared/apiTypes";
 import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse, PiPackagePluginDiagnostic, PiPackagePluginInfo, PiPackagePluginResourceCounts, PiPackagePluginResourceInfo, PiPackagePluginResourceKind, PiPackagePluginScope, PiPackagePluginStatus, PiPackageScope, PiPackagePluginsResponse, PiPackagesResponse, SessionMessageForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SystemInfoResponse, SystemMetricsResponse, SystemNetworkMetrics } from "../../../shared/apiTypes";
 import type { LegacyStarterModelPolicyPreference, SessionDefaultsResponse, SessionDefaultsV2Response, StarterModelPolicyPreference, StarterModelPolicyPreferenceResponse } from "../../../shared/apiTypes";
 import type { SessionOrderEntry, SessionReorderResponse } from "../../../shared/apiTypes";
@@ -10,6 +10,7 @@ import { MODEL_TIERS, RECENT_PROJECT_LIMIT, UTILITY_MODEL_SLOTS } from "../../..
 import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
+import { isHostSpeechRunId } from "../../../shared/hostSpeech";
 import { isKnownThinkingLevel } from "../../../shared/thinkingLevels";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,6 +52,66 @@ export function arrayOf<T>(parse: (value: unknown) => T): (value: unknown) => T[
     if (!Array.isArray(value)) throw new Error("Expected array response");
     return value.map(parse);
   };
+}
+
+export function parseHostSpeechStatus(value: unknown): HostSpeechStatus {
+  const record = requirePlainRecord(value, "host speech status");
+  assertOnlyFields(record, ["available", "reason", "voices"], "host speech status");
+  const available = requireBoolean(record, "available");
+  const reason = Object.hasOwn(record, "reason") ? requireNonBlankString(record, "reason") : undefined;
+  if (!available && reason === undefined) throw new Error("Unavailable host speech status requires a reason");
+  const voices = parseHostSpeechVoices(record["voices"]);
+  return {
+    available,
+    ...optionalField("reason", reason),
+    voices,
+  };
+}
+
+function parseHostSpeechVoices(value: unknown): HostSpeechVoice[] {
+  if (!Array.isArray(value)) throw new Error("Expected host speech voices array");
+  const voices = value.map(parseHostSpeechVoice);
+  const names = new Set<string>();
+  for (const voice of voices) {
+    if (names.has(voice.name)) throw new Error("Duplicate host speech voice name");
+    names.add(voice.name);
+  }
+  return voices;
+}
+
+function parseHostSpeechVoice(value: unknown): HostSpeechVoice {
+  const record = requirePlainRecord(value, "host speech voice");
+  assertOnlyFields(record, ["name", "language", "variant"], "host speech voice");
+  const variant = Object.hasOwn(record, "variant") ? requireNonBlankString(record, "variant") : undefined;
+  return {
+    name: requireNonBlankString(record, "name"),
+    language: requireNonBlankString(record, "language"),
+    ...optionalField("variant", variant),
+  };
+}
+
+export function parseHostSpeechTerminalResult(value: unknown): HostSpeechTerminalResult {
+  const record = requirePlainRecord(value, "host speech terminal result");
+  assertOnlyFields(record, ["runId", "outcome"], "host speech terminal result");
+  const runId = requireHostSpeechRunId(record, "runId");
+  const outcome = record["outcome"];
+  if (outcome !== "ended" && outcome !== "canceled") throw new Error("Invalid host speech terminal outcome");
+  return { runId, outcome };
+}
+
+export function parseHostSpeechStopResponse(value: unknown): HostSpeechStopResponse {
+  const record = requirePlainRecord(value, "host speech stop response");
+  assertOnlyFields(record, ["runId", "stopped"], "host speech stop response");
+  return {
+    runId: requireHostSpeechRunId(record, "runId"),
+    stopped: requireBoolean(record, "stopped"),
+  };
+}
+
+function requireHostSpeechRunId(record: Record<string, unknown>, key: string): string {
+  const value = requireString(record, key);
+  if (!isHostSpeechRunId(value)) throw new Error(`Invalid host speech run ID field: ${key}`);
+  return value;
 }
 
 function parseUnknownArray(value: unknown): unknown[] {
@@ -1723,6 +1784,7 @@ function parsePiWebUiConfigValues(value: unknown): PiWebUiConfigValues {
     ...optionalField("uploads", optionalUploads(record["uploads"])),
     ...optionalField("maxUploadBytes", optionalNumber(record, "maxUploadBytes")),
     ...optionalField("agent", optionalAgent(record["agent"])),
+    ...optionalField("tts", optionalTts(record["tts"])),
     ...optionalField("spawnSessions", optionalBoolean(record, "spawnSessions")),
     ...optionalField("subsessions", optionalBoolean(record, "subsessions")),
   };
@@ -1734,6 +1796,22 @@ function optionalAgent(value: unknown): PiWebUiConfigValues["agent"] | undefined
   return {
     ...optionalField("command", optionalString(value, "command")),
     ...optionalField("dir", optionalString(value, "dir")),
+  };
+}
+
+function optionalTts(value: unknown): PiWebUiConfigValues["tts"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEBUI tts field");
+  assertOnlyFields(value, ["voice", "rate"], "PI WEBUI tts");
+  const voice = optionalString(value, "voice")?.trim();
+  if (voice === "") throw new Error("Invalid PI WEBUI tts voice field");
+  const rate = optionalNumber(value, "rate");
+  if (rate !== undefined && (!Number.isInteger(rate) || rate < -100 || rate > 100)) {
+    throw new Error("Invalid PI WEBUI tts rate field");
+  }
+  return {
+    ...optionalField("voice", voice),
+    ...optionalField("rate", rate),
   };
 }
 

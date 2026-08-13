@@ -1,7 +1,7 @@
 import type { TemplateResult } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import { writeClipboardText } from "../clipboard";
-import type { QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
+import type { HostSpeechStatus, QueuedSessionMessage, SessionStatus, SessionWarning } from "../api";
 import {
   notificationTargetKey,
   notificationTrayIsCollapsed,
@@ -26,6 +26,8 @@ import {
   chatQueuedSectionsShowClearAction,
   chatSessionWarningRows,
   chatUserMessageActionAvailability,
+  chatAssistantSpeechAction,
+  type ChatAssistantSpeechAction,
 } from "./ChatView";
 import { findOptionalTemplateEventHandlerAfterMarker, templateClickHandlerForText, templateEventHandlerAfterMarker, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
 
@@ -105,6 +107,140 @@ describe("ChatView per-message action wiring", () => {
     resolveFork?.();
     await Promise.resolve();
     expect(Reflect.get(view, "forkingEntryId")).toBeUndefined();
+  });
+
+  // Escape hatch: this verifies only the host-speech callback wired into Lit's
+  // message-action template. The node suite has no DOM harness, so handler
+  // extraction anchored to the stable semantic control marker is proportionate.
+  it("wires the host-speech action to the toggle callback with the absolute-index key", () => {
+    const view = new ChatView();
+    const onToggleHostSpeech = vi.fn();
+    Reflect.set(view, "onToggleHostSpeech", onToggleHostSpeech);
+    Reflect.set(view, "hostSpeechStatus", { available: true, voices: [] });
+    const message: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Hello **world**" }] };
+
+    const rendered = renderMessageActions(view, message, "1", { key: "assistant-index:1", isLast: false });
+    templateEventHandlerNearMarker(rendered, "data-message-action=\"host-speech\"")(new Event("click"));
+
+    expect(onToggleHostSpeech).toHaveBeenCalledExactlyOnceWith({ message, messageKey: "assistant-index:1", text: "Hello world" });
+  });
+
+  it("stops propagation of host-speech clicks so the message header cannot react", () => {
+    const view = new ChatView();
+    const onToggleHostSpeech = vi.fn();
+    Reflect.set(view, "onToggleHostSpeech", onToggleHostSpeech);
+    Reflect.set(view, "hostSpeechStatus", { available: true, voices: [] });
+    const message: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Read this" }] };
+    const stopPropagation = vi.spyOn(Event.prototype, "stopPropagation");
+    try {
+      const rendered = renderMessageActions(view, message, "0", { key: "assistant-index:0", isLast: false });
+      templateEventHandlerNearMarker(rendered, "data-message-action=\"host-speech\"")(new Event("click"));
+      expect(stopPropagation).toHaveBeenCalled();
+    } finally {
+      stopPropagation.mockRestore();
+    }
+    expect(onToggleHostSpeech).toHaveBeenCalledOnce();
+  });
+
+  it("omits the host-speech action entirely without a toggle callback", () => {
+    const view = new ChatView();
+    const message: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Read this" }] };
+    const rendered = renderMessageActions(view, message, "0", { key: "assistant-index:0", isLast: false });
+    expect(findOptionalTemplateEventHandlerAfterMarker(rendered, "data-message-action=\"host-speech\"")).toBeUndefined();
+  });
+
+  it("keeps the host-speech action absent while the trailing reply is still streaming", () => {
+    const view = new ChatView();
+    Reflect.set(view, "onToggleHostSpeech", vi.fn());
+    Reflect.set(view, "status", usageStatus({ isStreaming: true }));
+    const message: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Partial answer" }] };
+
+    const rendered = renderMessageActions(view, message, "0", { key: "assistant-index:0", isLast: true });
+    expect(findOptionalTemplateEventHandlerAfterMarker(rendered, "data-message-action=\"host-speech\"")).toBeUndefined();
+  });
+
+  it("keeps the host-speech action present when the trailing reply finished streaming", () => {
+    const view = new ChatView();
+    Reflect.set(view, "onToggleHostSpeech", vi.fn());
+    Reflect.set(view, "hostSpeechStatus", { available: true, voices: [] });
+    Reflect.set(view, "status", usageStatus({ isStreaming: false }));
+    const message: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Final answer" }] };
+
+    const rendered = renderMessageActions(view, message, "0", { key: "assistant-index:0", isLast: true });
+    expect(templateEventHandlerNearMarker(rendered, "data-message-action=\"host-speech\"")).toBeTypeOf("function");
+  });
+});
+
+describe("chatAssistantSpeechAction", () => {
+  const availableStatus: HostSpeechStatus = { available: true, voices: [] };
+  const unavailableStatus: HostSpeechStatus = { available: false, reason: "No speech service on this host.", voices: [] };
+  const prose: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Read me" }] };
+
+  it("renders an enabled Listen action for finalized speakable assistant prose", () => {
+    const action: ChatAssistantSpeechAction | undefined = chatAssistantSpeechAction(
+      { role: "assistant", parts: [{ type: "text", text: "Hello **world**" }] },
+      "assistant-index:0",
+      { enabled: true, finalized: true, status: availableStatus },
+    );
+    expect(action).toEqual({
+      text: "Hello world",
+      active: false,
+      disabled: false,
+      label: "Listen to assistant reply",
+      title: "Listen to assistant reply",
+    });
+  });
+
+  it("returns nothing without the toggle callback or before the reply is finalized", () => {
+    expect(chatAssistantSpeechAction(prose, "assistant-index:0", { enabled: false, finalized: true, status: availableStatus })).toBeUndefined();
+    expect(chatAssistantSpeechAction(prose, "assistant-index:0", { enabled: true, finalized: false, status: availableStatus })).toBeUndefined();
+  });
+
+  it("skips roles and content that cannot be spoken", () => {
+    const options = { enabled: true, finalized: true, status: availableStatus };
+    expect(chatAssistantSpeechAction({ ...prose, role: "user" }, "k", options)).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, role: "tool" }, "k", options)).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, source: "compaction" }, "k", options)).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, source: "branch_summary" }, "k", options)).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, parts: [{ type: "text", text: "```ts\nconst x = 1;\n```" }] }, "k", options)).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, parts: [{ type: "image", mimeType: "image/png", data: "aGk=" }] }, "k", options)).toBeUndefined();
+  });
+
+  it("disables Listen with the availability reason when host speech is unavailable", () => {
+    expect(chatAssistantSpeechAction(prose, "k", { enabled: true, finalized: true, status: unavailableStatus })).toEqual({
+      text: "Read me",
+      active: false,
+      disabled: true,
+      label: "Listen to assistant reply",
+      title: "Listen to assistant reply — No speech service on this host.",
+    });
+    const unknownStatus = chatAssistantSpeechAction(prose, "k", { enabled: true, finalized: true, status: undefined });
+    expect(unknownStatus?.disabled).toBe(true);
+    expect(unknownStatus?.title).toBe("Listen to assistant reply — Host speech is unavailable.");
+  });
+
+  it("renders an enabled Stop only for the exact active message key, bypassing finalized and availability gating", () => {
+    const activeOptions = { enabled: true, finalized: false, status: unavailableStatus, activeMessageKey: "k" };
+    expect(chatAssistantSpeechAction(prose, "k", activeOptions)).toEqual({
+      text: "Read me",
+      active: true,
+      disabled: false,
+      label: "Stop reading assistant reply",
+      title: "Stop reading assistant reply",
+    });
+    // A different reply stays a plain Listen while this one is active.
+    expect(chatAssistantSpeechAction(prose, "other", { ...activeOptions, finalized: true })).toEqual({
+      text: "Read me",
+      active: false,
+      disabled: true,
+      label: "Listen to assistant reply",
+      title: "Listen to assistant reply — No speech service on this host.",
+    });
+  });
+
+  it("keeps Stop absent for the active key without a callback or readable prose", () => {
+    expect(chatAssistantSpeechAction(prose, "k", { enabled: false, finalized: true, status: availableStatus, activeMessageKey: "k" })).toBeUndefined();
+    expect(chatAssistantSpeechAction({ ...prose, parts: [{ type: "text", text: "```\ncode\n```" }] }, "k", { enabled: true, finalized: true, status: availableStatus, activeMessageKey: "k" })).toBeUndefined();
   });
 });
 
@@ -781,7 +917,7 @@ interface GroupBodyRenderCall {
 type RenderActivityDock = (this: ChatView) => TemplateResult | null;
 type RenderQueuedMessages = (this: ChatView) => TemplateResult;
 type RenderMessageGroup = (this: ChatView, messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean) => TemplateResult;
-type RenderMessageActions = (this: ChatView, message: ChatLine, key: string) => TemplateResult | null;
+type RenderMessageActions = (this: ChatView, message: ChatLine, key: string, speech?: { key: string; isLast: boolean }) => TemplateResult | null;
 type RenderMessageGroupBody = (this: ChatView, messages: ChatLine[], startIndex: number) => TemplateResult;
 type RenderWarnings = (this: ChatView) => TemplateResult | null;
 type RenderNotificationTray = (this: ChatView) => TemplateResult | null;
@@ -808,10 +944,10 @@ function renderMessageGroup(view: ChatView, messages: ChatLine[], startIndex: nu
   return method.call(view, messages, startIndex, endIndex, defaultOpen);
 }
 
-function renderMessageActions(view: ChatView, message: ChatLine, key: string): TemplateResult {
+function renderMessageActions(view: ChatView, message: ChatLine, key: string, speech?: { key: string; isLast: boolean }): TemplateResult {
   const method: unknown = Reflect.get(view, "renderMessageActions");
   if (!isRenderMessageActions(method)) throw new Error("ChatView.renderMessageActions is not callable");
-  const rendered = method.call(view, message, key);
+  const rendered = method.call(view, message, key, speech);
   if (rendered === null) throw new Error("Expected message actions");
   return rendered;
 }

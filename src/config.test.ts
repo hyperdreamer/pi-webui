@@ -342,6 +342,55 @@ describe("PI WEBUI config persistence", () => {
 
     expect(() => loadPiWebUiConfig(testOptions())).toThrow("PI WEBUI config uploads.defaultFolder must not contain path traversal");
   });
+
+  it("loads and saves host speech config and resolves effective TTS settings", async () => {
+    await writeFile(configPath, `${JSON.stringify({
+      tts: { voice: "en-US-Test", rate: 35 },
+    })}\n`, "utf8");
+    expect(loadPiWebUiConfig(testOptions()).config.tts).toEqual({
+      voice: "en-US-Test",
+      rate: 35,
+    });
+    expect(effectivePiWebUiConfig(testOptions()).config.tts).toEqual({
+      voice: "en-US-Test",
+      rate: 35,
+    });
+
+    // Omitted config resolves through effectivePiWebUiTtsConfig to rate 0
+    await rm(configPath, { force: true });
+    expect(loadPiWebUiConfig(testOptions()).config.tts).toBeUndefined();
+
+    // An unrelated save preserves existing tts
+    await writeFile(configPath, `${JSON.stringify({
+      tts: { voice: "en-US-Test", rate: 35 },
+    })}\n`, "utf8");
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.tts).toEqual({
+      voice: "en-US-Test",
+      rate: 35,
+    });
+
+    // Explicit empty object replaces prior object with {}
+    savePiWebUiConfig({ tts: {} }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.tts).toEqual({});
+  });
+
+  it("rejects invalid tts configuration fields", async () => {
+    await writeFile(configPath, `${JSON.stringify({ tts: { voice: "", rate: 0 } })}\n`, "utf8");
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow("PI WEBUI config tts.voice must be a non-empty string");
+
+    await writeFile(configPath, `${JSON.stringify({ tts: { autoReadAssistantReplies: true } })}\n`, "utf8");
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow('PI WEBUI config tts contains unknown key "autoReadAssistantReplies"');
+
+    await writeFile(configPath, `${JSON.stringify({ tts: { rate: 1.5 } })}\n`, "utf8");
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow("PI WEBUI config tts.rate must be an integer between -100 and 100");
+
+    await writeFile(configPath, `${JSON.stringify({ tts: { rate: -101 } })}\n`, "utf8");
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow("PI WEBUI config tts.rate must be an integer between -100 and 100");
+
+    await writeFile(configPath, `${JSON.stringify({ tts: { rate: 101 } })}\n`, "utf8");
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow("PI WEBUI config tts.rate must be an integer between -100 and 100");
+  });
 });
 
 describe("PI WEBUI default port", () => {

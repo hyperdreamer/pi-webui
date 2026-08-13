@@ -27,6 +27,8 @@ import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActiv
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
 import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
+import { HostSpeechController } from "../controllers/hostSpeechController";
+import { resolveAssistantSpeechSource } from "../hostSpeechText";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
 import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
 import { SessionStorageSessionSelectionMemory } from "../controllers/sessionSelection";
@@ -215,6 +217,11 @@ export class PiWebUiApp extends LitElement {
     (patch) => { this.setState(patch); },
     { onBackgroundError: (message, error) => { console.warn(message, error); } },
   );
+  private readonly hostSpeech = new HostSpeechController({
+    onStateChange: () => {
+      if (this.hostSpeechSurfaceVisible()) this.requestUpdate();
+    },
+  });
   private readonly sessions = new SessionController(
     () => this.state,
     (patch) => { this.setState(patch); },
@@ -622,8 +629,38 @@ export class PiWebUiApp extends LitElement {
       || this.recentProjectDialogEntry !== undefined;
   }
 
+  private hostSpeechSurfaceVisible(): boolean {
+    if (selectedMachineId(this.state) !== "local") return false;
+    if (this.settingsSection === "general") return true;
+    return this.state.selectedSession !== undefined && !this.isChatObscured();
+  }
+
+  private abandonHostSpeechIfSourceInvalid(next: AppState): void {
+    const active = this.hostSpeech.snapshot.active;
+    if (active === undefined) return;
+    const session = next.selectedSession;
+    if (session?.id !== active.sessionId) return;
+    if (session.archived === true) {
+      void this.hostSpeech.stop();
+      return;
+    }
+    const text = resolveAssistantSpeechSource({
+      messages: next.messages,
+      messagePageStart: next.messagePageStart,
+    }, active.messageKey);
+    if (text === "" || !this.hostSpeech.matchesActiveSource({
+      sessionId: active.sessionId,
+      messageKey: active.messageKey,
+      text,
+    })) {
+      void this.hostSpeech.stop();
+    }
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
+    this.hostSpeech.select(hostSpeechSelection(this.state));
+    void this.hostSpeech.refreshStatus();
     this.synchronizeProjectCatalogPolling();
     this.unreadConnected = true;
     window.addEventListener("popstate", this.onPopState);
@@ -646,6 +683,7 @@ export class PiWebUiApp extends LitElement {
 
   override disconnectedCallback(): void {
     this.finishTerminalModalPointerInteraction();
+    this.hostSpeech.dispose();
     this.unreadConnected = false;
     this.committedChatIdentity = undefined;
     this.readyChatIdentity = undefined;
@@ -681,10 +719,20 @@ export class PiWebUiApp extends LitElement {
   private setState(patch: Partial<AppState>) {
     if (!patchChangesState(this.state, patch)) return;
     const previous = this.state;
+    const next = { ...previous, ...patch };
+    const previousHostSpeechSelection = hostSpeechSelection(previous);
+    const nextHostSpeechSelection = hostSpeechSelection(next);
+    if (!hostSpeechSelectionsEqual(previousHostSpeechSelection, nextHostSpeechSelection)) {
+      this.hostSpeech.select(nextHostSpeechSelection);
+    } else if (previous.status?.isCompacting !== true && next.status?.isCompacting === true) {
+      void this.hostSpeech.stop();
+    } else {
+      this.abandonHostSpeechIfSourceInvalid(next);
+    }
     const previousActiveSessionScope = activeSessionModelPolicyScope(previous);
     const previousPolicyComposerScope = activePolicyComposerScope(previous);
     const previousStarterSelectionScope = starterModelPolicySelectionScope(previous);
-    this.state = { ...this.state, ...patch };
+    this.state = next;
     if (previousStarterSelectionScope !== starterModelPolicySelectionScope(this.state)) {
       this.starterModelPolicySelectionGeneration += 1;
     }
@@ -791,6 +839,7 @@ export class PiWebUiApp extends LitElement {
   private applyClientConfig(config: PiWebUiConfigValues): void {
     this.shortcutConfig = config.shortcuts ?? {};
     this.workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(config);
+    this.hostSpeech.configure(config.tts);
   }
 
   private async refreshAppData(): Promise<void> {
@@ -4256,6 +4305,22 @@ export class PiWebUiApp extends LitElement {
     void this.sessions.runCommand("/compact");
   };
 
+  private readonly handleToggleHostSpeech = (target: { messageKey: string; text: string }): void => {
+    const session = this.state.selectedSession;
+    if (session === undefined || selectedMachineId(this.state) !== "local") return;
+    const active = this.hostSpeech.snapshot.active;
+    if (active?.sessionId === session.id && active.messageKey === target.messageKey) {
+      void this.hostSpeech.stop();
+      return;
+    }
+    void this.hostSpeech.startManual({
+      machineId: "local",
+      sessionId: session.id,
+      messageKey: target.messageKey,
+      text: target.text,
+    });
+  };
+
   private readonly handleClearServerQueue = (): void => {
     void this.sessions.clearServerQueue();
   };
@@ -4366,8 +4431,9 @@ export class PiWebUiApp extends LitElement {
   }
 
   private renderChatView(state: AppState, session: SessionInfo) {
+    const localHostSpeech = selectedMachineId(state) === "local" ? this.hostSpeech.snapshot : undefined;
     return html`
-      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
+      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .hostSpeechStatus=${localHostSpeech?.status} .activeHostSpeechMessageKey=${localHostSpeech?.active?.messageKey ?? ""} .hostSpeechError=${localHostSpeech?.error ?? ""} .onToggleHostSpeech=${localHostSpeech === undefined ? undefined : this.handleToggleHostSpeech} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
     `;
   }
 
@@ -4637,7 +4703,7 @@ export class PiWebUiApp extends LitElement {
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${keyed(this.recentProjectDialogGeneration, this.renderRecentProjectDialog())}
-        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
+        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .showHostSpeechSettings=${selectedMachineId(state) === "local"} .hostSpeechStatus=${selectedMachineId(state) === "local" ? this.hostSpeech.snapshot.status : undefined} .hostSpeechStatusLoading=${selectedMachineId(state) === "local" && this.hostSpeech.snapshot.loadingStatus} .onReloadHostSpeech=${selectedMachineId(state) === "local" ? () => this.hostSpeech.refreshStatus() : undefined} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
     `;
   }
@@ -4665,6 +4731,18 @@ function unreadChatIdentity(machineId: string, session: Pick<SessionInfo, "id" |
 function selectedChatIdentity(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {
   const session = state.selectedSession;
   return session === undefined ? undefined : unreadChatIdentity(selectedMachineId(state), session);
+}
+
+function hostSpeechSelection(state: Pick<AppState, "selectedMachine" | "selectedSession">): { machineId: string; sessionId: string } | undefined {
+  const session = state.selectedSession;
+  return session === undefined ? undefined : { machineId: selectedMachineId(state), sessionId: session.id };
+}
+
+function hostSpeechSelectionsEqual(
+  left: ReturnType<typeof hostSpeechSelection>,
+  right: ReturnType<typeof hostSpeechSelection>,
+): boolean {
+  return left?.machineId === right?.machineId && left?.sessionId === right?.sessionId;
 }
 
 function activeSessionModelPolicyScope(state: Pick<AppState, "selectedMachine" | "selectedSession">): string | undefined {

@@ -192,6 +192,7 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
   delete existing["spawnSessions"];
   delete existing["subsessions"];
   delete existing["agent"];
+  if (normalized.tts !== undefined) delete existing["tts"];
   if (normalized.modelTiers !== undefined) delete existing["modelTiers"];
   if (normalized.utilityModels !== undefined) delete existing["utilityModels"];
   const merged = { ...existing, ...piWebUiConfigRecord(normalized) };
@@ -238,6 +239,7 @@ function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
     ...(config.spawnSessions !== undefined ? { spawnSessions: config.spawnSessions } : {}),
     ...(config.subsessions !== undefined ? { subsessions: config.subsessions } : {}),
     ...(config.agent !== undefined ? { agent: config.agent } : {}),
+    ...(config.tts !== undefined ? { tts: config.tts } : {}),
   };
 }
 
@@ -279,6 +281,7 @@ function parsePiWebUiConfig(value: Record<string, unknown>, path: string, option
       ...(value["spawnSessions"] !== undefined ? { spawnSessions: parseSpawnSessions(value["spawnSessions"], path) } : {}),
       ...(value["subsessions"] !== undefined ? { subsessions: parseSubsessions(value["subsessions"], path) } : {}),
       ...(value["agent"] !== undefined ? { agent: parseAgentConfig(value["agent"], path) } : {}),
+      ...(value["tts"] !== undefined ? { tts: parseTtsConfig(value["tts"], path) } : {}),
     },
     ...(modelTiersError === undefined ? {} : { modelTiersError }),
     ...(utilityModelsError === undefined ? {} : { utilityModelsError }),
@@ -429,6 +432,37 @@ export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config:
 function parseString(value: unknown, key: string, path: string): string {
   if (typeof value !== "string" || value === "") throw new Error(`PI WEBUI config ${key} must be a non-empty string: ${path}`);
   return value;
+}
+
+const TTS_CONFIG_KEYS = new Set(["voice", "rate"]);
+
+export function parseTtsConfig(value: unknown, path: string): NonNullable<PiWebUiConfig["tts"]> {
+  if (!isRecord(value)) throw new Error(`PI WEBUI config tts must be an object: ${path}`);
+  const unknownKey = Object.keys(value).find((key) => !TTS_CONFIG_KEYS.has(key));
+  if (unknownKey !== undefined) throw new Error(`PI WEBUI config tts contains unknown key ${JSON.stringify(unknownKey)}: ${path}`);
+  const voice = value["voice"];
+  const rate = value["rate"];
+
+  let parsedVoice: string | undefined;
+  if (voice !== undefined) {
+    if (typeof voice !== "string" || voice.trim() === "") {
+      throw new Error(`PI WEBUI config tts.voice must be a non-empty string: ${path}`);
+    }
+    parsedVoice = voice.trim();
+  }
+
+  let parsedRate: number | undefined;
+  if (rate !== undefined) {
+    if (typeof rate !== "number" || !Number.isInteger(rate) || rate < -100 || rate > 100) {
+      throw new Error(`PI WEBUI config tts.rate must be an integer between -100 and 100: ${path}`);
+    }
+    parsedRate = rate;
+  }
+
+  return {
+    ...(parsedVoice !== undefined ? { voice: parsedVoice } : {}),
+    ...(parsedRate !== undefined ? { rate: parsedRate } : {}),
+  };
 }
 
 const AGENT_CONFIG_KEYS = new Set(["command", "dir"]);

@@ -41,6 +41,10 @@ import { registerLearnedSkillsRoutes } from "./learnedSkills/learnedSkillsRoutes
 import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
+import { registerTtsRoutes } from "./tts/ttsRoutes.js";
+import { HostSpeechService } from "./tts/hostSpeechService.js";
+import { SpeechDispatcherAdapter } from "./tts/speechDispatcherAdapter.js";
+import type { HostSpeech } from "./tts/hostSpeech.js";
 import type { Project, Workspace } from "./types.js";
 
 export interface AppDependencies {
@@ -58,6 +62,8 @@ export interface AppDependencies {
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
   bodyLimit?: number;
+  /** Gateway host speech service for manual text-to-speech playback. */
+  hostSpeech?: HostSpeech;
 }
 
 interface LocalProjectRouteOptions {
@@ -260,6 +266,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const machines = deps.machines ?? new MachineService(undefined, {
     localRuntime: () => getPiWebUiRuntime(sessionDaemon),
   });
+  const hostSpeech = deps.hostSpeech ?? new HostSpeechService(new SpeechDispatcherAdapter());
 
   app.get("/pi-webui-plugins/manifest.json", async (_request, reply) => withProfileDependency(reply, () => piWebUiPlugins.manifest()));
 
@@ -319,6 +326,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerLocalFileSuggestionRoutes(app, projects, workspaces, "/api", { config: configService });
   registerLocalFileSuggestionRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
+
+  registerTtsRoutes(app, hostSpeech);
+  app.addHook("onClose", () => hostSpeech.close());
 
   registerMachineProxyRoutes(app, machines);
 

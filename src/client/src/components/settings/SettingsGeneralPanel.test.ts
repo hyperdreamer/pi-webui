@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TemplateResult } from "lit";
-import type { PiWebUiConfigResponse, PiWebUiConfigValues } from "../../api";
+import type { HostSpeechStatus, PiWebUiConfigResponse, PiWebUiConfigValues } from "../../api";
+import { findTemplateContaining, templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
 import type { GatewayServerConfigDraft, MachineAccessConfigDraft } from "./settingsConfigDraft";
 
@@ -139,6 +140,160 @@ describe("settings-general-panel save payloads", () => {
   });
 });
 
+describe("settings-general-panel host speech settings", () => {
+  it("renders an enabled gateway-host card with a system default first and deduplicated voice labels", () => {
+    const panel = hostSpeechPanel({
+      available: true,
+      voices: [
+        { name: "Ada", language: "en-US" },
+        { name: "Ada", language: "en-US", variant: "duplicate" },
+        { name: "Beatriz", language: "pt-BR", variant: "female" },
+      ],
+    }, { tts: { voice: "Ada", rate: 25 } });
+
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    expect(text).toContain("Text to speech");
+    expect(text).toContain("gateway host");
+    expect(text).toContain("System default");
+    expect(text).toContain("Ada (en-US)");
+    expect(text).toContain("Beatriz (pt-BR, female)");
+    expect(text.match(/Ada \(en-US\)/gu)).toHaveLength(1);
+    expect(collectTemplateStrings(card).join("")).toContain('type="range"');
+    expect(collectTemplateStrings(card).join("")).toContain('type="number"');
+    expect(templateValuesAfterMarker(card, ".value=").filter((value) => value === "25")).toHaveLength(2);
+  });
+
+  it("disables host speech controls and shows the gateway reason when the service is unavailable", () => {
+    const panel = hostSpeechPanel({ available: false, reason: "Speech Dispatcher is unavailable.", voices: [] }, { tts: { voice: "Configured voice" } });
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    expect(text).toContain("Speech Dispatcher is unavailable.");
+    expect(text).toContain("Configured voice (configured)");
+    expect(text).not.toContain("Configured voice (no longer available)");
+    expect(templateValuesAfterMarker(card, "?disabled=")).toContain(true);
+  });
+
+  it("keeps text to speech controls disabled while gateway configuration is loading and rejects a direct save", async () => {
+    const panel = new SettingsGeneralPanel();
+    const onSave = vi.fn();
+    panel.showHostSpeechSettings = true;
+    panel.hostSpeechStatus = { available: true, voices: [{ name: "Ada", language: "en-US" }] };
+    panel.loading = true;
+    panel.onSave = onSave;
+
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    expect(templateText(card)).toContain("Gateway configuration is still loading");
+    expect(templateText(card)).toContain("cannot be saved yet");
+    expect(templateValuesAfterMarker(card, "?disabled=")).toEqual([true, true, true, true]);
+
+    await callPanelPromise(panel, "saveHostSpeechConfig", new Event("submit", { cancelable: true }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(getPanelProperty(panel, "hostSpeechLocalError")).toBe("Reload gateway configuration before saving text to speech settings.");
+  });
+
+  it("keeps text to speech controls disabled when gateway configuration is unavailable and rejects a direct save", async () => {
+    const panel = new SettingsGeneralPanel();
+    const onSave = vi.fn();
+    panel.showHostSpeechSettings = true;
+    panel.hostSpeechStatus = { available: true, voices: [{ name: "Ada", language: "en-US" }] };
+    panel.error = "Failed to load gateway configuration.";
+    panel.onSave = onSave;
+
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    expect(templateText(card)).toContain("Gateway configuration is unavailable");
+    expect(templateText(card)).toContain("Reload before saving text to speech settings");
+    expect(templateValuesAfterMarker(card, "?disabled=")).toEqual([true, true, true, true]);
+
+    await callPanelPromise(panel, "saveHostSpeechConfig", new Event("submit", { cancelable: true }));
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(getPanelProperty(panel, "hostSpeechLocalError")).toBe("Reload gateway configuration before saving text to speech settings.");
+  });
+
+  it("omits the host speech card for a remote target even when status is supplied", () => {
+    const panel = hostSpeechPanel({ available: true, voices: [{ name: "Ada", language: "en-US" }] });
+    panel.showHostSpeechSettings = false;
+
+    expect(hostSpeechCard(panel)).toBeUndefined();
+  });
+
+  it("keeps an unavailable configured voice selectable and explains the system-default fallback", () => {
+    const panel = hostSpeechPanel({ available: true, voices: [{ name: "Ada", language: "en-US" }] }, { tts: { voice: "Retired voice", rate: 10 } });
+    const card = hostSpeechCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    expect(text).toContain("Retired voice");
+    expect(text).toContain("no longer available");
+    expect(text).toContain("System default");
+  });
+
+  it("preserves a dirty host speech draft across unrelated config responses, then accepts its saved response", () => {
+    const panel = hostSpeechPanel({ available: true, voices: [] }, { tts: { voice: "Ada", rate: 10 }, host: "127.0.0.1" });
+    const initial = panel.configResponse;
+    callPanelMethod(panel, "updateHostSpeechDraft", { voice: "Beatriz", rate: "25" });
+
+    const unrelated = configResponse({ tts: { voice: "Ada", rate: 10 }, host: "0.0.0.0" });
+    panel.configResponse = unrelated;
+    callPanelMethod(panel, "willUpdate", new Map([["configResponse", initial]]));
+    expect(getPanelProperty(panel, "hostSpeechDraft")).toEqual({ voice: "Beatriz", rate: "25" });
+
+    const saved = configResponse({ tts: { voice: "Beatriz", rate: 25 }, host: "0.0.0.0" });
+    panel.configResponse = saved;
+    callPanelMethod(panel, "willUpdate", new Map([["configResponse", unrelated]]));
+    expect(getPanelProperty(panel, "hostSpeechDraftDirty")).toBe(false);
+  });
+
+  it("saves complete gateway config and reloads host speech only for the local card", async () => {
+    const panel = hostSpeechPanel({ available: true, voices: [{ name: "Ada", language: "en-US" }] }, {
+      host: "127.0.0.1",
+      port: 8808,
+      allowedHosts: ["localhost"],
+      shortcuts: { "core:view.chat": "mod+1" },
+      plugins: { info: { enabled: false } },
+      pathAccess: { allowedPaths: ["/gateway"] },
+      uploads: { defaultFolder: "gateway/uploads" },
+      spawnSessions: true,
+      tts: { voice: "Old", rate: 10 },
+    });
+    const onSave = vi.fn();
+    const onReloadHostSpeech = vi.fn();
+    panel.onSave = onSave;
+    panel.onReloadHostSpeech = onReloadHostSpeech;
+    setPanelProperty(panel, "hostSpeechDraft", { voice: " Ada ", rate: "-20" });
+
+    await callPanelPromise(panel, "saveHostSpeechConfig", new Event("submit", { cancelable: true }));
+    expect(onSave).toHaveBeenCalledExactlyOnceWith({
+      host: "127.0.0.1",
+      port: 8808,
+      allowedHosts: ["localhost"],
+      shortcuts: { "core:view.chat": "mod+1" },
+      plugins: { info: { enabled: false } },
+      pathAccess: { allowedPaths: ["/gateway"] },
+      uploads: { defaultFolder: "gateway/uploads" },
+      spawnSessions: true,
+      tts: { voice: "Ada", rate: -20 },
+    });
+
+    callPanelMethod(panel, "reloadAll");
+    expect(onReloadHostSpeech).toHaveBeenCalledOnce();
+
+    panel.showHostSpeechSettings = false;
+    callPanelMethod(panel, "reloadAll");
+    expect(onReloadHostSpeech).toHaveBeenCalledOnce();
+  });
+});
+
 function collectTemplateStrings(template: TemplateResult): string[] {
   const strings: string[] = [];
   visitTemplate(template);
@@ -218,6 +373,19 @@ function callPanelMethod(panel: SettingsGeneralPanel, methodName: string, ...arg
   const method: unknown = Reflect.get(panel, methodName);
   if (!isPanelMethod(method)) throw new Error(`SettingsGeneralPanel.${methodName} is not callable`);
   return method.call(panel, ...args);
+}
+
+function hostSpeechPanel(status: HostSpeechStatus, config: PiWebUiConfigValues = {}): SettingsGeneralPanel {
+  const panel = new SettingsGeneralPanel();
+  panel.showHostSpeechSettings = true;
+  panel.hostSpeechStatus = status;
+  panel.configResponse = configResponse(config);
+  callPanelMethod(panel, "willUpdate", new Map([["configResponse", undefined]]));
+  return panel;
+}
+
+function hostSpeechCard(panel: SettingsGeneralPanel): TemplateResult | undefined {
+  return findTemplateContaining(panel.render(), 'aria-label="Text to speech settings"');
 }
 
 function isPanelMethod(value: unknown): value is (this: SettingsGeneralPanel, ...args: readonly unknown[]) => unknown {

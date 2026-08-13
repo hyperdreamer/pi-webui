@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TemplateResult } from "lit";
 import { configApi, type PiWebUiConfigResponse } from "../api";
+import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
 import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, remoteMachine, secondRemoteMachine, setDialogProperty, stubWindowTimers } from "./SettingsDialog.testSupport";
 
@@ -179,4 +181,35 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(getDialogProperty(dialog, "accessError")).toBe("Failed to load file access/upload config from Lab Mac (remote machine): Could not reach Lab Mac for selected-machine settings. Check the machine connection and try again.");
     expect(getDialogProperty(dialog, "accessLoading")).toBe(false);
   });
+
+  it("forwards gateway host speech state only to the local General panel", () => {
+    const status = { available: true, voices: [{ name: "Ada", language: "en-US" }] };
+    const onReloadHostSpeech = vi.fn();
+    const dialog = new SettingsDialog();
+    if (!Reflect.set(dialog, "showHostSpeechSettings", true)) throw new Error("Could not configure host speech visibility");
+    if (!Reflect.set(dialog, "hostSpeechStatus", status)) throw new Error("Could not configure host speech status");
+    if (!Reflect.set(dialog, "hostSpeechStatusLoading", true)) throw new Error("Could not configure host speech loading");
+    if (!Reflect.set(dialog, "onReloadHostSpeech", onReloadHostSpeech)) throw new Error("Could not configure host speech reload");
+
+    const localGeneral = renderActiveSection(dialog);
+    expect(templateValueAfterMarker(localGeneral, ".showHostSpeechSettings=")).toBe(true);
+    expect(templateValueAfterMarker(localGeneral, ".hostSpeechStatus=")).toBe(status);
+    expect(templateValueAfterMarker(localGeneral, ".hostSpeechStatusLoading=")).toBe(true);
+    expect(templateValueAfterMarker(localGeneral, ".onReloadHostSpeech=")).toBe(onReloadHostSpeech);
+
+    dialog.machine = remoteMachine;
+    const remoteGeneral = renderActiveSection(dialog);
+    expect(templateValueAfterMarker(remoteGeneral, ".showHostSpeechSettings=")).toBe(false);
+    expect(templateValueAfterMarker(remoteGeneral, ".hostSpeechStatus=")).toBeUndefined();
+    expect(templateValueAfterMarker(remoteGeneral, ".hostSpeechStatusLoading=")).toBe(false);
+    expect(templateValueAfterMarker(remoteGeneral, ".onReloadHostSpeech=")).toBeUndefined();
+  });
 });
+
+function renderActiveSection(dialog: SettingsDialog): TemplateResult {
+  const render: unknown = Reflect.get(dialog, "renderActiveSection");
+  if (typeof render !== "function") throw new Error("SettingsDialog.renderActiveSection is not callable");
+  const result: unknown = Reflect.apply(render, dialog, []);
+  if (!isTemplateResult(result)) throw new Error("SettingsDialog.renderActiveSection did not return a template");
+  return result;
+}
