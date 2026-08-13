@@ -1,7 +1,8 @@
 import { LitElement, type TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HostSpeechControllerSnapshot } from "../controllers/hostSpeechController";
+import type { HostSpeechClientApi, HostSpeechControllerSnapshot } from "../controllers/hostSpeechController";
 import { HostSpeechController } from "../controllers/hostSpeechController";
+import type { HostSpeechTerminalResult } from "../../../shared/apiTypes";
 import { initialAppState, type AppState } from "../appState";
 import type { Machine, PiWebUiConfigValues, SessionInfo, SessionStatus } from "../api";
 import { findTemplateContaining, templateValueAfterMarker } from "../templateInspection.testSupport";
@@ -75,6 +76,110 @@ describe("PiWebUiApp host speech lifecycle", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(stoppedWhileStateWasIdle[0]?.status?.isCompacting).toBe(false);
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it("stops the captured run before assigning archive, source removal, changed prose, and page re-keying", async () => {
+    const speakable = assistantLine("Answer");
+    const transcript = {
+      messages: [userLine("Ask"), speakable],
+      messagePageStart: 10,
+      messagePageEnd: 12,
+      messagePageTotal: 12,
+    };
+    const cases: { name: string; patch: Partial<AppState> }[] = [
+      { name: "archive", patch: { selectedSession: { ...localSession, archived: true } } },
+      { name: "removal", patch: { messages: [userLine("Ask")] } },
+      { name: "replacement", patch: { messages: [userLine("Ask"), assistantLine("Changed")] } },
+      { name: "re-key", patch: { messagePageStart: 9, messagePageEnd: 11, messagePageTotal: 11 } },
+    ];
+
+    for (const scenario of cases) {
+      const { app, speak, stop, first } = await startActiveSpeech(transcript);
+      const stoppedWhileOld: AppState[] = [];
+      stop.mockImplementation(() => {
+        stoppedWhileOld.push(appState(app));
+        return Promise.resolve({ runId: "run-1", stopped: true });
+      });
+
+      applyStatePatch(app, scenario.patch);
+
+      expect(stop, scenario.name).toHaveBeenCalledOnce();
+      expect(stoppedWhileOld[0]?.selectedSession?.archived, scenario.name).not.toBe(true);
+      expect(stoppedWhileOld[0]?.messages, scenario.name).toEqual(transcript.messages);
+      expect(stoppedWhileOld[0]?.messagePageStart, scenario.name).toBe(10);
+      expect(hostSpeechController(app).snapshot.active, scenario.name).toBeUndefined();
+      first.resolve({ runId: "run-1", outcome: "canceled" });
+      await first.promise.catch(() => undefined);
+      expect(speak, scenario.name).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("keeps speech active for an equivalent republish, earlier-page prepend, and unrelated patch", async () => {
+    const speakable = assistantLine("Answer");
+    const transcript = {
+      messages: [userLine("Ask"), speakable],
+      messagePageStart: 10,
+      messagePageEnd: 12,
+      messagePageTotal: 12,
+    };
+    const { app, stop, first, controller } = await startActiveSpeech(transcript);
+    const originalMessages = transcript.messages;
+
+    applyStatePatch(app, { error: "unrelated" });
+    applyStatePatch(app, { messages: [userLine("Ask"), assistantLine("Answer")] });
+    applyStatePatch(app, {
+      messages: [assistantLine("Earlier"), userLine("Ask"), speakable],
+      messagePageStart: 9,
+      messagePageEnd: 12,
+      messagePageTotal: 12,
+    });
+
+    expect(stop).not.toHaveBeenCalled();
+    expect(controller.snapshot.active).toEqual({
+      runId: "run-1",
+      sessionId: localSession.id,
+      messageKey: "assistant-index:11",
+    });
+    expect(appState(app).messages).not.toBe(originalMessages);
+    first.resolve({ runId: "run-1", outcome: "ended" });
+    await first.promise;
+    expect(controller.snapshot.active).toBeUndefined();
+  });
+
+  it("does not let a replaced run's late completion clear a newer run", async () => {
+    const speakable = assistantLine("Answer");
+    const second = deferred<HostSpeechTerminalResult>();
+    const { app, stop, first, controller } = await startActiveSpeech({
+      messages: [userLine("Ask"), speakable],
+      messagePageStart: 10,
+      messagePageEnd: 12,
+      messagePageTotal: 12,
+    }, [second.promise]);
+
+    applyStatePatch(app, { messages: [userLine("Ask"), assistantLine("Changed")] });
+    expect(controller.snapshot.active).toBeUndefined();
+    await vi.waitFor(() => { expect(stop).toHaveBeenCalledWith("run-1"); });
+
+    const secondStart = controller.startManual({
+      machineId: "local",
+      sessionId: localSession.id,
+      messageKey: "assistant-index:11",
+      text: "Changed",
+    });
+    expect(controller.snapshot.active?.runId).toBe("run-2");
+
+    first.resolve({ runId: "run-1", outcome: "ended" });
+    await first.promise;
+    expect(controller.snapshot.active).toEqual({
+      runId: "run-2",
+      sessionId: localSession.id,
+      messageKey: "assistant-index:11",
+    });
+    expect(stop).toHaveBeenCalledOnce();
+
+    second.resolve({ runId: "run-2", outcome: "ended" });
+    await secondStart;
+    expect(controller.snapshot.active).toBeUndefined();
   });
 });
 
@@ -341,4 +446,60 @@ function compactingStatus(sessionId: string): SessionStatus {
 
 function hostSpeechSnapshot(overrides: Partial<HostSpeechControllerSnapshot> = {}): HostSpeechControllerSnapshot {
   return { status: { available: true, voices: [] }, loadingStatus: false, ...overrides };
+}
+
+async function startActiveSpeech(
+  transcript: Pick<AppState, "messages" | "messagePageStart" | "messagePageEnd" | "messagePageTotal">,
+  laterSpeak: Promise<HostSpeechTerminalResult>[] = [],
+) {
+  const app = createApp();
+  const controller = hostSpeechController(app);
+  const first = deferred<HostSpeechTerminalResult>();
+  const speak = vi.fn<HostSpeechClientApi["speak"]>();
+  speak.mockReturnValueOnce(first.promise);
+  for (const later of laterSpeak) speak.mockReturnValueOnce(later);
+  const stop = vi.fn<HostSpeechClientApi["stop"]>().mockResolvedValue({ runId: "run-1", stopped: true });
+  const runIds = ["run-1", "run-2"];
+  if (!Reflect.set(controller, "api", {
+    status: vi.fn<HostSpeechClientApi["status"]>().mockResolvedValue({ available: true, voices: [] }),
+    speak,
+    stop,
+  })) throw new Error("Could not inject host speech API");
+  if (!Reflect.set(controller, "createRunId", () => runIds.shift() ?? "run-extra")) {
+    throw new Error("Could not inject host speech run ids");
+  }
+  setAppState(app, speechState(localSession, transcript));
+  controller.select({ machineId: "local", sessionId: localSession.id });
+  await controller.refreshStatus();
+  const start = controller.startManual({
+    machineId: "local",
+    sessionId: localSession.id,
+    messageKey: "assistant-index:11",
+    text: "Answer",
+  });
+  expect(controller.snapshot.active).toEqual({
+    runId: "run-1",
+    sessionId: localSession.id,
+    messageKey: "assistant-index:11",
+  });
+  void start.catch(() => undefined);
+  return { app, controller, speak, stop, first, start };
+}
+
+function userLine(text: string) {
+  return { role: "user" as const, parts: [{ type: "text" as const, text }] };
+}
+
+function assistantLine(text: string) {
+  return { role: "assistant" as const, parts: [{ type: "text" as const, text }] };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }

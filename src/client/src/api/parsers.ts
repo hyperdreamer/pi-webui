@@ -1802,6 +1802,7 @@ function optionalAgent(value: unknown): PiWebUiConfigValues["agent"] | undefined
 function optionalTts(value: unknown): PiWebUiConfigValues["tts"] | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEBUI tts field");
+  assertOnlyFields(value, ["voice", "rate"], "PI WEBUI tts");
   const voice = optionalString(value, "voice")?.trim();
   if (voice === "") throw new Error("Invalid PI WEBUI tts voice field");
   const rate = optionalNumber(value, "rate");

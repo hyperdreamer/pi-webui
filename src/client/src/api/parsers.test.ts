@@ -385,6 +385,16 @@ describe("API parsers", () => {
       ...response,
       config: { tts: { rate: 101 } },
     })).toThrow("Invalid PI WEBUI tts rate field");
+
+    expect(() => parsePiWebUiConfigResponse({
+      ...response,
+      config: { tts: { rate: 0, autoReadAssistantReplies: true } },
+    })).toThrow("Invalid PI WEBUI tts field: autoReadAssistantReplies");
+
+    expect(() => parsePiWebUiConfigResponse({
+      ...response,
+      effectiveConfig: { tts: { voice: "en-US-Test", futureVoiceEngine: "edge" } },
+    })).toThrow("Invalid PI WEBUI tts field: futureVoiceEngine");
   });
 
   it("parses Pi package list and mutation responses", () => {

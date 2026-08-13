@@ -206,3 +206,20 @@ export function assistantSpeechText(message: ChatLine): string {
 export function assistantSpeechMessageKey(_message: ChatLine, absoluteIndex: number): string {
   return `assistant-index:${String(absoluteIndex)}`;
 }
+
+/**
+ * Resolves a ChatView raw absolute-index speech key against the current
+ * transcript page and returns that message's spoken prose, or `""` when the
+ * key is missing, malformed, or no longer speakable.
+ */
+export function resolveAssistantSpeechSource(
+  page: { messages: readonly ChatLine[]; messagePageStart: number },
+  messageKey: string,
+): string {
+  const match = /^assistant-index:(\d+)$/u.exec(messageKey);
+  if (match === null) return "";
+  const absoluteIndex = Number(match[1]);
+  if (!Number.isSafeInteger(absoluteIndex)) return "";
+  const message = page.messages[absoluteIndex - page.messagePageStart];
+  return message === undefined ? "" : assistantSpeechText(message);
+}

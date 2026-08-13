@@ -18,7 +18,14 @@ export function truncateHostSpeechText(text: string): string {
   const normalized = text
     .replace(/\r\n|\r/gu, "\n")
     .replace(/(?!\t|\n)\p{Cc}/gu, "");
-  const sliced = normalized.slice(0, HOST_SPEECH_MAX_TEXT_CHARS);
+  let sliced = normalized.slice(0, HOST_SPEECH_MAX_TEXT_CHARS);
+  if (sliced.length === HOST_SPEECH_MAX_TEXT_CHARS) {
+    const last = sliced.charCodeAt(sliced.length - 1);
+    const next = normalized.charCodeAt(HOST_SPEECH_MAX_TEXT_CHARS);
+    if (last >= 0xD800 && last <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+      sliced = sliced.slice(0, -1);
+    }
+  }
   return sliced.trimEnd();
 }
 

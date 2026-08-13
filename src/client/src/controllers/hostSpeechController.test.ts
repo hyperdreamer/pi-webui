@@ -64,6 +64,33 @@ describe("HostSpeechController", () => {
     expect(harness.controller.snapshot).toEqual({ status: AVAILABLE, loadingStatus: false });
   });
 
+  it("compares captured source identity without exposing spoken text on the snapshot", async () => {
+    const speaking = deferred<HostSpeechTerminalResult>();
+    const harness = createHarness({ speak: vi.fn<HostSpeechClientApi["speak"]>(() => speaking.promise) });
+    harness.controller.select({ machineId: "local", sessionId: "session-a" });
+    await harness.controller.refreshStatus();
+    const start = harness.controller.startManual(TARGET);
+
+    expect(harness.controller.snapshot.active).toEqual({
+      runId: "run-1",
+      sessionId: "session-a",
+      messageKey: "message-a",
+    });
+    expect(harness.controller.matchesActiveSource({
+      sessionId: "session-a",
+      messageKey: "message-a",
+      text: "Hello there",
+    })).toBe(true);
+    expect(harness.controller.matchesActiveSource({
+      sessionId: "session-a",
+      messageKey: "message-a",
+      text: "Changed",
+    })).toBe(false);
+
+    speaking.resolve({ runId: "run-1", outcome: "ended" });
+    await start;
+  });
+
   it("uses configured defaults and omits a configured voice that is not currently available", async () => {
     const firstSpeak = deferred<HostSpeechTerminalResult>();
     const secondSpeak = deferred<HostSpeechTerminalResult>();

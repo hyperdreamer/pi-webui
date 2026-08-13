@@ -97,6 +97,23 @@ describe("SpeechDispatcherAdapter", () => {
     }
   });
 
+  it("omits empty and literal none voice variants while preserving other values and order", async () => {
+    const fixture = scriptedFactory([
+      initializationReplies(),
+      ["249-Alice\ten-US\tfemale1\r\n249-Bob\tde\tnone\r\n249-Cara\tfr\t\r\n249 OK\r\n"],
+    ]);
+    const adapter = new SpeechDispatcherAdapter({ platform: "linux", createTransport: fixture.factory });
+
+    await expect(adapter.status()).resolves.toEqual({
+      available: true,
+      voices: [
+        { name: "Alice", language: "en-US", variant: "female1" },
+        { name: "Bob", language: "de" },
+        { name: "Cara", language: "fr" },
+      ],
+    });
+  });
+
   it("refreshes status voice lists and caches normalized named voices only for one connection", async () => {
     const fixture = scriptedFactory([
       initializationReplies(),
@@ -206,6 +223,69 @@ describe("SpeechDispatcherAdapter", () => {
     await fixture.connected();
     await expect(unknownVoice).rejects.toThrow(/voice/i);
     expect(fixture.transport.writes).not.toContain("SET SELF SYNTHESIS_VOICE Not listed\r\n");
+    expect(fixture.factory).toHaveBeenCalledOnce();
+    expect(fixture.transport.closed).toBe(false);
+
+    await expect(adapter.enqueue({ text: "hello", rate: 101 })).rejects.toThrow(/rate/i);
+    expect(fixture.factory).toHaveBeenCalledOnce();
+    expect(fixture.transport.closed).toBe(false);
+  });
+
+  it("resets after a malformed 245 client-id reply so a later status uses a fresh connection", async () => {
+    const fixture = scriptedFactory([
+      ["208 OK\r\n", "245 OK\r\n"],
+    ], [
+      initializationReplies(),
+      ["249-Alice\ten\t\r\n249 OK\r\n"],
+    ]);
+    const adapter = new SpeechDispatcherAdapter({ platform: "linux", createTransport: fixture.factory });
+
+    await expect(adapter.status()).resolves.toEqual({ available: false, reason: UNAVAILABLE_MESSAGE, voices: [] });
+    expect(fixture.factory).toHaveBeenCalledOnce();
+    expect(fixture.transport.closed).toBe(true);
+
+    const retry = adapter.status();
+    await fixture.connected(1);
+    await expect(retry).resolves.toEqual({ available: true, voices: [{ name: "Alice", language: "en" }] });
+    expect(fixture.factory).toHaveBeenCalledTimes(2);
+  });
+
+  it("resets after a malformed 225 message-id reply so later work uses a fresh connection", async () => {
+    const fixture = scriptedFactory([
+      initializationReplies(),
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
+      ["230 OK\r\n"],
+      ["225 OK\r\n"],
+    ], [
+      initializationReplies(),
+      ["249 OK\r\n"],
+      ["202 OK\r\n"],
+      ["203 OK\r\n"],
+      ["230 OK\r\n"],
+      ["225-9\r\n225 OK\r\n"],
+    ]);
+    const adapter = new SpeechDispatcherAdapter({ platform: "linux", createTransport: fixture.factory });
+    const first = adapter.enqueue({ text: "hello", rate: 0 });
+    await fixture.connected();
+    await expect(first).rejects.toThrow(HostSpeechUnavailableError);
+    expect(fixture.factory).toHaveBeenCalledOnce();
+    expect(fixture.transport.closed).toBe(true);
+
+    const status = adapter.status();
+    await fixture.connected(1);
+    await expect(status).resolves.toEqual({ available: true, voices: [] });
+    expect(fixture.factory).toHaveBeenCalledTimes(2);
+    const secondTransport = fixture.transports[1];
+    if (secondTransport === undefined) throw new Error("Expected second transport");
+    expect(fixture.transport.closed).toBe(true);
+
+    const utterance = await adapter.enqueue({ text: "again", rate: 0 });
+    expect(utterance.messageId).toBe(9);
+    expect(fixture.factory).toHaveBeenCalledTimes(2);
+    expect(secondTransport.closed).toBe(false);
+    secondTransport.feed("702-9\r\n702-7\r\n702 END\r\n");
+    await expect(utterance.terminal).resolves.toBe("ended");
   });
 
   it("reconnects before a default-voice utterance after a named voice", async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HOST_SPEECH_MAX_TEXT_CHARS } from "../../shared/hostSpeech";
 import type { ChatLine } from "./components/shared";
-import { assistantSpeechMessageKey, assistantSpeechText } from "./hostSpeechText";
+import { assistantSpeechMessageKey, assistantSpeechText, resolveAssistantSpeechSource } from "./hostSpeechText";
 
 function assistant(text: string): ChatLine {
   return { role: "assistant", parts: [{ type: "text", text }] };
@@ -78,5 +78,30 @@ describe("assistantSpeechText", () => {
   it("derives an index-based key regardless of any entry metadata", () => {
     expect(assistantSpeechMessageKey(assistant("reply"), 12)).toBe("assistant-index:12");
     expect(assistantSpeechMessageKey({ role: "assistant", entryId: "reply-7", parts: [{ type: "text", text: "reply" }] }, 12)).toBe("assistant-index:12");
+  });
+});
+
+describe("resolveAssistantSpeechSource", () => {
+  const page = {
+    messages: [
+      { role: "user" as const, parts: [{ type: "text" as const, text: "Ask" }] },
+      assistant("Answer"),
+    ],
+    messagePageStart: 10,
+  };
+
+  it("resolves the raw absolute-index key against the current page window", () => {
+    expect(resolveAssistantSpeechSource(page, "assistant-index:11")).toBe("Answer");
+  });
+
+  it("returns empty when the key is missing, malformed, or no longer speakable", () => {
+    expect(resolveAssistantSpeechSource(page, "assistant-index:10")).toBe("");
+    expect(resolveAssistantSpeechSource(page, "assistant-index:12")).toBe("");
+    expect(resolveAssistantSpeechSource(page, "assistant-index")).toBe("");
+    expect(resolveAssistantSpeechSource(page, "entry:reply-7")).toBe("");
+    expect(resolveAssistantSpeechSource({
+      messages: [{ role: "assistant", source: "compaction", parts: [{ type: "text", text: "summary" }] }],
+      messagePageStart: 11,
+    }, "assistant-index:11")).toBe("");
   });
 });

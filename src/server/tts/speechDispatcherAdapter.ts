@@ -150,7 +150,13 @@ export class SpeechDispatcherAdapter implements HostSpeechProvider {
     }
     await this.sendCommand("SPEAK", 230, COMMAND_TIMEOUT_MS);
     const reply = await this.sendData(ssipDataPayload(input.text), 225, COMMAND_TIMEOUT_MS);
-    const messageId = ssipMessageId(reply);
+    let messageId: number;
+    try {
+      messageId = ssipMessageId(reply);
+    } catch (error) {
+      this.resetConnection(normalizeError(error));
+      throw error;
+    }
     return this.registerUtterance(messageId, input.text.length);
   }
 
@@ -169,6 +175,9 @@ export class SpeechDispatcherAdapter implements HostSpeechProvider {
     this.initializing = this.initialize();
     try {
       await this.initializing;
+    } catch (error) {
+      this.resetConnection(normalizeError(error));
+      throw error;
     } finally {
       if (this.transport === undefined) this.initializing = undefined;
     }
@@ -394,7 +403,7 @@ function normalizeVoices(data: readonly string[]): readonly Readonly<HostSpeechV
     const language = parts[1];
     const variant = parts[2];
     if (name === undefined || language === undefined || variant === undefined || name === "" || language === "") continue;
-    voices.push(Object.freeze({ name, language, ...(variant === "" ? {} : { variant }) }));
+    voices.push(Object.freeze({ name, language, ...(variant === "" || variant === "none" ? {} : { variant }) }));
   }
   return Object.freeze(voices);
 }

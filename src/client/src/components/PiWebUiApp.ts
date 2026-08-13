@@ -27,6 +27,7 @@ import { PiWebUiStatusController } from "../controllers/piWebUiStatusController"
 import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { HostSpeechController } from "../controllers/hostSpeechController";
+import { resolveAssistantSpeechSource } from "../hostSpeechText";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
 import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
 import { SessionStorageSessionSelectionMemory } from "../controllers/sessionSelection";
@@ -635,6 +636,28 @@ export class PiWebUiApp extends LitElement {
     return this.state.selectedSession !== undefined && !this.isChatObscured();
   }
 
+  private abandonHostSpeechIfSourceInvalid(next: AppState): void {
+    const active = this.hostSpeech.snapshot.active;
+    if (active === undefined) return;
+    const session = next.selectedSession;
+    if (session?.id !== active.sessionId) return;
+    if (session.archived === true) {
+      void this.hostSpeech.stop();
+      return;
+    }
+    const text = resolveAssistantSpeechSource({
+      messages: next.messages,
+      messagePageStart: next.messagePageStart,
+    }, active.messageKey);
+    if (text === "" || !this.hostSpeech.matchesActiveSource({
+      sessionId: active.sessionId,
+      messageKey: active.messageKey,
+      text,
+    })) {
+      void this.hostSpeech.stop();
+    }
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
     this.hostSpeech.select(hostSpeechSelection(this.state));
@@ -704,6 +727,8 @@ export class PiWebUiApp extends LitElement {
       this.hostSpeech.select(nextHostSpeechSelection);
     } else if (previous.status?.isCompacting !== true && next.status?.isCompacting === true) {
       void this.hostSpeech.stop();
+    } else {
+      this.abandonHostSpeechIfSourceInvalid(next);
     }
     const previousActiveSessionScope = activeSessionModelPolicyScope(previous);
     const previousPolicyComposerScope = activePolicyComposerScope(previous);

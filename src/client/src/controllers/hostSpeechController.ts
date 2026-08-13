@@ -52,6 +52,7 @@ interface ActiveRun {
   machineId: string;
   sessionId: string;
   messageKey: string;
+  text: string;
   controller: AbortController;
   requestClosed: boolean;
 }
@@ -146,6 +147,7 @@ export class HostSpeechController {
       machineId: target.machineId,
       sessionId: target.sessionId,
       messageKey: target.messageKey,
+      text,
       controller: new AbortController(),
       requestClosed: false,
     };
@@ -185,6 +187,13 @@ export class HostSpeechController {
       this.publish();
       if (error instanceof HttpRequestError && error.status === 500) void this.refreshStatus();
     }
+  }
+
+  matchesActiveSource(identity: { sessionId: string; messageKey: string; text: string }): boolean {
+    const active = this.active;
+    return active?.sessionId === identity.sessionId
+      && active.messageKey === identity.messageKey
+      && active.text === identity.text;
   }
 
   async stop(): Promise<void> {
