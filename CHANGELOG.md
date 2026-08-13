@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0
+
+### Minor Changes
+
+- ce3ee7b: Add local-gateway OS text-to-speech controls for assistant replies, including OS voice/rate settings.
+
 ## 1.12.4
 
 ### Minor Changes
