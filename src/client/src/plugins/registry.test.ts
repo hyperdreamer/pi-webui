@@ -478,6 +478,16 @@ describe("PluginRegistry", () => {
     ]);
   });
 
+  it("uses xterm color 75 for the E-Ink Color Paper accent", () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: "themes", plugin: themePackPlugin });
+
+    const theme = registry.getThemes().find((candidate) => candidate.id === "themes:eink-color-paper");
+
+    expect(theme).toBeDefined();
+    expect(theme?.tokens["--pi-accent"]).toBe("#5FAFFF");
+  });
+
   it("collects theme contributions in contribution order", () => {
     const registry = new PluginRegistry();
     registry.register({

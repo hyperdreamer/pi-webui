@@ -138,7 +138,8 @@ const einkColorPaperTokens = {
   "--pi-text-bright": "#15131b",
   "--pi-muted": "#5f586a",
   "--pi-dim": "#766f7e",
-  "--pi-accent": "#87FF87",
+  // xterm palette color 75 (#5FAFFF).
+  "--pi-accent": "#5FAFFF",
   "--pi-accent-border": "#6430d8",
   // Chart cell 40. Black body text sits at 10.7:1 on it.
   "--pi-selection-bg": "#00d700",
