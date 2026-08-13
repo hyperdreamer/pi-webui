@@ -310,7 +310,7 @@ The client uses the existing application-relative `request()` boundary with an e
 
 The approved visual direction keeps the existing compact PI WEBUI composer:
 
-- the microphone is a fixed 36 px icon action immediately before Send;
+- the microphone uses the same stable dimensions as adjacent composer icon actions: 36 px on desktop/tablet and the existing 34 px size below the 430 px narrow breakpoint;
 - idle uses the accent color without a persistent label;
 - listening changes the same control to a clearly labeled red Stop action;
 - transcribing uses a restrained processing state with a touch-accessible cancel action;
@@ -411,7 +411,7 @@ Implementation follows test-driven development at the narrowest meaningful layer
 
 ### Browser and broad verification
 
-Use the repository's Chromium/CDP tooling or an equivalent deterministic browser harness with injected fake recognition, media, and transcription boundaries. Verify desktop and narrow mobile widths for nonblank rendering, fixed composer geometry, no overlapping controls, permission/listening/transcribing/error transitions, touch cancellation, and settings field containment. CI does not depend on live browser-vendor recognition or a real cloud API key.
+Use the repository's Chromium/CDP tooling or an equivalent deterministic browser harness with injected fake recognition, media, and transcription boundaries. Verify desktop and narrow mobile widths for nonblank rendering, exact 36 px desktop and 34 px narrow microphone geometry matching adjacent icon actions, no overlapping controls, permission/listening/transcribing/error transitions, touch cancellation, and settings field containment. CI does not depend on live browser-vendor recognition or a real cloud API key.
 
 Run focused Vitest files first, then typecheck and lint for changed sources, and finish with `npm run verify:fast`. A manual smoke check in a compatible secure-context browser may validate real microphone permission and browser recognition, but it is not a substitute for deterministic coverage.
 
