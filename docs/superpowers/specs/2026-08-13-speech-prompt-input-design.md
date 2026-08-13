@@ -230,7 +230,7 @@ The raw `apiKey` source is write-only at the browser API boundary:
 - saving a nonempty credential source forces the gateway config file mode to `0600` on platforms with POSIX permissions; later writes preserve that restrictive mode;
 - clearing a credential does not broaden file permissions.
 
-The browser holds a newly entered source only in the password input and the in-flight same-origin settings request. It clears the input after a terminal save result and does not persist it in component state beyond that form lifecycle, browser storage, URL state, telemetry, or logs. Loopback HTTP retains the browser's secure-context exemption; any non-loopback deployment must use HTTPS before exposing this credential form or microphone controls.
+The browser holds a newly entered source only in the password input and the in-flight same-origin settings request. It clears the input after a successful save/response adoption, retains it after failure for correction, and does not persist it in component state, draft objects, browser storage, URL state, telemetry, or logs. Loopback HTTP retains the browser's secure-context exemption; any non-loopback deployment must use HTTPS before exposing this credential form or microphone controls.
 
 ### Credential status
 
