@@ -118,8 +118,11 @@ describe("production gateway config composition shares one mutation authority", 
 
     const tracked = trackCoordinator(sharedConfigMutationCoordinator(undefined, env));
     const composition = createGatewayConfigComposition(env, tracked);
-    // The production helper hands back the exact injected authority.
+    // The production helper hands back the exact injected authority, and the
+    // build-time selection for the speech path must return that same object
+    // rather than allocating a forwarding facade around it.
     expect(composition.coordinator).toBe(tracked);
+    expect(sharedConfigMutationCoordinator(composition.coordinator)).toBe(composition.coordinator);
 
     const app = await buildApp({
       config: composition.config,
@@ -203,6 +206,18 @@ describe("production gateway config composition shares one mutation authority", 
       await app.close();
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("sharedConfigMutationCoordinator with an injected authority", () => {
+  it("returns the exact injected coordinator instead of allocating a forwarding facade", () => {
+    const injected = {
+      marker: "distinctive-injected-authority",
+      read: () => Promise.reject(new Error("injected read not exercised")),
+      mutate: () => Promise.reject(new Error("injected mutate not exercised")),
+    };
+
+    expect(sharedConfigMutationCoordinator(injected)).toBe(injected);
   });
 });
 

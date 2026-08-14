@@ -240,8 +240,9 @@ function isApiPath(requestUrl: string): boolean {
 
 /**
  * One lazy shared config mutation authority per app. When `injected` is
- * supplied, the returned coordinator delegates to exactly that instance, so
- * every consumer handed this proxy shares one authority. Otherwise the real
+ * supplied, that exact instance is returned unchanged, so the generic config
+ * service and the speech settings service receive the identical object rather
+ * than one of them wrapping it in a forwarding facade. Otherwise the real
  * coordinator is created on first use against `pinnedEnv` (frozen from
  * `process.env` when omitted, the same startup moment `src/server/index.ts`
  * freezes its snapshot), so a live process.env change cannot move the
@@ -252,9 +253,10 @@ export function sharedConfigMutationCoordinator(
   injected: PiWebUiConfigMutationCoordinator | undefined,
   pinnedEnv: NodeJS.ProcessEnv = Object.freeze({ ...process.env }),
 ): PiWebUiConfigMutationCoordinator {
+  if (injected !== undefined) return injected;
   let created: PiWebUiConfigMutationCoordinator | undefined;
   const resolve = (): PiWebUiConfigMutationCoordinator => {
-    created ??= injected ?? createPiWebUiConfigMutationCoordinator({ config: { env: pinnedEnv } });
+    created ??= createPiWebUiConfigMutationCoordinator({ config: { env: pinnedEnv } });
     return created;
   };
   return {
@@ -297,9 +299,10 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const workspaces = deps.workspaces ?? new WorkspaceService();
   // One shared config mutation authority for the app: the generic config
   // service and the speech settings service must never coordinate against
-  // different coordinators. Construction stays lazy behind the shared
-  // instance so apps that never touch coordinated paths (including injected
-  // test apps) create no filesystem state in the real data directory.
+  // different coordinators. An injected coordinator is used exactly as-is;
+  // otherwise construction stays lazy behind the shared instance so apps
+  // that never touch coordinated paths (including injected test apps)
+  // create no filesystem state in the real data directory.
   const configMutationCoordinator = sharedConfigMutationCoordinator(deps.configMutationCoordinator);
   const configService = deps.config ?? createFilePiWebUiConfigService(undefined, configMutationCoordinator);
   const readConfig = () => readEffectiveConfig(configService);
