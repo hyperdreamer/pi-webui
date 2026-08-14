@@ -256,6 +256,16 @@ describe("buildSpeechTranscriptInsertion", () => {
     });
   });
 
+  it.each(["[", "{"])("does not add a space after the remaining opening delimiter %s", (delimiter) => {
+    expect(buildSpeechTranscriptInsertion(capture(delimiter, 1, 1), delimiter, "hello")).toEqual({
+      ok: true,
+      insert: "hello",
+      from: 1,
+      to: 1,
+      caret: 6,
+    });
+  });
+
   it("does not add a space before closing punctuation", () => {
     expect(buildSpeechTranscriptInsertion(capture("x", 1, 1), "x", "!")).toEqual({
       ok: true,
@@ -265,6 +275,19 @@ describe("buildSpeechTranscriptInsertion", () => {
       caret: 2,
     });
   });
+
+  it.each([".", ",", ";", ":", "?", "%", ")", "]", "}"])(
+    "does not add a space before the remaining closing punctuation %s",
+    (punctuation) => {
+      expect(buildSpeechTranscriptInsertion(capture(punctuation, 0, 0), punctuation, "x")).toEqual({
+        ok: true,
+        insert: "x",
+        from: 0,
+        to: 0,
+        caret: 1,
+      });
+    },
+  );
 
   it("does not add a space after a transcript-ending opening delimiter", () => {
     expect(buildSpeechTranscriptInsertion(capture("y", 0, 0), "y", "(")).toEqual({
