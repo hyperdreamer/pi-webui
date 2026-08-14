@@ -3,6 +3,7 @@ import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse,
 import type { LegacyStarterModelPolicyPreference, SessionDefaultsResponse, SessionDefaultsV2Response, StarterModelPolicyPreference, StarterModelPolicyPreferenceResponse } from "../../../shared/apiTypes";
 import type { SessionOrderEntry, SessionReorderResponse } from "../../../shared/apiTypes";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
+import type { SpeechInputSettings, SpeechInputSettingsResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
@@ -10,6 +11,7 @@ import { MODEL_TIERS, RECENT_PROJECT_LIMIT, UTILITY_MODEL_SLOTS } from "../../..
 import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
+import { canonicalBcp47LanguageTag, isCanonicalLowercaseUuid } from "../../../shared/speechInput";
 import { isHostSpeechRunId } from "../../../shared/hostSpeech";
 import { isKnownThinkingLevel } from "../../../shared/thinkingLevels";
 
@@ -1770,6 +1772,79 @@ export function parsePiWebUiConfigResponse(value: unknown): PiWebUiConfigRespons
     effectiveConfig: parsePiWebUiConfigValues(record["effectiveConfig"]),
     envOverrides: parsePiWebUiConfigEnvOverrides(record["envOverrides"]),
   };
+}
+
+export function parseSpeechInputSettingsResponse(value: unknown): SpeechInputSettingsResponse {
+  const record = requirePlainRecord(value, "speech input settings response");
+  assertOnlyFields(record, ["contractVersion", "revision", "settings", "credential"], "speech input settings response");
+  if (record["contractVersion"] !== 1) throw new Error("Invalid speech input settings contract version");
+  const revision = requireString(record, "revision");
+  if (!isCanonicalLowercaseUuid(revision)) throw new Error("Invalid speech input settings revision");
+  return {
+    contractVersion: 1,
+    revision,
+    settings: parseSpeechInputSettings(record["settings"]),
+    credential: parseSpeechInputCredentialStatus(record["credential"]),
+  };
+}
+
+function parseSpeechInputSettings(value: unknown): SpeechInputSettings {
+  const record = requireObjectRecord(value, "speech input settings");
+  assertOnlyFields(record, ["provider", "language", "cloud"], "speech input settings");
+  const provider = record["provider"];
+  if (provider !== "auto" && provider !== "browser" && provider !== "cloud") {
+    throw new Error("Invalid speech input settings provider");
+  }
+  const language = optionalString(record, "language");
+  if (language !== undefined && canonicalBcp47LanguageTag(language) !== language) {
+    throw new Error("Invalid speech input settings language");
+  }
+  return {
+    provider,
+    ...optionalField("language", language),
+    cloud: parseSpeechInputCloudSettings(record["cloud"]),
+  };
+}
+
+function parseSpeechInputCloudSettings(value: unknown): SpeechInputSettings["cloud"] {
+  const record = requireObjectRecord(value, "speech input cloud settings");
+  assertOnlyFields(record, ["baseUrl", "model"], "speech input cloud settings");
+  const baseUrl = requireNonBlankString(record, "baseUrl");
+  if (!isHttpsSpeechInputBaseUrl(baseUrl)) throw new Error("Invalid speech input cloud base URL");
+  return { baseUrl, model: requireNonBlankString(record, "model") };
+}
+
+function isHttpsSpeechInputBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.search === "" && url.hash === "";
+  } catch {
+    return false;
+  }
+}
+
+function parseSpeechInputCredentialStatus(value: unknown): SpeechInputSettingsResponse["credential"] {
+  const record = requireObjectRecord(value, "speech input credential status");
+  assertOnlyFields(record, ["configured", "source", "resolution"], "speech input credential status");
+  const configured = requireBoolean(record, "configured");
+  const source = record["source"];
+  const resolution = record["resolution"];
+  if (typeof resolution !== "string") throw new Error("Invalid speech input credential status");
+  if (!configured) {
+    if (source !== undefined || resolution !== "missing") throw new Error("Invalid speech input credential status");
+    return { configured: false, resolution: "missing" };
+  }
+  if (source !== "literal" && source !== "environment" && source !== "command") {
+    throw new Error("Invalid speech input credential status");
+  }
+  if (source === "command") {
+    if (resolution !== "unchecked") throw new Error("Invalid speech input credential status");
+  } else if (source === "literal") {
+    if (resolution !== "resolved") throw new Error("Invalid speech input credential status");
+  } else if (resolution !== "resolved" && resolution !== "unresolved") {
+    throw new Error("Invalid speech input credential status");
+  }
+  return { configured: true, source, resolution };
 }
 
 function parsePiWebUiConfigValues(value: unknown): PiWebUiConfigValues {

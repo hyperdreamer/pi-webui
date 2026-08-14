@@ -22,6 +22,9 @@ import { registerTerminalProxyRoutes } from "./terminalProxyRoutes.js";
 import { registerWorkspaceDeletionRoutes } from "./workspaces/workspaceDeletionRoutes.js";
 import { registerSystemInfoRoutes } from "./systemInfoRoutes.js";
 import { createFilePiWebUiConfigService, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
+import { createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator } from "../configMutationCoordinator.js";
+import { createSpeechInputSettingsService, type SpeechInputSettingsService } from "./speechInput/speechInputSettingsService.js";
+import { registerSpeechInputSettingsRoutes } from "./speechInput/speechInputSettingsRoutes.js";
 import { PiWebUiPluginService } from "./piWebUiPluginService.js";
 import { createActiveProfilePiPackageService, type PiPackageService } from "./piPackageService.js";
 import { createActiveProfilePiPackagePluginsConfigService, type PiPackagePluginsConfigService } from "./piPackagePluginsConfigService.js";
@@ -58,6 +61,10 @@ export interface AppDependencies {
   piPackagePlugins?: PiPackagePluginsConfigService;
   piWebUiStatusCache?: PiWebUiStatusCache;
   config?: PiWebUiConfigService;
+  /** Shared cross-process config mutation authority; defaults to one shared lazy instance. */
+  configMutationCoordinator?: PiWebUiConfigMutationCoordinator;
+  /** Gateway speech input settings authority; production pairs it with the shared coordinator. */
+  speechInputSettings?: SpeechInputSettingsService;
   clientDist?: string | false;
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
@@ -231,6 +238,24 @@ function isApiPath(requestUrl: string): boolean {
   return requestUrl === "/api" || requestUrl.startsWith("/api/") || requestUrl.startsWith("/api?");
 }
 
+/**
+ * One coordinator instance per app, constructed lazily on first coordinated
+ * use with the environment pinned to construction time. The same instance is
+ * handed to both the generic config service and the speech settings service,
+ * so production never creates a second mutation authority.
+ */
+function sharedConfigMutationCoordinator(injected?: PiWebUiConfigMutationCoordinator): PiWebUiConfigMutationCoordinator {
+  let created: PiWebUiConfigMutationCoordinator | undefined;
+  const resolve = (): PiWebUiConfigMutationCoordinator => {
+    created ??= injected ?? createPiWebUiConfigMutationCoordinator({ config: { env: Object.freeze({ ...process.env }) } });
+    return created;
+  };
+  return {
+    read: () => resolve().read(),
+    mutate: (mutate, mutationOptions) => resolve().mutate(mutate, mutationOptions),
+  };
+}
+
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: deps.logger ?? true,
@@ -248,7 +273,13 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   const projects = deps.projects ?? new ProjectService(new ProjectStore());
   const workspaces = deps.workspaces ?? new WorkspaceService();
-  const configService = deps.config ?? createFilePiWebUiConfigService();
+  // One shared config mutation authority for the app: the generic config
+  // service and the speech settings service must never coordinate against
+  // different coordinators. Construction stays lazy behind the shared
+  // instance so apps that never touch coordinated paths (including injected
+  // test apps) create no filesystem state in the real data directory.
+  const configMutationCoordinator = sharedConfigMutationCoordinator(deps.configMutationCoordinator);
+  const configService = deps.config ?? createFilePiWebUiConfigService(undefined, configMutationCoordinator);
   const readConfig = () => readEffectiveConfig(configService);
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const agentProfileProvider = deps.agentProfileProvider ?? new SessionDaemonActiveAgentProfileProvider(sessionDaemon);
@@ -302,6 +333,14 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   const invalidatingConfigService = invalidatePiWebUiStatusOnWrite(configService, piWebUiStatusCache);
   registerConfigRoutes(app, invalidatingConfigService);
   registerLocalMachineConfigRoutes(app, invalidatingConfigService);
+
+  const speechInputSettingsService = deps.speechInputSettings ?? createSpeechInputSettingsService({
+    coordinator: configMutationCoordinator,
+    onCommitted: () => {
+      piWebUiStatusCache.invalidate();
+    },
+  });
+  registerSpeechInputSettingsRoutes(app, speechInputSettingsService);
 
   registerMemoryRoutes(app, agentProfileProvider, "/api");
   registerMemoryRoutes(app, agentProfileProvider, "/api/machines/local");

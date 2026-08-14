@@ -15,6 +15,10 @@ import type { PiPackageService } from "./piPackageService.js";
 import type { PiPackagePluginsConfigService } from "./piPackagePluginsConfigService.js";
 import type { SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { PI_WEBUI_CAPABILITIES } from "../shared/capabilities.js";
+import { createPiWebUiStatusCache, type PiWebUiStatusCache } from "./piWebUiStatusCache.js";
+import { getPiWebUiStatus } from "./piWebUiStatus.js";
+import { createSpeechInputSettingsService, type SpeechInputSettingsService } from "./speechInput/speechInputSettingsService.js";
+import { createInMemorySpeechInputConfigCoordinator, type InMemorySpeechInputConfigCoordinator } from "./speechInput/speechInputSettingsService.testSupport.js";
 import type { ActiveAgentProfileDescriptor, HostSpeechSpeakRequest, HostSpeechStatus, PiPackageInfo, PiPackagePluginMutationRequest, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import type { SessionDaemonAgentProfileResult } from "../sessiond/sessionDaemonClient.js";
 import type { HostSpeech } from "./tts/hostSpeech.js";
@@ -38,6 +42,8 @@ interface AppTestContext {
   piWebUiConfig: PiWebUiConfigValues;
   agentProfileResult: SessionDaemonAgentProfileResult;
   readonly hostSpeech: FakeHostSpeech;
+  readonly piWebUiStatusCache: PiWebUiStatusCache;
+  readonly speechInputCoordinator: InMemorySpeechInputConfigCoordinator;
 }
 
 let app: FastifyInstance | undefined;
@@ -45,6 +51,8 @@ let tempDir: string | undefined;
 let projectDir: string | undefined;
 let remoteClient: MachineClient | undefined;
 let hostSpeech: FakeHostSpeech | undefined;
+let piWebUiStatusCache: PiWebUiStatusCache | undefined;
+let speechInputCoordinator: InMemorySpeechInputConfigCoordinator | undefined;
 let sessionDaemonRequests: CapturedSessionDaemonRequest[] = [];
 let piPackageRequests: CapturedPiPackageRequest[] = [];
 let piPackagePluginRequests: CapturedPiPackagePluginRequest[] = [];
@@ -95,6 +103,14 @@ export const appTestContext: AppTestContext = {
     if (hostSpeech === undefined) throw new Error("App test harness was not initialized");
     return hostSpeech;
   },
+  get piWebUiStatusCache() {
+    if (piWebUiStatusCache === undefined) throw new Error("App test harness was not initialized");
+    return piWebUiStatusCache;
+  },
+  get speechInputCoordinator() {
+    if (speechInputCoordinator === undefined) throw new Error("App test harness was not initialized");
+    return speechInputCoordinator;
+  },
 };
 
 export function registerAppTestHooks(): void {
@@ -108,6 +124,19 @@ export function registerAppTestHooks(): void {
     piWebUiConfig = {};
     agentProfileResult = { status: "available", profile: appTestAgentProfile(join(tempDir, "agent")) };
     hostSpeech = createFakeHostSpeech();
+    const agentProfileProvider = { getActiveAgentProfile: () => Promise.resolve(agentProfileResult) };
+    const sessionDaemon = fakeSessionDaemon();
+    piWebUiStatusCache = createPiWebUiStatusCache(
+      async ({ force }) => {
+        const activeAgentProfile = await agentProfileProvider.getActiveAgentProfile();
+        return getPiWebUiStatus(sessionDaemon, {
+          forceReleaseCheck: force,
+          ...(activeAgentProfile.status === "available" ? { activeAgentProfile: activeAgentProfile.profile } : {}),
+        });
+      },
+      { onError: () => undefined },
+    );
+    speechInputCoordinator = createInMemorySpeechInputConfigCoordinator({});
     app = await buildApp({
       projects: new ProjectService(new ProjectStore(join(tempDir, "projects.json"))),
       workspaces: new WorkspaceService(),
@@ -127,9 +156,14 @@ export function registerAppTestHooks(): void {
           capabilities: [PI_WEBUI_CAPABILITIES.sessionsDeleteArchived],
         }),
       }),
-      sessionDaemon: fakeSessionDaemon(),
-      agentProfileProvider: { getActiveAgentProfile: () => Promise.resolve(agentProfileResult) },
+      sessionDaemon,
+      agentProfileProvider,
       config: fakeConfigService(),
+      speechInputSettings: createSpeechInputSettingsService({
+        coordinator: speechInputCoordinator,
+        onCommitted: () => piWebUiStatusCache?.invalidate(),
+      }),
+      piWebUiStatusCache,
       piPackages: fakePiPackageService(),
       piPackagePlugins: fakePiPackagePluginsConfigService(),
       piWebUiPlugins: {
@@ -156,6 +190,8 @@ export function registerAppTestHooks(): void {
     piWebUiConfig = {};
     agentProfileResult = { status: "invalid", error: "App test harness was not initialized" };
     hostSpeech = undefined;
+    piWebUiStatusCache = undefined;
+    speechInputCoordinator = undefined;
 
     if (appToClose !== undefined) await appToClose.close();
     if (tempDirToRemove !== undefined) await rm(tempDirToRemove, { recursive: true, force: true });
@@ -225,6 +261,17 @@ export function fakeConfigService() {
       return piWebUiConfigResponse(piWebUiConfig);
     },
   };
+}
+
+/**
+ * Fake speech settings service backed by an in-memory full-fidelity
+ * coordinator. Tests that inject a custom `config` service pair it with this
+ * fake so production never silently creates a second config authority.
+ */
+export function createFakeSpeechInputSettingsService(): SpeechInputSettingsService {
+  return createSpeechInputSettingsService({
+    coordinator: createInMemorySpeechInputConfigCoordinator({}),
+  });
 }
 
 function appTestAgentProfile(dir: string): ActiveAgentProfileDescriptor {

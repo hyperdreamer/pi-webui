@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
-import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
+import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, SpeechInputSettingsUpdate, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
+import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, speechInputApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
   id: "w/1",
@@ -78,6 +78,40 @@ describe("host speech API", () => {
     expect(fetchMock.mock.calls.some(([url]) => toUrl(url).pathname.includes("/machines/"))).toBe(false);
   });
 });
+describe("speech input settings API", () => {
+  it("reads and saves settings through the gateway-only path with exact request options under a nested base", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const response = {
+      contractVersion: 1,
+      revision: "00000000-0000-4000-8000-000000000001",
+      settings: { provider: "auto", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+      credential: { configured: false, resolution: "missing" },
+    };
+    const fetchMock = stubSequenceFetch([
+      jsonResponse(response),
+      jsonResponse({ ...response, revision: "00000000-0000-4000-8000-000000000002" }),
+    ]);
+
+    const current = await speechInputApi.settings();
+    const update: SpeechInputSettingsUpdate = {
+      expectedRevision: current.revision,
+      settings: { provider: "auto", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+      credential: { action: "preserve" },
+    };
+    await speechInputApi.saveSettings(update);
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://pi.example.test/nested/pi-webui/api/speech-input/settings",
+      "https://pi.example.test/nested/pi-webui/api/speech-input/settings",
+    ]);
+    expect(fetchCall(fetchMock, 0)[1]?.cache).toBe("no-store");
+    expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
+    expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual(update);
+    expect(fetchMock.mock.calls.some(([url]) => toUrl(url).pathname.includes("/machines/"))).toBe(false);
+  });
+});
+
 describe("machine-scoped runtime API", () => {
   it("reads machine PI WEBUI status through the gateway route", async () => {
     const fetchMock = stubJsonFetch(piWebUiStatusResponse());

@@ -3,6 +3,7 @@ import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from ".
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate, StarterModelPolicyPreference } from "../../../shared/apiTypes";
+import type { SpeechInputSettingsResponse, SpeechInputSettingsUpdate } from "../../../shared/apiTypes";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
@@ -84,6 +85,7 @@ import {
   parseSessionStreamSnapshot,
   parseSessionTreeNavigateResult,
   parseSlashCommand,
+  parseSpeechInputSettingsResponse,
   parseStopped,
   parseTerminalCommandRun,
   parseTerminalInfo,
@@ -174,6 +176,16 @@ export const ttsApi = {
     "api/tts/stop",
     parseHostSpeechStopResponse,
     { method: "POST", body: JSON.stringify({ runId }) },
+  ),
+};
+
+/** Gateway-only speech input settings API; no selected-machine path exists. */
+export const speechInputApi = {
+  settings: (): Promise<SpeechInputSettingsResponse> => request("api/speech-input/settings", parseSpeechInputSettingsResponse, { cache: "no-store" }),
+  saveSettings: (update: SpeechInputSettingsUpdate): Promise<SpeechInputSettingsResponse> => request(
+    "api/speech-input/settings",
+    parseSpeechInputSettingsResponse,
+    { method: "PUT", body: JSON.stringify(update) },
   ),
 };
 

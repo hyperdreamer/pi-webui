@@ -7,6 +7,7 @@ import type { SessionDaemonAgentProfileResult } from "../sessiond/sessionDaemonC
 import type { ActiveAgentProfileProvider } from "./activeAgentProfileProvider.js";
 import { buildApp } from "./app.js";
 import type { PiWebUiConfigService } from "./configRoutes.js";
+import { createFakeSpeechInputSettingsService } from "./app.testSupport.js";
 
 let tempDir: string;
 
@@ -36,6 +37,7 @@ describe("buildApp active profile composition", () => {
     const app = await buildApp({
       agentProfileProvider: { getActiveAgentProfile },
       config: emptyConfigService(),
+      speechInputSettings: createFakeSpeechInputSettingsService(),
       clientDist: false,
       logger: false,
     });
@@ -70,6 +72,7 @@ describe("buildApp active profile composition", () => {
     const app = await buildApp({
       agentProfileProvider: provider,
       config: emptyConfigService(),
+      speechInputSettings: createFakeSpeechInputSettingsService(),
       clientDist: false,
       logger: false,
     });

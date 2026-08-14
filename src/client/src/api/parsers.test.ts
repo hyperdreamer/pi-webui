@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseSpeechInputSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
   it("strictly parses host speech status documents", () => {
@@ -1662,3 +1662,73 @@ function modelTierSettingsWire(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("speech input settings parser", () => {
+  function speechInputSettingsResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      contractVersion: 1,
+      revision: "00000000-0000-4000-8000-000000000001",
+      settings: {
+        provider: "auto",
+        language: "pt-BR",
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+      },
+      credential: { configured: true, source: "command", resolution: "unchecked" },
+      ...overrides,
+    };
+  }
+
+  it("strictly parses complete speech input settings responses", () => {
+    const response = speechInputSettingsResponse();
+
+    expect(parseSpeechInputSettingsResponse(response)).toEqual(response);
+    expect(parseSpeechInputSettingsResponse(speechInputSettingsResponse({ credential: { configured: false, resolution: "missing" } })))
+      .toEqual(speechInputSettingsResponse({ credential: { configured: false, resolution: "missing" } }));
+    expect(parseSpeechInputSettingsResponse(speechInputSettingsResponse({ credential: { configured: true, source: "environment", resolution: "unresolved" } })))
+      .toEqual(speechInputSettingsResponse({ credential: { configured: true, source: "environment", resolution: "unresolved" } }));
+  });
+
+  it("rejects noncanonical revisions, wrong contract versions, and unknown or leaked fields", () => {
+    const valid = speechInputSettingsResponse();
+
+    for (const value of [
+      null,
+      [],
+      {},
+      { ...valid, contractVersion: 2 },
+      { ...valid, contractVersion: "1" },
+      { ...valid, revision: "01234567-89ab-4cde-8f01-23456789abcd".toUpperCase() },
+      { ...valid, revision: "not-a-uuid" },
+      { ...valid, revision: 42 },
+      { ...valid, extra: true },
+      { ...valid, settings: { ...valid.settings, extra: true } },
+      { ...valid, settings: { ...valid.settings, language: "" } },
+      { ...valid, settings: { ...valid.settings, language: "en-us" } },
+      { ...valid, settings: { ...valid.settings, language: "auto" } },
+      { ...valid, settings: { ...valid.settings, provider: "local" } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, apiKey: "sk-leak" } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, extra: true } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, baseUrl: "http://api.openai.com/v1" } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, baseUrl: "https://user@api.openai.com/v1" } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, baseUrl: "https://api.openai.com/v1?key=x" } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, baseUrl: "https://api.openai.com/v1#frag" } } },
+      { ...valid, settings: { ...valid.settings, cloud: { ...valid.settings.cloud, model: "   " } } },
+      { ...valid, settings: { ...valid.settings, cloud: { baseUrl: "https://api.openai.com/v1" } } },
+      { ...valid, settings: { provider: "auto", language: "pt-BR" } },
+      { ...valid, credential: { configured: true, resolution: "missing" } },
+      { ...valid, credential: { configured: true, source: "literal", resolution: "unresolved" } },
+      { ...valid, credential: { configured: true, source: "literal", resolution: "unchecked" } },
+      { ...valid, credential: { configured: true, source: "environment", resolution: "unchecked" } },
+      { ...valid, credential: { configured: true, source: "command", resolution: "resolved" } },
+      { ...valid, credential: { configured: true, source: "command", resolution: "missing" } },
+      { ...valid, credential: { configured: false, source: "literal", resolution: "missing" } },
+      { ...valid, credential: { configured: false, resolution: "resolved" } },
+      { ...valid, credential: { configured: false, resolution: "missing", extra: true } },
+      { ...valid, credential: { configured: true, source: "literal", resolution: "resolved", apiKey: "sk-leak" } },
+      { ...valid, credential: { configured: true, source: "keychain", resolution: "resolved" } },
+      { ...valid, credential: { configured: "yes", source: "literal", resolution: "resolved" } },
+    ]) {
+      expect(() => parseSpeechInputSettingsResponse(value)).toThrow();
+    }
+  });
+});

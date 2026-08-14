@@ -276,6 +276,31 @@ export interface SpeechInputCredentialStatus {
   resolution: "missing" | "resolved" | "unresolved" | "unchecked";
 }
 
+export interface SpeechInputSettings {
+  provider: SpeechInputProviderPreference;
+  language?: string;
+  cloud: { baseUrl: string; model: string };
+}
+
+export interface SpeechInputSettingsResponse {
+  contractVersion: 1;
+  /** Canonical lowercase UUID; opaque to clients. */
+  revision: string;
+  settings: SpeechInputSettings;
+  credential: SpeechInputCredentialStatus;
+}
+
+export type SpeechInputCredentialMutation =
+  | { action: "preserve" }
+  | { action: "replace"; value: string }
+  | { action: "clear" };
+
+export interface SpeechInputSettingsUpdate {
+  expectedRevision: string;
+  settings: SpeechInputSettings;
+  credential: SpeechInputCredentialMutation;
+}
+
 export interface HostSpeechVoice {
   name: string;
   language: string;

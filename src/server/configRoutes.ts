@@ -30,17 +30,20 @@ const SELECTED_MACHINE_CONFIG_KEY_SET = new Set<string>(SELECTED_MACHINE_CONFIG_
  * earlier mutation's response. Ordinary reads stay on the lock-free JSON read
  * path because they expose no revision and need no write transaction.
  *
- * The environment is pinned at construction: the coordinator is built lazily
- * at the first mutation, and a live process.env could otherwise change
- * between construction and that first mutation, moving the config and lock
- * database paths away from the session daemon's frozen startup snapshot.
+ * The environment is pinned at construction: a live process.env could
+ * otherwise change between construction and the first mutation, moving the
+ * config and lock database paths away from the session daemon's frozen
+ * startup snapshot. Callers that own a shared coordinator (for example
+ * `buildApp`, which hands the same instance to the speech settings service)
+ * pass it in so there is exactly one mutation authority per process.
  */
-export function createFilePiWebUiConfigService(options: LoadOptions = {}): PiWebUiConfigService {
+export function createFilePiWebUiConfigService(options: LoadOptions = {}, coordinator?: PiWebUiConfigMutationCoordinator): PiWebUiConfigService {
   const pinnedOptions: LoadOptions = options.env === undefined ? { ...options, env: Object.freeze({ ...process.env }) } : options;
-  let coordinator: PiWebUiConfigMutationCoordinator | undefined;
+  let ownedCoordinator: PiWebUiConfigMutationCoordinator | undefined;
   const mutationCoordinator = (): PiWebUiConfigMutationCoordinator => {
-    coordinator ??= createPiWebUiConfigMutationCoordinator({ config: pinnedOptions });
-    return coordinator;
+    if (coordinator !== undefined) return coordinator;
+    ownedCoordinator ??= createPiWebUiConfigMutationCoordinator({ config: pinnedOptions });
+    return ownedCoordinator;
   };
   return {
     read: () => currentPiWebUiConfigResponse(pinnedOptions),
