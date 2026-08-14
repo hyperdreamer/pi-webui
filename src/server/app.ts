@@ -239,16 +239,19 @@ function isApiPath(requestUrl: string): boolean {
 }
 
 /**
- * One coordinator instance per app, handed to both the generic config service
- * and the speech settings service, so production never creates a second
- * mutation authority. The environment is pinned when the app is built (the
- * same startup moment `src/server/index.ts` freezes its snapshot), so a live
- * process.env change cannot move the coordinated paths away from that frozen
- * startup snapshot. The coordinator itself stays lazy so apps that never
- * touch coordinated paths create no filesystem state.
+ * One lazy shared config mutation authority per app. When `injected` is
+ * supplied, the returned coordinator delegates to exactly that instance, so
+ * every consumer handed this proxy shares one authority. Otherwise the real
+ * coordinator is created on first use against `pinnedEnv` (frozen from
+ * `process.env` when omitted, the same startup moment `src/server/index.ts`
+ * freezes its snapshot), so a live process.env change cannot move the
+ * coordinated paths away from the frozen startup snapshot and apps that
+ * never touch coordinated paths create no filesystem state.
  */
-function sharedConfigMutationCoordinator(injected?: PiWebUiConfigMutationCoordinator): PiWebUiConfigMutationCoordinator {
-  const pinnedEnv: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
+export function sharedConfigMutationCoordinator(
+  injected: PiWebUiConfigMutationCoordinator | undefined,
+  pinnedEnv: NodeJS.ProcessEnv = Object.freeze({ ...process.env }),
+): PiWebUiConfigMutationCoordinator {
   let created: PiWebUiConfigMutationCoordinator | undefined;
   const resolve = (): PiWebUiConfigMutationCoordinator => {
     created ??= injected ?? createPiWebUiConfigMutationCoordinator({ config: { env: pinnedEnv } });
@@ -258,6 +261,21 @@ function sharedConfigMutationCoordinator(injected?: PiWebUiConfigMutationCoordin
     read: () => resolve().read(),
     mutate: (mutate, mutationOptions) => resolve().mutate(mutate, mutationOptions),
   };
+}
+
+/**
+ * The production gateway composition: exactly one shared lazy coordinator,
+ * pinned to the frozen startup environment, handed to both the file-backed
+ * generic config service and (through `AppDependencies.configMutationCoordinator`)
+ * the speech settings service, so the normal startup path can never silently
+ * own a second mutation authority.
+ */
+export function createGatewayConfigComposition(
+  env: NodeJS.ProcessEnv,
+  injectedCoordinator?: PiWebUiConfigMutationCoordinator,
+): { coordinator: PiWebUiConfigMutationCoordinator; config: PiWebUiConfigService } {
+  const coordinator = injectedCoordinator ?? sharedConfigMutationCoordinator(undefined, env);
+  return { coordinator, config: createFilePiWebUiConfigService({ env }, coordinator) };
 }
 
 export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInstance> {
