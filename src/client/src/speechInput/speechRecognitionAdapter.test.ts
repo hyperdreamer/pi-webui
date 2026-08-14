@@ -328,6 +328,36 @@ describe("result accumulation", () => {
     expect(log.transcribing).toBe(0);
   });
 
+  it("publishes an empty interim update when a provisional segment becomes final", () => {
+    const harness = createHarness();
+    const { log } = startRun(harness);
+    const instance = singleInstance(harness);
+    instance.emitResult([{ transcript: "Hello", isFinal: false }]);
+    expect(log.interim).toEqual(["Hello"]);
+    // The provisional segment flips to final, so the aggregate becomes empty;
+    // the adapter must publish that change so a stale interim display clears
+    // before the run completes.
+    instance.emitResult([{ transcript: "Hello ", isFinal: true }]);
+    expect(log.interim).toEqual(["Hello", ""]);
+    expect(log.completed).toEqual([]);
+    instance.emitEnd();
+    expect(log.completed).toEqual(["Hello"]);
+  });
+
+  it("publishes an empty interim update when the recognizer retracts the provisional segment", () => {
+    const harness = createHarness();
+    const { log } = startRun(harness);
+    const instance = singleInstance(harness);
+    instance.emitResult([{ transcript: "Hello", isFinal: false }]);
+    expect(log.interim).toEqual(["Hello"]);
+    instance.emitResult([{ transcript: "", isFinal: false }]);
+    expect(log.interim).toEqual(["Hello", ""]);
+    expect(log.completed).toEqual([]);
+    instance.emitEnd();
+    expect(log.completed).toEqual([]);
+    expect(log.errors).toEqual([{ code: "no-speech", message: "No speech detected" }]);
+  });
+
   it("finalizes a previously interim result exactly once when it becomes final", () => {
     const harness = createHarness();
     const { log } = startRun(harness);

@@ -140,6 +140,8 @@ interface RecognitionRunState {
   finalText: string;
   /** First not-yet-visited index in each event's accumulated results list. */
   resultIndex: number;
+  /** Last interim aggregate handed to onInterim, used to detect changes. */
+  publishedInterim: string;
   /** True once the run settled; every late event is then suppressed. */
   terminal: boolean;
   /** True while a Stop request waits for its settlement end event. */
@@ -201,6 +203,7 @@ export class SpeechRecognitionAdapter implements SpeechInputProviderAdapter {
       callbacks,
       finalText: "",
       resultIndex: 0,
+      publishedInterim: "",
       terminal: false,
       stopping: false,
       deadlineCancel: undefined,
@@ -253,9 +256,14 @@ export class SpeechRecognitionAdapter implements SpeechInputProviderAdapter {
           interim += transcript;
         }
       }
-      // Publish only the latest nonfinal aggregate; finalized segments never
-      // flow through the interim channel.
-      if (interim !== "") callbacks.onInterim(interim);
+      // Publish the latest nonfinal aggregate whenever it changes, including
+      // the empty string: when a provisional segment becomes final or is
+      // retracted, consumers must clear their stale interim display.
+      // Finalized segments never flow through the interim channel.
+      if (interim !== state.publishedInterim) {
+        state.publishedInterim = interim;
+        callbacks.onInterim(interim);
+      }
     };
 
     recognition.onend = () => {
