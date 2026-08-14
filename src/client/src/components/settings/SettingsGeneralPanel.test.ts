@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TemplateResult } from "lit";
-import type { HostSpeechStatus, PiWebUiConfigResponse, PiWebUiConfigValues } from "../../api";
+import type { HostSpeechStatus, PiWebUiConfigResponse, PiWebUiConfigValues, SpeechInputSettingsResponse } from "../../api";
+import { HttpRequestError } from "../../api";
 import { findTemplateContaining, templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
 import type { GatewayServerConfigDraft, MachineAccessConfigDraft } from "./settingsConfigDraft";
@@ -305,6 +306,246 @@ describe("settings-general-panel host speech settings", () => {
   });
 });
 
+describe("settings-general-panel speech input settings", () => {
+  it("renders the gateway-owned card for remote selections with provider, privacy, and credential status copy", () => {
+    const panel = new SettingsGeneralPanel();
+    panel.targetLabel = "Lab Mac (remote machine)";
+    panel.speechInputSettings = speechInputSettingsResponse({
+      credential: { configured: true, source: "environment", resolution: "unresolved" },
+    });
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    const strings = collectTemplateStrings(card).join("");
+
+    expect(text).toContain("Speech input");
+    expect(text).toContain("Auto");
+    expect(text).toContain("Browser");
+    expect(text).toContain("Cloud");
+    expect(text).toContain("Browser recognition may be processed by the browser vendor's speech service.");
+    expect(text).toContain("Cloud sends audio to the configured HTTPS endpoint through the gateway.");
+    expect(text).toContain("Gateway access is administrative because PI WEBUI adds no authentication");
+    expect(text).toContain("An environment API key source is configured but is not currently resolved for this gateway.");
+    expect(text).toContain("Clear credential");
+    expect(text).toContain("Save speech input settings");
+    expect(strings).toContain('placeholder="Auto"');
+    expect(strings).toContain('class="speech-input-api-key"');
+    expect(strings).toContain('type="password"');
+    expect(strings).toContain('aria-label="Speech input settings"');
+  });
+
+  it("renders safe credential-status copy for every response state", () => {
+    const cases: readonly [SpeechInputSettingsResponse["credential"], string][] = [
+      [{ configured: false, resolution: "missing" }, "No API key source is configured."],
+      [{ configured: true, source: "literal", resolution: "resolved" }, "A literal API key source is configured."],
+      [{ configured: true, source: "environment", resolution: "resolved" }, "An environment API key source is configured and resolves for this gateway."],
+      [{ configured: true, source: "environment", resolution: "unresolved" }, "An environment API key source is configured but is not currently resolved for this gateway."],
+      [{ configured: true, source: "command", resolution: "unchecked" }, "A command API key source is configured and is resolved when transcription starts."],
+    ];
+
+    for (const [credential, expected] of cases) {
+      const panel = new SettingsGeneralPanel();
+      panel.speechInputSettings = speechInputSettingsResponse({ credential });
+      callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+      const card = speechInputCard(panel);
+      expect(card === undefined ? "" : templateText(card)).toContain(expected);
+    }
+  });
+
+  it("reads the password DOM value once for a revision-bound full save and never retains it", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse();
+    const saved = speechInputSettingsResponse({
+      revision: "00000000-0000-4000-8000-000000000002",
+      settings: { provider: "cloud", language: "pt-BR", cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    let value = "!short-lived-credential-command";
+    let reads = 0;
+    const input = passwordInput(
+      () => "!short-lived-credential-command",
+      (next) => { value = next; },
+      () => { reads += 1; },
+    );
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    panel.onSaveSpeechInput = vi.fn(() => Promise.resolve(saved));
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+    callPanelMethod(panel, "updateSpeechInputDraft", {
+      provider: "cloud",
+      language: "pt-BR",
+      baseUrl: "https://gateway.example.test/v1",
+      model: "whisper-1",
+    });
+    callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+
+    expect(reads).toBe(1);
+    expect(panel.onSaveSpeechInput).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: initial.revision,
+      settings: { provider: "cloud", language: "pt-BR", cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
+      credential: { action: "replace", value: "!short-lived-credential-command" },
+    });
+    expect(value).toBe("");
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(false);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(false);
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(false);
+    expect(JSON.stringify({
+      draft: getPanelProperty(panel, "speechInputDraft"),
+      saved: getPanelProperty(panel, "speechInputSavedResponse"),
+      error: getPanelProperty(panel, "speechInputLocalError"),
+    })).not.toContain("!short-lived-credential-command");
+  });
+
+  it("keeps a changed draft and password entry on a conflict, marks the card stale, and blocks actions", async () => {
+    const panel = new SettingsGeneralPanel();
+    let password = "$SPEECH_KEY";
+    const input = passwordInput(() => password, (next) => { password = next; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = speechInputSettingsResponse();
+    panel.onSaveSpeechInput = vi.fn(() => Promise.reject(new HttpRequestError("conflict", 409)));
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+    callPanelMethod(panel, "updateSpeechInputDraft", { model: "new-model" });
+    callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+
+    expect(input.value).toBe("$SPEECH_KEY");
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(true);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(true);
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(true);
+    expect(getPanelProperty(panel, "speechInputLocalError")).toBe("Speech input settings changed in another tab. Reload before saving.");
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    expect(templateText(card)).not.toContain("$SPEECH_KEY");
+    expect(templateValuesAfterMarker(card, "?disabled=")).toContain(true);
+  });
+
+  it("clears only the credential baseline after confirmation while retaining a dirty nonsecret draft", async () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse({
+      credential: { configured: true, source: "environment", resolution: "resolved" },
+    });
+    const cleared = speechInputSettingsResponse({
+      revision: "00000000-0000-4000-8000-000000000003",
+      credential: { configured: false, resolution: "missing" },
+    });
+    let password = "$SPEECH_KEY";
+    const input = passwordInput(() => password, (next) => { password = next; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    panel.onSaveSpeechInput = vi.fn(() => Promise.resolve(cleared));
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+    callPanelMethod(panel, "updateSpeechInputDraft", { model: "unsaved-model" });
+    callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(panel.onSaveSpeechInput).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: initial.revision,
+      settings: initial.settings,
+      credential: { action: "clear" },
+    });
+    expect(input.value).toBe("");
+    expect(getPanelProperty(panel, "speechInputDraft")).toMatchObject({ model: "unsaved-model" });
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(true);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(false);
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps a dirty draft and password entry when an external revision arrives, then force-adopts an explicit reload", () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse();
+    const newer = speechInputSettingsResponse({
+      revision: "00000000-0000-4000-8000-000000000005",
+      settings: { provider: "browser", language: "fr-FR", cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
+    });
+    let password = "$SPEECH_KEY";
+    const input = passwordInput(() => password, (next) => { password = next; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+    callPanelMethod(panel, "updateSpeechInputDraft", { model: "unsaved-model" });
+    callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+
+    panel.speechInputSettings = newer;
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", initial]]));
+
+    expect(getPanelProperty(panel, "speechInputSavedResponse")).toBe(initial);
+    expect(getPanelProperty(panel, "speechInputDraft")).toMatchObject({ model: "unsaved-model" });
+    expect(password).toBe("$SPEECH_KEY");
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(true);
+
+    panel.speechInputAdoptionGeneration = 1;
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputAdoptionGeneration", 0]]));
+
+    expect(getPanelProperty(panel, "speechInputSavedResponse")).toBe(newer);
+    expect(getPanelProperty(panel, "speechInputDraft")).toEqual({
+      provider: "browser",
+      language: "fr-FR",
+      baseUrl: "https://gateway.example.test/v1",
+      model: "whisper-1",
+    });
+    expect(password).toBe("");
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(false);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(false);
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(false);
+  });
+
+  it("uses preserve for a blank password entry and keeps a safe endpoint-binding failure local", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse();
+    let password = "";
+    const input = passwordInput(() => password, (next) => { password = next; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    panel.onSaveSpeechInput = vi.fn(() => Promise.reject(new HttpRequestError("Re-enter the API key source when changing the cloud base URL.", 400)));
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+    callPanelMethod(panel, "updateSpeechInputDraft", { baseUrl: "https://gateway.example.test/v1" });
+    callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+
+    expect(panel.onSaveSpeechInput).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: initial.revision,
+      settings: {
+        provider: "auto",
+        cloud: { baseUrl: "https://gateway.example.test/v1", model: "gpt-4o-mini-transcribe" },
+      },
+      credential: { action: "preserve" },
+    });
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(true);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(true);
+    expect(getPanelProperty(panel, "speechInputLocalError")).toBe("Re-enter the API key source when changing the cloud base URL, or clear the saved credential first.");
+  });
+
+  it("does not send a clear request when credential-clear confirmation is canceled", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    const panel = new SettingsGeneralPanel();
+    panel.speechInputSettings = speechInputSettingsResponse({
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    panel.onSaveSpeechInput = vi.fn();
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(panel.onSaveSpeechInput).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
+
 function collectTemplateStrings(template: TemplateResult): string[] {
   const strings: string[] = [];
   visitTemplate(template);
@@ -401,6 +642,35 @@ function hostSpeechCard(panel: SettingsGeneralPanel): TemplateResult | undefined
 
 function isPanelMethod(value: unknown): value is (this: SettingsGeneralPanel, ...args: readonly unknown[]) => unknown {
   return typeof value === "function";
+}
+
+function speechInputCard(panel: SettingsGeneralPanel): TemplateResult | undefined {
+  return findTemplateContaining(panel.render(), 'aria-label="Speech input settings"');
+}
+
+function passwordInput(read: () => string, write: (value: string) => void, onRead?: () => void): { value: string } {
+  return {
+    get value(): string {
+      onRead?.();
+      return read();
+    },
+    set value(value: string) {
+      write(value);
+    },
+  };
+}
+
+function speechInputSettingsResponse(overrides: Partial<SpeechInputSettingsResponse> = {}): SpeechInputSettingsResponse {
+  return {
+    contractVersion: 1,
+    revision: "00000000-0000-4000-8000-000000000001",
+    settings: {
+      provider: "auto",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+    },
+    credential: { configured: false, resolution: "missing" },
+    ...overrides,
+  };
 }
 
 function configResponse(config: PiWebUiConfigValues): PiWebUiConfigResponse {

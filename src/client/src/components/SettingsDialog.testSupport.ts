@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { Machine, MachineRuntime, PiPackageInfo, PiPackageMutationResponse, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiPluginInfo, PiWebUiPluginsResponse } from "../api";
+import type { Machine, MachineRuntime, PiPackageInfo, PiPackageMutationResponse, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiPluginInfo, PiWebUiPluginsResponse, SpeechInputSettingsResponse } from "../api";
 import { SettingsDialog } from "./SettingsDialog";
 
 export const remoteMachine: Machine = {
@@ -64,6 +64,19 @@ export function configResponse(config: PiWebUiConfigValues): PiWebUiConfigRespon
     config,
     effectiveConfig: config,
     envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false },
+  };
+}
+
+export function speechInputSettingsResponse(overrides: Partial<SpeechInputSettingsResponse> = {}): SpeechInputSettingsResponse {
+  return {
+    contractVersion: 1,
+    revision: "00000000-0000-4000-8000-000000000001",
+    settings: {
+      provider: "auto",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+    },
+    credential: { configured: false, resolution: "missing" },
+    ...overrides,
   };
 }
 

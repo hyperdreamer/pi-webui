@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TemplateResult } from "lit";
-import { configApi, type PiWebUiConfigResponse } from "../api";
+import { configApi, pluginsApi, speechInputApi, type PiWebUiConfigResponse, type SpeechInputSettingsResponse, type SpeechInputSettingsUpdate } from "../api";
 import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
-import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, remoteMachine, secondRemoteMachine, setDialogProperty, stubWindowTimers } from "./SettingsDialog.testSupport";
+import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, pluginsResponse, remoteMachine, secondRemoteMachine, setDialogProperty, speechInputSettingsResponse, stubWindowTimers } from "./SettingsDialog.testSupport";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -203,6 +203,88 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(templateValueAfterMarker(remoteGeneral, ".hostSpeechStatus=")).toBeUndefined();
     expect(templateValueAfterMarker(remoteGeneral, ".hostSpeechStatusLoading=")).toBe(false);
     expect(templateValueAfterMarker(remoteGeneral, ".onReloadHostSpeech=")).toBeUndefined();
+  });
+  it("forwards the app-owned speech settings snapshot and controls to the General panel for remote selections", () => {
+    const dialog = new SettingsDialog();
+    const snapshot = speechInputSettingsResponse();
+    dialog.machine = remoteMachine;
+    dialog.speechInputSettings = snapshot;
+
+    const general = renderActiveSection(dialog);
+
+    expect(templateValueAfterMarker(general, ".speechInputSettings=")).toBe(snapshot);
+    expect(templateValueAfterMarker(general, ".onSaveSpeechInput=")).toEqual(expect.any(Function));
+    expect(templateValueAfterMarker(general, ".showHostSpeechSettings=")).toBe(false);
+  });
+
+  it("loads speech input settings with the gateway reload and notifies the app only for the accepted response", async () => {
+    const config = configResponse({ host: "127.0.0.1" });
+    const snapshot = speechInputSettingsResponse();
+    const onSpeechInputSettingsLoaded = vi.fn();
+    vi.spyOn(configApi, "config").mockResolvedValue(config);
+    vi.spyOn(pluginsApi, "plugins").mockResolvedValue(pluginsResponse([]));
+    vi.spyOn(speechInputApi, "settings").mockResolvedValue(snapshot);
+    const dialog = new SettingsDialog();
+    dialog.onSpeechInputSettingsLoaded = onSpeechInputSettingsLoaded;
+
+    await callDialogPromise(dialog, "loadConfig");
+
+    expect(speechInputApi.settings).toHaveBeenCalledOnce();
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(snapshot);
+    expect(onSpeechInputSettingsLoaded).toHaveBeenCalledExactlyOnceWith(snapshot);
+  });
+
+  it("drops a stale speech settings reload before it can notify the app", async () => {
+    const firstConfig = deferred<PiWebUiConfigResponse>();
+    const firstPlugins = deferred<ReturnType<typeof pluginsResponse>>();
+    const firstSpeech = deferred<SpeechInputSettingsResponse>();
+    const current = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000002" });
+    const stale = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000003" });
+    vi.spyOn(configApi, "config")
+      .mockReturnValueOnce(firstConfig.promise)
+      .mockResolvedValueOnce(configResponse({ host: "127.0.0.1" }));
+    vi.spyOn(pluginsApi, "plugins")
+      .mockReturnValueOnce(firstPlugins.promise)
+      .mockResolvedValueOnce(pluginsResponse([]));
+    vi.spyOn(speechInputApi, "settings")
+      .mockReturnValueOnce(firstSpeech.promise)
+      .mockResolvedValueOnce(current);
+    const dialog = new SettingsDialog();
+    const onSpeechInputSettingsLoaded = vi.fn();
+    dialog.onSpeechInputSettingsLoaded = onSpeechInputSettingsLoaded;
+
+    const staleLoad = callDialogPromise(dialog, "loadConfig");
+    await callDialogPromise(dialog, "loadConfig");
+    firstConfig.resolve(configResponse({ host: "0.0.0.0" }));
+    firstPlugins.resolve(pluginsResponse([]));
+    firstSpeech.resolve(stale);
+    await staleLoad;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(current);
+    expect(onSpeechInputSettingsLoaded).toHaveBeenCalledExactlyOnceWith(current);
+  });
+
+  it("returns a successful speech save to the panel and notifies the app with the new revision", async () => {
+    stubWindowTimers();
+    const initial = speechInputSettingsResponse();
+    const saved = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000004" });
+    const update: SpeechInputSettingsUpdate = {
+      expectedRevision: initial.revision,
+      settings: initial.settings,
+      credential: { action: "preserve" },
+    };
+    vi.spyOn(speechInputApi, "saveSettings").mockResolvedValue(saved);
+    const onSpeechInputSettingsSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = initial;
+    dialog.onSpeechInputSettingsSaved = onSpeechInputSettingsSaved;
+
+    await callDialogPromise(dialog, "saveSpeechInputSettings", update);
+
+    expect(speechInputApi.saveSettings).toHaveBeenCalledExactlyOnceWith(update);
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(saved);
+    expect(getDialogProperty(dialog, "speechInputAdoptionGeneration")).toBe(1);
+    expect(onSpeechInputSettingsSaved).toHaveBeenCalledExactlyOnceWith(saved);
   });
 });
 

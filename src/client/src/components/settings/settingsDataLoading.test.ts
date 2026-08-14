@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PiPackagesResponse, PiWebUiConfigResponse, PiWebUiPluginsResponse } from "../../api";
+import type { PiPackagesResponse, PiWebUiConfigResponse, PiWebUiPluginsResponse, SpeechInputSettingsResponse } from "../../api";
 import { loadGatewaySettingsData, loadPiPackagesData } from "./settingsDataLoading";
 import type { PiPackageManagementSupport } from "./piPackageSettings";
 
@@ -12,6 +12,15 @@ const configResponse: PiWebUiConfigResponse = {
 };
 
 const pluginsResponse: PiWebUiPluginsResponse = { plugins: [] };
+const speechInputSettingsResponse: SpeechInputSettingsResponse = {
+  contractVersion: 1,
+  revision: "00000000-0000-4000-8000-000000000001",
+  settings: {
+    provider: "auto",
+    cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+  },
+  credential: { configured: false, resolution: "missing" },
+};
 const packagesResponse: PiPackagesResponse = { packages: [{ source: "npm:@acme/tools", scope: "user", filtered: false }] };
 
 const remoteTarget = { id: "remote-a", name: "Lab Mac", kind: "remote" } as const;
@@ -25,19 +34,43 @@ describe("settings data loading helpers", () => {
     const result = await loadGatewaySettingsData({
       loadConfig: () => Promise.resolve(configResponse),
       loadPlugins: () => Promise.resolve(pluginsResponse),
+      loadSpeechInputSettings: () => Promise.resolve(speechInputSettingsResponse),
     });
 
-    expect(result).toEqual({ config: configResponse, plugins: pluginsResponse, error: "" });
+    expect(result).toEqual({
+      config: configResponse,
+      plugins: pluginsResponse,
+      speechInputSettings: speechInputSettingsResponse,
+      error: "",
+    });
+  });
+
+  it("loads gateway config, plugins, and speech input independently while retaining partial successes", async () => {
+    const loadConfig = vi.fn(() => Promise.reject(new Error("config unavailable")));
+    const loadPlugins = vi.fn(() => Promise.resolve(pluginsResponse));
+    const loadSpeechInputSettings = vi.fn(() => Promise.reject(new Error("speech unavailable")));
+
+    const pending = loadGatewaySettingsData({ loadConfig, loadPlugins, loadSpeechInputSettings });
+
+    expect(loadConfig).toHaveBeenCalledOnce();
+    expect(loadPlugins).toHaveBeenCalledOnce();
+    expect(loadSpeechInputSettings).toHaveBeenCalledOnce();
+    await expect(pending).resolves.toEqual({
+      plugins: pluginsResponse,
+      error: "Failed to load settings: config: config unavailable; speech input: speech unavailable",
+    });
   });
 
   it("keeps gateway settings errors scoped to gateway config and plugins", async () => {
     const result = await loadGatewaySettingsData({
       loadConfig: () => Promise.resolve(configResponse),
       loadPlugins: () => Promise.reject(new Error("plugin scan failed")),
+      loadSpeechInputSettings: () => Promise.resolve(speechInputSettingsResponse),
     });
 
     expect(result.config).toBe(configResponse);
     expect(result.plugins).toBeUndefined();
+    expect(result.speechInputSettings).toBe(speechInputSettingsResponse);
     expect(result.error).toBe("Failed to load settings: PI WEBUI plugins: plugin scan failed");
   });
 

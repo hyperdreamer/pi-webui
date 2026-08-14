@@ -1,7 +1,7 @@
 import { LitElement, html, type TemplateResult } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import { customElement, query, state } from "lit/decorators.js";
-import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type RecentProjectEntry, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
+import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, speechInputApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type RecentProjectEntry, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type SpeechInputSettingsResponse, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
 import type { AppAction } from "../actions";
 import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, StarterModelPolicyPreference } from "../api";
@@ -55,6 +55,7 @@ import { PluginRegistry, installActivityRailScope, installPluginRuntimeScope, in
 import { queryNamespace, readNamespacedString, setNamespacedQueryKey } from "../namespacedQueryArgs";
 import { AppShellController } from "../appShell/appShellController";
 import { BrowserResumeController } from "../appShell/browserResumeController";
+import { SpeechInputSettingsChannel, type SpeechInputSettingsChannelLike } from "../appShell/speechInputSettingsChannel";
 import { NavigationSectionsController, type NavigationSection } from "../appShell/navigationState";
 import { PanelCollapseController, mainViewClass } from "../appShell/panelCollapseController";
 import { PanelResizeController, type PanelResizeConstraints, type ResizablePanelSide } from "../appShell/panelResizeController";
@@ -183,6 +184,11 @@ interface ActiveActivityRailItem extends ResolvedActivityRailItem {
   generation: number;
 }
 
+export interface PiWebUiAppDependencies {
+  speechInputApi?: Pick<typeof speechInputApi, "settings">;
+  createSpeechInputSettingsChannel?: (onRevision: (revision: string) => void) => SpeechInputSettingsChannelLike;
+}
+
 interface ProjectWorkTarget {
   machineId: string;
   projectId: string;
@@ -196,6 +202,13 @@ export class PiWebUiApp extends LitElement {
   @query("app-navigation-panel") private navigationPanel?: AppNavigationPanel;
   @query("#navigation-panel") private navigationPanelFrame?: HTMLElement;
   @query("#workspace-panel") private workspacePanelFrame?: HTMLElement;
+
+  constructor(dependencies: PiWebUiAppDependencies = {}) {
+    super();
+    this.speechInputSettingsApi = dependencies.speechInputApi ?? speechInputApi;
+    this.createSpeechInputSettingsChannel = dependencies.createSpeechInputSettingsChannel
+      ?? ((onRevision) => new SpeechInputSettingsChannel(onRevision));
+  }
 
   private readonly sessionUnread = new SessionUnreadController({
     onChange: (machineId) => {
@@ -355,6 +368,15 @@ export class PiWebUiApp extends LitElement {
     refreshAfterResume: () => this.refreshAfterBrowserResume(),
     onRefreshError: (error) => { console.warn("Failed to refresh after browser resume", error); },
   });
+  @state() private speechInputSettings: SpeechInputSettingsResponse | undefined;
+  private readonly speechInputSettingsApi: Pick<typeof speechInputApi, "settings">;
+  private readonly createSpeechInputSettingsChannel: (onRevision: (revision: string) => void) => SpeechInputSettingsChannelLike;
+  private speechInputSettingsChannel: SpeechInputSettingsChannelLike | undefined;
+  private speechInputSettingsConnected = false;
+  private speechInputSettingsRequestSeq = 0;
+  private speechInputSettingsChannelDispatchQueued = false;
+  private speechInputSettingsChannelRefreshInFlight = false;
+  private pendingSpeechInputSettingsChannelRevision: string | undefined;
   private readonly panelCollapse = new PanelCollapseController(this);
   private readonly panelResize = new PanelResizeController(this);
   private readonly navigationSections = new NavigationSectionsController(
@@ -664,6 +686,7 @@ export class PiWebUiApp extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this.connectSpeechInputSettings();
     this.hostSpeech.select(hostSpeechSelection(this.state));
     void this.hostSpeech.refreshStatus();
     this.synchronizeProjectCatalogPolling();
@@ -687,6 +710,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.disconnectSpeechInputSettings();
     this.finishTerminalModalPointerInteraction();
     this.hostSpeech.dispose();
     this.unreadConnected = false;
@@ -786,6 +810,91 @@ export class PiWebUiApp extends LitElement {
     await this.refreshWorkspaceDeletionRuns();
   }
 
+  private connectSpeechInputSettings(): void {
+    if (this.speechInputSettingsConnected) return;
+    this.speechInputSettingsConnected = true;
+    try {
+      this.speechInputSettingsChannel = this.createSpeechInputSettingsChannel((revision) => {
+        this.handleSpeechInputSettingsChannelRevision(revision);
+      });
+    } catch {
+      this.speechInputSettingsChannel = undefined;
+    }
+    void this.refreshSpeechInputSettings();
+  }
+
+  private disconnectSpeechInputSettings(): void {
+    if (!this.speechInputSettingsConnected && this.speechInputSettingsChannel === undefined) return;
+    this.speechInputSettingsConnected = false;
+    this.speechInputSettingsRequestSeq += 1;
+    this.speechInputSettingsChannelDispatchQueued = false;
+    this.speechInputSettingsChannelRefreshInFlight = false;
+    this.pendingSpeechInputSettingsChannelRevision = undefined;
+    this.speechInputSettingsChannel?.close();
+    this.speechInputSettingsChannel = undefined;
+  }
+
+  private async refreshSpeechInputSettings(): Promise<void> {
+    if (!this.speechInputSettingsConnected) return;
+    const requestSeq = ++this.speechInputSettingsRequestSeq;
+    try {
+      const response = await this.speechInputSettingsApi.settings();
+      if (requestSeq !== this.speechInputSettingsRequestSeq) return;
+      this.speechInputSettings = response;
+    } catch {
+      // The last successful redacted response remains usable while a refresh fails.
+    }
+  }
+
+  private handleSpeechInputSettingsLoaded(response: SpeechInputSettingsResponse): void {
+    this.adoptSpeechInputSettings(response, false);
+  }
+
+  private handleSpeechInputSettingsSaved(response: SpeechInputSettingsResponse): void {
+    this.adoptSpeechInputSettings(response, true);
+  }
+
+  private adoptSpeechInputSettings(response: SpeechInputSettingsResponse, publish: boolean): void {
+    if (!this.speechInputSettingsConnected) return;
+    this.speechInputSettingsRequestSeq += 1;
+    this.speechInputSettings = response;
+    if (this.pendingSpeechInputSettingsChannelRevision === response.revision) {
+      this.pendingSpeechInputSettingsChannelRevision = undefined;
+    }
+    if (publish) this.speechInputSettingsChannel?.publish(response.revision);
+  }
+
+  private handleSpeechInputSettingsChannelRevision(revision: string): void {
+    if (!this.speechInputSettingsConnected || revision === this.speechInputSettings?.revision) return;
+    this.pendingSpeechInputSettingsChannelRevision = revision;
+    if (this.speechInputSettingsChannelRefreshInFlight || this.speechInputSettingsChannelDispatchQueued) return;
+    this.speechInputSettingsChannelDispatchQueued = true;
+    queueMicrotask(() => {
+      this.speechInputSettingsChannelDispatchQueued = false;
+      if (!this.speechInputSettingsConnected || this.speechInputSettingsChannelRefreshInFlight) return;
+      void this.refreshSpeechInputSettingsFromChannel();
+    });
+  }
+
+  private async refreshSpeechInputSettingsFromChannel(): Promise<void> {
+    if (!this.speechInputSettingsConnected || this.speechInputSettingsChannelRefreshInFlight) return;
+    if (this.pendingSpeechInputSettingsChannelRevision === undefined) return;
+    this.pendingSpeechInputSettingsChannelRevision = undefined;
+    this.speechInputSettingsChannelRefreshInFlight = true;
+    try {
+      await this.refreshSpeechInputSettings();
+    } finally {
+      this.speechInputSettingsChannelRefreshInFlight = false;
+      if (this.shouldRunSpeechInputSettingsChannelTrailingRefresh()) {
+        void this.refreshSpeechInputSettingsFromChannel();
+      }
+    }
+  }
+
+  private shouldRunSpeechInputSettingsChannelTrailingRefresh(): boolean {
+    return this.speechInputSettingsConnected && this.pendingSpeechInputSettingsChannelRevision !== undefined;
+  }
+
   private handleBrowserResumeSignal(): void {
     this.appShell.repairViewportPosition();
     this.schedulePiWebUiStatusRefresh();
@@ -799,6 +908,7 @@ export class PiWebUiApp extends LitElement {
       this.sessions.refreshSelectedSession(),
       this.refreshMachineActivities(),
       this.refreshWorkspaceDeletionRuns(),
+      this.refreshSpeechInputSettings(),
     ]);
   }
 
@@ -2739,7 +2849,7 @@ export class PiWebUiApp extends LitElement {
           <h1 id="session-start-heading">What would you like to build?</h1>
           <p class="session-start-copy">Start a conversation in <strong>${workspace.label}</strong>. Ask Pi to explore the codebase, plan a change, or help you make it.</p>
           <div class="session-start-composer">
-            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .showSessionConfiguration=${true} .sessionConfiguration=${configuration} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : catalog} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${this.currentConfirmedStarterModelPolicyWriterSnapshot()?.saving === true} .modelPolicyError=${this.starterModelPolicyError()} .sendDisabled=${policy?.status.blockedReason !== undefined} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
+            <prompt-editor .cwd=${workspace.path} .machineId=${selectedMachineId(state)} .projectId=${workspace.projectId} .workspaceId=${workspace.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .speechInputSettings=${this.speechInputSettings} .showSessionConfiguration=${true} .sessionConfiguration=${configuration} .availableThinkingLevels=${defaults?.thinkingLevels ?? []} .modelPolicyStatus=${policy?.status} .modelTierCatalog=${policy === undefined ? undefined : catalog} .policyThinkingOptions=${policyThinkingOptions} .modelPolicyLoading=${policy !== undefined && this.modelTierCatalogLoading} .modelPolicySaving=${this.currentConfirmedStarterModelPolicyWriterSnapshot()?.saving === true} .modelPolicyError=${this.starterModelPolicyError()} .sendDisabled=${policy?.status.blockedReason !== undefined} .onSelectPolicyMode=${policy === undefined ? undefined : this.handleSelectStarterPolicyMode} .onSelectPolicyTier=${policy === undefined ? undefined : this.handleSelectStarterPolicyTier} .onSelectPolicyThinking=${policy === undefined ? undefined : this.handleSelectStarterPolicyThinking} .onSend=${this.handleStartSessionPrompt} .onSelectModel=${canSelectDefaultModel ? this.handleSelectStarterModel : undefined} .onSelectThinking=${canSelectDefaultThinking ? this.handleSelectStarterThinking : undefined}></prompt-editor>
           </div>
           <p class="session-start-hint">Describe a goal, paste a task, or attach a file to begin.</p>
         </div>
@@ -4641,7 +4751,7 @@ export class PiWebUiApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession ? html`
             ${this.renderChatView(state, state.selectedSession)}
-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${activePolicy === undefined ? statusWithoutModelPolicy(state.status) : activePolicy.editorStatus} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy?.status} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${activePolicy?.thinkingOptions ?? []} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onSelectPolicyMode=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyMode} .onSelectPolicyTier=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyTier} .onSelectPolicyThinking=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyThinking} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
+            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .workspaceScopedFileSuggestions=${this.supportsWorkspaceFileSuggestions()} .speechInputSettings=${this.speechInputSettings} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${activePolicy === undefined ? statusWithoutModelPolicy(state.status) : activePolicy.editorStatus} .availableThinkingLevels=${state.availableThinkingLevels} .modelPolicyStatus=${activePolicy?.status} .modelTierCatalog=${activePolicy === undefined ? undefined : this.selectedMachineModelTierCatalog()} .policyThinkingOptions=${activePolicy?.thinkingOptions ?? []} .modelPolicyLoading=${activePolicy !== undefined && (state.isLoadingModelPolicy || this.modelTierCatalogLoading)} .modelPolicySaving=${activePolicy !== undefined && state.isSavingModelPolicy} .modelPolicyError=${activePolicy === undefined ? "" : activePolicy.error} .onSelectPolicyMode=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyMode} .onSelectPolicyTier=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyTier} .onSelectPolicyThinking=${activePolicy === undefined ? undefined : this.handleSelectActivePolicyThinking} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking} .onCompact=${showCompact ? this.handleCompact : undefined}></prompt-editor>
             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
           ` : this.shouldShowSessionStartScreen(state)
             ? this.renderSessionStartScreen(state)
@@ -4708,7 +4818,7 @@ export class PiWebUiApp extends LitElement {
         ${gitUpdateManagerWorkspace === undefined ? null : html`<git-update-manager-panel .workspace=${gitUpdateManagerWorkspace} .machineId=${selectedMachineId(state)} .onStatusChange=${(gitStatus: GitStatusResponse) => { this.applyGitUpdateManagerStatus(gitUpdateManagerWorkspace, selectedMachineId(state), gitStatus); }} .onClose=${this.handleCloseGitUpdateManagerPanel}></git-update-manager-panel>`}
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${keyed(this.recentProjectDialogGeneration, this.renderRecentProjectDialog())}
-        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .showHostSpeechSettings=${selectedMachineId(state) === "local"} .hostSpeechStatus=${selectedMachineId(state) === "local" ? this.hostSpeech.snapshot.status : undefined} .hostSpeechStatusLoading=${selectedMachineId(state) === "local" && this.hostSpeech.snapshot.loadingStatus} .onReloadHostSpeech=${selectedMachineId(state) === "local" ? () => this.hostSpeech.refreshStatus() : undefined} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
+        ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .speechInputSettings=${this.speechInputSettings} .showHostSpeechSettings=${selectedMachineId(state) === "local"} .hostSpeechStatus=${selectedMachineId(state) === "local" ? this.hostSpeech.snapshot.status : undefined} .hostSpeechStatusLoading=${selectedMachineId(state) === "local" && this.hostSpeech.snapshot.loadingStatus} .onReloadHostSpeech=${selectedMachineId(state) === "local" ? () => this.hostSpeech.refreshStatus() : undefined} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onSpeechInputSettingsLoaded=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsLoaded(response); }} .onSpeechInputSettingsSaved=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsSaved(response); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
     `;
   }

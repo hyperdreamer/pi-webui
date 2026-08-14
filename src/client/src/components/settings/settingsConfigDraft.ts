@@ -1,4 +1,4 @@
-import type { PiWebUiConfigValues } from "../../api";
+import type { PiWebUiConfigValues, SpeechInputCredentialMutation, SpeechInputSettingsResponse, SpeechInputSettingsUpdate } from "../../api";
 
 export interface GatewayServerConfigDraft {
   host: string;
@@ -20,6 +20,14 @@ export interface AgentProfileConfigDraft {
 export interface HostSpeechConfigDraft {
   voice: string;
   rate: string;
+}
+
+export interface SpeechInputSettingsDraft {
+  provider: "auto" | "browser" | "cloud";
+  /** Empty string is the UI-only Auto sentinel and is omitted on the wire. */
+  language: string;
+  baseUrl: string;
+  model: string;
 }
 
 export function emptyGatewayServerConfigDraft(): GatewayServerConfigDraft {
@@ -65,6 +73,31 @@ export function hostSpeechDraftFromConfig(config: PiWebUiConfigValues): HostSpee
   return {
     voice: config.tts?.voice ?? "",
     rate: String(config.tts?.rate ?? 0),
+  };
+}
+
+export function speechInputDraftFromResponse(response: SpeechInputSettingsResponse): SpeechInputSettingsDraft {
+  return {
+    provider: response.settings.provider,
+    language: response.settings.language ?? "",
+    baseUrl: response.settings.cloud.baseUrl,
+    model: response.settings.cloud.model,
+  };
+}
+
+export function speechInputUpdateFromDraft(
+  draft: SpeechInputSettingsDraft,
+  expectedRevision: string,
+  credential: SpeechInputCredentialMutation,
+): SpeechInputSettingsUpdate {
+  return {
+    expectedRevision,
+    settings: {
+      provider: draft.provider,
+      ...(draft.language === "" ? {} : { language: draft.language }),
+      cloud: { baseUrl: draft.baseUrl, model: draft.model },
+    },
+    credential,
   };
 }
 

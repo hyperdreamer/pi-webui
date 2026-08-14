@@ -1,7 +1,7 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { AppAction } from "../actions";
-import { configApi, modelTiersApi, piPackagesApi, pluginsApi, utilityModelsApi, type HostSpeechStatus, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
+import { configApi, modelTiersApi, piPackagesApi, pluginsApi, speechInputApi, utilityModelsApi, type HostSpeechStatus, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type SpeechInputSettingsResponse, type SpeechInputSettingsUpdate, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
 import "./settings/SettingsSessiondPanel";
@@ -32,6 +32,9 @@ export class SettingsDialog extends LitElement {
   @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
   @property({ type: Boolean }) hostSpeechStatusLoading = false;
   @property({ attribute: false }) onReloadHostSpeech?: () => void | Promise<void>;
+  @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
+  @property({ attribute: false }) onSpeechInputSettingsLoaded?: (response: SpeechInputSettingsResponse) => void;
+  @property({ attribute: false }) onSpeechInputSettingsSaved?: (response: SpeechInputSettingsResponse) => void;
   @state() private configResponse: PiWebUiConfigResponse | undefined;
   @state() private accessConfigResponse: PiWebUiConfigResponse | undefined;
   @state() private sessiondConfigResponse: PiWebUiConfigResponse | undefined;
@@ -57,6 +60,8 @@ export class SettingsDialog extends LitElement {
   @state() private packageError = "";
   @state() private modelTiersError = "";
   @state() private utilityModelsError = "";
+  @state() private speechInputAdoptionGeneration = 0;
+  @state() private speechInputCredentialClearGeneration = 0;
   @state() private savedMessage = "";
   @state() private packageMessage = "";
   private savedMessageTimer: number | undefined;
@@ -268,10 +273,14 @@ export class SettingsDialog extends LitElement {
         .showHostSpeechSettings=${showHostSpeechSettings}
         .hostSpeechStatus=${showHostSpeechSettings ? this.hostSpeechStatus : undefined}
         .hostSpeechStatusLoading=${showHostSpeechSettings && this.hostSpeechStatusLoading}
-        .onReload=${() => this.loadConfig()}
+        .speechInputSettings=${this.speechInputSettings}
+        .speechInputAdoptionGeneration=${this.speechInputAdoptionGeneration}
+        .speechInputCredentialClearGeneration=${this.speechInputCredentialClearGeneration}
+        .onReload=${() => this.loadConfig(true)}
         .onReloadMachine=${() => this.loadAccessConfigForTarget()}
         .onReloadHostSpeech=${showHostSpeechSettings ? this.onReloadHostSpeech : undefined}
         .onSave=${(config: PiWebUiConfigValues) => this.saveConfig(config)}
+        .onSaveSpeechInput=${(update: SpeechInputSettingsUpdate) => this.saveSpeechInputSettings(update)}
         .onSaveMachineConfig=${(config: PiWebUiConfigValues) => this.saveMachineAccessConfig(config)}
       ></settings-general-panel>
     `;
@@ -291,7 +300,7 @@ export class SettingsDialog extends LitElement {
     this.onNavigate?.(section);
   }
 
-  private async loadConfig(): Promise<void> {
+  private async loadConfig(forceSpeechInputAdoption = false): Promise<void> {
     const requestSeq = ++this.loadRequestSeq;
     this.loading = true;
     this.error = "";
@@ -299,11 +308,17 @@ export class SettingsDialog extends LitElement {
       const result = await loadGatewaySettingsData({
         loadConfig: () => configApi.config(),
         loadPlugins: () => pluginsApi.plugins(),
+        loadSpeechInputSettings: () => speechInputApi.settings(),
       });
       if (!this.isCurrentLoad(requestSeq)) return;
 
       if (result.config !== undefined) this.configResponse = result.config;
       if (result.plugins !== undefined) this.pluginsResponse = result.plugins;
+      if (result.speechInputSettings !== undefined) {
+        this.speechInputSettings = result.speechInputSettings;
+        if (forceSpeechInputAdoption) this.speechInputAdoptionGeneration += 1;
+        this.onSpeechInputSettingsLoaded?.(result.speechInputSettings);
+      }
       this.error = result.error;
     } finally {
       if (this.isCurrentLoad(requestSeq)) this.loading = false;
@@ -507,6 +522,23 @@ export class SettingsDialog extends LitElement {
       this.showSavedMessage();
     } catch (error) {
       this.error = `Failed to save config: ${errorMessage(error)}`;
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  private async saveSpeechInputSettings(update: SpeechInputSettingsUpdate): Promise<SpeechInputSettingsResponse> {
+    if (this.saving) throw new Error("A settings operation is already running.");
+    this.saving = true;
+    this.savedMessage = "";
+    try {
+      const response = await speechInputApi.saveSettings(update);
+      this.speechInputSettings = response;
+      if (update.credential.action === "clear") this.speechInputCredentialClearGeneration += 1;
+      else this.speechInputAdoptionGeneration += 1;
+      this.onSpeechInputSettingsSaved?.(response);
+      this.showSavedMessage();
+      return response;
     } finally {
       this.saving = false;
     }

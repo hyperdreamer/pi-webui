@@ -1,6 +1,6 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import { DEFAULT_WORKSPACE_UPLOADS_FOLDER, type HostSpeechStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues } from "../../api";
+import { customElement, property, query, state } from "lit/decorators.js";
+import { DEFAULT_WORKSPACE_UPLOADS_FOLDER, HttpRequestError, type HostSpeechStatus, type PiWebUiConfigEnvOverrides, type PiWebUiConfigResponse, type PiWebUiConfigValues, type SpeechInputSettingsResponse, type SpeechInputSettingsUpdate } from "../../api";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import {
@@ -14,9 +14,12 @@ import {
   hostSpeechDraftMatchesConfig,
   machineAccessConfigPatchFromDraft,
   machineAccessDraftFromConfig,
+  speechInputDraftFromResponse,
+  speechInputUpdateFromDraft,
   type GatewayServerConfigDraft,
   type HostSpeechConfigDraft,
   type MachineAccessConfigDraft,
+  type SpeechInputSettingsDraft,
 } from "./settingsConfigDraft";
 
 function generalDescription(targetLabel: string): TemplateResult {
@@ -37,14 +40,27 @@ export class SettingsGeneralPanel extends LitElement {
   @property({ type: Boolean }) showHostSpeechSettings = false;
   @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
   @property({ type: Boolean }) hostSpeechStatusLoading = false;
+  @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
+  @property({ type: Number }) speechInputAdoptionGeneration = 0;
+  @property({ type: Number }) speechInputCredentialClearGeneration = 0;
   @property({ attribute: false }) onReload?: () => void | Promise<void>;
   @property({ attribute: false }) onReloadMachine?: () => void | Promise<void>;
   @property({ attribute: false }) onReloadHostSpeech?: () => void | Promise<void>;
   @property({ attribute: false }) onSave?: (config: PiWebUiConfigValues) => void | Promise<void>;
+  @property({ attribute: false }) onSaveSpeechInput?: (update: SpeechInputSettingsUpdate) => SpeechInputSettingsResponse | Promise<SpeechInputSettingsResponse>;
   @property({ attribute: false }) onSaveMachineConfig?: (config: PiWebUiConfigValues) => void | Promise<void>;
+  @query(".speech-input-api-key") private speechInputApiKeyInput?: HTMLInputElement;
   @state() private gatewayDraft: GatewayServerConfigDraft = emptyGatewayServerConfigDraft();
   @state() private hostSpeechDraft: HostSpeechConfigDraft = emptyHostSpeechConfigDraft();
   @state() private machineDraft: MachineAccessConfigDraft = emptyMachineAccessConfigDraft();
+  @state() private speechInputDraft: SpeechInputSettingsDraft = emptySpeechInputSettingsDraft();
+  @state() private speechInputSavedResponse: SpeechInputSettingsResponse | undefined;
+  @state() private speechInputDraftDirty = false;
+  @state() private credentialEntryDirty = false;
+  @state() private speechInputStale = false;
+  @state() private speechInputLocalError = "";
+  private appliedSpeechInputAdoptionGeneration = 0;
+  private appliedSpeechInputCredentialClearGeneration = 0;
   @state() private gatewayLocalError = "";
   @state() private hostSpeechDraftDirty = false;
   @state() private hostSpeechLocalError = "";
@@ -70,6 +86,9 @@ export class SettingsGeneralPanel extends LitElement {
       this.machineDraft = machineAccessDraftFromConfig(this.machineConfigResponse.config);
       this.machineLocalError = "";
     }
+    if (changed.has("speechInputSettings") || changed.has("speechInputAdoptionGeneration") || changed.has("speechInputCredentialClearGeneration")) {
+      this.adoptSpeechInputProperties();
+    }
   }
 
   override render(): TemplateResult {
@@ -84,6 +103,7 @@ export class SettingsGeneralPanel extends LitElement {
       >
         <div class="settings-sections">
           ${this.renderGatewayServerSettings()}
+          ${this.renderSpeechInputSettings()}
           ${this.showHostSpeechSettings ? this.renderHostSpeechSettings() : null}
           ${this.renderSelectedMachineAccessSettings()}
         </div>
@@ -141,6 +161,65 @@ export class SettingsGeneralPanel extends LitElement {
 
             <footer class="form-actions">
               <button class="primary" ?disabled=${this.loading || this.saving}>${this.saving ? "Saving…" : "Save gateway server config"}</button>
+            </footer>
+          </form>
+        `}
+      </section>
+    `;
+  }
+
+  private renderSpeechInputSettings(): TemplateResult {
+    const response = this.speechInputSavedResponse ?? this.speechInputSettings;
+    const disabled = this.saving || this.speechInputStale || response === undefined;
+    const clearDisabled = disabled || !speechInputCredentialConfigured(response);
+    return html`
+      <section class="settings-card speech-input-card" aria-label="Speech input settings">
+        <div class="card-heading">
+          <h3>Speech input</h3>
+          <p>Dictation settings are stored on this gateway and apply regardless of the selected coding machine.</p>
+          <p class="speech-input-boundary">Browser recognition may be processed by the browser vendor's speech service. Cloud sends audio to the configured HTTPS endpoint through the gateway. Cloud audio and the resolved credential go only to that endpoint, with redirects disabled. Gateway access is administrative because PI WEBUI adds no authentication.</p>
+        </div>
+        ${response === undefined ? html`<div class="loading-card">${this.loading ? "Loading speech input settings…" : "Speech input settings are unavailable. Reload before saving."}</div>` : html`
+          <div class="speech-input-status" role="status">${speechInputCredentialStatusText(response.credential)}</div>
+          ${this.speechInputLocalError === "" ? null : html`<div class="message error-message" role="alert">${this.speechInputLocalError}</div>`}
+          <form class="config-form" @submit=${(event: Event) => { void this.saveSpeechInputSettings(event); }}>
+            <label class="field">
+              <span class="field-heading"><span>Provider</span></span>
+              <select
+                .value=${this.speechInputDraft.provider}
+                ?disabled=${disabled}
+                @change=${(event: Event) => {
+                  const value = selectValue(event);
+                  this.updateSpeechInputDraft({ provider: value === "browser" || value === "cloud" ? value : "auto" });
+                }}
+              >
+                <option value="auto">Auto</option>
+                <option value="browser">Browser</option>
+                <option value="cloud">Cloud</option>
+              </select>
+              <small>Auto uses Browser when available, then Cloud.</small>
+            </label>
+            <label class="field">
+              <span class="field-heading"><span>Language</span></span>
+              <input .value=${this.speechInputDraft.language} ?disabled=${disabled} placeholder="Auto" autocomplete="off" spellcheck="false" @input=${(event: Event) => { this.updateSpeechInputDraft({ language: inputValue(event) }); }}>
+              <small>Leave empty for the provider default.</small>
+            </label>
+            <label class="field">
+              <span class="field-heading"><span>Cloud base URL</span></span>
+              <input .value=${this.speechInputDraft.baseUrl} ?disabled=${disabled} type="url" autocomplete="off" spellcheck="false" @input=${(event: Event) => { this.updateSpeechInputDraft({ baseUrl: inputValue(event) }); }}>
+            </label>
+            <label class="field">
+              <span class="field-heading"><span>Cloud model</span></span>
+              <input .value=${this.speechInputDraft.model} ?disabled=${disabled} autocomplete="off" spellcheck="false" @input=${(event: Event) => { this.updateSpeechInputDraft({ model: inputValue(event) }); }}>
+            </label>
+            <label class="field">
+              <span class="field-heading"><span>API key source</span></span>
+              <input class="speech-input-api-key" type="password" ?disabled=${disabled} placeholder="Leave blank to preserve the saved source" autocomplete="off" spellcheck="false" @input=${() => { this.markSpeechInputCredentialEntryDirty(); }}>
+              <small>Enter a literal, environment reference, or trusted short-lived command only when replacing the saved source.</small>
+            </label>
+            <footer class="form-actions speech-input-actions">
+              <button type="button" ?disabled=${clearDisabled} @click=${() => { void this.clearSpeechInputCredential(); }}>Clear credential</button>
+              <button class="primary" ?disabled=${disabled}>${this.saving ? "Saving…" : "Save speech input settings"}</button>
             </footer>
           </form>
         `}
@@ -259,11 +338,122 @@ export class SettingsGeneralPanel extends LitElement {
     `;
   }
 
+  private adoptSpeechInputProperties(): void {
+    const response = this.speechInputSettings;
+    if (response === undefined) return;
+    if (this.speechInputAdoptionGeneration !== this.appliedSpeechInputAdoptionGeneration) {
+      this.appliedSpeechInputAdoptionGeneration = this.speechInputAdoptionGeneration;
+      this.appliedSpeechInputCredentialClearGeneration = this.speechInputCredentialClearGeneration;
+      this.adoptSpeechInputResponse(response, true);
+      return;
+    }
+    if (this.speechInputCredentialClearGeneration !== this.appliedSpeechInputCredentialClearGeneration) {
+      this.appliedSpeechInputCredentialClearGeneration = this.speechInputCredentialClearGeneration;
+      this.adoptSpeechInputCredentialClear(response);
+      return;
+    }
+
+    const saved = this.speechInputSavedResponse;
+    if (saved === undefined || saved.revision === response.revision) {
+      if (saved === undefined) this.adoptSpeechInputResponse(response, false);
+      else this.speechInputSavedResponse = response;
+      return;
+    }
+    if (this.speechInputDraftDirty || this.credentialEntryDirty) {
+      this.speechInputStale = true;
+      this.speechInputLocalError = "Speech input settings changed in another tab. Reload before saving.";
+      return;
+    }
+    this.adoptSpeechInputResponse(response, false);
+  }
+
+  private adoptSpeechInputResponse(response: SpeechInputSettingsResponse, clearCredentialInput: boolean): void {
+    this.speechInputSavedResponse = response;
+    this.speechInputDraft = speechInputDraftFromResponse(response);
+    this.speechInputDraftDirty = false;
+    this.credentialEntryDirty = false;
+    this.speechInputStale = false;
+    this.speechInputLocalError = "";
+    if (clearCredentialInput) this.clearSpeechInputCredentialInput();
+  }
+
+  private adoptSpeechInputCredentialClear(response: SpeechInputSettingsResponse): void {
+    this.speechInputSavedResponse = response;
+    if (!this.speechInputDraftDirty) this.speechInputDraft = speechInputDraftFromResponse(response);
+    this.credentialEntryDirty = false;
+    this.speechInputStale = false;
+    this.speechInputLocalError = "";
+    this.clearSpeechInputCredentialInput();
+  }
+
+  private async saveSpeechInputSettings(event: Event): Promise<void> {
+    event.preventDefault();
+    const saved = this.speechInputSavedResponse;
+    if (saved === undefined || this.speechInputStale || this.saving) return;
+    this.speechInputLocalError = "";
+    const credentialValue = this.speechInputApiKeyInput?.value ?? "";
+    const credential = credentialValue === "" ? { action: "preserve" } as const : { action: "replace", value: credentialValue } as const;
+    try {
+      const response = await this.onSaveSpeechInput?.(speechInputUpdateFromDraft(this.speechInputDraft, saved.revision, credential));
+      if (response !== undefined) this.adoptSpeechInputResponse(response, true);
+    } catch (error) {
+      this.handleSpeechInputSaveError(error);
+    }
+  }
+
+  private async clearSpeechInputCredential(): Promise<void> {
+    const saved = this.speechInputSavedResponse;
+    if (saved === undefined || this.speechInputStale || this.saving) return;
+    if (typeof globalThis.confirm !== "function" || !globalThis.confirm("Clear the saved speech input credential?")) return;
+    this.speechInputLocalError = "";
+    try {
+      const response = await this.onSaveSpeechInput?.({
+        expectedRevision: saved.revision,
+        settings: saved.settings,
+        credential: { action: "clear" },
+      });
+      if (response !== undefined) this.adoptSpeechInputCredentialClear(response);
+    } catch (error) {
+      this.handleSpeechInputSaveError(error);
+    }
+  }
+
+  private handleSpeechInputSaveError(error: unknown): void {
+    if (error instanceof HttpRequestError && error.status === 409) {
+      this.speechInputStale = true;
+      this.speechInputLocalError = "Speech input settings changed in another tab. Reload before saving.";
+      return;
+    }
+    if (error instanceof HttpRequestError
+      && error.status === 400
+      && error.message === "Re-enter the API key source when changing the cloud base URL.") {
+      this.speechInputLocalError = "Re-enter the API key source when changing the cloud base URL, or clear the saved credential first.";
+      return;
+    }
+    this.speechInputLocalError = errorMessage(error);
+  }
+
+  private updateSpeechInputDraft(patch: Partial<SpeechInputSettingsDraft>): void {
+    this.speechInputDraft = { ...this.speechInputDraft, ...patch };
+    this.speechInputDraftDirty = true;
+    this.speechInputLocalError = "";
+  }
+
+  private markSpeechInputCredentialEntryDirty(): void {
+    this.credentialEntryDirty = true;
+    this.speechInputLocalError = "";
+  }
+
+  private clearSpeechInputCredentialInput(): void {
+    if (this.speechInputApiKeyInput !== undefined) this.speechInputApiKeyInput.value = "";
+  }
+
   private panelNotices(): readonly SettingsNotice[] {
     const notices: SettingsNotice[] = [];
     const gatewayError = this.gatewayLocalError || this.error;
     if (gatewayError !== "") notices.push({ type: "error", title: "Gateway server", content: gatewayError });
     if (this.hostSpeechLocalError !== "") notices.push({ type: "error", title: "Text to speech", content: this.hostSpeechLocalError });
+    if (this.speechInputLocalError !== "") notices.push({ type: "error", title: "Speech input", content: this.speechInputLocalError });
     if (this.savedMessage !== "") notices.push({ type: "success", content: this.savedMessage });
     return notices;
   }
@@ -377,6 +567,9 @@ export class SettingsGeneralPanel extends LitElement {
     .settings-card { display: grid; gap: 14px; }
     .message { margin-bottom: 12px; }
     .settings-card .message { margin-bottom: 0; }
+    .speech-input-status { min-width: 0; color: var(--pi-muted); line-height: 1.45; overflow-wrap: anywhere; }
+    .speech-input-boundary { min-width: 0; overflow-wrap: anywhere; }
+    .speech-input-actions { flex-wrap: wrap; }
     .error-message { border-color: var(--pi-danger); color: var(--pi-danger); background: color-mix(in srgb, var(--pi-danger) 10%, var(--pi-surface)); }
     .host-speech-unavailable { border-color: var(--pi-warning-border); color: var(--pi-warning); background: var(--pi-warning-surface); }
     .loading-card { color: var(--pi-muted); }
@@ -406,6 +599,25 @@ export class SettingsGeneralPanel extends LitElement {
       .effective-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
     }
   `;
+}
+
+function emptySpeechInputSettingsDraft(): SpeechInputSettingsDraft {
+  return { provider: "auto", language: "", baseUrl: "", model: "" };
+}
+
+function speechInputCredentialConfigured(response: SpeechInputSettingsResponse | undefined): boolean {
+  return response?.credential.configured ?? false;
+}
+
+function speechInputCredentialStatusText(credential: SpeechInputSettingsResponse["credential"]): string {
+  if (!credential.configured) return "No API key source is configured.";
+  if (credential.source === "literal") return "A literal API key source is configured.";
+  if (credential.source === "environment") {
+    return credential.resolution === "resolved"
+      ? "An environment API key source is configured and resolves for this gateway."
+      : "An environment API key source is configured but is not currently resolved for this gateway.";
+  }
+  return "A command API key source is configured and is resolved when transcription starts.";
 }
 
 function formatAllowedHosts(value: PiWebUiConfigValues["allowedHosts"]): string | TemplateResult {

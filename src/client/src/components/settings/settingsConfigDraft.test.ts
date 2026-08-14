@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SpeechInputCredentialMutation, SpeechInputSettingsResponse } from "../../api";
 import {
   agentProfileConfigPatchFromDraft,
   agentProfileDraftFromConfig,
@@ -11,9 +12,84 @@ import {
   hostSpeechDraftMatchesConfig,
   machineAccessConfigPatchFromDraft,
   machineAccessDraftFromConfig,
+  speechInputDraftFromResponse,
+  speechInputUpdateFromDraft,
 } from "./settingsConfigDraft";
 
+function speechSettingsResponse(overrides: Partial<SpeechInputSettingsResponse> = {}): SpeechInputSettingsResponse {
+  return {
+    contractVersion: 1,
+    revision: "00000000-0000-4000-8000-000000000001",
+    settings: {
+      provider: "auto",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+    },
+    credential: { configured: false, resolution: "missing" },
+    ...overrides,
+  };
+}
+
 describe("settings config drafts", () => {
+  it("maps speech input responses into credential-free drafts and preserves the Auto language sentinel", () => {
+    const response = speechSettingsResponse({
+      settings: {
+        provider: "auto",
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+      },
+      credential: { configured: true, source: "environment", resolution: "unresolved" },
+    });
+
+    const draft = speechInputDraftFromResponse(response);
+
+    expect(draft).toEqual({
+      provider: "auto",
+      language: "",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini-transcribe",
+    });
+    expect(draft).not.toHaveProperty("credential");
+    expect(draft).not.toHaveProperty("apiKey");
+  });
+
+  it("builds speech settings updates from the adopted revision and separate credential mutation", () => {
+    const draft = {
+      provider: "cloud" as const,
+      language: "",
+      baseUrl: "https://gateway.example.test/v1",
+      model: "whisper-1",
+    };
+    const response = speechSettingsResponse({ revision: "00000000-0000-4000-8000-000000000042" });
+    const replace: SpeechInputCredentialMutation = { action: "replace", value: "$SPEECH_KEY" };
+
+    expect(speechInputUpdateFromDraft(draft, response.revision, { action: "preserve" })).toEqual({
+      expectedRevision: "00000000-0000-4000-8000-000000000042",
+      settings: {
+        provider: "cloud",
+        cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
+      },
+      credential: { action: "preserve" },
+    });
+    expect(speechInputUpdateFromDraft({ ...draft, language: "pt-BR" }, response.revision, replace)).toEqual({
+      expectedRevision: response.revision,
+      settings: {
+        provider: "cloud",
+        language: "pt-BR",
+        cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
+      },
+      credential: replace,
+    });
+  });
+
+  it("leaves speech language canonicalization to the server", () => {
+    const update = speechInputUpdateFromDraft({
+      provider: "browser",
+      language: " PT-br ",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini-transcribe",
+    }, "00000000-0000-4000-8000-000000000042", { action: "preserve" });
+
+    expect(update.settings.language).toBe(" PT-br ");
+  });
   it("splits gateway server and selected-machine access drafts", () => {
     const config = {
       host: "0.0.0.0",

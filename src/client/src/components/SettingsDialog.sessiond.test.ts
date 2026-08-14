@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import { configApi, pluginsApi, type PiWebUiConfigResponse, type PiWebUiPluginsResponse } from "../api";
+import { configApi, pluginsApi, speechInputApi, type PiWebUiConfigResponse, type PiWebUiPluginsResponse } from "../api";
 import { SettingsDialog } from "./SettingsDialog";
-import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, pluginInfo, pluginsResponse, remoteMachine, runtimeWithPackageManagement as runtimeWithoutSelectedMachineSettings, secondRemoteMachine, setDialogProperty, stubWindowTimers } from "./SettingsDialog.testSupport";
+import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, pluginInfo, pluginsResponse, remoteMachine, runtimeWithPackageManagement as runtimeWithoutSelectedMachineSettings, secondRemoteMachine, setDialogProperty, speechInputSettingsResponse, stubWindowTimers } from "./SettingsDialog.testSupport";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -13,16 +13,20 @@ describe("settings-dialog session daemon machine targeting", () => {
   it("keeps gateway settings loads on the gateway config/plugin endpoints", async () => {
     const config = configResponse({ host: "127.0.0.1" });
     const plugins: PiWebUiPluginsResponse = { plugins: [] };
+    const speechInputSettings = speechInputSettingsResponse();
     const configSpy = vi.spyOn(configApi, "config").mockResolvedValue(config);
     const pluginsSpy = vi.spyOn(pluginsApi, "plugins").mockResolvedValue(plugins);
+    const speechInputSpy = vi.spyOn(speechInputApi, "settings").mockResolvedValue(speechInputSettings);
     const dialog = new SettingsDialog();
 
     await callDialogPromise(dialog, "loadConfig");
 
     expect(configSpy.mock.calls).toEqual([[]]);
     expect(pluginsSpy.mock.calls).toEqual([[]]);
+    expect(speechInputSpy.mock.calls).toEqual([[]]);
     expect(getDialogProperty(dialog, "configResponse")).toBe(config);
     expect(getDialogProperty(dialog, "pluginsResponse")).toBe(plugins);
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(speechInputSettings);
     expect(getDialogProperty(dialog, "error")).toBe("");
     expect(getDialogProperty(dialog, "loading")).toBe(false);
   });

@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
+import type { TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SpeechInputSettingsResponse } from "../api";
+import { initialAppState, type AppState } from "../appState";
+import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 interface KeyEventDouble {
@@ -74,6 +78,272 @@ describe("PiWebUiApp speech input Escape delegation", () => {
     expect(keyboard).toHaveBeenCalledOnce();
   });
 });
+
+describe("PiWebUiApp speech input settings ownership", () => {
+  it("loads the app-owned snapshot at startup and suppresses an older direct response after dialog adoption", async () => {
+    const initial = deferred<SpeechInputSettingsResponse>();
+    const dialogResponse = speechInputSettingsResponse("00000000-0000-4000-8000-000000000002");
+    const staleResponse = speechInputSettingsResponse("00000000-0000-4000-8000-000000000003");
+    const settings = vi.fn(() => initial.promise);
+    const { app, channel } = speechSettingsApp(settings);
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    expect(settings).toHaveBeenCalledOnce();
+    callAppMethod(app, "handleSpeechInputSettingsLoaded", dialogResponse);
+    initial.resolve(staleResponse);
+    await flush();
+
+    expect(getAppProperty(app, "speechInputSettings")).toBe(dialogResponse);
+    expect(channel.published).toEqual([]);
+    callAppMethod(app, "disconnectSpeechInputSettings");
+  });
+
+  it("refreshes speech settings through browser resume", async () => {
+    const startup = speechInputSettingsResponse("00000000-0000-4000-8000-000000000001");
+    const resumed = speechInputSettingsResponse("00000000-0000-4000-8000-000000000002");
+    const settings = vi.fn()
+      .mockResolvedValueOnce(startup)
+      .mockResolvedValueOnce(resumed);
+    const { app } = speechSettingsApp(settings);
+    stubResumeDependencies(app);
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    await flush();
+    await callAppPromise(app, "refreshAfterBrowserResume");
+
+    expect(settings).toHaveBeenCalledTimes(2);
+    expect(getAppProperty(app, "speechInputSettings")).toBe(resumed);
+    callAppMethod(app, "disconnectSpeechInputSettings");
+  });
+
+  it("adopts dialog saves before publishing only the new revision", () => {
+    const settings = vi.fn();
+    const { app, channel } = speechSettingsApp(settings);
+    const saved = speechInputSettingsResponse("00000000-0000-4000-8000-000000000004");
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    settings.mockClear();
+    callAppMethod(app, "handleSpeechInputSettingsSaved", saved);
+
+    expect(getAppProperty(app, "speechInputSettings")).toBe(saved);
+    expect(channel.published).toEqual([saved.revision]);
+    expect(settings).not.toHaveBeenCalled();
+    callAppMethod(app, "disconnectSpeechInputSettings");
+  });
+
+  it("coalesces a queued revision burst and runs one trailing refresh for newer in-flight revisions", async () => {
+    const startup = speechInputSettingsResponse("00000000-0000-4000-8000-000000000001");
+    const firstChannelRefresh = deferred<SpeechInputSettingsResponse>();
+    const trailingChannelRefresh = deferred<SpeechInputSettingsResponse>();
+    const settings = vi.fn()
+      .mockResolvedValueOnce(startup)
+      .mockReturnValueOnce(firstChannelRefresh.promise)
+      .mockReturnValueOnce(trailingChannelRefresh.promise);
+    const { app, channel } = speechSettingsApp(settings);
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    await flush();
+    settings.mockClear();
+    channel.emit("00000000-0000-4000-8000-000000000002");
+    channel.emit("00000000-0000-4000-8000-000000000003");
+    await flush();
+    expect(settings).toHaveBeenCalledOnce();
+
+    channel.emit("00000000-0000-4000-8000-000000000004");
+    channel.emit("00000000-0000-4000-8000-000000000005");
+    firstChannelRefresh.resolve(speechInputSettingsResponse("00000000-0000-4000-8000-000000000003"));
+    await flush();
+    expect(settings).toHaveBeenCalledTimes(2);
+
+    trailingChannelRefresh.resolve(speechInputSettingsResponse("00000000-0000-4000-8000-000000000005"));
+    await flush();
+    expect(settings).toHaveBeenCalledTimes(2);
+    expect(getAppProperty(app, "speechInputSettings")).toMatchObject({ revision: "00000000-0000-4000-8000-000000000005" });
+    callAppMethod(app, "disconnectSpeechInputSettings");
+  });
+
+  it("retains the last successful snapshot on a failed channel refresh and still services one trailing invalidation", async () => {
+    const startup = speechInputSettingsResponse("00000000-0000-4000-8000-000000000001");
+    const failedRefresh = deferred<SpeechInputSettingsResponse>();
+    const trailingRefresh = deferred<SpeechInputSettingsResponse>();
+    const settings = vi.fn()
+      .mockResolvedValueOnce(startup)
+      .mockReturnValueOnce(failedRefresh.promise)
+      .mockReturnValueOnce(trailingRefresh.promise);
+    const { app, channel } = speechSettingsApp(settings);
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    await flush();
+    settings.mockClear();
+    channel.emit("00000000-0000-4000-8000-000000000002");
+    await flush();
+    channel.emit("00000000-0000-4000-8000-000000000003");
+    failedRefresh.reject(new Error("offline"));
+    await flush();
+
+    expect(getAppProperty(app, "speechInputSettings")).toBe(startup);
+    expect(settings).toHaveBeenCalledTimes(2);
+    trailingRefresh.resolve(speechInputSettingsResponse("00000000-0000-4000-8000-000000000003"));
+    await flush();
+    expect(getAppProperty(app, "speechInputSettings")).toMatchObject({ revision: "00000000-0000-4000-8000-000000000003" });
+    callAppMethod(app, "disconnectSpeechInputSettings");
+  });
+
+  it("passes the exact app-owned response object to starter and active prompt editors", () => {
+    const snapshot = speechInputSettingsResponse("00000000-0000-4000-8000-000000000006");
+    const { app } = speechSettingsApp(vi.fn());
+    const workspace = {
+      id: "workspace-a",
+      projectId: "project-a",
+      path: "/work/project-a",
+      label: "Project A",
+      isMain: true,
+      isGitRepo: true,
+      isGitWorktree: false,
+    };
+    const starterState: AppState = { ...initialAppState(), selectedWorkspace: workspace, workspaces: [workspace] };
+    Reflect.set(app, "speechInputSettings", snapshot);
+    Reflect.set(app, "state", starterState);
+    const starter = requiredTemplate(callAppMethod(app, "renderSessionStartScreen", starterState));
+
+    const session = {
+      id: "session-a",
+      cwd: workspace.path,
+      path: "/work/project-a/.pi/sessions/session-a.jsonl",
+      created: "2026-08-13T00:00:00.000Z",
+      modified: "2026-08-13T00:00:00.000Z",
+      messageCount: 0,
+      firstMessage: "",
+    };
+    const activeState: AppState = {
+      ...starterState,
+      selectedSession: session,
+      sessions: [session],
+      projectSessions: [session],
+    };
+    Reflect.set(app, "state", activeState);
+    const active = app.render();
+
+    expect(templateValueAfterMarker(starter, ".speechInputSettings=")).toBe(snapshot);
+    expect(templateValueAfterMarker(active, ".speechInputSettings=")).toBe(snapshot);
+  });
+
+  it("ignores same revisions and closes the channel before a queued refresh can run", async () => {
+    const current = speechInputSettingsResponse("00000000-0000-4000-8000-000000000001");
+    const settings = vi.fn().mockResolvedValue(current);
+    const { app, channel } = speechSettingsApp(settings);
+
+    callAppMethod(app, "connectSpeechInputSettings");
+    await flush();
+    settings.mockClear();
+    channel.emit(current.revision);
+    await flush();
+    expect(settings).not.toHaveBeenCalled();
+
+    channel.emit("00000000-0000-4000-8000-000000000002");
+    callAppMethod(app, "disconnectSpeechInputSettings");
+    await flush();
+    expect(settings).not.toHaveBeenCalled();
+    expect(channel.close).toHaveBeenCalledOnce();
+  });
+});
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+class FakeSpeechInputSettingsChannel {
+  readonly published: string[] = [];
+  readonly close = vi.fn();
+  private onRevision: ((revision: string) => void) | undefined;
+
+  bind(onRevision: (revision: string) => void): void {
+    this.onRevision = onRevision;
+  }
+
+  publish(revision: string): void {
+    this.published.push(revision);
+  }
+
+  emit(revision: string): void {
+    if (this.onRevision === undefined) throw new Error("Speech channel has not been connected");
+    this.onRevision(revision);
+  }
+}
+
+function speechSettingsApp(settings: () => Promise<SpeechInputSettingsResponse>): { app: PiWebUiApp; channel: FakeSpeechInputSettingsChannel } {
+  const channel = new FakeSpeechInputSettingsChannel();
+  const app = new PiWebUiApp({
+    speechInputApi: { settings },
+    createSpeechInputSettingsChannel: (onRevision: (revision: string) => void) => {
+      channel.bind(onRevision);
+      return channel;
+    },
+  });
+  return { app, channel };
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: ((value: T) => void) | undefined;
+  let reject: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  if (resolve === undefined || reject === undefined) throw new Error("Deferred promise was not initialized");
+  return { promise, resolve, reject };
+}
+
+function speechInputSettingsResponse(revision: string): SpeechInputSettingsResponse {
+  return {
+    contractVersion: 1,
+    revision,
+    settings: {
+      provider: "auto",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+    },
+    credential: { configured: false, resolution: "missing" },
+  };
+}
+
+function requiredTemplate(value: unknown): TemplateResult {
+  if (!isTemplateResult(value)) throw new Error("Expected a Lit TemplateResult");
+  return value;
+}
+
+function getAppProperty(app: PiWebUiApp, property: string): unknown {
+  return Reflect.get(app, property);
+}
+
+function callAppMethod(app: PiWebUiApp, methodName: string, ...args: readonly unknown[]): unknown {
+  const method: unknown = Reflect.get(app, methodName);
+  if (typeof method !== "function") throw new Error(`PiWebUiApp.${methodName} is not callable`);
+  return Reflect.apply(method, app, args);
+}
+
+async function callAppPromise(app: PiWebUiApp, methodName: string, ...args: readonly unknown[]): Promise<void> {
+  const result = callAppMethod(app, methodName, ...args);
+  if (!(result instanceof Promise)) throw new Error(`PiWebUiApp.${methodName} did not return a promise`);
+  await result;
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function stubResumeDependencies(app: PiWebUiApp): void {
+  const projectCatalog: unknown = Reflect.get(app, "projectCatalog");
+  if (typeof projectCatalog === "object" && projectCatalog !== null) Reflect.set(projectCatalog, "refresh", vi.fn());
+  Reflect.set(app, "renegotiateUnreadMachines", vi.fn(() => Promise.resolve(undefined)));
+  Reflect.set(app, "refreshMachineActivities", vi.fn(() => Promise.resolve(undefined)));
+  Reflect.set(app, "refreshWorkspaceDeletionRuns", vi.fn(() => Promise.resolve(undefined)));
+  const sessions: unknown = Reflect.get(app, "sessions");
+  if (typeof sessions === "object" && sessions !== null) Reflect.set(sessions, "refreshSelectedSession", vi.fn(() => Promise.resolve(undefined)));
+}
 
 function setPromptEditor(app: PiWebUiApp, promptEditor: { cancelSpeechInput: () => boolean }): void {
   Object.defineProperty(app, "promptEditor", { configurable: true, value: promptEditor });
