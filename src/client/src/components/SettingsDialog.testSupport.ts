@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { Machine, MachineRuntime, PiPackageInfo, PiPackageMutationResponse, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiPluginInfo, PiWebUiPluginsResponse, SpeechInputSettingsResponse } from "../api";
+import { speechInputApi } from "../api";
 import { SettingsDialog } from "./SettingsDialog";
 
 export const remoteMachine: Machine = {
@@ -82,6 +83,10 @@ export function speechInputSettingsResponse(overrides: Partial<SpeechInputSettin
 
 export function pluginsResponse(plugins: PiWebUiPluginInfo[]): PiWebUiPluginsResponse {
   return { plugins };
+}
+
+if (typeof document === "undefined") {
+  vi.spyOn(speechInputApi, "settings").mockResolvedValue(speechInputSettingsResponse());
 }
 
 export function pluginInfo(id: string, enabled: boolean): PiWebUiPluginInfo {

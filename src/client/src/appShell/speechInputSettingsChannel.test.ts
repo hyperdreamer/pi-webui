@@ -71,6 +71,18 @@ describe("SpeechInputSettingsChannel", () => {
     expect(onRevision).not.toHaveBeenCalled();
   });
 
+  it("ignores malformed nonempty UUID revisions at both boundaries", () => {
+    const onRevision = vi.fn();
+    const subject = channel(onRevision);
+    const instance = requiredChannel(0);
+
+    subject.publish("not-a-uuid");
+    instance.emit({ contractVersion: 1, revision: "not-a-uuid" });
+
+    expect(instance.messages).toEqual([]);
+    expect(onRevision).not.toHaveBeenCalled();
+  });
+
   it("forwards each valid foreign revision until closed", () => {
     const onRevision = vi.fn();
     const subject = channel(onRevision);

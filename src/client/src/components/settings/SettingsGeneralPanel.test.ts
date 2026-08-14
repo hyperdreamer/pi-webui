@@ -343,7 +343,7 @@ describe("settings-general-panel speech input settings", () => {
       [{ configured: true, source: "literal", resolution: "resolved" }, "A literal API key source is configured."],
       [{ configured: true, source: "environment", resolution: "resolved" }, "An environment API key source is configured and resolves for this gateway."],
       [{ configured: true, source: "environment", resolution: "unresolved" }, "An environment API key source is configured but is not currently resolved for this gateway."],
-      [{ configured: true, source: "command", resolution: "unchecked" }, "A command API key source is configured and is resolved when transcription starts."],
+      [{ configured: true, source: "command", resolution: "unchecked" }, "A command API key source is configured and is checked when transcription starts."],
     ];
 
     for (const [credential, expected] of cases) {

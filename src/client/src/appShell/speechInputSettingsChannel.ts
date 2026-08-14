@@ -1,4 +1,5 @@
 import { resolveAppUrl } from "../appUrl";
+import { isCanonicalLowercaseUuid } from "../../../shared/speechInput";
 
 const CHANNEL_PREFIX = "pi-webui:speech-input-settings:";
 
@@ -80,7 +81,7 @@ function isSpeechInputSettingsChannelMessage(value: unknown): value is { contrac
 }
 
 function isRevision(value: unknown): value is string {
-  return typeof value === "string" && value !== "";
+  return typeof value === "string" && isCanonicalLowercaseUuid(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

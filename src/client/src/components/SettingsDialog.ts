@@ -302,6 +302,7 @@ export class SettingsDialog extends LitElement {
 
   private async loadConfig(forceSpeechInputAdoption = false): Promise<void> {
     const requestSeq = ++this.loadRequestSeq;
+    const speechInputSettingsAtStart = this.speechInputSettings;
     this.loading = true;
     this.error = "";
     try {
@@ -314,7 +315,7 @@ export class SettingsDialog extends LitElement {
 
       if (result.config !== undefined) this.configResponse = result.config;
       if (result.plugins !== undefined) this.pluginsResponse = result.plugins;
-      if (result.speechInputSettings !== undefined) {
+      if (result.speechInputSettings !== undefined && this.speechInputSettings === speechInputSettingsAtStart) {
         this.speechInputSettings = result.speechInputSettings;
         if (forceSpeechInputAdoption) this.speechInputAdoptionGeneration += 1;
         this.onSpeechInputSettingsLoaded?.(result.speechInputSettings);

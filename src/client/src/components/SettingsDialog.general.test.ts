@@ -264,6 +264,36 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(onSpeechInputSettingsLoaded).toHaveBeenCalledExactlyOnceWith(current);
   });
 
+  it("suppresses a speech load that settles after a newer speech save", async () => {
+    stubWindowTimers();
+    const staleSpeech = deferred<SpeechInputSettingsResponse>();
+    const saved = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000004" });
+    vi.spyOn(configApi, "config").mockResolvedValue(configResponse({ host: "127.0.0.1" }));
+    vi.spyOn(pluginsApi, "plugins").mockResolvedValue(pluginsResponse([]));
+    vi.spyOn(speechInputApi, "settings").mockReturnValue(staleSpeech.promise);
+    vi.spyOn(speechInputApi, "saveSettings").mockResolvedValue(saved);
+    const onSpeechInputSettingsLoaded = vi.fn();
+    const onSpeechInputSettingsSaved = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.onSpeechInputSettingsLoaded = onSpeechInputSettingsLoaded;
+    dialog.onSpeechInputSettingsSaved = onSpeechInputSettingsSaved;
+
+    const loadPromise = callDialogPromise(dialog, "loadConfig");
+    const current = speechInputSettingsResponse();
+    const update: SpeechInputSettingsUpdate = {
+      expectedRevision: current.revision,
+      settings: current.settings,
+      credential: { action: "preserve" },
+    };
+    await callDialogPromise(dialog, "saveSpeechInputSettings", update);
+    staleSpeech.resolve(speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000005" }));
+    await loadPromise;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(saved);
+    expect(onSpeechInputSettingsLoaded).not.toHaveBeenCalled();
+    expect(onSpeechInputSettingsSaved).toHaveBeenCalledExactlyOnceWith(saved);
+  });
+
   it("returns a successful speech save to the panel and notifies the app with the new revision", async () => {
     stubWindowTimers();
     const initial = speechInputSettingsResponse();

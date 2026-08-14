@@ -617,7 +617,7 @@ function speechInputCredentialStatusText(credential: SpeechInputSettingsResponse
       ? "An environment API key source is configured and resolves for this gateway."
       : "An environment API key source is configured but is not currently resolved for this gateway.";
   }
-  return "A command API key source is configured and is resolved when transcription starts.";
+  return "A command API key source is configured and is checked when transcription starts.";
 }
 
 function formatAllowedHosts(value: PiWebUiConfigValues["allowedHosts"]): string | TemplateResult {
