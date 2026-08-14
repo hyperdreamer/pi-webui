@@ -45,6 +45,7 @@ const credentialCommandTimedOutMessage = "Credential command timed out";
 const credentialCommandOutputExceededMessage = "Credential command output exceeded limit";
 const credentialCommandEmptyOutputMessage = "Credential command produced no credential";
 const variableNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const variableNameContinuationPattern = /^[A-Za-z0-9_]$/;
 
 class CredentialResolutionError extends Error {
   constructor(message: string) {
@@ -291,7 +292,7 @@ function parseCredentialTemplate(source: string): CredentialTemplate {
     }
     if (next !== undefined && variableNamePattern.test(next)) {
       let endIndex = index + 2;
-      while (endIndex < source.length && variableNamePattern.test(source[endIndex] ?? "")) endIndex += 1;
+      while (endIndex < source.length && variableNameContinuationPattern.test(source[endIndex] ?? "")) endIndex += 1;
       flushLiteral();
       parts.push({ type: "variable", name: source.slice(index + 1, endIndex) });
       hasVariable = true;

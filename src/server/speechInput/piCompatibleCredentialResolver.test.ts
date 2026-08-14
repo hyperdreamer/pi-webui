@@ -222,6 +222,10 @@ describe("Pi-compatible speech-input credential sources", () => {
     expect(await resolvePiCompatibleCredentialSource("$$cash-$!bang", resolutionOptions())).toBe("$cash-!bang");
   });
 
+  it("resolves unbraced environment names containing digits after the first character", async () => {
+    expect(await resolvePiCompatibleCredentialSource("$FOO1", resolutionOptions({ FOO: "wrong", FOO1: "right" }))).toBe("right");
+  });
+
   it("preserves malformed braced references as literals", async () => {
     expect(await resolvePiCompatibleCredentialSource("${NOT-AN_ENV}", resolutionOptions())).toBe("${NOT-AN_ENV}");
     expect(await resolvePiCompatibleCredentialSource("${UNTERMINATED", resolutionOptions())).toBe("${UNTERMINATED");
