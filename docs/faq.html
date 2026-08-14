@@ -103,6 +103,8 @@
             <a href="#laptop-or-server">Laptop or server?</a>
             <a href="#plugins">Can I use local plugins?</a>
             <a href="#sessions-stop">Sessions stop unexpectedly</a>
+            <a href="#speech-input">Dictation is unavailable, or speech input fails</a>
+            <a href="#speech-input-privacy">Where does dictated audio go?</a>
             <a href="#logs">Where are logs?</a>
           </aside>
 
@@ -326,6 +328,108 @@
                 <pre id="session-logs"><code><span class="prompt">$</span> pi-webui status
 <span class="prompt">$</span> pi-webui logs</code></pre>
               </div>
+            </article>
+
+            <article id="speech-input" class="faq-item">
+              <h2>Dictation is unavailable, or speech input fails</h2>
+              <p>
+                The microphone action in the prompt composer starts dictation with the provider chosen in
+                <strong>Settings → General → Speech input</strong> (Auto, Browser, or Cloud). Dictation only edits the
+                prompt draft; it never sends anything by itself. If the microphone is missing or disabled, hover it
+                for the specific reason. Common causes and fixes:
+              </p>
+              <ul>
+                <li>
+                  <strong>Not a secure context:</strong> microphone use requires a secure browser context. Local
+                  <code>http://127.0.0.1</code> or <code>http://localhost</code> is exempt, but any other plain-HTTP
+                  (non-loopback) deployment must be served over HTTPS first.
+                </li>
+                <li>
+                  <strong>Permission denied or recorder failure:</strong> the browser reported microphone permission
+                  denied or the recorder could not start. Check the browser's site permissions, make sure another
+                  application is not holding the microphone, and start a fresh run (Auto re-evaluates providers).
+                </li>
+                <li>
+                  <strong>Unsupported browser or codec:</strong> Browser recognition needs a usable Web Speech
+                  recognition implementation, and Cloud needs <code>MediaRecorder</code> support for
+                  <code>audio/webm;codecs=opus</code>, <code>audio/ogg;codecs=opus</code>,
+                  <code>audio/mp4;codecs=mp4a.40.2</code>, or <code>audio/mp4</code>. Use a browser that provides
+                  them; no other recording format is accepted.
+                </li>
+                <li>
+                  <strong>Credential missing or unresolved:</strong> Cloud requires a configured credential whose
+                  status is resolved. Literal keys and <code>$OPENAI_API_KEY</code> / <code>${OPENAI_API_KEY}</code>
+                  references are checked against the gateway's environment; set the variable in the gateway service
+                  environment and restart the service if it is missing. Command sources
+                  (<code>!command</code>) are deliberately reported as "checked when used" and only run when a
+                  transcription starts. If resolution still fails, verify the command runs quickly, exits zero, and
+                  prints only the key to stdout.
+                </li>
+                <li>
+                  <strong>No speech detected:</strong> the provider ended without usable audio. Speak closer to the
+                  microphone, check the selected language, and retry.
+                </li>
+                <li>
+                  <strong>Timeout:</strong> capture stops after ten minutes and cloud transcription has hard
+                  deadlines for upload, credential resolution, and the provider. Retry; if the provider is slow,
+                  check the configured base URL and model.
+                </li>
+                <li>
+                  <strong>Provider rejection:</strong> the configured endpoint refused the request (authentication,
+                  model name, or endpoint policy). PI WEBUI shows a safe message and the upstream status code without
+                  forwarding provider bodies. Verify the base URL, model, and credential against the provider's
+                  transcription API.
+                </li>
+                <li>
+                  <strong>"Config is busy":</strong> config mutations serialize through a private SQLite mutex with a
+                  ten-second budget; a <code>503</code> means another process held the lock. Wait and retry. If it
+                  persists, stop both services before editing <code>config.json</code> by hand — manual edits while
+                  either service is running are unsupported.
+                </li>
+                <li>
+                  <strong>Settings changed in another tab:</strong> speech settings use opaque revision checks. A
+                  stale or dirty form keeps its values and marks itself stale; reload the nonsecret settings before
+                  retrying. Changing the cloud base URL while a credential is configured requires re-entering the
+                  credential source in the same save, or clearing it first.
+                </li>
+              </ul>
+              <p>
+                After installing or updating to the version that introduces speech input, one manual
+                <code>systemctl --user restart pi-webui-sessiond.service</code> is required: the session daemon's
+                existing config writes adopt the shared config-mutation coordinator, and ordinary web/UI autoreload
+                does not reload that daemon-side change. Speech settings saves themselves apply to the next dictation
+                run without a restart. See the <a href="config#speech-input">configuration reference</a> for the full
+                behavior and limits.
+              </p>
+            </article>
+
+            <article id="speech-input-privacy" class="faq-item">
+              <h2>Where does dictated audio go?</h2>
+              <p>
+                PI WEBUI does not persist dictated audio, browser interim text, or cloud request bodies: nothing is
+                written to disk, attached to workspaces, or stored in browser storage or session history.
+              </p>
+              <ul>
+                <li>
+                  <strong>Browser provider:</strong> recognition uses the browser's built-in Web Speech implementation.
+                  PI WEBUI does not record or upload audio itself, but the browser vendor's service may process it
+                  under that vendor's policy.
+                </li>
+                <li>
+                  <strong>Cloud provider:</strong> audio is recorded in the browser, uploaded to the PI WEBUI gateway,
+                  and sent only to the configured OpenAI-compatible HTTPS endpoint, with redirects disabled so audio
+                  and the resolved credential cannot be forwarded elsewhere. No automatic provider fallback changes
+                  that destination mid-run.
+                </li>
+              </ul>
+              <div class="callout warning">
+                PI WEBUI has no authentication layer, and speech input adds none. Any client that can reach the
+                gateway HTTP surface can spend a configured cloud credential, change the endpoint it is sent to,
+                replace the credential source, and trigger a configured <code>!command</code>. Keep the gateway on a
+                trusted network, VPN, tunnel, or behind an authenticated reverse proxy, and prefer an environment or
+                command source over a stored literal key when the gateway is shared.
+              </div>
+              <p>See <a href="config#speech-input">Speech input in the configuration reference</a> for the full privacy and security model.</p>
             </article>
 
             <article id="logs" class="faq-item">

@@ -103,6 +103,7 @@
             <a href="#utility-models">Utility models</a>
             <a href="#model-tiers">Model tiers</a>
             <a href="#tts">Text to speech</a>
+            <a href="#speech-input">Speech input</a>
             <a href="#session-tools">Session tools</a>
             <a href="#completion-tools">Completion tools</a>
           </aside>
@@ -119,7 +120,7 @@
                 Each PI WEBUI machine has its own config. When using Fleet/machine federation, Settings uses the selected
                 machine for config that affects work running there: the Pi-compatible agent profile and companion CLI,
                 session daemon tools, model tier routing ladder, utility model routing, PI WEBUI plugin enablement, external path access, and upload defaults. Gateway/browser-only settings stay local to the gateway:
-                keyboard shortcuts, remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers
+                keyboard shortcuts, speech input (dictation), remote machine registry/tokens, and gateway host/port/allowed-hosts. Remote servers
                 that do not advertise selected-machine settings support report those settings as unavailable instead of
                 silently falling back to the gateway.
               </p>
@@ -136,6 +137,12 @@
                 <code>pi-webui install --config /path/to/config.json</code> after changing that path or after upgrading from
                 a version that only applied the custom path to the web service. This regenerates service files so the
                 web/API and session daemon use the same <code>PI_WEBUI_CONFIG</code>.
+              </p>
+              <p>
+                The same applies to a custom managed data directory: a nonempty <code>PI_WEBUI_DATA_DIR</code> present when
+                you run <code>pi-webui install</code> is resolved and pinned into both generated process-owner services. If
+                you change either setting, rerun <code>pi-webui install</code> before restarting so the web/API process and
+                session daemon keep resolving the identical config file and managed-state root.
               </p>
             </section>
 
@@ -179,6 +186,7 @@
                 <li><code>modelTiers</code>: saved settings apply immediately in <strong>Settings → Model tiers</strong>; validates all six ladder rows atomically.</li>
                 <li><code>utilityModels</code>: saved settings apply immediately in <strong>Settings → Utility models</strong>; existing sessions use updated values on their next utility operation.</li>
                 <li><code>tts</code>: saved voice/rate settings apply to the next utterance; no service restart required.</li>
+                <li><code>speechInput</code>: saved provider, language, and cloud settings apply to the next dictation run; no service restart required for saves. Installing or updating this feature requires one manual <code>pi-webui-sessiond.service</code> restart because both services adopt the shared config-mutation coordinator.</li>
                 <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
                 <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
                 <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
@@ -238,6 +246,15 @@
   "tts": {
     "voice": "en-US-Test",
     "rate": 20
+  },
+  "speechInput": {
+    "provider": "auto",
+    "language": "en-US",
+    "cloud": {
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini-transcribe",
+      "apiKey": "$OPENAI_API_KEY"
+    }
   },
   "spawnSessions": true,
   "subsessions": false,
@@ -419,6 +436,14 @@
                       <td>Global</td>
                       <td>Not supported locally</td>
                       <td>Next utterance after settings save; no service restart</td>
+                    </tr>
+                    <tr>
+                      <td>Speech input (dictation)</td>
+                      <td><code>speechInput</code></td>
+                      <td>—</td>
+                      <td>Global (gateway)</td>
+                      <td>Not supported locally</td>
+                      <td>Next dictation run after settings save; installing/updating this feature requires one manual session-daemon restart</td>
                     </tr>
                     <tr>
                       <td>PI WEBUI plugin enablement/settings</td>
@@ -794,6 +819,191 @@
                 <a href="install#remote-access">Remote access</a> and the
                 <a href="install#reverse-proxy-prefix">reverse proxy deployment example</a>.
               </div>
+            </section>
+
+            <section id="speech-input">
+              <h2>Speech input</h2>
+              <p>
+                PI WEBUI can turn spoken dictation into editable prompt text in the starter and active-session
+                composers. Dictation only edits the prompt draft at the captured selection: it never sends, queues,
+                steers, or starts anything on its own, and the inserted text is always editable before you act on it.
+                The microphone action sits immediately before Send in both composers, and the agent-work Stop control
+                remains independently available during dictation.
+              </p>
+              <p>
+                <code>speechInput</code> is a gateway-only setting in <code>$PI_WEBUI_CONFIG</code> or
+                <code>~/.config/pi-webui/config.json</code>. It is not a selected-machine key and never applies to
+                remote machines, and project-local config does not support it. <strong>Settings → General</strong>
+                shows the full-width <strong>Speech input</strong> card regardless of the selected coding machine;
+                dictation and cloud transcription both run on the gateway that serves the browser UI.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>speechInput settings</strong>
+                  <button class="copy-button" data-copy="#speech-input-config-example">Copy</button>
+                </div>
+                <pre id="speech-input-config-example"><code>{
+  "speechInput": {
+    "provider": "auto",
+    "language": "en-US",
+    "cloud": {
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini-transcribe",
+      "apiKey": "$OPENAI_API_KEY"
+    }
+  }
+}</code></pre>
+              </div>
+              <p>
+                The object accepts only <code>provider</code> (<code>auto</code>, <code>browser</code>, or
+                <code>cloud</code>; default <code>auto</code>), <code>language</code> (a BCP 47 tag such as
+                <code>en-US</code>; omitted means Auto), <code>cloud.baseUrl</code> (HTTPS only; default
+                <code>https://api.openai.com/v1</code>), <code>cloud.model</code> (default
+                <code>gpt-4o-mini-transcribe</code>), and <code>cloud.apiKey</code> (a Pi-compatible credential
+                source). Unknown keys are rejected. Stored limits are: language tag 128 characters, base URL 2,048
+                characters, model 256 characters, and credential source 8 KiB of UTF-8 text. Language validation is
+                syntactic only: it canonicalizes case and structure (<code>en-us</code> becomes <code>en-US</code>)
+                but stores well-formed tags it cannot verify, so a tag such as <code>qq-ZZ</code> is saved and
+                forwarded to the provider, which decides whether it is usable.
+              </p>
+              <p>
+                The <strong>Speech input</strong> card exposes a Provider select (Auto, Browser, Cloud), a Language
+                input (empty means Auto, which is never sent as a BCP 47 tag), <strong>Cloud base URL</strong>,
+                <strong>Cloud model</strong>, a password-style <strong>API key source</strong> input with literal,
+                <code>$ENV_VAR</code>, and <code>!command</code> placeholder guidance (never prepopulated; blank means
+                preserve), the redacted credential status, a separate <strong>Clear credential</strong> action that
+                clears only the saved credential, and <strong>Save speech input settings</strong>. Cloud fields stay
+                editable in Auto because Cloud may be the selected fallback candidate.
+              </p>
+              <h3>Provider selection</h3>
+              <ul>
+                <li>
+                  <strong>Browser</strong> uses the browser's built-in Web Speech recognition. PI WEBUI does not
+                  record or upload audio itself; the browser implementation may process your speech through a
+                  browser-vendor service under that vendor's policy.
+                </li>
+                <li>
+                  <strong>Cloud</strong> records a short audio clip in the browser, uploads it to the PI WEBUI
+                  gateway, and the gateway sends it to the configured OpenAI-compatible endpoint
+                  (<code>baseUrl</code> + <code>/audio/transcriptions</code>). Cloud is eligible only when a
+                  microphone and <code>MediaRecorder</code> are available and the gateway credential status is
+                  <code>resolved</code> or <code>unchecked</code>.
+                </li>
+                <li>
+                  <strong>Auto</strong> (the default) evaluates providers once, immediately before a run starts, in
+                  the order Browser, then Cloud. An explicit Browser or Cloud choice never falls back. Once
+                  permission, capture, recognition, upload, or transcription has begun, Auto never changes providers;
+                  a failure is shown for the selected provider and retry is user-initiated.
+                </li>
+                <li>
+                  The resolved provider is visible in the microphone tooltip before capture and in the composer status
+                  while active. The microphone stays visible but disabled with the specific reason when the selected
+                  provider cannot run.
+                </li>
+              </ul>
+              <p>
+                Dictation, cloud transcription, and settings all require a secure browser context. Loopback
+                <code>http://127.0.0.1</code> (and <code>localhost</code>) retains the browser's secure-context
+                exemption; any non-loopback deployment must use HTTPS before the microphone or the credential form
+                can be used.
+              </p>
+              <p>
+                The gateway's authoritative settings are captured once per transcription request. Browser recognition
+                applies the language observed when the run starts; a Cloud transcription uses the gateway's language,
+                model, and base URL at transcription time because the uploaded audio carries no settings override. A
+                Settings save in another tab during recording can therefore affect that Cloud transcription, but never
+                changes the already selected provider or causes fallback.
+              </p>
+              <h3>Credential sources</h3>
+              <p><code>cloud.apiKey</code> accepts Pi's documented provider value language:</p>
+              <ul>
+                <li>literal: <code>sk-...</code>;</li>
+                <li>environment interpolation: <code>$OPENAI_API_KEY</code>, <code>${OPENAI_API_KEY}</code>, or interpolation inside a larger value;</li>
+                <li>command: a leading <code>!command</code>, resolved from the command's trimmed stdout;</li>
+                <li>escapes: <code>$$</code> produces a literal <code>$</code>, and <code>$!</code> produces a literal <code>!</code> without command execution.</li>
+              </ul>
+              <p>
+                A plain <code>OPENAI_API_KEY</code> (no <code>$</code>) is a literal, not an environment reference.
+                Missing or empty referenced variables make the source unresolved. Commands execute <strong>only</strong>
+                when a cloud transcription starts, never during settings reads or availability checks: they run
+                uncached as the gateway service account, receive no audio or transcript input, capture at most 64 KiB
+                of stdout, and fail credential resolution after a ten-second total monotonic budget or request
+                cancellation. PI WEBUI best-effort terminates the spawned command's process group/tree, but portable
+                Node APIs cannot reclaim intentionally detached descendants (<code>setsid</code>, double-fork,
+                services). Configure only trusted, short-lived commands that do not daemonize.
+              </p>
+              <div class="callout warning">
+                A configured <code>!command</code> source is arbitrary command execution under the gateway account.
+                Use only trusted, short-lived commands that do not daemonize: detached descendants can outlive the
+                request beyond PI WEBUI's best-effort process-group cleanup.
+              </div>
+              <p>
+                The settings card shows only a redacted status — <strong>Credential missing</strong>,
+                <strong>Literal credential configured</strong>, <strong>Environment credential resolved/unresolved</strong>, or
+                <strong>Command credential configured; checked when used</strong> — never the source text, the
+                resolved key, an environment name, or command text. The API key field is never prepopulated; the
+                browser holds a newly entered source only in the password input and the in-flight same-origin request,
+                and clears it after a successful save (retaining it after a failure for correction).
+              </p>
+              <h3>Capture and transcription limits</h3>
+              <ul>
+                <li>Capture/listening is hard-limited to ten minutes from the provider's successful start.</li>
+                <li>Browser recognition is stopped and finalized at the limit; because a recognition instance may never emit its terminal <code>end</code> event, a Stop request starts a 2,000 ms settlement watchdog that finalizes accumulated text when it expires.</li>
+                <li>Cloud recording stops at ten minutes or exactly 20 MiB (<code>20 * 1024 * 1024</code> bytes), whichever comes first, and a chunk that would cross the bound discards the recording rather than truncating encoded audio.</li>
+                <li>The gateway admits at most two concurrent transcription requests; a third receives <code>429</code> before its body is parsed. Each admitted request has one 130-second admission-to-body-completion deadline, so a stalled or trickled upload is aborted and releases its slot.</li>
+                <li>Cloud credential command resolution is bounded to ten seconds, the provider request to 120 seconds (one total budget each, never reset between stages), and the client owns a 130-second Transcribing watchdog covering upload, credential resolution, provider request, and response even if the gateway connection is lost. Combined with the capture limit, a cloud run ends at most 12 minutes 10 seconds after recording starts, excluding user-controlled permission time.</li>
+                <li>Accepted recording types are <code>audio/webm;codecs=opus</code>, <code>audio/ogg;codecs=opus</code>, <code>audio/mp4;codecs=mp4a.40.2</code>, and <code>audio/mp4</code>. Other codec/parameter combinations are rejected.</li>
+                <li>Every accepted transcript must be nonempty and at most 1 MiB of UTF-8 text.</li>
+              </ul>
+              <h3>Settings concurrency</h3>
+              <p>
+                Every speech mutation must match the latest opaque revision; a stale tab receives a <code>409</code>
+                conflict and performs no write. Saving rotates the revision and tells other tabs (through a nonsecret
+                channel containing only the new revision) to refetch; a burst of notifications requests one trailing
+                refetch so no revision is lost. A dirty form preserves its draft and password, marks itself stale, and
+                requires an explicit reload before retrying. Because a preserved credential cannot be silently
+                redirected to a new endpoint, changing the cloud base URL while a credential is configured requires
+                re-entering a replacement credential source in the same save, or clearing the saved credential first.
+              </p>
+              <h3>Shared persistence coordination</h3>
+              <p>
+                Because the autoreloading web/API process and the long-lived session daemon both perform
+                read-modify-write updates on the shared global config file, production config mutations run under a
+                private SQLite transaction mutex. Its database lives at
+                <code>$PI_WEBUI_DATA_DIR/config-mutations/&lt;config-path-hash&gt;.sqlite</code> (named by a SHA-256
+                digest of the resolved global config path), inside a <code>0700</code> directory, with the database
+                file tightened to <code>0600</code>. It stores only a random opaque speech-input revision and a
+                fingerprint of nonsecret config-file identity metadata — no config, credential, audio, or transcript
+                bytes, and it never hashes file contents. Audio and transcription never touch SQLite. Lock
+                acquisition uses one ten-second monotonic budget; exhaustion surfaces as a typed "config is busy"
+                failure (HTTP <code>503</code>) rather than a hang. Selected-machine config patches are forwarded
+                atomically to the target gateway, where that gateway's own coordinator merges them. Manual config-file
+                edits while either service is running are unsupported: stop both services first, then edit, then start
+                them again. Installing this change requires one manual <code>pi-webui-sessiond.service</code> restart
+                because the daemon's existing config writes adopt the shared coordinator; ordinary web/UI autoreload
+                does not load that daemon-side change.
+              </p>
+              <h3>Privacy and security</h3>
+              <ul>
+                <li>PI WEBUI does not persist dictated audio, browser interim text, or cloud request bodies. Audio lives only in bounded process memory and browser buffers for the duration of a run; no object URL, download, attachment, workspace file, IndexedDB record, or session entry is created.</li>
+                <li>Browser-provider processing may leave the device under the browser vendor's implementation and policy.</li>
+                <li>Cloud audio leaves the gateway only for the explicitly configured endpoint, which must be HTTPS with no credentials, query, or fragment; redirects are rejected so audio and the resolved credential cannot be forwarded to another origin. No automatic provider fallback can change that boundary mid-run.</li>
+                <li>Audio, transcript text, credential sources, and resolved credentials are excluded from logs and error messages; provider error bodies are never forwarded to the browser.</li>
+              </ul>
+              <div class="callout warning">
+                PI WEBUI has no authentication layer, and this feature adds none. Treat any client that can reach the
+                gateway HTTP surface as an administrator: it can call transcription, mutate speech settings, redirect
+                the endpoint, replace the credential source, and trigger a configured <code>!command</code>. A
+                configured cloud credential is therefore a network-reachable spending capability, and an accepted
+                endpoint receives the resolved credential. Configure cloud transcription only on a gateway restricted
+                to a trusted network, VPN, tunnel, or authenticated reverse proxy, and prefer an environment or
+                command source over a stored literal key when the gateway is shared.
+              </div>
+              <p>
+                For troubleshooting permission denial, unsupported browsers or codecs, unresolved credentials,
+                no-speech results, timeouts, provider rejections, and config-busy failures, see the
+                <a href="faq#speech-input">FAQ</a>.
+              </p>
             </section>
 
             <section id="session-tools">
