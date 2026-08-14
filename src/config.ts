@@ -143,6 +143,12 @@ export function loadPiWebUiConfig(options: LoadOptions = {}): LoadedPiWebUiConfi
   const env = options.env ?? process.env;
   const path = piWebUiConfigPath(env, options.cwd ?? process.cwd());
   if (!existsSync(path)) return { path, exists: false, config: {} };
+  // Validate the terminal type before any synchronous read: reading a FIFO,
+  // socket, or device could block the process, including while a coordinator
+  // transaction is held. A symlink to a regular file still loads.
+  if (!statSync(path).isFile()) {
+    throw new Error(`PI WEBUI config path must resolve to a file: ${path}`);
+  }
 
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`PI WEBUI config must be a JSON object: ${path}`);

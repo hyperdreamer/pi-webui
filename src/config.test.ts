@@ -594,6 +594,16 @@ describe("PI WEBUI config atomic file operations", () => {
     expect(ownedTempFiles(tempDir)).toEqual([]);
   });
 
+  it("rejects a non-regular existing config path on load before reading it", () => {
+    // The loader must validate the terminal type before any synchronous read:
+    // a directory would throw a platform-dependent EISDIR, while a FIFO could
+    // block the process (including while a coordinator transaction is held).
+    const dirPath = join(tempDir, "config-dir");
+    mkdirSync(dirPath);
+
+    expect(() => loadPiWebUiConfig({ env: { PI_WEBUI_CONFIG: dirPath } })).toThrow("PI WEBUI config path must resolve to a file");
+  });
+
   it.skipIf(process.platform === "win32")("rejects a character-device config target without artifacts", () => {
     // A char device is a nonregular terminal: reading it as JSON would never
     // block, but it must still be rejected before any write occurs.

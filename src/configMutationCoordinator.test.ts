@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, chownSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,39 +73,42 @@ describe("config mutation coordinator acquisition", () => {
 
   it("spends one total 10,000 ms acquisition budget without resetting between attempts", async () => {
     const harness = fakeHarness({
-      beginErrors: [busyError(), busyError(), busyError(), busyError(), busyError()],
+      beginErrors: [busyError(), busyError(), busyError(), busyError()],
       retryAdvanceMs: 2_500,
     });
 
     const attempt = harness.coordinator.read();
     await expect(attempt).rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
     await expect(attempt).rejects.toMatchObject({ code: "PI_WEBUI_CONFIG_BUSY" });
-    expect(harness.dbs).toHaveLength(5);
+    // Four attempts each spaced 2,500 ms apart exhaust the budget; the fifth
+    // attempt would start exactly at 10,000 ms and is rejected before it opens
+    // a database handle.
+    expect(harness.dbs).toHaveLength(4);
     expect(harness.dbs.every((db) => db.closeCalls === 1)).toBe(true);
     expect(harness.retryCount()).toBe(4);
     expect(harness.fakeNow()).toBe(10_000);
   });
 
   it("exhausts the budget at the exact deadline and never falls back to an unlocked save", async () => {
-    const harness = fakeHarness({ beginErrors: [busyError(), busyError(), busyError(), busyError(), busyError()], retryAdvanceMs: 2_500 });
+    const harness = fakeHarness({ beginErrors: [busyError(), busyError(), busyError(), busyError()], retryAdvanceMs: 2_500 });
 
     await expect(harness.coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 })))
       .rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
     expect(harness.fakeNow()).toBe(PI_WEBUI_CONFIG_MUTATION_LOCK_TIMEOUT_MS);
-    expect(harness.dbs).toHaveLength(5);
+    expect(harness.dbs).toHaveLength(4);
     expect(harness.retryCount()).toBe(4);
     expect(existsSync(configPath)).toBe(false);
   });
 
-  it("still acquires on an attempt exactly at the total deadline", async () => {
+  it("rejects an acquisition attempt exactly at the total deadline", async () => {
     const harness = fakeHarness({ beginErrors: [busyError(), busyError(), busyError(), busyError()], retryAdvanceMs: 2_500 });
 
-    const read = await harness.coordinator.read();
-
-    expect(read.loaded.path).toBe(configPath);
+    await expect(harness.coordinator.read()).rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
+    // The deadline is enforced with >= so an attempt beginning exactly at
+    // 10,000 ms is rejected before it opens another database handle.
     expect(harness.fakeNow()).toBe(PI_WEBUI_CONFIG_MUTATION_LOCK_TIMEOUT_MS);
-    expect(harness.dbs).toHaveLength(5);
-    expect(requireDb(harness.dbs, 4).commitCalls).toBe(1);
+    expect(harness.dbs).toHaveLength(4);
+    expect(harness.retryCount()).toBe(4);
   });
 
   it("fails immediately on non-contention SQLite errors after close", async () => {
@@ -128,7 +131,7 @@ describe("config mutation coordinator acquisition", () => {
     expect(harness.fakeNow()).toBe(10_001);
   });
 
-  it("bounds retry scheduling to the remaining acquisition budget", async () => {
+  it("bounds retry scheduling to the remaining acquisition budget and rejects the exact-deadline attempt", async () => {
     let fakeNow = 0;
     let retriesScheduled = 0;
     const requestedDelays: number[] = [];
@@ -158,12 +161,11 @@ describe("config mutation coordinator acquisition", () => {
 
     // First busy at t=0 requests the full 25 ms retry; after the clock lands
     // at 9,980 ms only 20 ms of the budget remain, so the second retry is
-    // clamped to 20 ms and the third attempt still acquires inside the budget.
-    const snapshot = await coordinator.read();
+    // clamped to 20 ms and the next attempt exactly at 10,000 ms is rejected.
+    await expect(coordinator.read()).rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
 
     expect(requestedDelays).toEqual([PI_WEBUI_CONFIG_MUTATION_RETRY_MS, 20]);
-    expect(snapshot.speechInputRevision).toBe("revision-1");
-    expect(dbs).toHaveLength(3);
+    expect(dbs).toHaveLength(2);
   });
 
   it("retries a SQLite busy failure during database open within the budget", async () => {
@@ -622,6 +624,42 @@ describe("config mutation coordinator real-process probe", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")("does not block a coordinator read on a FIFO config path", { timeout: 60_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-webui-fifo-probe-"));
+    const srcDir = dirname(fileURLToPath(import.meta.url));
+    const workerDir = join(dir, "workers");
+    mkdirSync(workerDir, { recursive: true });
+    writeFileSync(join(workerDir, "fifo.mts"), fifoCoordinatorWorkerSource(srcDir));
+    const fifoPath = join(dir, "config.fifo");
+    execFileSync("mkfifo", [fifoPath]);
+    const probeDataDir = join(dir, "data");
+    mkdirSync(probeDataDir, { recursive: true, mode: 0o700 });
+
+    const child = spawn(process.execPath, ["--import", "tsx/esm", join(workerDir, "fifo.mts"), fifoPath, probeDataDir], { stdio: ["pipe", "pipe", "pipe"] });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => process.stderr.write(`[probe fifo] ${chunk}`));
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      output += chunk;
+    });
+    try {
+      await withinDeadline(30_000, () => new Promise<void>((resolve, reject) => {
+        // 'close' fires only after stdio has fully drained, so a worker
+        // blocked on a synchronous FIFO read would never reach it and the
+        // outer deadline would fail and clean up the probe.
+        child.once("close", (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`fifo probe worker exited with code ${String(code)}`));
+        });
+      }));
+      expect(output).toContain("FIFO:REJECTED:PI WEBUI config path must resolve to a file");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 interface FakeLockStateStore {
@@ -842,6 +880,24 @@ const coordinator = createPiWebUiConfigMutationCoordinator({
 });
 const snapshot = await coordinator.mutate((current) => ({ ...current.loaded.config, maxUploadBytes: 2345 }));
 process.stdout.write("B:COMMITTED:" + JSON.stringify(snapshot.loaded.config) + "\\n");
+`;
+}
+
+function fifoCoordinatorWorkerSource(srcDir: string): string {
+  return `import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const { createPiWebUiConfigMutationCoordinator } = await import(pathToFileURL(join(${JSON.stringify(srcDir)}, "configMutationCoordinator.ts")).href);
+const configPath = process.argv[2];
+const dataDir = process.argv[3];
+const coordinator = createPiWebUiConfigMutationCoordinator({
+  config: { env: { PI_WEBUI_CONFIG: configPath, PI_WEBUI_DATA_DIR: dataDir } },
+});
+try {
+  await coordinator.read();
+  process.stdout.write("FIFO:READ-OK\\n");
+} catch (error) {
+  process.stdout.write("FIFO:REJECTED:" + (error instanceof Error ? error.message : String(error)) + "\\n");
+}
 `;
 }
 

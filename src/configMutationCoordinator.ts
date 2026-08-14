@@ -106,8 +106,9 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
     // retries.
     const deadline = now() + PI_WEBUI_CONFIG_MUTATION_LOCK_TIMEOUT_MS;
     for (;;) {
-      // Enforced before every attempt and again after every retry wake.
-      if (now() > deadline) throw new PiWebUiConfigMutationBusyError();
+      // Enforced before every attempt and again after every retry wake; an
+      // attempt beginning exactly at the deadline is already past the budget.
+      if (now() >= deadline) throw new PiWebUiConfigMutationBusyError();
       let db: PiWebUiConfigLockDatabase | undefined;
       let acquired = false;
       try {
