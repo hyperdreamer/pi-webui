@@ -33,6 +33,8 @@ export class SettingsDialog extends LitElement {
   @property({ type: Boolean }) hostSpeechStatusLoading = false;
   @property({ attribute: false }) onReloadHostSpeech?: () => void | Promise<void>;
   @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
+  @property({ attribute: false }) speechInputSettingsRequestSeq = 0;
+  @property({ attribute: false }) isSpeechInputSettingsRequestCurrent?: (requestSeq: number) => boolean;
   @property({ attribute: false }) onSpeechInputSettingsLoaded?: (response: SpeechInputSettingsResponse) => void;
   @property({ attribute: false }) onSpeechInputSettingsSaved?: (response: SpeechInputSettingsResponse) => void;
   @state() private configResponse: PiWebUiConfigResponse | undefined;
@@ -303,6 +305,7 @@ export class SettingsDialog extends LitElement {
   private async loadConfig(forceSpeechInputAdoption = false): Promise<void> {
     const requestSeq = ++this.loadRequestSeq;
     const speechInputSettingsAtStart = this.speechInputSettings;
+    const speechInputSettingsRequestSeqAtStart = this.speechInputSettingsRequestSeq;
     this.loading = true;
     this.error = "";
     try {
@@ -315,7 +318,11 @@ export class SettingsDialog extends LitElement {
 
       if (result.config !== undefined) this.configResponse = result.config;
       if (result.plugins !== undefined) this.pluginsResponse = result.plugins;
-      if (result.speechInputSettings !== undefined && this.speechInputSettings === speechInputSettingsAtStart) {
+      if (
+        result.speechInputSettings !== undefined
+        && this.speechInputSettings === speechInputSettingsAtStart
+        && (this.isSpeechInputSettingsRequestCurrent?.(speechInputSettingsRequestSeqAtStart) ?? true)
+      ) {
         this.speechInputSettings = result.speechInputSettings;
         if (forceSpeechInputAdoption) this.speechInputAdoptionGeneration += 1;
         this.onSpeechInputSettingsLoaded?.(result.speechInputSettings);

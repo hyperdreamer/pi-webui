@@ -2,9 +2,10 @@
 
 import type { TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SpeechInputSettingsResponse } from "../api";
+import { configApi, pluginsApi, speechInputApi, type SpeechInputSettingsResponse } from "../api";
 import { initialAppState, type AppState } from "../appState";
-import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { findTemplateContaining, isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
+import { SettingsDialog } from "./SettingsDialog";
 import { PiWebUiApp } from "./PiWebUiApp";
 
 interface KeyEventDouble {
@@ -19,6 +20,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -80,6 +82,46 @@ describe("PiWebUiApp speech input Escape delegation", () => {
 });
 
 describe("PiWebUiApp speech input settings ownership", () => {
+  it("suppresses a dialog reload after app adoption advances the live request sequence before the dialog rerenders", async () => {
+    const staleSpeech = deferred<SpeechInputSettingsResponse>();
+    const older = speechInputSettingsResponse("00000000-0000-4000-8000-000000000001");
+    const newer = speechInputSettingsResponse("00000000-0000-4000-8000-000000000002");
+    const stale = speechInputSettingsResponse("00000000-0000-4000-8000-000000000003");
+    vi.spyOn(configApi, "config").mockResolvedValue(gatewayConfigResponse());
+    vi.spyOn(pluginsApi, "plugins").mockResolvedValue({ plugins: [] });
+    vi.spyOn(speechInputApi, "settings").mockReturnValue(staleSpeech.promise);
+    const { app } = speechSettingsApp(vi.fn());
+    Reflect.set(app, "speechInputSettingsConnected", true);
+    Reflect.set(app, "speechInputSettings", older);
+    Reflect.set(app, "speechInputSettingsRequestSeq", 12);
+    Reflect.set(app, "settingsSection", "general");
+    const appDialog = settingsDialogTemplate(app);
+    const requestSeq = templateValueAfterMarker(appDialog, ".speechInputSettingsRequestSeq=");
+    const isRequestCurrent = templateValueAfterMarker(appDialog, ".isSpeechInputSettingsRequestCurrent=");
+    const appOnSpeechInputSettingsLoaded = templateValueAfterMarker(appDialog, ".onSpeechInputSettingsLoaded=");
+    if (typeof requestSeq !== "number") throw new Error("settings-dialog did not receive the speech settings request sequence");
+    if (typeof isRequestCurrent !== "function") throw new Error("settings-dialog did not receive the live speech settings request validator");
+    if (typeof appOnSpeechInputSettingsLoaded !== "function") throw new Error("settings-dialog did not receive the speech settings adoption callback");
+
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = older;
+    Reflect.set(dialog, "speechInputSettingsRequestSeq", requestSeq);
+    Reflect.set(dialog, "isSpeechInputSettingsRequestCurrent", isRequestCurrent);
+    const onSpeechInputSettingsLoaded = vi.fn((response: SpeechInputSettingsResponse) => {
+      Reflect.apply(appOnSpeechInputSettingsLoaded, undefined, [response]);
+    });
+    dialog.onSpeechInputSettingsLoaded = onSpeechInputSettingsLoaded;
+
+    const load = callPrivateDialogPromise(dialog, "loadConfig");
+    callAppMethod(app, "handleSpeechInputSettingsLoaded", newer);
+    staleSpeech.resolve(stale);
+    await load;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(older);
+    expect(onSpeechInputSettingsLoaded).not.toHaveBeenCalled();
+    expect(getAppProperty(app, "speechInputSettings")).toBe(newer);
+  });
+
   it("loads the app-owned snapshot at startup and suppresses an older direct response after dialog adoption", async () => {
     const initial = deferred<SpeechInputSettingsResponse>();
     const dialogResponse = speechInputSettingsResponse("00000000-0000-4000-8000-000000000002");
@@ -308,6 +350,25 @@ function speechInputSettingsResponse(revision: string): SpeechInputSettingsRespo
   };
 }
 
+function gatewayConfigResponse() {
+  return {
+    path: "/tmp/pi-webui/config.json",
+    exists: true,
+    config: {},
+    effectiveConfig: {},
+    envOverrides: {
+      host: false,
+      port: false,
+      allowedHosts: false,
+      spawnSessions: false,
+      subsessions: false,
+      agentCommand: false,
+      agentDir: false,
+      agentSessionDir: false,
+    },
+  };
+}
+
 function requiredTemplate(value: unknown): TemplateResult {
   if (!isTemplateResult(value)) throw new Error("Expected a Lit TemplateResult");
   return value;
@@ -315,6 +376,24 @@ function requiredTemplate(value: unknown): TemplateResult {
 
 function getAppProperty(app: PiWebUiApp, property: string): unknown {
   return Reflect.get(app, property);
+}
+
+function getDialogProperty(dialog: SettingsDialog, property: string): unknown {
+  return Reflect.get(dialog, property);
+}
+
+function settingsDialogTemplate(app: PiWebUiApp): TemplateResult {
+  const dialog = findTemplateContaining(app.render(), "<settings-dialog");
+  if (dialog === undefined) throw new Error("PiWebUiApp did not render settings-dialog");
+  return dialog;
+}
+
+async function callPrivateDialogPromise(dialog: SettingsDialog, methodName: string): Promise<void> {
+  const method: unknown = Reflect.get(dialog, methodName);
+  if (typeof method !== "function") throw new Error(`SettingsDialog.${methodName} is not callable`);
+  const result: unknown = Reflect.apply(method, dialog, []);
+  if (!(result instanceof Promise)) throw new Error(`SettingsDialog.${methodName} did not return a promise`);
+  await result;
 }
 
 function callAppMethod(app: PiWebUiApp, methodName: string, ...args: readonly unknown[]): unknown {
