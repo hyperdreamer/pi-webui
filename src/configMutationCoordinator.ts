@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, type Stats } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { loadPiWebUiConfig, piWebUiDataDir, piWebUiConfigPath, savePiWebUiConfig, type LoadOptions, type LoadedPiWebUiConfig } from "./config.js";
-import type { PiWebUiConfigValues, PiWebUiSpeechInputCloudConfig, PiWebUiSpeechInputConfig } from "./shared/apiTypes.js";
+import { loadPiWebUiConfig, piWebUiDataDir, piWebUiConfigPath, readRawSpeechInputSubtree, savePiWebUiConfig, type LoadOptions, type LoadedPiWebUiConfig } from "./config.js";
+import type { PiWebUiConfigValues } from "./shared/apiTypes.js";
 
 /**
  * Typed contention failure: the SQLite acquisition budget was exhausted. Config,
@@ -93,41 +94,57 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
   const mutationsDir = join(canonicalDataDir, CONFIG_MUTATIONS_CHILD);
   ensureConfigMutationsChild(mutationsDir);
   const databasePath = piWebUiConfigMutationDatabasePath(resolvedConfigPath, canonicalDataDir);
-  const now = options.now ?? (() => Date.now());
+  const now = options.now ?? (() => performance.now());
   const scheduleRetry = options.scheduleRetry ?? defaultScheduleRetry;
   const openDatabase = options.openDatabase ?? defaultOpenDatabase;
   const readFileIdentity = options.readFileIdentity ?? defaultReadFileIdentity;
   const createRevision = options.createRevision ?? randomUUID;
 
   async function withAcquiredTransaction<T>(run: (db: PiWebUiConfigLockDatabase) => T): Promise<T> {
+    // One monotonic ten-second budget for the entire acquisition; wall-clock
+    // adjustments cannot shorten or stretch it, and it is never reset between
+    // retries.
     const deadline = now() + PI_WEBUI_CONFIG_MUTATION_LOCK_TIMEOUT_MS;
     for (;;) {
-      const db = openDatabase(databasePath);
+      // Enforced before every attempt and again after every retry wake.
+      if (now() > deadline) throw new PiWebUiConfigMutationBusyError();
+      let db: PiWebUiConfigLockDatabase | undefined;
       let acquired = false;
       try {
+        // Database opening and setup are part of the guarded attempt: SQLite
+        // can report busy from setup PRAGMAs as well as from BEGIN IMMEDIATE.
+        db = openDatabase(databasePath);
         db.beginImmediate();
         acquired = true;
         return run(db);
       } catch (error) {
         try {
-          if (acquired) db.rollback();
+          // Roll back only an uncommitted acquired transaction; a setup
+          // failure never reaches rollback.
+          if (acquired && db !== undefined) db.rollback();
         } catch {
           // Close-only cleanup; the acquisition failure is what matters.
         }
-        db.close();
         if (isSqliteBusy(error)) {
           if (now() >= deadline) throw new PiWebUiConfigMutationBusyError();
-          await scheduleRetryOnce();
+          // Bound the retry delay to the remaining budget so a slow retry can
+          // never overshoot the deadline.
+          const remainingBudget = Math.max(0, deadline - now());
+          await scheduleRetryOnce(Math.min(PI_WEBUI_CONFIG_MUTATION_RETRY_MS, remainingBudget));
           continue;
         }
         throw error;
+      } finally {
+        // Every attempt closes its own handle, success or failure, so a
+        // long-lived process leaks no descriptor per coordinated operation.
+        db?.close();
       }
     }
   }
 
-  function scheduleRetryOnce(): Promise<void> {
+  function scheduleRetryOnce(delayMs: number): Promise<void> {
     return new Promise<void>((resolveRetry) => {
-      scheduleRetry(resolveRetry, PI_WEBUI_CONFIG_MUTATION_RETRY_MS);
+      scheduleRetry(resolveRetry, delayMs);
     });
   }
 
@@ -160,6 +177,10 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
     mutate: (mutate, mutationOptions = {}) => withAcquiredTransaction((db) => {
       const before = readSnapshot(db);
       const next = mutate(before);
+      // Compare the raw persisted speech subtree, never the parsed form:
+      // canonicalization or trimming from an unrelated write still counts as
+      // a persisted change and conservatively rotates the CAS revision.
+      const beforeRawSpeech = readRawSpeechInputSubtree(resolvedConfigPath);
       savePiWebUiConfig(next, configOptions);
       const after = loadPiWebUiConfig(configOptions);
       if (after.path !== resolvedConfigPath) {
@@ -167,7 +188,8 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
       }
       const identity = readFileIdentity(resolvedConfigPath);
       const fingerprint = fingerprintFor(identity);
-      const speechChanged = !sameSpeechInput(before.loaded.config.speechInput, after.config.speechInput);
+      const afterRawSpeech = readRawSpeechInputSubtree(resolvedConfigPath);
+      const speechChanged = !sameRawSpeechInput(beforeRawSpeech, afterRawSpeech);
       const rotateSpeechInputRevision = speechChanged || mutationOptions.rotateSpeechInputRevision === true;
       const speechInputRevision = rotateSpeechInputRevision ? createRevision() : before.speechInputRevision;
       db.writeState({ speechInputRevision, fileFingerprint: fingerprint });
@@ -177,16 +199,26 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
   };
 }
 
-function sameSpeechInput(a: PiWebUiSpeechInputConfig | undefined, b: PiWebUiSpeechInputConfig | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return a.provider === b.provider
-    && a.language === b.language
-    && sameSpeechInputCloud(a.cloud, b.cloud);
+/**
+ * Field-by-field structural equality of the raw persisted speech subtree,
+ * order-independent and tolerant of unknown keys, so canonicalization or
+ * trimming performed by an unrelated write is still detected as a change.
+ */
+function sameRawSpeechInput(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!isRawRecord(a) || !isRawRecord(b)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!sameRawSpeechInput(a[key], b[key])) return false;
+  }
+  return true;
 }
 
-function sameSpeechInputCloud(a: PiWebUiSpeechInputCloudConfig | undefined, b: PiWebUiSpeechInputCloudConfig | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return a.baseUrl === b.baseUrl && a.model === b.model && a.apiKey === b.apiKey;
+function isRawRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fingerprintFor(identity: PiWebUiConfigFileIdentity): string {
@@ -232,7 +264,7 @@ function validateCanonicalDataRoot(canonicalDataDir: string): void {
   if (metadata.uid !== (process.geteuid?.() ?? -1)) {
     throw new Error("PI WEBUI data directory must be owned by the PI WEBUI user");
   }
-  if ((metadata.mode & 0o077) !== 0) {
+  if ((metadata.mode & 0o022) !== 0) {
     throw new Error("PI WEBUI data directory must not be group or other writable");
   }
 }
@@ -336,14 +368,23 @@ class SqliteConfigMutationLockDatabase implements PiWebUiConfigLockDatabase {
 
 function defaultOpenDatabase(path: string): PiWebUiConfigLockDatabase {
   validateAndPrepareDatabaseFile(path);
-  const db = new DatabaseSync(path);
-  // Nonblocking acquisition: SQLite reports SQLITE_BUSY immediately so this
-  // process can close the handle and retry on the event loop instead of
-  // blocking the gateway on an in-flight transaction elsewhere.
-  db.exec("PRAGMA busy_timeout = 0");
-  // The rollback journal stays inside the private owned child directory.
-  db.exec("PRAGMA journal_mode = DELETE");
-  return new SqliteConfigMutationLockDatabase(db);
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path);
+    // Nonblocking acquisition: SQLite reports SQLITE_BUSY immediately so this
+    // process can close the handle and retry on the event loop instead of
+    // blocking the gateway on an in-flight transaction elsewhere.
+    db.exec("PRAGMA busy_timeout = 0");
+    // The rollback journal stays inside the private owned child directory.
+    db.exec("PRAGMA journal_mode = DELETE");
+    return new SqliteConfigMutationLockDatabase(db);
+  } catch (error) {
+    // A busy failure during setup (for example the journal-mode change needs
+    // the exclusive lock) must still close the constructed handle before the
+    // coordinator retries.
+    db?.close();
+    throw error;
+  }
 }
 
 function isStateRow(value: unknown): value is { speechInputRevision: string; fileFingerprint: string } {

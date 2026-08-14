@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, chownSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   PI_WEBUI_CONFIG_MUTATION_LOCK_TIMEOUT_MS,
+  PI_WEBUI_CONFIG_MUTATION_RETRY_MS,
   PiWebUiConfigMutationBusyError,
   createPiWebUiConfigMutationCoordinator,
   piWebUiConfigMutationDatabasePath,
@@ -44,13 +45,16 @@ describe("config mutation coordinator acquisition", () => {
     expect(read.speechInputRevision).toBe("revision-1");
     expect(requireDb(harness.dbs, 0).commitCalls).toBe(1);
     expect(requireDb(harness.dbs, 0).rollbackCalls).toBe(0);
-    expect(requireDb(harness.dbs, 0).closeCalls).toBe(0);
+    // Every attempt closes its own database handle, success or failure, so a
+    // long-lived process never leaks a descriptor per coordinated operation.
+    expect(requireDb(harness.dbs, 0).closeCalls).toBe(1);
 
     const mutated = await harness.coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 }));
     expect(mutated.loaded.config.port).toBe(9001);
     expect(mutated.speechInputRevision).toBe("revision-1");
     expect(requireDb(harness.dbs, 1).commitCalls).toBe(1);
     expect(requireDb(harness.dbs, 1).beginImmediateCalls).toBe(1);
+    expect(requireDb(harness.dbs, 1).closeCalls).toBe(1);
     expect(harness.retryCount()).toBe(0);
   });
 
@@ -111,6 +115,87 @@ describe("config mutation coordinator acquisition", () => {
     expect(harness.retryCount()).toBe(0);
     expect(requireDb(harness.dbs, 0).closeCalls).toBe(1);
     expect(requireDb(harness.dbs, 0).rollbackCalls).toBe(0);
+  });
+
+  it("rejects with PiWebUiConfigMutationBusyError when a retry wakes past the acquisition deadline", async () => {
+    const harness = fakeHarness({ beginErrors: [busyError()], retryAdvanceMs: 10_001 });
+
+    await expect(harness.coordinator.read()).rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
+    // The deadline is rechecked after the retry wakes, so the second attempt
+    // never opens a database handle once the budget is exhausted.
+    expect(harness.dbs).toHaveLength(1);
+    expect(harness.retryCount()).toBe(1);
+    expect(harness.fakeNow()).toBe(10_001);
+  });
+
+  it("bounds retry scheduling to the remaining acquisition budget", async () => {
+    let fakeNow = 0;
+    let retriesScheduled = 0;
+    const requestedDelays: number[] = [];
+    const store: FakeLockStateStore = { state: undefined, beginErrors: [busyError(), busyError()] };
+    const dbs: FakeLockDatabase[] = [];
+    const coordinator = createPiWebUiConfigMutationCoordinator({
+      config: { env: { PI_WEBUI_CONFIG: configPath } },
+      dataDir,
+      now: () => fakeNow,
+      scheduleRetry: (callback, delayMs) => {
+        requestedDelays.push(delayMs);
+        // The first retry jumps the clock to 9,980 ms, leaving only 20 ms of
+        // the ten-second budget; later retries advance only by their own
+        // requested delay.
+        fakeNow = retriesScheduled === 0 ? 9_980 : fakeNow + delayMs;
+        retriesScheduled += 1;
+        callback();
+        return () => undefined;
+      },
+      openDatabase: () => {
+        const db = new FakeLockDatabase(store);
+        dbs.push(db);
+        return db;
+      },
+      createRevision: () => `revision-${String(++revisionCounter)}`,
+    });
+
+    // First busy at t=0 requests the full 25 ms retry; after the clock lands
+    // at 9,980 ms only 20 ms of the budget remain, so the second retry is
+    // clamped to 20 ms and the third attempt still acquires inside the budget.
+    const snapshot = await coordinator.read();
+
+    expect(requestedDelays).toEqual([PI_WEBUI_CONFIG_MUTATION_RETRY_MS, 20]);
+    expect(snapshot.speechInputRevision).toBe("revision-1");
+    expect(dbs).toHaveLength(3);
+  });
+
+  it("retries a SQLite busy failure during database open within the budget", async () => {
+    const harness = fakeHarness({ openErrors: [busyError()] });
+
+    const read = await harness.coordinator.read();
+
+    expect(read.speechInputRevision).toBe("revision-1");
+    expect(harness.retryCount()).toBe(1);
+    expect(harness.dbs).toHaveLength(1);
+    expect(requireDb(harness.dbs, 0).commitCalls).toBe(1);
+    expect(requireDb(harness.dbs, 0).closeCalls).toBe(1);
+  });
+
+  it("fails immediately on non-contention database open errors", async () => {
+    const harness = fakeHarness({ openErrors: [new Error("open boom")] });
+
+    await expect(harness.coordinator.read()).rejects.toThrow("open boom");
+    expect(harness.retryCount()).toBe(0);
+    expect(harness.dbs).toHaveLength(0);
+  });
+
+  it("exhausts the acquisition budget across busy database opens", async () => {
+    const harness = fakeHarness({
+      openErrors: [busyError(), busyError(), busyError(), busyError(), busyError()],
+      retryAdvanceMs: 2_500,
+    });
+
+    await expect(harness.coordinator.read()).rejects.toBeInstanceOf(PiWebUiConfigMutationBusyError);
+    expect(harness.dbs).toHaveLength(0);
+    expect(harness.retryCount()).toBe(4);
+    expect(harness.fakeNow()).toBe(10_000);
   });
 
   it("rolls back and closes after a mutation callback failure", async () => {
@@ -190,6 +275,22 @@ describe("config mutation coordinator speech revision", () => {
     expect(omitted.speechInputRevision).toBe(seeded.speechInputRevision);
     expect(omitted.loaded.config.speechInput).toEqual(seeded.loaded.config.speechInput);
     expect(omitted.loaded.config.port).toBe(9002);
+  });
+
+  it("rotates the revision when an unrelated coordinated write canonicalizes the raw speech subtree", async () => {
+    const coordinator = realCoordinator();
+    // Raw lowercase language on disk: parsing canonicalizes it, so a parsed
+    // comparison would see identical speech before and after an unrelated
+    // write that normalizes the persisted subtree.
+    writeFileSync(configPath, `${JSON.stringify({ speechInput: { provider: "cloud", language: "en-us" } }, null, 2)}\n`, "utf8");
+
+    const seeded = await coordinator.read();
+    expect(seeded.loaded.config.speechInput).toEqual({ provider: "cloud", language: "en-US" });
+
+    const unrelated = await coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 }));
+
+    expect(unrelated.speechInputRevision).not.toBe(seeded.speechInputRevision);
+    expect(unrelated.loaded.config.speechInput).toEqual({ provider: "cloud", language: "en-US" });
   });
 
   it("rotates the revision only when the authoritative persisted speech subtree changed", async () => {
@@ -326,6 +427,18 @@ describe("config mutation coordinator managed paths and permissions", () => {
       .toThrow("PI WEBUI data directory must not be group or other writable");
   });
 
+  it.skipIf(process.platform === "win32")("accepts an owned data root with group/other read and execute bits", async () => {
+    // Fresh directories are commonly created at 0755; only group/other write
+    // permission may disqualify a root.
+    chmodSync(dataDir, 0o755);
+
+    const coordinator = realCoordinator();
+    const snapshot = await coordinator.read();
+
+    expect(snapshot.loaded.path).toBe(configPath);
+    expect(existsSync(join(dataDir, "config-mutations"))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("rejects a data root owned by another user", () => {
     if ((process.getuid?.() ?? -1) !== 0) return; // Only root can create a foreign-owned directory.
     chownSync(dataDir, 12345, 12345);
@@ -404,6 +517,24 @@ describe("config mutation coordinator managed paths and permissions", () => {
     await coordinator.read();
 
     expect(statSync(dbPath).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === "win32")("closes the production SQLite handle after every successful operation", async () => {
+    const fdDir = "/proc/self/fd";
+    if (!existsSync(fdDir)) return; // Linux-only descriptor counting.
+    const coordinator = realCoordinator();
+    const countFds = () => readdirSync(fdDir).length;
+
+    await coordinator.read();
+    const before = countFds();
+    for (let index = 0; index < 50; index += 1) {
+      await coordinator.mutate((current) => ({ ...current.loaded.config, port: 9000 + index }));
+    }
+    await coordinator.read();
+
+    // A leaked descriptor per operation would add 51 entries; the handle is
+    // closed on every attempt, so the count returns to its baseline.
+    expect(countFds()).toBeLessThanOrEqual(before + 2);
   });
 });
 
@@ -553,6 +684,7 @@ let revisionCounter = 0;
 function fakeHarness(overrides: {
   env?: NodeJS.ProcessEnv;
   beginErrors?: Error[];
+  openErrors?: Error[];
   retryAdvanceMs?: number;
   readFileIdentity?: (path: string) => PiWebUiConfigFileIdentity;
 } = {}): FakeHarness {
@@ -571,6 +703,8 @@ function fakeHarness(overrides: {
       return () => undefined;
     },
     openDatabase: () => {
+      const openError = overrides.openErrors?.shift();
+      if (openError !== undefined) throw openError;
       const db = new FakeLockDatabase(store);
       dbs.push(db);
       return db;

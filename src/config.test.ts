@@ -1,4 +1,5 @@
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -588,6 +589,43 @@ describe("PI WEBUI config atomic file operations", () => {
   it("rejects directory config targets without artifacts", () => {
     configPath = join(tempDir, "config-dir");
     mkdirSync(configPath);
+
+    expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("PI WEBUI config path must resolve to a file");
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a character-device config target without artifacts", () => {
+    // A char device is a nonregular terminal: reading it as JSON would never
+    // block, but it must still be rejected before any write occurs.
+    configPath = "/dev/null";
+
+    expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("PI WEBUI config path must resolve to a file");
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a Unix socket config target without artifacts", async () => {
+    const socketPath = join(tempDir, "config.sock");
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      configPath = socketPath;
+
+      expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("PI WEBUI config path must resolve to a file");
+      expect(ownedTempFiles(tempDir)).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a special-file target reached through a configured symlink", () => {
+    symlinkSync("/dev/null", configPath);
 
     expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("PI WEBUI config path must resolve to a file");
     expect(ownedTempFiles(tempDir)).toEqual([]);

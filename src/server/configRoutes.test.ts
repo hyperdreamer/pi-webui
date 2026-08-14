@@ -1,7 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadPiWebUiConfig } from "../config.js";
 import { PiWebUiConfigMutationBusyError } from "../configMutationCoordinator.js";
-import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
+import { createFilePiWebUiConfigService, parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
 import type { PiWebUiConfigResponse, PiWebUiSpeechInputConfig, PiWebUiConfigValues } from "../shared/apiTypes.js";
 
 let app: FastifyInstance;
@@ -444,6 +448,64 @@ describe("config route speech redaction", () => {
     expect(response.config.speechInput).toEqual({ provider: "cloud", cloud: { apiKey: "$KEY" } });
   });
 });
+
+describe("config file service environment pinning", () => {
+  let tempDir: string;
+  let pinnedConfigPath: string;
+  let pinnedDataDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pi-webui-config-service-test-"));
+    pinnedConfigPath = join(tempDir, "config.json");
+    pinnedDataDir = join(tempDir, "data");
+    mkdirSync(pinnedDataDir, { recursive: true, mode: 0o700 });
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("pins the default file service to the environment frozen at construction", async () => {
+    const originalConfig = process.env["PI_WEBUI_CONFIG"];
+    const originalData = process.env["PI_WEBUI_DATA_DIR"];
+    process.env["PI_WEBUI_CONFIG"] = pinnedConfigPath;
+    process.env["PI_WEBUI_DATA_DIR"] = pinnedDataDir;
+    try {
+      const service = createFilePiWebUiConfigService();
+      // A post-start environment change must not move the config and lock
+      // database paths away from the construction-time snapshot.
+      process.env["PI_WEBUI_CONFIG"] = join(tempDir, "mutated.json");
+      await service.update((current) => ({ ...current, port: 9001 }));
+    } finally {
+      restoreProcessEnv("PI_WEBUI_CONFIG", originalConfig);
+      restoreProcessEnv("PI_WEBUI_DATA_DIR", originalData);
+    }
+
+    expect(existsSync(pinnedConfigPath)).toBe(true);
+    expect(existsSync(join(tempDir, "mutated.json"))).toBe(false);
+    expect(loadPiWebUiConfig({ env: { PI_WEBUI_CONFIG: pinnedConfigPath } }).config.port).toBe(9001);
+  });
+
+  it("keeps an injected frozen startup snapshot authoritative after process.env changes", async () => {
+    const env: NodeJS.ProcessEnv = Object.freeze({ PI_WEBUI_CONFIG: pinnedConfigPath, PI_WEBUI_DATA_DIR: pinnedDataDir });
+    const service = createFilePiWebUiConfigService({ env });
+    const original = process.env["PI_WEBUI_CONFIG"];
+    process.env["PI_WEBUI_CONFIG"] = join(tempDir, "mutated.json");
+    try {
+      await service.update((current) => ({ ...current, port: 9002 }));
+    } finally {
+      restoreProcessEnv("PI_WEBUI_CONFIG", original);
+    }
+
+    expect(existsSync(pinnedConfigPath)).toBe(true);
+    expect(existsSync(join(tempDir, "mutated.json"))).toBe(false);
+  });
+});
+
+function restoreProcessEnv(key: string, original: string | undefined): void {
+  if (original === undefined) Reflect.deleteProperty(process.env, key);
+  else process.env[key] = original;
+}
 
 function fullConfig(): PiWebUiConfigValues {
   return {

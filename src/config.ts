@@ -297,7 +297,9 @@ function defaultResolveWriteTarget(filePath: string): { path: string; mode?: num
   try {
     const effectivePath = realpathSync(filePath);
     const metadata = statSync(effectivePath);
-    if (metadata.isDirectory()) {
+    // Every existing terminal target must be a regular file; FIFOs, sockets,
+    // and devices could otherwise block or corrupt a held transaction.
+    if (!metadata.isFile()) {
       throw new Error(`PI WEBUI config path must resolve to a file: ${filePath}`);
     }
     return {
@@ -333,7 +335,7 @@ function resolveMissingWriteTarget(filePath: string): { path: string; mode?: num
     }
 
     if (!metadata.isSymbolicLink()) {
-      if (metadata.isDirectory()) {
+      if (!metadata.isFile()) {
         throw new Error(`PI WEBUI config path must resolve to a file: ${filePath}`);
       }
       return {
@@ -368,12 +370,24 @@ export function replacePiWebUiUtilityModels(utilityModels: UtilityModelSettings,
 
 function readExistingConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
-  // A directory at the configured path is rejected later by the atomic writer;
-  // reading it as JSON would raise a platform-dependent EISDIR instead.
-  if (statSync(path).isDirectory()) return {};
+  // A directory, FIFO, socket, or device at the configured path is rejected
+  // later by the atomic writer; reading it as JSON would raise a
+  // platform-dependent EISDIR, block on a special file, or fail on a device
+  // instead of failing safely before any write.
+  if (!statSync(path).isFile()) return {};
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`PI WEBUI config must be a JSON object: ${path}`);
   return parsed;
+}
+
+/**
+ * The raw persisted speechInput subtree of the configured file, for the
+ * coordinator's conservative pre-write/post-write CAS comparison. Returns
+ * undefined when the file does not exist or carries no speech subtree; never
+ * normalizes or parses the subtree.
+ */
+export function readRawSpeechInputSubtree(path: string): unknown {
+  return readExistingConfigObject(path)["speechInput"];
 }
 
 interface ParsedPiWebUiConfig {

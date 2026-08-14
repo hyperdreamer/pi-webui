@@ -29,22 +29,28 @@ const SELECTED_MACHINE_CONFIG_KEY_SET = new Set<string>(SELECTED_MACHINE_CONFIG_
  * committed snapshot, so a later writer's commit can never leak into an
  * earlier mutation's response. Ordinary reads stay on the lock-free JSON read
  * path because they expose no revision and need no write transaction.
+ *
+ * The environment is pinned at construction: the coordinator is built lazily
+ * at the first mutation, and a live process.env could otherwise change
+ * between construction and that first mutation, moving the config and lock
+ * database paths away from the session daemon's frozen startup snapshot.
  */
 export function createFilePiWebUiConfigService(options: LoadOptions = {}): PiWebUiConfigService {
+  const pinnedOptions: LoadOptions = options.env === undefined ? { ...options, env: Object.freeze({ ...process.env }) } : options;
   let coordinator: PiWebUiConfigMutationCoordinator | undefined;
   const mutationCoordinator = (): PiWebUiConfigMutationCoordinator => {
-    coordinator ??= createPiWebUiConfigMutationCoordinator({ config: options });
+    coordinator ??= createPiWebUiConfigMutationCoordinator({ config: pinnedOptions });
     return coordinator;
   };
   return {
-    read: () => currentPiWebUiConfigResponse(options),
+    read: () => currentPiWebUiConfigResponse(pinnedOptions),
     write: async (config) => {
       const snapshot = await mutationCoordinator().mutate(() => config);
-      return piWebUiConfigResponseFromSnapshot(snapshot, options);
+      return piWebUiConfigResponseFromSnapshot(snapshot, pinnedOptions);
     },
     update: async (mutate) => {
       const snapshot = await mutationCoordinator().mutate((current) => mutate(current.loaded.config));
-      return piWebUiConfigResponseFromSnapshot(snapshot, options);
+      return piWebUiConfigResponseFromSnapshot(snapshot, pinnedOptions);
     },
   };
 }
