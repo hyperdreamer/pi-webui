@@ -239,15 +239,19 @@ function isApiPath(requestUrl: string): boolean {
 }
 
 /**
- * One coordinator instance per app, constructed lazily on first coordinated
- * use with the environment pinned to construction time. The same instance is
- * handed to both the generic config service and the speech settings service,
- * so production never creates a second mutation authority.
+ * One coordinator instance per app, handed to both the generic config service
+ * and the speech settings service, so production never creates a second
+ * mutation authority. The environment is pinned when the app is built (the
+ * same startup moment `src/server/index.ts` freezes its snapshot), so a live
+ * process.env change cannot move the coordinated paths away from that frozen
+ * startup snapshot. The coordinator itself stays lazy so apps that never
+ * touch coordinated paths create no filesystem state.
  */
 function sharedConfigMutationCoordinator(injected?: PiWebUiConfigMutationCoordinator): PiWebUiConfigMutationCoordinator {
+  const pinnedEnv: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
   let created: PiWebUiConfigMutationCoordinator | undefined;
   const resolve = (): PiWebUiConfigMutationCoordinator => {
-    created ??= injected ?? createPiWebUiConfigMutationCoordinator({ config: { env: Object.freeze({ ...process.env }) } });
+    created ??= injected ?? createPiWebUiConfigMutationCoordinator({ config: { env: pinnedEnv } });
     return created;
   };
   return {
