@@ -12,6 +12,25 @@ import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
 registerAppTestHooks();
 
 describe("buildApp gateway speech input settings routes", () => {
+  it("registers only the gateway transcription route", async () => {
+    const gateway = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/speech-input/transcribe",
+      headers: { "content-type": "audio/webm;codecs=opus" },
+      payload: Buffer.from("audio"),
+    });
+    const selectedMachine = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/machines/local/speech-input/transcribe",
+      headers: { "content-type": "audio/webm;codecs=opus" },
+      payload: Buffer.from("audio"),
+    });
+
+    expect(gateway.statusCode).toBe(200);
+    expect(gateway.json()).toEqual({ text: "test transcript" });
+    expect(selectedMachine.statusCode).toBe(404);
+  });
+
   it("serves the redacted gateway settings snapshot", async () => {
     const response = await appTestContext.app.inject({ method: "GET", url: "/api/speech-input/settings" });
 

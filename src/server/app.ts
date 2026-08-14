@@ -25,6 +25,8 @@ import { createFilePiWebUiConfigService, registerConfigRoutes, registerLocalMach
 import { createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator } from "../configMutationCoordinator.js";
 import { createSpeechInputSettingsService, type SpeechInputSettingsService } from "./speechInput/speechInputSettingsService.js";
 import { registerSpeechInputSettingsRoutes } from "./speechInput/speechInputSettingsRoutes.js";
+import { createSpeechTranscriptionService, type SpeechInputTranscriptionService } from "./speechInput/speechTranscriptionService.js";
+import { registerSpeechInputTranscriptionRoutes } from "./speechInput/speechInputTranscriptionRoutes.js";
 import { PiWebUiPluginService } from "./piWebUiPluginService.js";
 import { createActiveProfilePiPackageService, type PiPackageService } from "./piPackageService.js";
 import { createActiveProfilePiPackagePluginsConfigService, type PiPackagePluginsConfigService } from "./piPackagePluginsConfigService.js";
@@ -65,6 +67,8 @@ export interface AppDependencies {
   configMutationCoordinator?: PiWebUiConfigMutationCoordinator;
   /** Gateway speech input settings authority; production pairs it with the shared coordinator. */
   speechInputSettings?: SpeechInputSettingsService;
+  /** Gateway-only cloud transcription authority; production pairs it with the shared coordinator. */
+  speechInputTranscription?: SpeechInputTranscriptionService;
   clientDist?: string | false;
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
@@ -366,6 +370,10 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
     },
   });
   registerSpeechInputSettingsRoutes(app, speechInputSettingsService);
+  const speechInputTranscriptionService = deps.speechInputTranscription ?? createSpeechTranscriptionService({
+    coordinator: configMutationCoordinator,
+  });
+  registerSpeechInputTranscriptionRoutes(app, speechInputTranscriptionService);
 
   registerMemoryRoutes(app, agentProfileProvider, "/api");
   registerMemoryRoutes(app, agentProfileProvider, "/api/machines/local");

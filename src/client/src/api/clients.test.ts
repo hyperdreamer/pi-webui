@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, SpeechInputSettingsUpdate, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
+import type { SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
 import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, speechInputApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
@@ -109,6 +110,25 @@ describe("speech input settings API", () => {
     expect(fetchCall(fetchMock, 1)[1]?.method).toBe("PUT");
     expect(JSON.parse(requestBody(fetchCall(fetchMock, 1)[1]))).toEqual(update);
     expect(fetchMock.mock.calls.some(([url]) => toUrl(url).pathname.includes("/machines/"))).toBe(false);
+  });
+});
+
+describe("speech input transcription API", () => {
+  it("posts a raw Blob with explicit MIME and cancellation through the gateway-only nested path", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const fetchMock = stubJsonFetch({ text: "transcript" });
+    const audio = new Blob(["opus audio"], { type: "audio/webm;codecs=opus" });
+    const mimeType: SpeechInputAudioMimeType = "audio/webm;codecs=opus";
+    const signal = new AbortController().signal;
+
+    await expect(speechInputApi.transcribe(audio, mimeType, signal)).resolves.toEqual({ text: "transcript" });
+
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/nested/pi-webui/api/speech-input/transcribe");
+    expect(init).toMatchObject({ method: "POST", body: audio, signal });
+    expect(new Headers(init?.headers).get("content-type")).toBe(mimeType);
+    expect(fetchMock.mock.calls.some(([requestUrl]) => toUrl(requestUrl).pathname.includes("/machines/"))).toBe(false);
   });
 });
 

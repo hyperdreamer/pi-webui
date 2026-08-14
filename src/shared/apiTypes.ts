@@ -301,6 +301,10 @@ export interface SpeechInputSettingsUpdate {
   credential: SpeechInputCredentialMutation;
 }
 
+export interface SpeechInputTranscribeResponse {
+  text: string;
+}
+
 export interface HostSpeechVoice {
   name: string;
   language: string;

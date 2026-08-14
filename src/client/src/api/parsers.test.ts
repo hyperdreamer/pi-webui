@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseSpeechInputSettingsResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../../shared/speechInputAudio";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseSpeechInputSettingsResponse, parseSpeechInputTranscribeResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("API parsers", () => {
+  it("strictly parses gateway speech transcription responses", () => {
+    expect(parseSpeechInputTranscribeResponse({ text: "transcript" })).toEqual({ text: "transcript" });
+
+    for (const value of [
+      null,
+      [],
+      {},
+      { text: "" },
+      { text: "   " },
+      { text: 1 },
+      { text: "x".repeat(SPEECH_INPUT_MAX_TRANSCRIPT_BYTES + 1) },
+      { text: "transcript", extra: true },
+    ]) {
+      expect(() => parseSpeechInputTranscribeResponse(value)).toThrow();
+    }
+  });
+
   it("strictly parses host speech status documents", () => {
     const available = {
       available: true,

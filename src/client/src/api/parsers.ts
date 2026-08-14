@@ -3,7 +3,7 @@ import type { PiPackageInfo, PiPackageMutationAction, PiPackageMutationResponse,
 import type { LegacyStarterModelPolicyPreference, SessionDefaultsResponse, SessionDefaultsV2Response, StarterModelPolicyPreference, StarterModelPolicyPreferenceResponse } from "../../../shared/apiTypes";
 import type { SessionOrderEntry, SessionReorderResponse } from "../../../shared/apiTypes";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelPolicy, SessionModelPolicyResponse } from "../../../shared/apiTypes";
-import type { SpeechInputSettings, SpeechInputSettingsResponse } from "../../../shared/apiTypes";
+import type { SpeechInputSettings, SpeechInputSettingsResponse, SpeechInputTranscribeResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
@@ -14,6 +14,7 @@ import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
 import { canonicalBcp47LanguageTag, isCanonicalLowercaseUuid } from "../../../shared/speechInput";
 import { isHostSpeechRunId } from "../../../shared/hostSpeech";
 import { isKnownThinkingLevel } from "../../../shared/thinkingLevels";
+import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../../shared/speechInputAudio";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -108,6 +109,16 @@ export function parseHostSpeechStopResponse(value: unknown): HostSpeechStopRespo
     runId: requireHostSpeechRunId(record, "runId"),
     stopped: requireBoolean(record, "stopped"),
   };
+}
+
+export function parseSpeechInputTranscribeResponse(value: unknown): SpeechInputTranscribeResponse {
+  const record = requirePlainRecord(value, "speech input transcription response");
+  assertOnlyFields(record, ["text"], "speech input transcription response");
+  const text = requireNonBlankString(record, "text");
+  if (new TextEncoder().encode(text).byteLength > SPEECH_INPUT_MAX_TRANSCRIPT_BYTES) {
+    throw new Error("Speech input transcription exceeds the maximum size");
+  }
+  return { text };
 }
 
 function requireHostSpeechRunId(record: Record<string, unknown>, key: string): string {

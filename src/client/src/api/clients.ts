@@ -3,7 +3,8 @@ import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from ".
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate, StarterModelPolicyPreference } from "../../../shared/apiTypes";
-import type { SpeechInputSettingsResponse, SpeechInputSettingsUpdate } from "../../../shared/apiTypes";
+import type { SpeechInputSettingsResponse, SpeechInputSettingsUpdate, SpeechInputTranscribeResponse } from "../../../shared/apiTypes";
+import type { SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
@@ -86,6 +87,7 @@ import {
   parseSessionTreeNavigateResult,
   parseSlashCommand,
   parseSpeechInputSettingsResponse,
+  parseSpeechInputTranscribeResponse,
   parseStopped,
   parseTerminalCommandRun,
   parseTerminalInfo,
@@ -186,6 +188,11 @@ export const speechInputApi = {
     "api/speech-input/settings",
     parseSpeechInputSettingsResponse,
     { method: "PUT", body: JSON.stringify(update) },
+  ),
+  transcribe: (audio: Blob, mimeType: SpeechInputAudioMimeType, signal?: AbortSignal): Promise<SpeechInputTranscribeResponse> => request(
+    "api/speech-input/transcribe",
+    parseSpeechInputTranscribeResponse,
+    { method: "POST", body: audio, headers: { "content-type": mimeType }, ...(signal === undefined ? {} : { signal }) },
   ),
 };
 

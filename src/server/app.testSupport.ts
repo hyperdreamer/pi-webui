@@ -18,6 +18,7 @@ import { PI_WEBUI_CAPABILITIES } from "../shared/capabilities.js";
 import { createPiWebUiStatusCache, type PiWebUiStatusCache } from "./piWebUiStatusCache.js";
 import { getPiWebUiStatus } from "./piWebUiStatus.js";
 import { createSpeechInputSettingsService, type SpeechInputSettingsService } from "./speechInput/speechInputSettingsService.js";
+import type { SpeechInputTranscriptionService } from "./speechInput/speechTranscriptionService.js";
 import { createInMemorySpeechInputConfigCoordinator, type InMemorySpeechInputConfigCoordinator } from "./speechInput/speechInputSettingsService.testSupport.js";
 import type { ActiveAgentProfileDescriptor, HostSpeechSpeakRequest, HostSpeechStatus, PiPackageInfo, PiPackagePluginMutationRequest, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import type { SessionDaemonAgentProfileResult } from "../sessiond/sessionDaemonClient.js";
@@ -163,6 +164,7 @@ export function registerAppTestHooks(): void {
         coordinator: speechInputCoordinator,
         onCommitted: () => piWebUiStatusCache?.invalidate(),
       }),
+      speechInputTranscription: createFakeSpeechInputTranscriptionService(),
       piWebUiStatusCache,
       piPackages: fakePiPackageService(),
       piPackagePlugins: fakePiPackagePluginsConfigService(),
@@ -272,6 +274,10 @@ export function createFakeSpeechInputSettingsService(): SpeechInputSettingsServi
   return createSpeechInputSettingsService({
     coordinator: createInMemorySpeechInputConfigCoordinator({}),
   });
+}
+
+function createFakeSpeechInputTranscriptionService(): SpeechInputTranscriptionService {
+  return { transcribe: () => Promise.resolve("test transcript") };
 }
 
 function appTestAgentProfile(dir: string): ActiveAgentProfileDescriptor {
