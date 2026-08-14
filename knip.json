@@ -18,5 +18,5 @@
   ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": ["tsx"],
-  "ignoreBinaries": ["tsx", "vite", "tsc", "knip", "eslint", "vitest", "changeset", "mkfifo"]
+  "ignoreBinaries": ["tsx", "vite", "tsc", "knip", "eslint", "vitest", "changeset", "mkfifo", "taskkill"]
 }

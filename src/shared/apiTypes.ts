@@ -270,6 +270,12 @@ export interface PiWebUiSpeechInputConfig {
   cloud?: PiWebUiSpeechInputCloudConfig;
 }
 
+export interface SpeechInputCredentialStatus {
+  configured: boolean;
+  source?: "literal" | "environment" | "command";
+  resolution: "missing" | "resolved" | "unresolved" | "unchecked";
+}
+
 export interface HostSpeechVoice {
   name: string;
   language: string;
