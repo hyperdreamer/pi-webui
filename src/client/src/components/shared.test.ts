@@ -44,6 +44,17 @@ describe("starter composer overflow", () => {
   });
 });
 
+describe("speech composer layout", () => {
+  it("keeps speech status bounded and leaves icon controls at stable dimensions", () => {
+    const styles = promptEditorStyles.cssText;
+
+    expect(styles).toMatch(/\.speech-input-status\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*\}/);
+    expect(styles).toMatch(/\.speech-input-error\s*\{[^}]*grid-column:\s*1;[^}]*\}/);
+    expect(styles).toMatch(/\.speech-input-button\s*\{[^}]*flex:\s*0 0 auto;[^}]*\}/);
+    expect(styles).toMatch(/@media \(max-width:\s*430px\)\s*\{[\s\S]*?\.icon-button\s*\{[^}]*width:\s*34px;[^}]*height:\s*34px;[^}]*\}/);
+  });
+});
+
 describe("terminal modal header", () => {
   it("keeps adjusters beside the title and the close control at the far edge", () => {
     const styles = appStyles.cssText;

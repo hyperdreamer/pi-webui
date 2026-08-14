@@ -379,9 +379,11 @@ describe("PromptEditor session controls", () => {
 
     const actions = renderPromptEditorActions(editor);
     const compact = requiredButton(actions, ".compact-button");
+    const microphone = requiredButton(actions, ".speech-input-button");
     const queue = requiredButton(actions, '[aria-label="Queue message"]');
 
-    expect(compact.nextElementSibling).toBe(queue);
+    expect(compact.nextElementSibling).toBe(microphone);
+    expect(microphone.nextElementSibling).toBe(queue);
     expect(compact.disabled).toBe(true);
     compact.click();
     expect(onCompact).not.toHaveBeenCalled();

@@ -3,9 +3,9 @@ import { markdown, deleteMarkupBackward, insertNewlineContinueMarkup } from "@co
 import { EditorSelection, EditorState, Compartment } from "@codemirror/state";
 import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultHighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
-import { LitElement, html, type PropertyValues } from "lit";
+import { LitElement, html, nothing, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import { api, type FileSuggestion, type PromptAttachment, type SessionStatus, type SlashCommand } from "../api";
+import { api, type FileSuggestion, type PromptAttachment, type SessionStatus, type SlashCommand, type SpeechInputSettingsResponse } from "../api";
 import {
   type ClientSessionModelPolicyStatus,
   type ModelTier,
@@ -20,8 +20,11 @@ import { detectPromptCompletionTrigger, fileCompletionInsertText, type PromptCom
 import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
 import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPreferences";
 import { createMobilePromptEnterMedia, readPromptEnterPreference, shouldSendPromptOnEnterShortcut, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
+import { createDefaultSpeechInputController, type SpeechInputControllerState } from "../controllers/speechInputController";
+import { buildSpeechTranscriptInsertion, type SpeechInputComposerIdentity, type SpeechInputTargetSnapshot } from "../speechInput/speechInputCore";
+import { clearPromptSpeechInterim, promptSpeechDecoration, showPromptSpeechInterim } from "./promptSpeechDecoration";
 import { promptEditorStyles, type CompletionItem } from "./shared";
-import { renderAttachIcon, renderCompactIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
+import { renderAttachIcon, renderCompactIcon, renderMicrophoneIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge, renderWaveformIcon } from "./promptEditorIcons";
 import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
 import { TIER_LABELS } from "./modelPolicyLabels";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
@@ -64,6 +67,7 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
+  @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
   /** Injectable so tests and the app share one app-lifetime draft store. */
   @property({ attribute: false }) attachmentDrafts: PromptAttachmentDraftStore = promptAttachmentDrafts;
   @query(".markdown-editor") private editorHost?: HTMLDivElement;
@@ -81,6 +85,10 @@ export class PromptEditor extends LitElement {
   @state() private attachments: PendingAttachment[] = [];
   @state() private attachmentDelivery: PromptAttachmentDelivery = loadAttachmentDelivery();
   @state() private attachmentError: string | undefined = undefined;
+  @state() private speechInputState: SpeechInputControllerState = {
+    kind: "idle",
+    unavailableReason: "Speech settings are still loading.",
+  };
   private attachmentScope: PromptAttachmentDraftScope | undefined;
   private requestVersion = 0;
   private editor: EditorView | undefined;
@@ -88,8 +96,22 @@ export class PromptEditor extends LitElement {
   private readonly readOnlyCompartment = new Compartment();
   private readonly mobilePromptEnterMedia = createMobilePromptEnterMedia();
   private explicitShiftKeyActive = false;
+  private speechInputController = createDefaultSpeechInputController({
+    onStateChange: (state) => { this.handleSpeechInputStateChange(state); },
+    onInterim: (target, text) => { this.applySpeechInputInterim(target, text); },
+    onFinal: (target, text) => this.applySpeechInputFinal(target, text),
+    onClearInterim: () => { this.clearSpeechInputInterim(); },
+  });
 
   protected override willUpdate(changed: PropertyValues<this>) {
+    const identityChanged = changed.has("sessionId")
+      || changed.has("machineId")
+      || changed.has("projectId")
+      || changed.has("workspaceId");
+    if (identityChanged) {
+      this.cancelSpeechInput();
+      if (!changed.has("sessionId") && !changed.has("machineId")) return;
+    }
     if (!changed.has("sessionId") && !changed.has("machineId")) return;
     const previousSessionId = changed.has("sessionId") ? changed.get("sessionId") : this.sessionId;
     const previousMachineId = changed.has("machineId") ? changed.get("machineId") : this.machineId;
@@ -146,11 +168,15 @@ export class PromptEditor extends LitElement {
   }
 
   protected override updated(changed: PropertyValues) {
-    if (changed.has("disabled")) this.updateEditorDisabledState();
+    if (changed.has("speechInputSettings")) this.speechInputController.configure(this.speechInputSettings);
+    if (changed.has("disabled") || changed.has("speechInputState")) this.updateEditorDisabledState();
     if (changed.has("sessionId") || changed.has("machineId")) this.syncEditorDoc();
   }
 
   override disconnectedCallback(): void {
+    this.cancelSpeechInput();
+    this.speechInputController.dispose();
+    this.clearSpeechInputInterim();
     this.editor?.destroy();
     this.editor = undefined;
     super.disconnectedCallback();
@@ -160,7 +186,8 @@ export class PromptEditor extends LitElement {
     const shellInputMode = this.currentInputMode.kind === "shell" ? this.currentInputMode : undefined;
     const shellMode = shellInputMode !== undefined;
     const queuesInput = this.canSteer || this.isCompacting;
-    const busy = this.disabled || this.sending;
+    const speechInputActive = this.speechInputActive();
+    const busy = this.disabled || this.sending || speechInputActive;
     const sendBusy = busy || this.sendDisabled;
     // Manual compaction aborts current work. Keep it beside Queue, but do not
     // permit it while the session exposes a stop action.
@@ -168,9 +195,9 @@ export class PromptEditor extends LitElement {
     return html`
       <footer class=${shellMode ? "shell-mode" : ""} @paste=${(event: ClipboardEvent) => { void this.handlePaste(event); }} @dragover=${(event: DragEvent) => { this.handleDragOver(event); }} @drop=${(event: DragEvent) => { void this.handleDrop(event); }}>
         <div class="editor-wrap">
-          <div class=${`markdown-editor${this.disabled ? " markdown-editor-disabled" : ""}`} aria-label="Message pi" aria-disabled=${this.disabled ? "true" : "false"}></div>
+          <div class=${`markdown-editor${this.disabled ? " markdown-editor-disabled" : ""}`} aria-label="Message pi" aria-disabled=${this.disabled ? "true" : "false"} aria-readonly=${speechInputActive ? "true" : nothing}></div>
           <input class="attachment-input" type="file" multiple hidden @change=${(event: Event) => { void this.handleFileInput(event); }} />
-          <button class="editor-attach icon-button" ?disabled=${busy} title="Attach files" aria-label="Attach files" @click=${() => { this.attachmentInput?.click(); }}>${renderAttachIcon()}</button>
+          <button class="editor-attach icon-button" ?disabled=${busy} title="Attach files" aria-label="Attach files" @click=${() => { if (!this.speechInputActive()) this.attachmentInput?.click(); }}>${renderAttachIcon()}</button>
           ${shellMode ? html`<div class="mode-hint">Shell command${shellInputMode.excludeFromContext ? " · excluded from context" : ""}</div>` : null}
           ${this.isCompacting && !shellMode ? html`<div class="mode-hint">Compacting history · message will be queued</div>` : null}
           ${this.renderAttachments()}
@@ -178,11 +205,14 @@ export class PromptEditor extends LitElement {
         </div>
         <div class="actions">
           ${this.renderCompactStatus()}
-          ${this.onCompact === undefined ? null : html`<button class="compact-button" ?disabled=${compactDisabled} title="Compact context" aria-label="Compact context" @click=${() => this.onCompact?.()}>${renderCompactIcon()}<span>Compact</span></button>`}
+          ${this.renderSpeechInputStatus()}
+          ${this.onCompact === undefined ? null : html`<button class="compact-button" ?disabled=${compactDisabled} title="Compact context" aria-label="Compact context" @click=${() => { if (!this.speechInputActive()) this.onCompact?.(); }}>${renderCompactIcon()}<span>Compact</span></button>`}
+          ${this.renderSpeechInputButton()}
           <button class="icon-button send-button" ?disabled=${sendBusy} title=${queuesInput ? "Queue until the current activity finishes" : "Send message"} aria-label=${queuesInput ? "Queue message" : "Send message"} @click=${() => { this.send("followUp"); }}>${queuesInput ? renderQueueIcon() : renderSendIcon()}</button>
           ${this.canSteer && !this.isCompacting ? html`<button class="icon-button steer-button" ?disabled=${sendBusy} title="Steer the current response before the next model call" aria-label="Steer current response" @click=${() => { this.send("steer"); }}>${renderSteerIcon()}</button>` : null}
           <button class="icon-button stop-button" ?disabled=${this.disabled || !this.canStop} title=${this.canStop ? "Stop current work and clear queued messages" : "Nothing running"} aria-label="Stop current work" @click=${() => this.onStop?.()}>${renderStopIcon()}</button>
         </div>
+        ${this.renderSpeechInputError()}
       </footer>
     `;
   }
@@ -218,6 +248,159 @@ export class PromptEditor extends LitElement {
     return this.editor;
   }
 
+  /** Lets the app shell cancel the active dictation run before global shortcuts. */
+  cancelSpeechInput(): boolean {
+    return this.speechInputController.cancel();
+  }
+
+  private speechInputActive(): boolean {
+    return this.speechInputState.kind !== "idle";
+  }
+
+  private handleSpeechInputStateChange(state: SpeechInputControllerState): void {
+    const wasActive = this.speechInputActive();
+    this.speechInputState = state;
+    this.updateEditorDisabledState();
+    if (wasActive && state.kind === "idle") {
+      queueMicrotask(() => {
+        if (!this.speechInputActive()) this.editor?.focus();
+      });
+    }
+  }
+
+  private handleSpeechInputControl(): void {
+    switch (this.speechInputState.kind) {
+      case "idle":
+        this.startSpeechInput();
+        return;
+      case "listening":
+        this.speechInputController.stop();
+        return;
+      case "requesting-permission":
+      case "transcribing":
+        this.cancelSpeechInput();
+        return;
+    }
+  }
+
+  private startSpeechInput(): void {
+    // Invalidate delayed completion responses before capturing the document and
+    // selection. Starting dictation itself never changes the draft.
+    this.requestVersion += 1;
+    this.completions = [];
+    this.selectedIndex = 0;
+    this.clearSpeechInputInterim();
+    const target = this.captureSpeechInputTarget();
+    if (target === undefined) {
+      this.speechInputState = {
+        kind: "idle",
+        ...(this.speechInputState.provider === undefined ? {} : { provider: this.speechInputState.provider }),
+        error: "Speech input is unavailable for this composer.",
+      };
+      return;
+    }
+    this.speechInputController.start(target);
+  }
+
+  private captureSpeechInputTarget(): SpeechInputTargetSnapshot | undefined {
+    const editor = this.editor;
+    const identity = this.speechInputComposerIdentity();
+    if (editor === undefined || identity === undefined) return undefined;
+    const selection = editor.state.selection.main;
+    return {
+      identity,
+      text: editor.state.doc.toString(),
+      from: selection.from,
+      to: selection.to,
+    };
+  }
+
+  private speechInputComposerIdentity(): SpeechInputComposerIdentity | undefined {
+    const machineId = nonemptySpeechIdentityPart(this.machineId);
+    const projectId = nonemptySpeechIdentityPart(this.projectId);
+    const workspaceId = nonemptySpeechIdentityPart(this.workspaceId);
+    if (machineId === undefined || projectId === undefined || workspaceId === undefined) return undefined;
+
+    const sessionId = this.sessionId;
+    if (sessionId === undefined || sessionId === "") {
+      return { kind: "starter", machineId, projectId, workspaceId };
+    }
+    if (typeof sessionId !== "string") return undefined;
+    return { kind: "session", machineId, projectId, workspaceId, sessionId };
+  }
+
+  private speechInputTargetIsCurrent(target: SpeechInputTargetSnapshot): boolean {
+    const identity = this.speechInputComposerIdentity();
+    const editor = this.editor;
+    return identity !== undefined
+      && editor !== undefined
+      && sameSpeechInputComposerIdentity(identity, target.identity)
+      && editor.state.doc.toString() === target.text;
+  }
+
+  private applySpeechInputInterim(target: SpeechInputTargetSnapshot, text: string): void {
+    if (!this.speechInputTargetIsCurrent(target)) return;
+    this.editor?.dispatch({
+      effects: text === ""
+        ? clearPromptSpeechInterim.of(undefined)
+        : showPromptSpeechInterim.of({ from: target.from, to: target.to, text }),
+    });
+  }
+
+  private applySpeechInputFinal(target: SpeechInputTargetSnapshot, text: string): "inserted" | "empty" | "changed" | "too-large" {
+    const editor = this.editor;
+    if (editor === undefined || !this.speechInputTargetIsCurrent(target)) return "changed";
+    const insertion = buildSpeechTranscriptInsertion(target, editor.state.doc.toString(), text);
+    if (!insertion.ok) return insertion.reason;
+    editor.dispatch({
+      changes: { from: insertion.from, to: insertion.to, insert: insertion.insert },
+      selection: EditorSelection.cursor(insertion.caret),
+      effects: clearPromptSpeechInterim.of(undefined),
+    });
+    return "inserted";
+  }
+
+  private clearSpeechInputInterim(): void {
+    this.editor?.dispatch({ effects: clearPromptSpeechInterim.of(undefined) });
+  }
+
+  private renderSpeechInputButton() {
+    const state = this.speechInputState;
+    if (state.kind === "idle") {
+      const label = state.unavailableReason
+        ?? (state.provider === undefined ? "Start dictation" : `Start dictation · ${speechInputProviderLabel(state.provider)}`);
+      return html`<button class="icon-button speech-input-button speech-input-idle" ?disabled=${state.unavailableReason !== undefined} title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderMicrophoneIcon()}</button>`;
+    }
+    if (state.kind === "requesting-permission") {
+      const label = `Cancel dictation · ${speechInputProviderLabel(state.provider)}`;
+      return html`<button class="icon-button speech-input-button speech-input-requesting" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderMicrophoneIcon()}</button>`;
+    }
+    if (state.kind === "listening") {
+      const label = `Stop dictation · ${speechInputProviderLabel(state.provider)}`;
+      return html`<button class="icon-button speech-input-button speech-input-listening" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderStopIcon()}</button>`;
+    }
+    const label = "Cancel transcription · Cloud";
+    return html`<button class="icon-button speech-input-button speech-input-transcribing" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderWaveformIcon()}</button>`;
+  }
+
+  private renderSpeechInputStatus() {
+    const state = this.speechInputState;
+    if (state.kind === "idle") return null;
+    if (state.kind === "requesting-permission") {
+      return html`<div class="speech-input-status">Requesting microphone permission · ${speechInputProviderLabel(state.provider)}</div>`;
+    }
+    if (state.kind === "listening") {
+      const elapsed = state.provider === "cloud" ? ` · ${speechInputElapsedLabel(state.elapsedMs)}` : "";
+      return html`<div class="speech-input-status">Listening · ${speechInputProviderLabel(state.provider)}${elapsed}</div>`;
+    }
+    return html`<div class="speech-input-status">Transcribing · Cloud</div>`;
+  }
+
+  private renderSpeechInputError() {
+    const error = this.speechInputState.kind === "idle" ? this.speechInputState.error : undefined;
+    return error === undefined || error === "" ? null : html`<div class="speech-input-error" aria-live="polite">${error}</div>`;
+  }
+
   private renderCompactStatus() {
     const configurationMode = this.status === undefined && this.showSessionConfiguration;
     const status = this.status ?? (configurationMode ? this.sessionConfiguration : undefined);
@@ -228,7 +411,7 @@ export class PromptEditor extends LitElement {
     const thinkingLabel = configurationMode
       ? `Default thinking level: ${thinkingLevelLabel(status?.thinkingLevel)}`
       : `Thinking level: ${thinkingLevelLabel(status?.thinkingLevel)}`;
-    const policyEditable = !this.disabled && !this.modelPolicySaving && !sessionHasActiveWork(this.status);
+    const policyEditable = !this.disabled && !this.speechInputActive() && !this.modelPolicySaving && !sessionHasActiveWork(this.status);
     return html`
       <div class="compact-status" aria-label=${configurationMode ? "Session defaults" : "Session status"}>
         ${policyStatus === undefined ? null : html`
@@ -239,7 +422,7 @@ export class PromptEditor extends LitElement {
             .saving=${this.modelPolicySaving}
             .editable=${policyEditable}
             .error=${this.modelPolicyError}
-            .onSelectMode=${this.onSelectPolicyMode}
+            .onSelectMode=${this.onSelectPolicyMode === undefined ? undefined : (mode: "exact" | "tiered") => { if (!this.speechInputActive()) this.onSelectPolicyMode?.(mode); }}
           ></session-model-policy-control>
         `}
         ${policyStatus?.mode === "tiered" ? html`
@@ -248,18 +431,18 @@ export class PromptEditor extends LitElement {
             .selectedTier=${policyStatus.tier}
             .label=${policyStatus.tier === undefined ? "Choose tier" : TIER_LABELS[policyStatus.tier]}
             .editable=${policyEditable}
-            .onSelectTier=${this.onSelectPolicyTier}
+            .onSelectTier=${this.onSelectPolicyTier === undefined ? undefined : (tier: ModelTier) => { if (!this.speechInputActive()) this.onSelectPolicyTier?.(tier); }}
           ></session-tier-menu>
         ` : html`
-          <button class="select-model" ?disabled=${this.onSelectModel === undefined} title="Select model" @click=${() => this.onSelectModel?.()}>${provider}${model}</button>
+          <button class="select-model" ?disabled=${this.onSelectModel === undefined || this.speechInputActive()} title="Select model" @click=${() => { if (!this.speechInputActive()) this.onSelectModel?.(); }}>${provider}${model}</button>
           ${policyStatus === undefined ? html`
-            <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => this.onSelectThinking?.()}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
+            <button class="select-thinking icon-button" ?disabled=${this.onSelectThinking === undefined || this.speechInputActive()} title=${thinkingLabel} aria-label=${thinkingLabel} @click=${() => { if (!this.speechInputActive()) this.onSelectThinking?.(); }}>${renderThinkingGauge(thinkingGauge(status?.thinkingLevel, this.availableThinkingLevels))}</button>
           ` : html`
             <session-thinking-menu
               .options=${this.policyThinkingOptions}
               .label=${policyStatus.resolved.thinkingLevel}
               .editable=${policyEditable}
-              .onSelectLevel=${this.onSelectPolicyThinking}
+              .onSelectLevel=${this.onSelectPolicyThinking === undefined ? undefined : (level: string) => { if (!this.speechInputActive()) this.onSelectPolicyThinking?.(level); }}
             ></session-thinking-menu>
           `}
         `}
@@ -271,17 +454,18 @@ export class PromptEditor extends LitElement {
     if (this.attachments.length === 0 && this.attachmentError === undefined) return null;
     const canUseInlineDelivery = promptAttachmentsCanUseInlineDelivery(this.attachments);
     const delivery = this.effectiveAttachmentDelivery();
+    const locked = this.speechInputActive();
     return html`
       <div class="attachments" aria-label="Pending attachments">
         ${this.attachments.map((attachment) => html`
           <div class=${`attachment-chip ${isInlinePromptAttachment(attachment) ? "attachment-chip-image" : "attachment-chip-file"}`} title=${attachment.name}>
             ${this.renderAttachmentPreview(attachment)}
-            <button type="button" class="attachment-remove" title="Remove attachment" aria-label=${`Remove ${attachment.name}`} @click=${() => { this.removeAttachment(attachment.id); }}>×</button>
+            <button type="button" class="attachment-remove" ?disabled=${locked} title="Remove attachment" aria-label=${`Remove ${attachment.name}`} @click=${() => { this.removeAttachment(attachment.id); }}>×</button>
           </div>
         `)}
         ${this.attachments.length > 0 ? html`
           <label class="attachment-delivery" title=${canUseInlineDelivery ? "How attachments are delivered to the agent" : "General files are saved and mentioned from the workspace"}>
-            <select .value=${delivery} @change=${(event: Event) => { this.changeDelivery(event); }}>
+            <select ?disabled=${locked} .value=${delivery} @change=${(event: Event) => { this.changeDelivery(event); }}>
               <option value="inline" ?disabled=${!canUseInlineDelivery}>Attach to message${canUseInlineDelivery ? "" : " (images only)"}</option>
               <option value="folder">Save to .pi-webui/attachments</option>
             </select>
@@ -303,6 +487,7 @@ export class PromptEditor extends LitElement {
   }
 
   private changeDelivery(event: Event) {
+    if (this.speechInputActive()) return;
     if (!(event.target instanceof HTMLSelectElement)) return;
     const requested = event.target.value === "folder" ? "folder" : "inline";
     if (requested === "inline" && !promptAttachmentsCanUseInlineDelivery(this.attachments)) {
@@ -346,11 +531,13 @@ export class PromptEditor extends LitElement {
   }
 
   private removeAttachment(id: string) {
+    if (this.speechInputActive()) return;
     this.attachments = this.attachments.filter((attachment) => attachment.id !== id);
     this.persistAttachmentDraft();
   }
 
   private async handlePaste(event: ClipboardEvent) {
+    if (this.speechInputActive()) return;
     const files = filesFromDataTransfer(event.clipboardData);
     if (files.length === 0) return;
     event.preventDefault();
@@ -358,11 +545,13 @@ export class PromptEditor extends LitElement {
   }
 
   private handleDragOver(event: DragEvent) {
+    if (this.speechInputActive()) return;
     if (event.dataTransfer === null) return;
     if (dataTransferHasFiles(event.dataTransfer)) event.preventDefault();
   }
 
   private async handleDrop(event: DragEvent) {
+    if (this.speechInputActive()) return;
     const files = filesFromDataTransfer(event.dataTransfer);
     if (files.length === 0) return;
     event.preventDefault();
@@ -370,6 +559,7 @@ export class PromptEditor extends LitElement {
   }
 
   private async handleFileInput(event: Event) {
+    if (this.speechInputActive()) return;
     if (!(event.target instanceof HTMLInputElement) || event.target.files === null) return;
     const files = Array.from(event.target.files);
     event.target.value = "";
@@ -377,6 +567,7 @@ export class PromptEditor extends LitElement {
   }
 
   private async addAttachmentFiles(files: File[]) {
+    if (this.speechInputActive()) return;
     // Capture the scope before awaiting: the user may select another session
     // while the read is outstanding, and these bytes belong to the session that
     // was active when they were dropped, pasted, or picked.
@@ -429,8 +620,9 @@ export class PromptEditor extends LitElement {
             blur: () => this.resetEditorModifierState(),
           }),
           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files"),
-          this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
-          this.readOnlyCompartment.of(EditorState.readOnly.of(this.disabled)),
+          promptSpeechDecoration,
+          this.editableCompartment.of(EditorView.editable.of(!(this.disabled || this.speechInputState.kind !== "idle"))),
+          this.readOnlyCompartment.of(EditorState.readOnly.of(this.disabled || this.speechInputState.kind !== "idle")),
           EditorView.updateListener.of((update) => {
             if (update.docChanged) this.updateDraft(update.state.doc.toString());
           }),
@@ -462,10 +654,11 @@ export class PromptEditor extends LitElement {
   }
 
   private updateEditorDisabledState() {
+    const readOnly = this.disabled || this.speechInputState.kind !== "idle";
     this.editor?.dispatch({
       effects: [
-        this.editableCompartment.reconfigure(EditorView.editable.of(!this.disabled)),
-        this.readOnlyCompartment.reconfigure(EditorState.readOnly.of(this.disabled)),
+        this.editableCompartment.reconfigure(EditorView.editable.of(!readOnly)),
+        this.readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
       ],
     });
   }
@@ -537,6 +730,7 @@ export class PromptEditor extends LitElement {
   }
 
   private handleEditorKeyDown(event: KeyboardEvent, view: EditorView): boolean {
+    if (this.speechInputActive() && (event.key === "Enter" || event.key === "Tab")) return true;
     if (event.key === "Shift") {
       this.explicitShiftKeyActive = true;
       return false;
@@ -563,6 +757,7 @@ export class PromptEditor extends LitElement {
   }
 
   private handleEditorEnter(view: EditorView, shiftKey: boolean): boolean {
+    if (this.speechInputActive()) return true;
     if (!shiftKey && this.completions.length) {
       const completion = this.completions[this.selectedIndex];
       if (completion !== undefined) this.pick(completion);
@@ -576,6 +771,7 @@ export class PromptEditor extends LitElement {
   }
 
   private handleEditorTab(view: EditorView): boolean {
+    if (this.speechInputActive()) return true;
     if (this.completions.length) {
       const completion = this.completions[this.selectedIndex];
       if (completion !== undefined) this.pick(completion);
@@ -590,6 +786,7 @@ export class PromptEditor extends LitElement {
   }
 
   private pick(item: CompletionItem) {
+    if (this.speechInputActive()) return;
     const editor = this.editor;
     if (!editor) return;
     const suffix = item.kind === "file" && (item.insertText.endsWith("/") || item.cursorOffset !== undefined) ? "" : " ";
@@ -604,7 +801,7 @@ export class PromptEditor extends LitElement {
   }
 
   private send(streamingBehavior?: "steer" | "followUp") {
-    if (this.disabled || this.sending || this.sendDisabled) return;
+    if (this.speechInputActive() || this.disabled || this.sending || this.sendDisabled) return;
     const text = this.draft.trim();
     const pending = this.attachments;
     if (text === "" && pending.length === 0) return;
@@ -635,6 +832,37 @@ export class PromptEditor extends LitElement {
   }
 
   static override styles = promptEditorStyles;
+}
+
+function nonemptySpeechIdentityPart(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function sameSpeechInputComposerIdentity(
+  left: SpeechInputComposerIdentity,
+  right: SpeechInputComposerIdentity,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (
+    left.machineId !== right.machineId
+    || left.projectId !== right.projectId
+    || left.workspaceId !== right.workspaceId
+  ) {
+    return false;
+  }
+  if (left.kind === "starter") return true;
+  return right.kind === "session" && left.sessionId === right.sessionId;
+}
+
+function speechInputProviderLabel(provider: "browser" | "cloud"): "Browser" | "Cloud" {
+  return provider === "browser" ? "Browser" : "Cloud";
+}
+
+function speechInputElapsedLabel(elapsedMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, elapsedMs) / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 // `status` churns once per token while the compact row only displays model,

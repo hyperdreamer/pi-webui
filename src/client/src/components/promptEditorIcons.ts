@@ -5,6 +5,29 @@ import type { ThinkingGauge } from "../../../shared/thinkingLevels";
 // (viewBox 0 0 24 24, fill none, stroke currentColor, round caps/joins).
 // See tabIcons.ts for the established convention.
 
+export function renderMicrophoneIcon(): TemplateResult {
+  return svg`
+    <svg class="prompt-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+      <path d="M6 11a6 6 0 0 0 12 0"></path>
+      <path d="M12 17v4"></path>
+      <path d="M8.5 21h7"></path>
+    </svg>
+  `;
+}
+
+export function renderWaveformIcon(): TemplateResult {
+  return svg`
+    <svg class="prompt-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 12h2"></path>
+      <path d="M8 8v8"></path>
+      <path d="M12 5v14"></path>
+      <path d="M16 8v8"></path>
+      <path d="M18 12h2"></path>
+    </svg>
+  `;
+}
+
 export function renderAttachIcon(): TemplateResult {
   return svg`
     <svg class="prompt-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

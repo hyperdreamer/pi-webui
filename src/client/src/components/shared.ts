@@ -924,16 +924,21 @@ export const promptEditorStyles = css`
   footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 12px; border-top: 1px solid var(--pi-border); border-radius: inherit; }
   footer.shell-mode { border-top-color: var(--pi-success); background: var(--pi-success-bg); }
   .editor-wrap { position: relative; min-width: 0; }
-  .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
+  .actions { display: flex; min-width: 0; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
   .compact-status { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--pi-muted); font-size: 12px; flex: 1 1 0; }
+  .speech-input-status { flex: 0 1 220px; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--pi-muted); font-size: 12px; white-space: nowrap; }
+  .speech-input-error { grid-column: 1; min-width: 0; color: var(--pi-danger); font-size: 12px; overflow-wrap: anywhere; }
   .compact-status > button { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .select-model { max-width: min(42vw, 320px); }
   .compact-button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; }
   .compact-button .prompt-action-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   .icon-button { flex: 0 0 auto; display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; }
+  .speech-input-button { flex: 0 0 auto; }
   .icon-button .prompt-action-icon, .icon-button .prompt-thinking-gauge { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
   .icon-button .prompt-action-icon-filled { fill: currentColor; stroke: none; }
-  .send-button:not(:disabled) { color: var(--pi-accent, var(--pi-text)); }
+  .send-button:not(:disabled), .speech-input-idle:not(:disabled) { color: var(--pi-accent, var(--pi-text)); }
+  .speech-input-listening:not(:disabled) { color: var(--pi-danger); }
+  .speech-input-transcribing:not(:disabled), .speech-input-requesting:not(:disabled) { color: var(--pi-warning); }
   .stop-button:not(:disabled) { color: var(--pi-danger); }
   .select-thinking .prompt-thinking-gauge .gauge-bar { fill: currentColor; stroke: none; opacity: .22; transition: opacity 120ms ease, fill 120ms ease; }
   .select-thinking .prompt-thinking-gauge .gauge-bar-active { fill: var(--pi-accent, currentColor); opacity: 1; }
@@ -950,6 +955,7 @@ export const promptEditorStyles = css`
   .markdown-editor .cm-content { min-height: 38px; padding: 8px 44px 8px 8px; caret-color: var(--pi-text); text-align: start; unicode-bidi: plaintext; }
   .markdown-editor .cm-line { padding: 0; unicode-bidi: plaintext; }
   .markdown-editor .cm-placeholder { color: var(--pi-dim); }
+  .prompt-speech-interim { color: var(--pi-muted); font-style: italic; opacity: .72; }
   .markdown-editor .cm-focused { outline: none; }
   .shell-mode textarea, .shell-mode .markdown-editor .cm-editor { border-color: var(--pi-success); box-shadow: 0 0 0 1px var(--pi-success-ring); }
   .mode-hint { position: absolute; right: 46px; bottom: 8px; max-width: calc(100% - 54px); border: 1px solid var(--pi-success-border); border-radius: 999px; background: var(--pi-success-surface); color: var(--pi-success); padding: 2px 8px; font-size: 12px; pointer-events: none; }
