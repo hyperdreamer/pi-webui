@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   agentCommandForChecks,
@@ -8,14 +8,24 @@ import {
   doctorExitCode,
   isCliEntrypoint,
   launchdRuntimeDetails,
+  nativeServiceConfigEnvironment,
+  nativeServiceInstallCandidate,
   nodeVersionCheck,
   regularFileExists,
   serviceBackendForPlatform,
 } from "./cli.js";
+import {
+  createDevelopmentNativeServicePlan,
+  resolveProductionNativeServicePlan,
+  type NativeServiceAuthoritativeProbe,
+} from "./nativeServices/servicePlan.js";
 
 const originalShell = process.env["SHELL"];
 const originalPiWebUiConfig = process.env["PI_WEBUI_CONFIG"];
 const originalPiWebUiAgentCommand = process.env["PI_WEBUI_AGENT_COMMAND"];
+const originalPiWebUiDataDir = process.env["PI_WEBUI_DATA_DIR"];
+
+const systemdBackend = { kind: "systemd", label: "systemd user services" } as const;
 
 afterEach(() => {
   if (originalShell === undefined) {
@@ -32,6 +42,11 @@ afterEach(() => {
     delete process.env["PI_WEBUI_AGENT_COMMAND"];
   } else {
     process.env["PI_WEBUI_AGENT_COMMAND"] = originalPiWebUiAgentCommand;
+  }
+  if (originalPiWebUiDataDir === undefined) {
+    delete process.env["PI_WEBUI_DATA_DIR"];
+  } else {
+    process.env["PI_WEBUI_DATA_DIR"] = originalPiWebUiDataDir;
   }
 });
 
@@ -91,6 +106,83 @@ describe("agentCommandForChecks", () => {
     }
   });
 });
+
+describe("nativeServiceConfigEnvironment", () => {
+  it("pins a custom config path and resolves a relative managed data directory", () => {
+    const environment = nativeServiceConfigEnvironment("/tmp/pi-webui/config.json", { PI_WEBUI_DATA_DIR: "managed-data" }, "/srv/pi-webui");
+
+    expect(environment).toEqual({
+      PI_WEBUI_CONFIG: "/tmp/pi-webui/config.json",
+      PI_WEBUI_DATA_DIR: "/srv/pi-webui/managed-data",
+    });
+    expect(Object.isFrozen(environment)).toBe(true);
+  });
+
+  it("pins only the resolved data directory when no config path is configured", () => {
+    expect(nativeServiceConfigEnvironment(undefined, { PI_WEBUI_DATA_DIR: "data" }, "/work")).toEqual({
+      PI_WEBUI_DATA_DIR: resolve("/work", "data"),
+    });
+  });
+
+  it("adds no overrides for missing or empty inputs and leaves the default data directory alone", () => {
+    expect(nativeServiceConfigEnvironment(undefined, {}, "/work")).toEqual({});
+    expect(nativeServiceConfigEnvironment(undefined, { PI_WEBUI_DATA_DIR: "" }, "/work")).toEqual({});
+    expect(nativeServiceConfigEnvironment(undefined, { PI_WEBUI_DATA_DIR: "   " }, "/work")).toEqual({});
+  });
+
+  it("feeds byte-identical environment maps to every native-service process owner", async () => {
+    process.env["SHELL"] = "/bin/bash";
+    const dir = mkdtempSync(join(tmpdir(), "pi-webui-cli-env-test-"));
+    try {
+      process.env["PI_WEBUI_DATA_DIR"] = "managed-data";
+      const configPath = join(dir, "config.json");
+      const environment = nativeServiceConfigEnvironment(configPath, process.env, process.cwd());
+
+      const development = nativeServiceInstallCandidate(
+        { host: "127.0.0.1", port: "8809", mode: "dev", config: configPath },
+        systemdBackend,
+        configPath,
+        dir,
+      );
+      expect(development.mode).toBe("development");
+      if (development.mode === "development") {
+        expect(development.input.environment).toEqual(environment);
+        const plan = createDevelopmentNativeServicePlan(development.input);
+        expect(plan.services.map((service) => service.environment)).toEqual([environment, environment]);
+      }
+
+      const production = nativeServiceInstallCandidate(
+        { host: "127.0.0.1", port: "8808", mode: "production", config: configPath },
+        systemdBackend,
+        configPath,
+        undefined,
+      );
+      expect(production.mode).toBe("production");
+      if (production.mode === "production") {
+        expect(production.input.environment).toEqual(environment);
+        const resolution = await resolveProductionNativeServicePlan(production.input, {
+          probe: completedProbe(),
+          fileExists: () => false,
+        });
+        expect(resolution.ok).toBe(true);
+        if (resolution.ok) {
+          expect(resolution.plan.services.map((service) => service.environment)).toEqual([environment, environment]);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function completedProbe(): NativeServiceAuthoritativeProbe {
+  return {
+    run: (request) => Promise.resolve({
+      kind: "completed",
+      outcomes: request.prerequisites.map((prerequisite) => ({ prerequisiteId: prerequisite.id, status: "satisfied" as const, detail: null })),
+    }),
+  };
+}
 
 describe("native-service doctor CLI contracts", () => {
   it("uses native services only on supported platforms", () => {

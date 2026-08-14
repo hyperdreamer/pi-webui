@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ActiveAgentProfileDescriptor, PiWebUiStatusResponse, PiWebUiVersionResponse } from "../shared/apiTypes.js";
-import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
+import { appTestContext, fakeConfigService, registerAppTestHooks } from "./app.testSupport.js";
+import { buildApp } from "./app.js";
 
 registerAppTestHooks();
 
@@ -66,6 +67,46 @@ describe("buildApp active agent profile", () => {
       restoreEnv(originalEnv);
     }
   });
+
+  it.each(["/api/config", "/api/machines/local/config"])("invalidates the status cache after a successful write through %s", async (configRoute) => {
+    const get = vi.fn(() => Promise.resolve(statusResponse("cached")));
+    const refresh = vi.fn(() => Promise.resolve(statusResponse("refreshed")));
+    const invalidate = vi.fn();
+    const app = await buildApp({
+      config: fakeConfigService(),
+      piWebUiStatusCache: { get, refresh, invalidate },
+      clientDist: false,
+      logger: false,
+    });
+    try {
+      const before = await app.inject({ method: "GET", url: "/api/pi-webui/status" });
+      expect(before.statusCode).toBe(200);
+      expect(get).toHaveBeenCalledOnce();
+
+      const update = await app.inject({ method: "PUT", url: configRoute, payload: { config: { spawnSessions: true } } });
+      expect(update.statusCode).toBe(200);
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not invalidate the status cache when a generic config write fails validation", async () => {
+    const invalidate = vi.fn();
+    const app = await buildApp({
+      config: fakeConfigService(),
+      piWebUiStatusCache: { get: () => Promise.resolve(statusResponse("cached")), refresh: () => Promise.resolve(statusResponse("refreshed")), invalidate },
+      clientDist: false,
+      logger: false,
+    });
+    try {
+      const update = await app.inject({ method: "PUT", url: "/api/config", payload: { config: { port: "not-a-port" } } });
+      expect(update.statusCode).toBe(400);
+      expect(invalidate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function activeProfile(revisionCharacter: string, command: string, dir: string): ActiveAgentProfileDescriptor {
@@ -81,6 +122,20 @@ function activeProfile(revisionCharacter: string, command: string, dir: string):
 async function installConfiguredPiWebUiPackage(agentDir: string): Promise<void> {
   await mkdir(agentDir, { recursive: true });
   await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ packages: [process.cwd()] }, null, 2)}\n`, "utf8");
+}
+
+function statusResponse(generatedAt: string): PiWebUiStatusResponse {
+  return {
+    packageName: "@hyperdreamer/pi-webui",
+    generatedAt,
+    components: {
+      web: { component: "web", label: "Web/UI", stale: false, available: true },
+      sessiond: { component: "sessiond", label: "Session daemon", stale: false, available: true },
+    },
+    release: { packageName: "@hyperdreamer/pi-webui", updateAvailable: false },
+    commands: {},
+    messages: [],
+  };
 }
 
 function captureEnv(keys: readonly string[]): Map<string, string | undefined> {

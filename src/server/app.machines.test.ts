@@ -116,14 +116,23 @@ describe("buildApp machine routes", () => {
       config: selectedMachinePiWebUiConfig(),
       effectiveConfig: selectedMachinePiWebUiConfig(),
     });
-    expect(requestJson).toHaveBeenCalledWith("GET", "/api/config");
+    expect(requestJson).toHaveBeenCalledWith("GET", "/api/machines/local/config");
   });
 
-  it("merges remote selected-machine config updates into the target machine config", async () => {
+  it("forwards only the validated remote selected-machine patch to the target local config route", async () => {
     const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();
+    const patch: PiWebUiConfigValues = {
+      plugins: { info: { enabled: false } },
+      pathAccess: { allowedPaths: ["/srv/remote"] },
+      uploads: { defaultFolder: "remote\\uploads" },
+      maxUploadBytes: 4096,
+      spawnSessions: true,
+      agent: { command: "remote-agent", dir: "/srv/remote-agent" },
+    };
     let persistedConfig = fullPiWebUiConfig();
-    const requestJson = vi.fn<MachineClient["requestJson"]>((method, _path, body) => {
+    const requestJson = vi.fn<MachineClient["requestJson"]>((method, path, body) => {
+      expect(path).toBe("/api/machines/local/config");
       if (method === "GET") return Promise.resolve({ statusCode: 200, headers: { "content-type": "application/json" }, body: piWebUiConfigResponse(persistedConfig) });
       persistedConfig = configFromMachineConfigWriteBody(body);
       return Promise.resolve({ statusCode: 200, headers: { "content-type": "application/json" }, body: piWebUiConfigResponse(persistedConfig) });
@@ -133,28 +142,20 @@ describe("buildApp machine routes", () => {
     const response = await appTestContext.app.inject({
       method: "PUT",
       url: `/api/machines/${remote.id}/config`,
-      payload: { config: { plugins: { info: { enabled: false } }, pathAccess: { allowedPaths: ["/srv/remote"] }, uploads: { defaultFolder: "remote\\uploads" }, maxUploadBytes: 4096, spawnSessions: true, agent: { command: "remote-agent", dir: "/srv/remote-agent" } } },
+      payload: { config: patch },
     });
 
-    const expectedMerged: PiWebUiConfigValues = {
-      ...fullPiWebUiConfig(),
-      plugins: { info: { enabled: false } },
-      pathAccess: { allowedPaths: ["/srv/remote"] },
-      uploads: { defaultFolder: "remote/uploads" },
-      maxUploadBytes: 4096,
-      spawnSessions: true,
-      agent: { command: "remote-agent", dir: "/srv/remote-agent" },
-    };
+    const expectedPatch = { ...patch, uploads: { defaultFolder: "remote/uploads" } };
     expect(response.statusCode).toBe(200);
-    expect(requestJson).toHaveBeenNthCalledWith(1, "GET", "/api/config");
-    expect(requestJson).toHaveBeenNthCalledWith(2, "PUT", "/api/config", { config: expectedMerged });
+    // No remote generic /api/config pre-read or merge: exactly one PUT of the patch.
+    expect(requestJson).toHaveBeenCalledTimes(1);
+    expect(requestJson).toHaveBeenCalledWith("PUT", "/api/machines/local/config", { config: expectedPatch });
     expect(response.json<PiWebUiConfigResponse>().config).toEqual({
       plugins: { info: { enabled: false } },
       pathAccess: { allowedPaths: ["/srv/remote"] },
       uploads: { defaultFolder: "remote/uploads" },
       maxUploadBytes: 4096,
       spawnSessions: true,
-      subsessions: false,
       agent: { command: "remote-agent", dir: "/srv/remote-agent" },
     });
   });
@@ -182,9 +183,9 @@ describe("buildApp machine routes", () => {
       error: "Remote machine did not persist the requested agent profile",
       machineId: remote.id,
     });
-    expect(requestJson).toHaveBeenNthCalledWith(1, "GET", "/api/config");
-    expect(requestJson).toHaveBeenNthCalledWith(2, "PUT", "/api/config", {
-      config: { ...legacyConfig, agent: { command: "remote-agent", dir: "/srv/remote-agent" } },
+    expect(requestJson).toHaveBeenCalledTimes(1);
+    expect(requestJson).toHaveBeenCalledWith("PUT", "/api/machines/local/config", {
+      config: { agent: { command: "remote-agent", dir: "/srv/remote-agent" } },
     });
   });
 
@@ -206,8 +207,9 @@ describe("buildApp machine routes", () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: "Remote machine did not persist the requested agent profile" });
-    expect(requestJson).toHaveBeenNthCalledWith(2, "PUT", "/api/config", {
-      config: { ...fullPiWebUiConfig(), agent: {} },
+    expect(requestJson).toHaveBeenCalledTimes(1);
+    expect(requestJson).toHaveBeenCalledWith("PUT", "/api/machines/local/config", {
+      config: { agent: {} },
     });
   });
 
@@ -230,6 +232,8 @@ describe("buildApp machine routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json<PiWebUiConfigResponse>().config.spawnSessions).toBe(true);
+    expect(requestJson).toHaveBeenCalledTimes(1);
+    expect(requestJson).toHaveBeenCalledWith("PUT", "/api/machines/local/config", { config: { spawnSessions: true } });
   });
 
   it("preserves foreign-platform agent paths while the target verifies persistence", async () => {
@@ -250,8 +254,9 @@ describe("buildApp machine routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json<PiWebUiConfigResponse>().config.agent).toEqual(windowsAgent);
-    expect(requestJson).toHaveBeenNthCalledWith(2, "PUT", "/api/config", {
-      config: { ...fullPiWebUiConfig(), agent: windowsAgent },
+    expect(requestJson).toHaveBeenCalledTimes(1);
+    expect(requestJson).toHaveBeenCalledWith("PUT", "/api/machines/local/config", {
+      config: { agent: windowsAgent },
     });
   });
 

@@ -251,6 +251,25 @@ export interface PiWebUiTtsConfig {
   rate?: number;
 }
 
+export type SpeechInputProviderPreference = "auto" | "browser" | "cloud";
+
+export interface PiWebUiSpeechInputCloudConfig {
+  /** HTTPS OpenAI-compatible transcription base URL. */
+  baseUrl?: string;
+  /** Transcription model name. */
+  model?: string;
+  /** Pi-compatible literal, environment template, or command credential source. */
+  apiKey?: string;
+}
+
+export interface PiWebUiSpeechInputConfig {
+  /** Default: "auto". */
+  provider?: SpeechInputProviderPreference;
+  /** Omitted means Auto. Stored as a canonical BCP 47 tag. */
+  language?: string;
+  cloud?: PiWebUiSpeechInputCloudConfig;
+}
+
 export interface HostSpeechVoice {
   name: string;
   language: string;
@@ -309,6 +328,8 @@ export interface PiWebUiConfigValues {
   agent?: PiWebUiAgentConfig;
   /** Host speech configuration for manual text-to-speech playback. */
   tts?: PiWebUiTtsConfig;
+  /** Gateway speech-input settings; the credential source is write-only at the browser boundary. */
+  speechInput?: PiWebUiSpeechInputConfig;
 }
 
 export type PiWebUiPluginScope = "bundled" | "local" | "user" | "project";

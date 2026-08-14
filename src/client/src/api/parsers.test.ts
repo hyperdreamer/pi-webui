@@ -291,6 +291,20 @@ describe("API parsers", () => {
     });
   });
 
+  it("never projects speechInput from generic config responses", () => {
+    const parsed = parsePiWebUiConfigResponse({
+      path: "/tmp/config.json",
+      exists: true,
+      config: { port: 8808, speechInput: { provider: "cloud", cloud: { apiKey: "sk-malicious", baseUrl: "https://api.openai.com/v1" } } },
+      effectiveConfig: { port: 8808, speechInput: { provider: "cloud", cloud: { apiKey: "sk-malicious" } } },
+      envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+    });
+
+    expect(parsed.config).not.toHaveProperty("speechInput");
+    expect(parsed.effectiveConfig).not.toHaveProperty("speechInput");
+    expect(parsed.config.port).toBe(8808);
+  });
+
   it("parses PI WEBUI runtime responses including the daemon-owned active profile", () => {
     expect(parsePiWebUiRuntimeResponse({
       packageName: "@hyperdreamer/pi-webui",

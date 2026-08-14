@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, savePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { PiWebUiConfigMutationBusyError, createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
 import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
 
 export interface PiWebUiConfigService {
   read: () => PiWebUiConfigResponse | Promise<PiWebUiConfigResponse>;
   write: (config: PiWebUiConfigValues) => PiWebUiConfigResponse | Promise<PiWebUiConfigResponse>;
+  update: (mutate: (current: PiWebUiConfigValues) => PiWebUiConfigValues) => PiWebUiConfigResponse | Promise<PiWebUiConfigResponse>;
 }
 
 export const SELECTED_MACHINE_CONFIG_KEYS = [
@@ -21,34 +23,75 @@ export const SELECTED_MACHINE_CONFIG_KEYS = [
 
 const SELECTED_MACHINE_CONFIG_KEY_SET = new Set<string>(SELECTED_MACHINE_CONFIG_KEYS);
 
+/**
+ * The production file service coordinates every mutation through the
+ * cross-process coordinator and projects each response from the exact
+ * committed snapshot, so a later writer's commit can never leak into an
+ * earlier mutation's response. Ordinary reads stay on the lock-free JSON read
+ * path because they expose no revision and need no write transaction.
+ */
 export function createFilePiWebUiConfigService(options: LoadOptions = {}): PiWebUiConfigService {
+  let coordinator: PiWebUiConfigMutationCoordinator | undefined;
+  const mutationCoordinator = (): PiWebUiConfigMutationCoordinator => {
+    coordinator ??= createPiWebUiConfigMutationCoordinator({ config: options });
+    return coordinator;
+  };
   return {
     read: () => currentPiWebUiConfigResponse(options),
-    write: (config) => {
-      savePiWebUiConfig(config, options);
-      return currentPiWebUiConfigResponse(options);
+    write: async (config) => {
+      const snapshot = await mutationCoordinator().mutate(() => config);
+      return piWebUiConfigResponseFromSnapshot(snapshot, options);
+    },
+    update: async (mutate) => {
+      const snapshot = await mutationCoordinator().mutate((current) => mutate(current.loaded.config));
+      return piWebUiConfigResponseFromSnapshot(snapshot, options);
     },
   };
 }
 
 export function currentPiWebUiConfigResponse(options: LoadOptions = {}): PiWebUiConfigResponse {
-  const loaded = loadPiWebUiConfig(options);
-  const effective = resolveEffectivePiWebUiConfig(loaded, options);
+  return piWebUiConfigResponseFromSnapshot({ loaded: loadPiWebUiConfig(options), speechInputRevision: "" }, options);
+}
+
+/** Pure projection of a coordinated snapshot without disk I/O. */
+export function piWebUiConfigResponseFromSnapshot(snapshot: PiWebUiConfigMutationSnapshot, options: LoadOptions = {}): PiWebUiConfigResponse {
+  const effective = resolveEffectivePiWebUiConfig(snapshot.loaded, options);
   const env = options.env ?? process.env;
   return {
-    path: loaded.path,
-    exists: loaded.exists,
-    config: loaded.config,
+    path: snapshot.loaded.path,
+    exists: snapshot.loaded.exists,
+    config: snapshot.loaded.config,
     effectiveConfig: effective.config,
-    ...(loaded.modelTiersError === undefined ? {} : { modelTiersError: loaded.modelTiersError }),
+    ...(snapshot.loaded.modelTiersError === undefined ? {} : { modelTiersError: snapshot.loaded.modelTiersError }),
     envOverrides: piWebUiConfigEnvOverrides(env, effective.config),
   };
+}
+
+/**
+ * Browser-facing generic config responses omit the entire persisted speech
+ * subtree; only route serialization calls this. The service itself stays
+ * full-fidelity because internal consumers and the dedicated speech modules
+ * need the raw config.
+ */
+export function redactSpeechInputConfigResponse(response: PiWebUiConfigResponse): PiWebUiConfigResponse {
+  return {
+    ...response,
+    config: redactSpeechInputConfigValues(response.config),
+    effectiveConfig: redactSpeechInputConfigValues(response.effectiveConfig),
+  };
+}
+
+function redactSpeechInputConfigValues(config: PiWebUiConfigValues): PiWebUiConfigValues {
+  if (config.speechInput === undefined) return config;
+  const redacted: PiWebUiConfigValues = { ...config };
+  delete redacted.speechInput;
+  return redacted;
 }
 
 export function registerConfigRoutes(app: FastifyInstance, service: PiWebUiConfigService = createFilePiWebUiConfigService()): void {
   app.get("/api/config", async (_request, reply) => {
     try {
-      return await service.read();
+      return redactSpeechInputConfigResponse(await service.read());
     } catch (error) {
       return reply.code(500).send({ error: errorMessage(error) });
     }
@@ -56,9 +99,18 @@ export function registerConfigRoutes(app: FastifyInstance, service: PiWebUiConfi
 
   app.put<{ Body: { config?: unknown } | undefined }>("/api/config", async (request, reply) => {
     try {
-      return await service.write(parseConfigRequest(request.body?.config));
+      const body = request.body?.config;
+      if (isRecord(body) && Object.hasOwn(body, "speechInput")) {
+        throw new Error("PI WEBUI config speechInput must be updated through the dedicated speech input settings API");
+      }
+      const requested = parseConfigRequest(body);
+      const response = await service.update((current) => ({
+        ...requested,
+        ...(current.speechInput === undefined ? {} : { speechInput: current.speechInput }),
+      }));
+      return redactSpeechInputConfigResponse(response);
     } catch (error) {
-      const status = isConfigValidationError(error) ? 400 : 500;
+      const status = configMutationErrorStatus(error);
       return reply.code(status).send({ error: errorMessage(error) });
     }
   });
@@ -75,11 +127,11 @@ export function registerLocalMachineConfigRoutes(app: FastifyInstance, service: 
 
   app.put<{ Body: { config?: unknown } | undefined }>("/api/machines/local/config", async (request, reply) => {
     try {
-      const current = await service.read();
       const patch = parseSelectedMachineConfigRequest(request.body?.config);
-      return selectedMachineConfigResponse(await service.write(mergeSelectedMachineConfig(current.config, patch)));
+      const response = await service.update((current) => mergeSelectedMachineConfig(current, patch));
+      return selectedMachineConfigResponse(response);
     } catch (error) {
-      const status = isConfigValidationError(error) ? 400 : 500;
+      const status = configMutationErrorStatus(error);
       return reply.code(status).send({ error: errorMessage(error) });
     }
   });
@@ -309,6 +361,12 @@ function isEnvSet(value: string | undefined): boolean {
 
 function isConfigValidationError(error: unknown): boolean {
   return error instanceof Error && (error.message.startsWith("PI WEBUI config") || error.message.startsWith("PI WEBUI selected-machine config"));
+}
+
+function configMutationErrorStatus(error: unknown): number {
+  if (error instanceof PiWebUiConfigMutationBusyError) return 503;
+  if (isConfigValidationError(error)) return 400;
+  return 500;
 }
 
 function errorMessage(error: unknown): string {

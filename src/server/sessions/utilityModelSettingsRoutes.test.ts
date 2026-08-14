@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
+import { PiWebUiConfigMutationBusyError } from "../../configMutationCoordinator";
 import type { UtilityModelSettingsResponse, UtilityModelSettingsResponseV2, UtilityModelSettingsUpdate } from "../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES } from "../../shared/federatedRoutes";
 import type { UtilityModelSettingsRouteService } from "./utilityModelSettingsRoutes";
@@ -87,6 +88,19 @@ describe("utility model settings routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "context utility model acme/ghost is unavailable" });
+  });
+
+  it("maps typed coordinator contention to a safe 503", async () => {
+    updateMock.mockRejectedValueOnce(new PiWebUiConfigMutationBusyError());
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/utility-models",
+      payload: { settings: { context: { provider: "acme", id: "large" } } },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: "PI WEBUI config is busy. Try again." });
   });
 
   it("advertises both remote utility-model methods while leaving other routes unlisted", () => {

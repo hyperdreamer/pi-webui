@@ -35,7 +35,9 @@ import { TerminalService } from "./terminals/terminalService.js";
 import { registerTerminalRoutes } from "./terminals/terminalRoutes.js";
 import { getPiWebUiRuntimeComponent } from "./piWebUiStatus.js";
 import { SESSIOND_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
-import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes, replacePiWebUiModelTiers, replacePiWebUiUtilityModels } from "../config.js";
+import { agentSessionDirEnvKeys, effectivePiWebUiConfig, loadPiWebUiConfig, maxUploadBytes } from "../config.js";
+import { createPiWebUiConfigMutationCoordinator } from "../configMutationCoordinator.js";
+import { createConfigMutationWriters } from "./sessiond/configMutationWriters.js";
 import { createActiveAgentProfileDescriptor } from "../sessiond/activeAgentProfile.js";
 import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
@@ -47,6 +49,8 @@ import { SessionUsageCacheStore } from "./usage/sessionUsageCacheStore.js";
 import { registerProjectUsageRoutes } from "./usage/projectUsageRoutes.js";
 
 const daemonEnvironment: NodeJS.ProcessEnv = Object.freeze({ ...process.env });
+const configMutationCoordinator = createPiWebUiConfigMutationCoordinator({ config: { env: daemonEnvironment } });
+const configMutationWriters = createConfigMutationWriters(configMutationCoordinator);
 const { config } = effectivePiWebUiConfig({ env: daemonEnvironment });
 const activeAgentProfile = createActiveAgentProfileDescriptor({
   command: config.agent.command,
@@ -145,17 +149,13 @@ await runSessionDaemonStartup({
           ...(loaded.modelTiersError === undefined ? {} : { modelTiersError: loaded.modelTiersError }),
         };
       },
-      saveConfig: ({ modelTiers: ladder }) => {
-        replacePiWebUiModelTiers(ladder, { env: daemonEnvironment });
-      },
+      saveConfig: ({ modelTiers: ladder }) => configMutationWriters.replaceModelTiers(ladder),
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
     });
     const utilityModels = createUtilityModelSettingsService({
       loadConfig: loadUtilityModelConfig,
-      saveConfig: ({ utilityModels: settings }) => {
-        replacePiWebUiUtilityModels(settings, { env: daemonEnvironment });
-      },
+      saveConfig: ({ utilityModels: settings }) => configMutationWriters.replaceUtilityModels(settings),
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
     });

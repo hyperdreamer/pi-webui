@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockInstance } from "vitest";
+import { PiWebUiConfigMutationBusyError } from "../../configMutationCoordinator";
 import type { ModelTierLadder, ModelTierSettingsResponse } from "../../shared/apiTypes";
 import { FEDERATED_HTTP_ROUTES } from "../../shared/federatedRoutes";
 import type { ModelTierSettingsRouteService } from "./modelTierSettingsRoutes";
@@ -77,6 +78,19 @@ describe("model tier settings routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "tier frontier names unavailable model acme/ghost" });
     expect(response.json()).not.toHaveProperty("valid");
+  });
+
+  it("maps typed coordinator contention to a safe 503", async () => {
+    replaceMock.mockRejectedValueOnce(new PiWebUiConfigMutationBusyError());
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/model-tiers",
+      payload: { ladder: completeLadder() },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: "PI WEBUI config is busy. Try again." });
   });
 
   it("advertises both remote model-tier methods while leaving other routes unlisted", () => {

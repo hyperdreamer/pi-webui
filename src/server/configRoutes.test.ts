@@ -1,7 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
-import type { PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import { PiWebUiConfigMutationBusyError } from "../configMutationCoordinator.js";
+import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
+import type { PiWebUiConfigResponse, PiWebUiSpeechInputConfig, PiWebUiConfigValues } from "../shared/apiTypes.js";
 
 let app: FastifyInstance;
 let savedConfig: PiWebUiConfigValues;
@@ -13,6 +14,10 @@ beforeEach(async () => {
     read: vi.fn(() => responseFor(savedConfig, true)),
     write: vi.fn((config: PiWebUiConfigValues) => {
       savedConfig = config;
+      return responseFor(savedConfig, true);
+    }),
+    update: vi.fn((mutate: (current: PiWebUiConfigValues) => PiWebUiConfigValues) => {
+      savedConfig = mutate(savedConfig);
       return responseFor(savedConfig, true);
     }),
   };
@@ -60,6 +65,7 @@ describe("config routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(service.update).toHaveBeenCalledWith(expect.any(Function));
     expect(savedConfig).toEqual(expectedConfig);
     expect(response.json<PiWebUiConfigResponse>().config).toEqual(expectedConfig);
   });
@@ -73,6 +79,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
+    expect(service.update).not.toHaveBeenCalled();
     expect(service.write).not.toHaveBeenCalled();
   });
 
@@ -85,7 +92,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("rejects invalid max upload bytes before writing", async () => {
@@ -97,7 +104,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("rejects invalid upload defaults before writing", async () => {
@@ -109,7 +116,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toHaveProperty("error");
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("accepts and retains valid tts, rejecting invalid tts payloads", async () => {
@@ -141,7 +148,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain(error);
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("rejects tts in selected-machine config updates", async () => {
@@ -153,7 +160,7 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain("selected-machine config key is not allowed: tts");
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("filters local machine config reads to selected-machine-safe keys", async () => {
@@ -193,7 +200,7 @@ describe("config routes", () => {
     };
     expect(response.statusCode).toBe(200);
     expect(savedConfig).toEqual(expectedConfig);
-    expect(service.write).toHaveBeenCalledWith(expectedConfig);
+    expect(service.update).toHaveBeenCalledWith(expect.any(Function));
     expect(response.json<PiWebUiConfigResponse>().config).toEqual({
       plugins: { info: { enabled: false } },
       pathAccess: { allowedPaths: ["/srv/repos"] },
@@ -260,7 +267,7 @@ describe("config routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain("PI WEBUI selected-machine config key is not allowed: host");
     expect(savedConfig).toEqual(fullConfig());
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("rejects invalid local selected-machine config values before writing", async () => {
@@ -272,7 +279,169 @@ describe("config routes", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain("PI WEBUI selected-machine config spawnSessions must be a boolean");
-    expect(service.write).not.toHaveBeenCalled();
+    expect(service.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("config route speech redaction", () => {
+  it("redacts the persisted speech subtree from generic GET responses", async () => {
+    const speechInput: PiWebUiSpeechInputConfig = {
+      provider: "cloud",
+      language: "en-US",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
+    };
+    savedConfig = { port: 9000, speechInput };
+
+    const response = await app.inject({ method: "GET", url: "/api/config" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<PiWebUiConfigResponse>();
+    expect(body.config).not.toHaveProperty("speechInput");
+    expect(body.effectiveConfig).not.toHaveProperty("speechInput");
+    expect(body.config.port).toBe(9000);
+    expect(service.read).toHaveBeenCalledOnce();
+  });
+
+  it("redacts the persisted speech subtree from generic PUT responses", async () => {
+    savedConfig = {
+      port: 8808,
+      speechInput: { provider: "cloud", cloud: { apiKey: "$OPENAI_API_KEY" } },
+    };
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { port: 9001 } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<PiWebUiConfigResponse>();
+    expect(body.config).not.toHaveProperty("speechInput");
+    expect(body.effectiveConfig).not.toHaveProperty("speechInput");
+    expect(savedConfig.port).toBe(9001);
+    expect(savedConfig.speechInput).toEqual({ provider: "cloud", cloud: { apiKey: "$OPENAI_API_KEY" } });
+  });
+
+  it("rejects any speechInput key in generic browser updates before parsing other fields", async () => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { port: 9001, speechInput: { provider: "cloud" } } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toContain("dedicated speech input settings API");
+    expect(savedConfig).toEqual({ host: "127.0.0.1", port: 8808, allowedHosts: [] });
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty speechInput object in generic browser updates", async () => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { speechInput: {} } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toContain("dedicated speech input settings API");
+  });
+
+  it("preserves the raw speech subtree across unrelated generic and selected-machine updates", async () => {
+    const speechInput: PiWebUiSpeechInputConfig = {
+      provider: "cloud",
+      language: "en-US",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
+    };
+    savedConfig = { ...fullConfig(), speechInput };
+
+    const generic = await app.inject({ method: "PUT", url: "/api/config", payload: { config: { port: 9001 } } });
+    expect(generic.statusCode).toBe(200);
+    expect(savedConfig.speechInput).toEqual(speechInput);
+
+    const selectedMachine = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/config",
+      payload: { config: { spawnSessions: true } },
+    });
+    expect(selectedMachine.statusCode).toBe(200);
+    expect(savedConfig.speechInput).toEqual(speechInput);
+  });
+
+  it("maps typed coordinator contention from generic and selected-machine mutations to 503", async () => {
+    service.update = vi.fn(() => { throw new PiWebUiConfigMutationBusyError(); });
+
+    const generic = await app.inject({ method: "PUT", url: "/api/config", payload: { config: { port: 9001 } } });
+    expect(generic.statusCode).toBe(503);
+    expect(generic.json()).toEqual({ error: "PI WEBUI config is busy. Try again." });
+
+    const selectedMachine = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/config",
+      payload: { config: { spawnSessions: true } },
+    });
+    expect(selectedMachine.statusCode).toBe(503);
+    expect(selectedMachine.json()).toEqual({ error: "PI WEBUI config is busy. Try again." });
+  });
+
+  it("keeps ordinary unlocked read failures and unexpected mutation failures at 500", async () => {
+    service.read = vi.fn(() => { throw new Error("disk read failure"); });
+    const read = await app.inject({ method: "GET", url: "/api/config" });
+    expect(read.statusCode).toBe(500);
+    expect(read.json()).toEqual({ error: "disk read failure" });
+
+    service.read = vi.fn(() => responseFor(savedConfig, true));
+    service.update = vi.fn(() => { throw new Error("unexpected mutation failure"); });
+    const write = await app.inject({ method: "PUT", url: "/api/config", payload: { config: { port: 9001 } } });
+    expect(write.statusCode).toBe(500);
+    expect(write.json()).toEqual({ error: "unexpected mutation failure" });
+  });
+
+  it("returns each mutation's own committed response even when a later mutation commits first", async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstCommitted: PiWebUiConfigValues = { ...savedConfig, port: 9001 };
+    const deferredService: PiWebUiConfigService = {
+      read: () => responseFor(savedConfig, true),
+      write: (config) => { savedConfig = config; return responseFor(savedConfig, true); },
+      update: (mutate) => {
+        const next = mutate(savedConfig);
+        const response = responseFor(next, true);
+        // The first mutation commits immediately but its route response stays
+        // pending; a later writer commits before it is serialized.
+        if (next.port === firstCommitted.port) return firstGate.then(() => response);
+        savedConfig = next;
+        return Promise.resolve(response);
+      },
+    };
+    const deferredApp = Fastify({ logger: false });
+    registerConfigRoutes(deferredApp, deferredService);
+    await deferredApp.ready();
+    try {
+      const first = deferredApp.inject({ method: "PUT", url: "/api/config", payload: { config: { port: 9001 } } });
+
+      // B commits through the same service while A's response is pending.
+      const second = await deferredService.update((current) => ({ ...current, port: 9002 }));
+      expect(second.config.port).toBe(9002);
+      expect(savedConfig.port).toBe(9002);
+
+      releaseFirst();
+      const firstResponse = await first;
+      expect(firstResponse.statusCode).toBe(200);
+      // A returns A's own committed config, not B's later disk state.
+      expect(firstResponse.json<PiWebUiConfigResponse>().config.port).toBe(9001);
+    } finally {
+      await deferredApp.close();
+    }
+  });
+
+  it("redacts only the response projection and leaves the service full-fidelity", () => {
+    const response = responseFor({ port: 9000, speechInput: { provider: "cloud", cloud: { apiKey: "$KEY" } } }, true);
+
+    const redacted = redactSpeechInputConfigResponse(response);
+
+    expect(redacted.config).not.toHaveProperty("speechInput");
+    expect(redacted.effectiveConfig).not.toHaveProperty("speechInput");
+    expect(response.config.speechInput).toEqual({ provider: "cloud", cloud: { apiKey: "$KEY" } });
   });
 });
 

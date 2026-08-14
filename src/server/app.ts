@@ -210,6 +210,11 @@ function invalidatePiWebUiStatusOnWrite(config: PiWebUiConfigService, statusCach
       statusCache.invalidate();
       return response;
     },
+    update: async (mutate) => {
+      const response = await config.update(mutate);
+      statusCache.invalidate();
+      return response;
+    },
   };
 }
 

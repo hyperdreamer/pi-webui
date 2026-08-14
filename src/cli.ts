@@ -342,11 +342,27 @@ function describeServiceShell(): string {
     : `${shell.name} (${shell.detectedExecutable})`;
 }
 
-function configEnvironment(
-  options: InstallOptions,
-  configPath: string
-): Record<string, string> {
-  return options.config === undefined ? {} : { PI_WEBUI_CONFIG: configPath };
+/**
+ * Resolved environment overrides for native-service definitions. A configured
+ * config path is pinned as `PI_WEBUI_CONFIG`; a nonempty `PI_WEBUI_DATA_DIR` is
+ * resolved against `cwd` and pinned so web and sessiond derive identical
+ * config and managed-state paths. Absent/empty inputs add no override and the
+ * default data directory is never altered.
+ */
+export function nativeServiceConfigEnvironment(
+  configPathOverride: string | undefined,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {};
+  if (configPathOverride !== undefined) {
+    environment["PI_WEBUI_CONFIG"] = configPathOverride;
+  }
+  const dataDir = env["PI_WEBUI_DATA_DIR"];
+  if (dataDir !== undefined && dataDir.trim() !== "") {
+    environment["PI_WEBUI_DATA_DIR"] = resolve(cwd, dataDir);
+  }
+  return Object.freeze(environment);
 }
 
 function serviceRefList(ids: ServiceId[]): ServiceRef[] {
@@ -818,14 +834,14 @@ function productionNativeServicePlanInput(
   };
 }
 
-function nativeServiceInstallCandidate(
+export function nativeServiceInstallCandidate(
   options: InstallOptions,
   backend: ServiceBackend,
   configPath: string,
   devRoot: string | undefined
 ): NativeServiceInstallCandidate {
   const shell = detectServiceShell();
-  const environment = configEnvironment(options, configPath);
+  const environment = nativeServiceConfigEnvironment(options.config === undefined ? undefined : configPath, process.env, process.cwd());
   if (options.mode === "production") {
     return {
       mode: "production",

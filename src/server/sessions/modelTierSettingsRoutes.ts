@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { parseModelTiersConfig } from "../../config.js";
+import { PiWebUiConfigMutationBusyError } from "../../configMutationCoordinator.js";
 import type { ModelTierLadder } from "../../shared/apiTypes.js";
 import type { ModelTierSettingsService } from "./modelTierSettingsService.js";
 
@@ -21,9 +22,13 @@ export function registerModelTierSettingsRoutes(app: FastifyInstance, service: M
     try {
       return await service.replace(parseReplacement(request.body));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return reply.code(settingsMutationErrorStatus(error)).send({ error: errorMessage(error) });
     }
   });
+}
+
+function settingsMutationErrorStatus(error: unknown): number {
+  return error instanceof PiWebUiConfigMutationBusyError ? 503 : 400;
 }
 
 function parseReplacement(value: unknown): ModelTierLadder {

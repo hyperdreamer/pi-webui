@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import type { PiWebUiAgentConfig } from "../../shared/apiTypes.js";
 import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, type FederatedHttpRouteSpec } from "../../shared/federatedRoutes.js";
-import { mergeSelectedMachineConfig, parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, selectedMachineConfigResponse } from "../configRoutes.js";
+import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, selectedMachineConfigResponse } from "../configRoutes.js";
 import { bridgeSockets } from "../webSocketBridge.js";
 import { RemoteMachineRequestError, type MachineClient, type MachineJsonResponse, type MachineRequestOptions } from "./machineClient.js";
 import { MachineService } from "./machineService.js";
@@ -64,19 +64,16 @@ async function proxyHttpRequest(machines: MachineService, spec: FederatedHttpRou
   }
 }
 
-async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, remotePath: string, body: unknown, reply: FastifyReply): Promise<FastifyReply> {
+async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, _remotePath: string, body: unknown, reply: FastifyReply): Promise<FastifyReply> {
   if (method === "GET") {
-    return sendSelectedMachineConfigResponse(reply, await client.requestJson("GET", remotePath), machineId);
+    return sendSelectedMachineConfigResponse(reply, await client.requestJson("GET", "/api/machines/local/config"), machineId);
   }
 
   if (method === "PUT") {
+    // The target gateway's coordinator performs the merge under its own lock;
+    // this gateway only validates the portable patch and forwards it once.
     const patch = parseSelectedMachineConfigRequest(configPayload(body), "portable");
-    const currentResponse = await client.requestJson("GET", remotePath);
-    if (!isSuccessfulStatus(currentResponse.statusCode)) return sendUpstreamJsonResponse(reply, currentResponse, machineId);
-
-    const current = parsePiWebUiConfigResponseBody(currentResponse.body, "Remote machine config response");
-    const merged = mergeSelectedMachineConfig(current.config, patch);
-    const updateResponse = await client.requestJson("PUT", remotePath, { config: merged });
+    const updateResponse = await client.requestJson("PUT", "/api/machines/local/config", { config: patch });
     return sendSelectedMachineConfigResponse(reply, updateResponse, machineId, patch.agent);
   }
 

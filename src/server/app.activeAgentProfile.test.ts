@@ -136,6 +136,7 @@ function emptyConfigService(): PiWebUiConfigService {
   return {
     read: () => Promise.resolve(response),
     write: () => Promise.resolve(response),
+    update: () => Promise.resolve(response),
   };
 }
 

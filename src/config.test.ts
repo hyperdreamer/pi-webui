@@ -1,8 +1,9 @@
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled } from "./config.js";
+import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseSpeechInputConfig, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled, type PiWebUiConfigFileOperations } from "./config.js";
 import type { UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
 import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
 
@@ -393,6 +394,284 @@ describe("PI WEBUI config persistence", () => {
   });
 });
 
+describe("speech input config persistence", () => {
+  it("persists and loads canonical speech input settings", () => {
+    savePiWebUiConfig({
+      speechInput: {
+        provider: "cloud",
+        language: "en-us",
+        cloud: {
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4o-mini-transcribe",
+          apiKey: "$OPENAI_API_KEY",
+        },
+      },
+    }, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({
+      provider: "cloud",
+      language: "en-US",
+      cloud: {
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini-transcribe",
+        apiKey: "$OPENAI_API_KEY",
+      },
+    });
+  });
+
+  it("omits absent provider, language, and cloud fields", () => {
+    savePiWebUiConfig({ speechInput: {} }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({});
+
+    savePiWebUiConfig({ speechInput: { provider: "browser" } }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({ provider: "browser" });
+
+    savePiWebUiConfig({ speechInput: { cloud: { model: "gpt-4o-mini-transcribe" } } }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({ cloud: { model: "gpt-4o-mini-transcribe" } });
+  });
+
+  it("preserves a well-formed unknown language tag", () => {
+    savePiWebUiConfig({ speechInput: { language: "qq-ZZ" } }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({ language: "qq-ZZ" });
+  });
+
+  it("canonicalizes language syntax and trims base URL and model", () => {
+    savePiWebUiConfig({
+      speechInput: {
+        language: "en-us",
+        cloud: { baseUrl: "  https://api.openai.com/v1  ", model: "  gpt-4o-mini-transcribe  " },
+      },
+    }, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({
+      language: "en-US",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+    });
+  });
+
+  it("persists the credential source byte-for-byte", () => {
+    savePiWebUiConfig({ speechInput: { cloud: { apiKey: "  $OPENAI_API_KEY  " } } }, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({ cloud: { apiKey: "  $OPENAI_API_KEY  " } });
+  });
+
+  it("preserves the raw speech subtree across an unrelated save", async () => {
+    const speechInput = {
+      provider: "cloud",
+      language: "en-US",
+      cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
+    };
+    await writeFile(configPath, `${JSON.stringify({ port: 8808, speechInput }, null, 2)}\n`, "utf8");
+
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ port: 9000, speechInput });
+  });
+
+  it("replaces the raw speech subtree on an explicit speech save", async () => {
+    await writeFile(configPath, `${JSON.stringify({ speechInput: { provider: "browser", cloud: { apiKey: "sk-old", baseUrl: "https://old.example.com" } } })}\n`, "utf8");
+
+    savePiWebUiConfig({
+      speechInput: {
+        provider: "cloud",
+        language: "en-US",
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
+      },
+    }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      speechInput: {
+        provider: "cloud",
+        language: "en-US",
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
+      },
+    });
+  });
+
+  it("clears only the credential source when a speech save omits cloud.apiKey", async () => {
+    await writeFile(configPath, `${JSON.stringify({ speechInput: { provider: "cloud", language: "en-US", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" } } })}\n`, "utf8");
+
+    savePiWebUiConfig({
+      speechInput: { provider: "cloud", language: "en-US", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+    }, testOptions());
+
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      speechInput: { provider: "cloud", language: "en-US", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+    });
+  });
+
+  it.each([
+    ["an unknown root key", { provider: "cloud", future: true }, 'PI WEBUI config speechInput contains unknown key "future"'],
+    ["an unknown cloud key", { cloud: { endpoint: "https://api.openai.com/v1" } }, 'PI WEBUI config speechInput.cloud contains unknown key "endpoint"'],
+    ["a provider outside the allowlist", { provider: "local" }, "PI WEBUI config speechInput.provider must be one of auto, browser, or cloud"],
+    ["a malformed language", { language: "not a tag" }, "PI WEBUI config speechInput.language must be a canonical BCP 47 language tag"],
+    ["a non-string language", { language: 42 }, "PI WEBUI config speechInput.language must be a canonical BCP 47 language tag"],
+    ["a blank model", { cloud: { model: "   " } }, "PI WEBUI config speechInput.cloud.model must be a non-empty string"],
+    ["a blank credential source", { cloud: { apiKey: "   " } }, "PI WEBUI config speechInput.cloud.apiKey must be a non-empty string"],
+    ["an HTTP base URL", { cloud: { baseUrl: "http://api.openai.com/v1" } }, "PI WEBUI config speechInput.cloud.baseUrl must use HTTPS"],
+    ["a base URL with credentials", { cloud: { baseUrl: "https://user:pass@api.openai.com/v1" } }, "PI WEBUI config speechInput.cloud.baseUrl must not contain credentials"],
+    ["a base URL with a query string", { cloud: { baseUrl: "https://api.openai.com/v1?api-version=1" } }, "PI WEBUI config speechInput.cloud.baseUrl must not contain a query string"],
+    ["a base URL with a fragment", { cloud: { baseUrl: "https://api.openai.com/v1#fragment" } }, "PI WEBUI config speechInput.cloud.baseUrl must not contain a fragment"],
+    ["a malformed base URL", { cloud: { baseUrl: "not a url" } }, "PI WEBUI config speechInput.cloud.baseUrl must be a valid HTTPS URL"],
+    ["a non-object speech subtree", "cloud", "PI WEBUI config speechInput must be an object"],
+    ["a non-object cloud subtree", { cloud: "https://api.openai.com/v1" }, "PI WEBUI config speechInput.cloud must be an object"],
+  ])("rejects %s", (_description, value, message) => {
+    expect(() => parseSpeechInputConfig(value, configPath)).toThrow(message);
+  });
+
+  it("accepts exact character limits and rejects over-limit values", () => {
+    const exactLanguage = "en-x-abc" + "x-abc".repeat(24);
+    expect(exactLanguage.length).toBe(128);
+    expect(parseSpeechInputConfig({ language: exactLanguage }, configPath)).toEqual({ language: exactLanguage });
+    expect(() => parseSpeechInputConfig({ language: exactLanguage + "a" }, configPath)).toThrow("PI WEBUI config speechInput.language must be at most 128 characters");
+
+    const exactBaseUrl = "https://" + "a".repeat(2040);
+    expect(exactBaseUrl.length).toBe(2048);
+    expect(parseSpeechInputConfig({ cloud: { baseUrl: exactBaseUrl } }, configPath).cloud?.baseUrl).toBe(exactBaseUrl);
+    expect(() => parseSpeechInputConfig({ cloud: { baseUrl: exactBaseUrl + "a" } }, configPath)).toThrow("PI WEBUI config speechInput.cloud.baseUrl must be at most 2048 characters");
+
+    const exactModel = "a".repeat(256);
+    expect(parseSpeechInputConfig({ cloud: { model: exactModel } }, configPath).cloud?.model).toBe(exactModel);
+    expect(() => parseSpeechInputConfig({ cloud: { model: exactModel + "a" } }, configPath)).toThrow("PI WEBUI config speechInput.cloud.model must be at most 256 characters");
+  });
+
+  it("accepts exact UTF-8 credential bytes and rejects over-limit sources", () => {
+    const exactSource = "🚀".repeat(2048);
+    expect(Buffer.byteLength(exactSource, "utf8")).toBe(8192);
+    expect(parseSpeechInputConfig({ cloud: { apiKey: exactSource } }, configPath).cloud?.apiKey).toBe(exactSource);
+    expect(() => parseSpeechInputConfig({ cloud: { apiKey: "🚀".repeat(2049) } }, configPath)).toThrow("PI WEBUI config speechInput.cloud.apiKey must be at most 8 KiB of UTF-8 text");
+  });
+});
+
+describe("PI WEBUI config atomic file operations", () => {
+  it("leaves no temp file behind after a successful write", () => {
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it("preserves an existing configured symlink while updating its physical target", async () => {
+    const physicalDir = join(tempDir, "physical");
+    mkdirSync(physicalDir);
+    const physicalPath = join(physicalDir, "config.json");
+    await writeFile(physicalPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    symlinkSync(physicalPath, configPath);
+
+    savePiWebUiConfig({ port: 9001 }, testOptions());
+
+    expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(configPath)).toBe(physicalPath);
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ port: 9001 });
+    expect(ownedTempFiles(physicalDir)).toEqual([]);
+  });
+
+  it("writes through a relative dangling symlink without replacing the link", async () => {
+    const targetDir = join(tempDir, "actual");
+    mkdirSync(targetDir);
+    symlinkSync(join("actual", "config.json"), configPath);
+
+    savePiWebUiConfig({ port: 9002 }, testOptions());
+
+    expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(await readFile(join(targetDir, "config.json"), "utf8"))).toEqual({ port: 9002 });
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ port: 9002 });
+    expect(ownedTempFiles(targetDir)).toEqual([]);
+  });
+
+  it("rejects symlink cycles without artifacts", () => {
+    symlinkSync("b.json", join(tempDir, "a.json"));
+    symlinkSync("a.json", join(tempDir, "b.json"));
+    configPath = join(tempDir, "a.json");
+
+    expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("symbolic-link cycle");
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it("rejects directory config targets without artifacts", () => {
+    configPath = join(tempDir, "config-dir");
+    mkdirSync(configPath);
+
+    expect(() => savePiWebUiConfig({ port: 9000 }, testOptions())).toThrow("PI WEBUI config path must resolve to a file");
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it.each([
+    ["resolve", { resolveWriteTarget: () => { throw new Error("injected resolve failure"); } }],
+    ["write", { writeExclusive: () => { throw new Error("injected write failure"); } }],
+    ["setMode", { setMode: () => { throw new Error("injected setMode failure"); } }],
+    ["rename", { rename: () => { throw new Error("injected rename failure"); } }],
+  ] as const)("leaves the prior target byte-identical and no temp after an injected %s failure", async (_failure, overrides) => {
+    const original = `${JSON.stringify({ port: 9000, future: { enabled: true } }, null, 2)}\n`;
+    await writeFile(configPath, original, "utf8");
+
+    expect(() => savePiWebUiConfig({ port: 9001 }, fileOperationsTestOptions(overrides))).toThrow("injected");
+
+    expect(await readFile(configPath, "utf8")).toBe(original);
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it("removes only its own temp when the injected writer fails midway", async () => {
+    const original = `${JSON.stringify({ port: 9000 }, null, 2)}\n`;
+    await writeFile(configPath, original, "utf8");
+    const created: string[] = [];
+
+    const operations = testFileOperations({
+      writeExclusive: (path, contents, mode) => {
+        created.push(path);
+        writeFileSync(path, contents, { encoding: "utf8", flag: "wx", mode });
+        throw new Error("injected post-write failure");
+      },
+    });
+
+    expect(() => savePiWebUiConfig({ port: 9001 }, fileOperationsTestOptions(operations))).toThrow("injected post-write failure");
+
+    expect(await readFile(configPath, "utf8")).toBe(original);
+    expect(created).toHaveLength(1);
+    const createdTemp = created[0] ?? "";
+    expect(existsAt(createdTemp)).toBe(false);
+    expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("uses restrictive mode 0600 for credential configs", () => {
+    savePiWebUiConfig({ speechInput: { cloud: { apiKey: "sk-secret" } } }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === "win32")("tightens an existing permissive target when a credential is added", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    chmodSync(configPath, 0o644);
+    savePiWebUiConfig({ speechInput: { cloud: { apiKey: "sk-secret" } } }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+
+    chmodSync(configPath, 0o755);
+    savePiWebUiConfig({ speechInput: { cloud: { apiKey: "sk-other" } } }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === "win32")("preserves mode 0600 after clearing the credential and later writes", () => {
+    savePiWebUiConfig({ speechInput: { cloud: { apiKey: "sk-secret" } } }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+
+    savePiWebUiConfig({ speechInput: { cloud: {} } }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+    expect(fileMode(configPath)).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === "win32")("preserves an existing credential-free mode without unrelated tightening", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    chmodSync(configPath, 0o644);
+
+    savePiWebUiConfig({ port: 9001 }, testOptions());
+
+    expect(fileMode(configPath)).toBe(0o644);
+  });
+
+  it.skipIf(process.platform === "win32")("uses the umask-derived default mode for a new credential-free config", () => {
+    savePiWebUiConfig({ port: 9000 }, testOptions());
+    expect(fileMode(configPath)).toBe(defaultFileMode());
+  });
+});
+
 describe("PI WEBUI default port", () => {
   it("uses port 8808 in generated configuration examples", () => {
     expect(JSON.parse(examplePiWebUiConfig())).toMatchObject({ host: "127.0.0.1", port: 8808 });
@@ -456,4 +735,48 @@ function validModelTiers(): ModelTierLadder {
 
 function testOptions(): { env: NodeJS.ProcessEnv } {
   return { env: { PI_WEBUI_CONFIG: configPath } };
+}
+
+function fileOperationsTestOptions(overrides: Partial<PiWebUiConfigFileOperations>): { env: NodeJS.ProcessEnv; fileOperations: PiWebUiConfigFileOperations } {
+  return { env: { PI_WEBUI_CONFIG: configPath }, fileOperations: testFileOperations(overrides) };
+}
+
+function testFileOperations(overrides: Partial<PiWebUiConfigFileOperations>): PiWebUiConfigFileOperations {
+  const base: PiWebUiConfigFileOperations = {
+    resolveWriteTarget: (path) => ({ path: realpathSync(path), mode: statSync(path).mode & 0o777 }),
+    writeExclusive: (path, contents, mode) => {
+      writeFileSync(path, contents, { encoding: "utf8", flag: "wx", mode });
+    },
+    setMode: (path, mode) => {
+      chmodSync(path, mode);
+    },
+    rename: (from, to) => {
+      renameSync(from, to);
+    },
+    remove: (path) => {
+      rmSync(path, { force: true });
+    },
+  };
+  return { ...base, ...overrides };
+}
+
+/** Mode a plain 0o666 write would produce under the current process umask. */
+function defaultFileMode(): number {
+  const probe = join(tempDir, "mode-probe");
+  writeFileSync(probe, "", { mode: 0o666 });
+  const mode = statSync(probe).mode & 0o777;
+  rmSync(probe, { force: true });
+  return mode;
+}
+
+function ownedTempFiles(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.startsWith(".") && name.endsWith(".tmp")).sort();
+}
+
+function existsAt(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+}
+
+function fileMode(path: string): number {
+  return statSync(path).mode & 0o777;
 }

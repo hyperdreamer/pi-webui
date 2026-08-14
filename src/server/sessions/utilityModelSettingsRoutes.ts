@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { parseUtilityModelsConfig } from "../../config.js";
+import { PiWebUiConfigMutationBusyError } from "../../configMutationCoordinator.js";
 import { UTILITY_MODEL_SLOTS, type UtilityModelSettingsUpdate, type UtilityModelSlot } from "../../shared/apiTypes.js";
 import type { UtilityModelSettingsService } from "./utilityModelSettingsService.js";
 
@@ -21,9 +22,13 @@ export function registerUtilityModelSettingsRoutes(app: FastifyInstance, service
     try {
       return await service.update(parseUpdate(request.body));
     } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      return reply.code(settingsMutationErrorStatus(error)).send({ error: errorMessage(error) });
     }
   });
+}
+
+function settingsMutationErrorStatus(error: unknown): number {
+  return error instanceof PiWebUiConfigMutationBusyError ? 503 : 400;
 }
 
 function parseUpdate(value: unknown): UtilityModelSettingsUpdate {

@@ -213,12 +213,16 @@ interface CapturedPiPackagePluginRequest {
   scope?: PiPackagePluginMutationRequest["scope"];
 }
 
-function fakeConfigService() {
+export function fakeConfigService() {
   return {
     read: () => piWebUiConfigResponse(piWebUiConfig),
     write: (config: PiWebUiConfigValues) => {
       piWebUiConfig = config;
       return piWebUiConfigResponse(config);
+    },
+    update: (mutate: (current: PiWebUiConfigValues) => PiWebUiConfigValues) => {
+      piWebUiConfig = mutate(piWebUiConfig);
+      return piWebUiConfigResponse(piWebUiConfig);
     },
   };
 }
