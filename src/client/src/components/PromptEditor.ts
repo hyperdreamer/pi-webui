@@ -104,6 +104,7 @@ export class PromptEditor extends LitElement {
   });
 
   protected override willUpdate(changed: PropertyValues<this>) {
+    if (changed.has("disabled") && this.disabled && this.speechInputActive()) this.cancelSpeechInput();
     const identityChanged = changed.has("sessionId")
       || changed.has("machineId")
       || changed.has("projectId")
@@ -271,7 +272,7 @@ export class PromptEditor extends LitElement {
   private handleSpeechInputControl(): void {
     switch (this.speechInputState.kind) {
       case "idle":
-        this.startSpeechInput();
+        if (!this.disabled) this.startSpeechInput();
         return;
       case "listening":
         this.speechInputController.stop();
@@ -284,6 +285,7 @@ export class PromptEditor extends LitElement {
   }
 
   private startSpeechInput(): void {
+    if (this.disabled) return;
     // Invalidate delayed completion responses before capturing the document and
     // selection. Starting dictation itself never changes the draft.
     this.requestVersion += 1;
@@ -332,7 +334,8 @@ export class PromptEditor extends LitElement {
   private speechInputTargetIsCurrent(target: SpeechInputTargetSnapshot): boolean {
     const identity = this.speechInputComposerIdentity();
     const editor = this.editor;
-    return identity !== undefined
+    return !this.disabled
+      && identity !== undefined
       && editor !== undefined
       && sameSpeechInputComposerIdentity(identity, target.identity)
       && editor.state.doc.toString() === target.text;
@@ -367,9 +370,12 @@ export class PromptEditor extends LitElement {
   private renderSpeechInputButton() {
     const state = this.speechInputState;
     if (state.kind === "idle") {
-      const label = state.unavailableReason
+      const unavailableReason = this.disabled
+        ? "Dictation is unavailable while this prompt is disabled."
+        : state.unavailableReason;
+      const label = unavailableReason
         ?? (state.provider === undefined ? "Start dictation" : `Start dictation · ${speechInputProviderLabel(state.provider)}`);
-      return html`<button class="icon-button speech-input-button speech-input-idle" ?disabled=${state.unavailableReason !== undefined} title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderMicrophoneIcon()}</button>`;
+      return html`<button class="icon-button speech-input-button speech-input-idle" ?disabled=${unavailableReason !== undefined} title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderMicrophoneIcon()}</button>`;
     }
     if (state.kind === "requesting-permission") {
       const label = `Cancel dictation · ${speechInputProviderLabel(state.provider)}`;

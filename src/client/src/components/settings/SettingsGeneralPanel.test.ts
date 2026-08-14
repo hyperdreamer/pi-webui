@@ -1,10 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateResult } from "lit";
 import type { HostSpeechStatus, PiWebUiConfigResponse, PiWebUiConfigValues, SpeechInputSettingsResponse } from "../../api";
 import { HttpRequestError } from "../../api";
 import { findTemplateContaining, templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
 import type { GatewayServerConfigDraft, MachineAccessConfigDraft } from "./settingsConfigDraft";
+
+beforeEach(() => {
+  vi.stubGlobal("isSecureContext", true);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("settings-general-panel copy", () => {
   it("uses factual scope copy for gateway and selected-machine settings", () => {
@@ -334,7 +342,48 @@ describe("settings-general-panel speech input settings", () => {
     expect(strings).toContain('placeholder="Auto"');
     expect(strings).toContain('class="speech-input-api-key"');
     expect(strings).toContain('type="password"');
+    expect(strings).toContain('placeholder="Literal key, $ENV_VAR, or !command; blank preserves saved source"');
     expect(strings).toContain('aria-label="Speech input settings"');
+  });
+
+  it("hides credential controls and blocks direct credential mutations outside a secure context", async () => {
+    const panel = new SettingsGeneralPanel();
+    panel.speechInputSecureContext = false;
+    panel.speechInputSettings = speechInputSettingsResponse({
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    const onSaveSpeechInput = vi.fn();
+    const confirm = vi.fn(() => true);
+    let credentialReads = 0;
+    Object.defineProperty(panel, "speechInputApiKeyInput", {
+      configurable: true,
+      get: () => ({
+        get value(): string {
+          credentialReads += 1;
+          return "literal-secret";
+        },
+      }),
+    });
+    panel.onSaveSpeechInput = onSaveSpeechInput;
+    vi.stubGlobal("confirm", confirm);
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    const strings = collectTemplateStrings(card).join("");
+    expect(text).toContain("Speech input settings require HTTPS outside localhost or loopback.");
+    expect(text).not.toContain("API key source");
+    expect(strings).not.toContain('class="speech-input-api-key"');
+    expect(strings).not.toContain('<form class="config-form"');
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(onSaveSpeechInput).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(credentialReads).toBe(0);
   });
 
   it("renders safe credential-status copy for every response state", () => {

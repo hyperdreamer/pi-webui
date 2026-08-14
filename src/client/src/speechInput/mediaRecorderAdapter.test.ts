@@ -506,6 +506,27 @@ describe("recording lifecycle", () => {
     expectRecorderReleased(harness.recorder, harness.tracks);
   });
 
+  it("releases recorder tracks when finalization starts a pending transcription", async () => {
+    const harness = createHarness();
+    const { run, log } = startRun(harness);
+    await grantPermission(harness);
+    harness.recorder.emitData(new Blob(["final audio"]));
+
+    run.stop();
+    harness.recorder.emitStop();
+
+    expect(harness.host.transcribeCalls).toHaveLength(1);
+    expect(log.transcribing).toBe(1);
+    expectTracksStoppedOnce(harness.tracks);
+
+    harness.host.transcription.resolve({ text: "completed transcript" });
+    await flushMicrotasks();
+    run.cancel();
+
+    expect(log.completed).toEqual(["completed transcript"]);
+    expectTracksStoppedOnce(harness.tracks);
+  });
+
   it("ignores Stop after recorder finalization while transcription is pending", async () => {
     const harness = createHarness();
     const { run, log } = startRun(harness);

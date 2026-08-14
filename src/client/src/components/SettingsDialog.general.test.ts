@@ -4,6 +4,7 @@ import { configApi, pluginsApi, speechInputApi, type PiWebUiConfigResponse, type
 import { isTemplateResult, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { activeSettingsPanelTag, SettingsDialog } from "./SettingsDialog";
 import { callDialogPromise, callDialogUpdated, configResponse, deferred, getDialogProperty, pluginsResponse, remoteMachine, secondRemoteMachine, setDialogProperty, speechInputSettingsResponse, stubWindowTimers } from "./SettingsDialog.testSupport";
+import { SettingsGeneralPanel } from "./settings/SettingsGeneralPanel";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -294,6 +295,50 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(onSpeechInputSettingsSaved).toHaveBeenCalledExactlyOnceWith(saved);
   });
 
+  it("force-adopts the latest app-owned snapshot after an explicit reload is superseded", async () => {
+    const staleSpeech = deferred<SpeechInputSettingsResponse>();
+    const initial = speechInputSettingsResponse();
+    const newer = speechInputSettingsResponse({
+      revision: "00000000-0000-4000-8000-000000000006",
+      settings: { provider: "browser", language: "fr-FR", cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
+    });
+    const stale = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000007" });
+    vi.spyOn(configApi, "config").mockResolvedValue(configResponse({ host: "127.0.0.1" }));
+    vi.spyOn(pluginsApi, "plugins").mockResolvedValue(pluginsResponse([]));
+    vi.spyOn(speechInputApi, "settings").mockReturnValue(staleSpeech.promise);
+    let appRequestSeq = 1;
+    const onSpeechInputSettingsLoaded = vi.fn();
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = initial;
+    dialog.speechInputSettingsRequestSeq = appRequestSeq;
+    dialog.isSpeechInputSettingsRequestCurrent = (requestSeq) => requestSeq === appRequestSeq;
+    dialog.onSpeechInputSettingsLoaded = onSpeechInputSettingsLoaded;
+    const panel = dirtySpeechInputPanel(initial);
+
+    const reload = callDialogPromise(dialog, "loadConfig", true);
+    appRequestSeq += 1;
+    dialog.speechInputSettings = newer;
+    deliverSpeechInputSettings(panel, newer);
+
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(true);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(true);
+    expect(getPanelPassword(panel)).toBe("$SPEECH_KEY");
+
+    staleSpeech.resolve(stale);
+    await reload;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(newer);
+    expect(onSpeechInputSettingsLoaded).not.toHaveBeenCalled();
+    expect(getDialogProperty(dialog, "speechInputAdoptionGeneration")).toBe(1);
+
+    panel.speechInputAdoptionGeneration = 1;
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputAdoptionGeneration", 0]]));
+    expect(getPanelProperty(panel, "speechInputDraftDirty")).toBe(false);
+    expect(getPanelProperty(panel, "credentialEntryDirty")).toBe(false);
+    expect(getPanelProperty(panel, "speechInputStale")).toBe(false);
+    expect(getPanelPassword(panel)).toBe("");
+  });
+
   it("returns a successful speech save to the panel and notifies the app with the new revision", async () => {
     stubWindowTimers();
     const initial = speechInputSettingsResponse();
@@ -324,4 +369,50 @@ function renderActiveSection(dialog: SettingsDialog): TemplateResult {
   const result: unknown = Reflect.apply(render, dialog, []);
   if (!isTemplateResult(result)) throw new Error("SettingsDialog.renderActiveSection did not return a template");
   return result;
+}
+
+function dirtySpeechInputPanel(initial: SpeechInputSettingsResponse): SettingsGeneralPanel {
+  const panel = new SettingsGeneralPanel();
+  panel.speechInputSecureContext = true;
+  panel.speechInputSettings = initial;
+  let password = "$SPEECH_KEY";
+  Object.defineProperty(panel, "speechInputApiKeyInput", {
+    configurable: true,
+    get: () => ({
+      get value(): string {
+        return password;
+      },
+      set value(next: string) {
+        password = next;
+      },
+    }),
+  });
+  callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+  callPanelMethod(panel, "updateSpeechInputDraft", { model: "unsaved-model" });
+  callPanelMethod(panel, "markSpeechInputCredentialEntryDirty");
+  return panel;
+}
+
+function deliverSpeechInputSettings(panel: SettingsGeneralPanel, response: SpeechInputSettingsResponse): void {
+  const previous = panel.speechInputSettings;
+  panel.speechInputSettings = response;
+  callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", previous]]));
+}
+
+function getPanelPassword(panel: SettingsGeneralPanel): string {
+  const input: unknown = Reflect.get(panel, "speechInputApiKeyInput");
+  if (typeof input !== "object" || input === null) throw new Error("SettingsGeneralPanel password input was unavailable");
+  const value: unknown = Reflect.get(input, "value");
+  if (typeof value !== "string") throw new Error("SettingsGeneralPanel password value was unavailable");
+  return value;
+}
+
+function getPanelProperty(panel: SettingsGeneralPanel, property: string): unknown {
+  return Reflect.get(panel, property);
+}
+
+function callPanelMethod(panel: SettingsGeneralPanel, methodName: string, ...args: readonly unknown[]): unknown {
+  const method: unknown = Reflect.get(panel, methodName);
+  if (typeof method !== "function") throw new Error(`SettingsGeneralPanel.${methodName} is not callable`);
+  return Reflect.apply(method, panel, args);
 }

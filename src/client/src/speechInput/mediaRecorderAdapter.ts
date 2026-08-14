@@ -444,6 +444,9 @@ export class MediaRecorderAdapter implements SpeechInputProviderAdapter {
     const onRecorderStop = (): void => {
       if (terminal) return;
       recorderStopObserved = true;
+      const activeStream = stream;
+      stream = undefined;
+      stopTracks(activeStream);
       // A source stream can end without an explicit user Stop; it still has a
       // valid final capture and must put the controller into its upload phase.
       announceTranscribing();

@@ -373,6 +373,46 @@ describe("PromptEditor speech input controls", () => {
     });
   });
 
+  it("disables an externally disabled idle microphone and rejects programmatic starts before touching the editor", async () => {
+    const editor = await mountedEditor({ sessionId: "session-a" });
+    const controller = installController(editor);
+    const view = requiredView(editor);
+    setSpeechState(editor, { kind: "idle", provider: "browser" });
+    editor.disabled = true;
+    await editor.updateComplete;
+    const dispatch = vi.spyOn(view, "dispatch");
+
+    const microphone = requiredButton(renderPromptEditor(editor), ".speech-input-button");
+    expect(microphone.disabled).toBe(true);
+    expect(microphone.title).toBe("Dictation is unavailable while this prompt is disabled.");
+
+    invokeVoid(editor, "handleSpeechInputControl");
+    invokeVoid(editor, "startSpeechInput");
+
+    expect(controller.start).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(speechState(editor)).toEqual({ kind: "idle", provider: "browser" });
+  });
+
+  it("cancels an active run and rejects a late final after the editor becomes externally disabled", async () => {
+    const editor = await mountedEditor({ sessionId: "session-a" });
+    const controller = installController(editor);
+    editor.replaceText("captured draft");
+    const target = requiredTarget(editor);
+    setSpeechState(editor, { kind: "listening", runId: "run-1", provider: "browser", elapsedMs: 0 });
+
+    editor.disabled = true;
+    await editor.updateComplete;
+    const view = requiredView(editor);
+    const dispatch = vi.spyOn(view, "dispatch");
+
+    expect(controller.cancel).toHaveBeenCalledOnce();
+    expect(applyFinal(editor, target, "dictated words")).toBe("changed");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toBe("captured draft");
+    expect(loadDraft(machineSessionKey("machine-a", "session-a"))).toBe("captured draft");
+  });
+
   it("locks every composer-mutating control while leaving agent-work Stop available", () => {
     const editor = new PromptEditor();
     const onSend = vi.fn();

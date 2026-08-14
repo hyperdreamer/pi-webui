@@ -75,6 +75,9 @@ export class SettingsDialog extends LitElement {
   private packageMutationSeq = 0;
   private modelTiersLoadRequestSeq = 0;
   private utilityModelsLoadRequestSeq = 0;
+  private pendingSpeechInputForceAdoption:
+    | { loadRequestSeq: number; startingSnapshot: SpeechInputSettingsResponse | undefined }
+    | undefined;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -94,6 +97,7 @@ export class SettingsDialog extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("speechInputSettings")) this.adoptPendingSpeechInputForceAdoption();
     const currentTarget = this.settingsTarget();
     if (changed.has("machine")) {
       const previousTarget = settingsMachineTarget(changed.get("machine"));
@@ -304,6 +308,7 @@ export class SettingsDialog extends LitElement {
 
   private async loadConfig(forceSpeechInputAdoption = false): Promise<void> {
     const requestSeq = ++this.loadRequestSeq;
+    if (this.pendingSpeechInputForceAdoption?.loadRequestSeq !== requestSeq) this.pendingSpeechInputForceAdoption = undefined;
     const speechInputSettingsAtStart = this.speechInputSettings;
     const speechInputSettingsRequestSeqAtStart = this.speechInputSettingsRequestSeq;
     this.loading = true;
@@ -318,14 +323,19 @@ export class SettingsDialog extends LitElement {
 
       if (result.config !== undefined) this.configResponse = result.config;
       if (result.plugins !== undefined) this.pluginsResponse = result.plugins;
-      if (
-        result.speechInputSettings !== undefined
+      const speechInputSettings = result.speechInputSettings;
+      const acceptsSpeechInputSettings = speechInputSettings !== undefined
         && this.speechInputSettings === speechInputSettingsAtStart
-        && (this.isSpeechInputSettingsRequestCurrent?.(speechInputSettingsRequestSeqAtStart) ?? true)
-      ) {
-        this.speechInputSettings = result.speechInputSettings;
-        if (forceSpeechInputAdoption) this.speechInputAdoptionGeneration += 1;
-        this.onSpeechInputSettingsLoaded?.(result.speechInputSettings);
+        && (this.isSpeechInputSettingsRequestCurrent?.(speechInputSettingsRequestSeqAtStart) ?? true);
+      if (acceptsSpeechInputSettings) {
+        this.speechInputSettings = speechInputSettings;
+        if (forceSpeechInputAdoption) {
+          this.pendingSpeechInputForceAdoption = undefined;
+          this.speechInputAdoptionGeneration += 1;
+        }
+        this.onSpeechInputSettingsLoaded?.(speechInputSettings);
+      } else if (forceSpeechInputAdoption && speechInputSettings !== undefined) {
+        this.requestSpeechInputForceAdoption(requestSeq, speechInputSettingsAtStart);
       }
       this.error = result.error;
     } finally {
@@ -818,6 +828,26 @@ export class SettingsDialog extends LitElement {
 
   private isCurrentLoad(requestSeq: number): boolean {
     return requestSeq === this.loadRequestSeq;
+  }
+
+  private requestSpeechInputForceAdoption(
+    loadRequestSeq: number,
+    startingSnapshot: SpeechInputSettingsResponse | undefined,
+  ): void {
+    if (!this.isCurrentLoad(loadRequestSeq)) return;
+    if (this.speechInputSettings !== startingSnapshot) {
+      this.speechInputAdoptionGeneration += 1;
+      return;
+    }
+    this.pendingSpeechInputForceAdoption = { loadRequestSeq, startingSnapshot };
+  }
+
+  private adoptPendingSpeechInputForceAdoption(): void {
+    const pending = this.pendingSpeechInputForceAdoption;
+    if (pending === undefined || !this.isCurrentLoad(pending.loadRequestSeq)) return;
+    if (this.speechInputSettings === pending.startingSnapshot) return;
+    this.pendingSpeechInputForceAdoption = undefined;
+    this.speechInputAdoptionGeneration += 1;
   }
 
   private isCurrentAccessLoad(requestSeq: number, target: SettingsMachineTarget): boolean {

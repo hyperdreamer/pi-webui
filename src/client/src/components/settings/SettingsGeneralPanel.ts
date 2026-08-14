@@ -41,6 +41,8 @@ export class SettingsGeneralPanel extends LitElement {
   @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
   @property({ type: Boolean }) hostSpeechStatusLoading = false;
   @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
+  /** Test-only override; production reads the browser's secure-context value. */
+  @property({ attribute: false }) speechInputSecureContext?: boolean;
   @property({ type: Number }) speechInputAdoptionGeneration = 0;
   @property({ type: Number }) speechInputCredentialClearGeneration = 0;
   @property({ attribute: false }) onReload?: () => void | Promise<void>;
@@ -179,7 +181,7 @@ export class SettingsGeneralPanel extends LitElement {
           <p>Dictation settings are stored on this gateway and apply regardless of the selected coding machine.</p>
           <p class="speech-input-boundary">Browser recognition may be processed by the browser vendor's speech service. Cloud sends audio to the configured HTTPS endpoint through the gateway. Cloud audio and the resolved credential go only to that endpoint, with redirects disabled. Gateway access is administrative because PI WEBUI adds no authentication.</p>
         </div>
-        ${response === undefined ? html`<div class="loading-card">${this.loading ? "Loading speech input settings…" : "Speech input settings are unavailable. Reload before saving."}</div>` : html`
+        ${!this.isSpeechInputSecureContext() ? html`<div class="speech-input-insecure-context" role="status">Speech input settings require HTTPS outside localhost or loopback.</div>` : response === undefined ? html`<div class="loading-card">${this.loading ? "Loading speech input settings…" : "Speech input settings are unavailable. Reload before saving."}</div>` : html`
           <div class="speech-input-status" role="status">${speechInputCredentialStatusText(response.credential)}</div>
           ${this.speechInputLocalError === "" ? null : html`<div class="message error-message" role="alert">${this.speechInputLocalError}</div>`}
           <form class="config-form" @submit=${(event: Event) => { void this.saveSpeechInputSettings(event); }}>
@@ -214,7 +216,7 @@ export class SettingsGeneralPanel extends LitElement {
             </label>
             <label class="field">
               <span class="field-heading"><span>API key source</span></span>
-              <input class="speech-input-api-key" type="password" ?disabled=${disabled} placeholder="Leave blank to preserve the saved source" autocomplete="off" spellcheck="false" @input=${() => { this.markSpeechInputCredentialEntryDirty(); }}>
+              <input class="speech-input-api-key" type="password" ?disabled=${disabled} placeholder="Literal key, $ENV_VAR, or !command; blank preserves saved source" autocomplete="off" spellcheck="false" @input=${() => { this.markSpeechInputCredentialEntryDirty(); }}>
               <small>Enter a literal, environment reference, or trusted short-lived command only when replacing the saved source.</small>
             </label>
             <footer class="form-actions speech-input-actions">
@@ -388,6 +390,7 @@ export class SettingsGeneralPanel extends LitElement {
 
   private async saveSpeechInputSettings(event: Event): Promise<void> {
     event.preventDefault();
+    if (!this.isSpeechInputSecureContext()) return;
     const saved = this.speechInputSavedResponse;
     if (saved === undefined || this.speechInputStale || this.saving) return;
     this.speechInputLocalError = "";
@@ -402,6 +405,7 @@ export class SettingsGeneralPanel extends LitElement {
   }
 
   private async clearSpeechInputCredential(): Promise<void> {
+    if (!this.isSpeechInputSecureContext()) return;
     const saved = this.speechInputSavedResponse;
     if (saved === undefined || this.speechInputStale || this.saving) return;
     if (typeof globalThis.confirm !== "function" || !globalThis.confirm("Clear the saved speech input credential?")) return;
@@ -446,6 +450,10 @@ export class SettingsGeneralPanel extends LitElement {
 
   private clearSpeechInputCredentialInput(): void {
     if (this.speechInputApiKeyInput !== undefined) this.speechInputApiKeyInput.value = "";
+  }
+
+  private isSpeechInputSecureContext(): boolean {
+    return this.speechInputSecureContext ?? globalThis.isSecureContext;
   }
 
   private panelNotices(): readonly SettingsNotice[] {
@@ -563,7 +571,7 @@ export class SettingsGeneralPanel extends LitElement {
     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
     button:disabled { opacity: .55; cursor: not-allowed; }
     .settings-sections { display: grid; gap: 14px; }
-    .settings-card, .message, .loading-card, .config-path-card, .effective-card, .host-speech-unavailable { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
+    .settings-card, .message, .loading-card, .config-path-card, .effective-card, .host-speech-unavailable, .speech-input-insecure-context { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
     .settings-card { display: grid; gap: 14px; }
     .message { margin-bottom: 12px; }
     .settings-card .message { margin-bottom: 0; }
@@ -572,6 +580,7 @@ export class SettingsGeneralPanel extends LitElement {
     .speech-input-actions { flex-wrap: wrap; }
     .error-message { border-color: var(--pi-danger); color: var(--pi-danger); background: color-mix(in srgb, var(--pi-danger) 10%, var(--pi-surface)); }
     .host-speech-unavailable { border-color: var(--pi-warning-border); color: var(--pi-warning); background: var(--pi-warning-surface); }
+    .speech-input-insecure-context { border-color: var(--pi-warning-border); color: var(--pi-warning); background: var(--pi-warning-surface); }
     .loading-card { color: var(--pi-muted); }
     .config-path-card { display: grid; gap: 5px; }
     .config-path-card span, .field-heading, dt { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
