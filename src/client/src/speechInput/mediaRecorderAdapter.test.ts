@@ -506,6 +506,27 @@ describe("recording lifecycle", () => {
     expectRecorderReleased(harness.recorder, harness.tracks);
   });
 
+  it("ignores Stop after recorder finalization while transcription is pending", async () => {
+    const harness = createHarness();
+    const { run, log } = startRun(harness);
+    await grantPermission(harness);
+    harness.recorder.emitData(new Blob(["audio"]));
+    harness.recorder.emitStop();
+    const call = harness.host.transcribeCalls[0];
+    if (call === undefined) throw new Error("missing transcription call");
+    harness.recorder.stopFailure = new Error("recorder is inactive");
+
+    run.stop();
+
+    expect.soft(harness.recorder.stopCalls).toBe(0);
+    expect.soft(call.signal.aborted).toBe(false);
+    expect.soft(log.errors).toEqual([]);
+    harness.host.transcription.resolve({ text: "natural finalization transcript" });
+    await flushMicrotasks();
+    expect(log.completed).toEqual(["natural finalization transcript"]);
+    expectRecorderReleased(harness.recorder, harness.tracks);
+  });
+
   it("retains final data emitted after Stop but before recorder stop, then starts one upload", async () => {
     const harness = createHarness();
     const { run, log } = startRun(harness);

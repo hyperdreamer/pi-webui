@@ -372,7 +372,7 @@ export class MediaRecorderAdapter implements SpeechInputProviderAdapter {
     };
 
     const requestStop = (): void => {
-      if (terminal || stopRequested) return;
+      if (terminal || stopRequested || recorderStopObserved) return;
       stopRequested = true;
       if (recorder === undefined) return;
       // This must precede recorder.stop() so the controller watchdog covers
