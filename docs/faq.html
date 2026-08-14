@@ -358,11 +358,13 @@
                 </li>
                 <li>
                   <strong>Credential missing or unresolved:</strong> Cloud requires a configured credential whose
-                  status is resolved. Literal keys and <code>$OPENAI_API_KEY</code> / <code>${OPENAI_API_KEY}</code>
-                  references are checked against the gateway's environment; set the variable in the gateway service
-                  environment and restart the service if it is missing. Command sources
-                  (<code>!command</code>) are deliberately reported as "checked when used" and only run when a
-                  transcription starts. If resolution still fails, verify the command runs quickly, exits zero, and
+                  status is <code>resolved</code>, or an <code>unchecked</code> command source that is resolved when
+                  transcription starts. Literal keys and <code>$OPENAI_API_KEY</code> /
+                  <code>${OPENAI_API_KEY}</code> references are checked against the gateway's environment; set the
+                  variable in the gateway service environment and restart the service if it is missing. Command
+                  sources (<code>!command</code>) are deliberately reported as "checked when used" and are resolved
+                  only when a transcription starts, never during settings reads or availability checks. If
+                  resolution still fails at transcription time, verify the command runs quickly, exits zero, and
                   prints only the key to stdout.
                 </li>
                 <li>
