@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpeechInputSettingsResponse } from "../../../shared/apiTypes";
 import type { SpeechInputControllerState } from "../controllers/speechInputController";
 import type { SpeechInputTargetSnapshot } from "../speechInput/speechInputCore";
+import type { BrowserRecognitionEvent, BrowserRecognitionResult, BrowserRecognitionResultsList, BrowserSpeechRecognition } from "../speechInput/speechRecognitionAdapter";
 import { machineSessionKey } from "../machineKeys";
 import { loadDraft, saveDraft } from "../promptDraftStorage";
 import type { PendingAttachment } from "../promptAttachmentDrafts";
@@ -37,15 +38,76 @@ interface SpeechControllerReplacement {
   dispose: ReturnType<typeof vi.fn<DisposeSpeechController>>;
 }
 
+let documentExecCommandDescriptor: PropertyDescriptor | undefined;
+
+const BROWSER_SPEECH_SETTINGS: SpeechInputSettingsResponse = {
+  contractVersion: 1,
+  revision: "00000000-0000-4000-8000-000000000001",
+  settings: {
+    provider: "browser",
+    cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+  },
+  credential: { configured: false, resolution: "missing" },
+};
+
+/** Controlled external browser API; PromptEditor still creates its production controller and adapter. */
+class ControlledBrowserRecognition implements BrowserSpeechRecognition {
+  continuous = false;
+  interimResults = false;
+  lang = "";
+  onstart: (() => void) | null = null;
+  onresult: ((event: BrowserRecognitionEvent) => void) | null = null;
+  onend: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  startCalls = 0;
+  stop = vi.fn();
+  abort = vi.fn();
+
+  start(): void {
+    this.startCalls += 1;
+  }
+
+  emitStart(): void {
+    this.onstart?.();
+  }
+
+  emitResult(segments: readonly { transcript: string; isFinal: boolean }[]): void {
+    this.onresult?.({ results: controlledRecognitionResults(segments) });
+  }
+
+  emitEnd(): void {
+    this.onend?.();
+  }
+}
+
+function controlledRecognitionResults(
+  segments: readonly { transcript: string; isFinal: boolean }[],
+): BrowserRecognitionResultsList {
+  const results: Record<number, BrowserRecognitionResult> = {};
+  for (const [index, segment] of segments.entries()) {
+    results[index] = { isFinal: segment.isFinal, length: 1, 0: { transcript: segment.transcript } };
+  }
+  return { length: segments.length, ...results };
+}
+
 beforeEach(() => {
   Object.defineProperty(globalThis, "localStorage", { value: new MemoryStorage(), configurable: true });
   vi.stubGlobal("matchMedia", mediaQuery);
+  // CodeMirror's focus path checks this legacy DOM API in jsdom's Safari branch.
+  documentExecCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+  Object.defineProperty(document, "execCommand", { value: () => false, configurable: true });
 });
 
 afterEach(() => {
   document.body.replaceChildren();
   vi.unstubAllGlobals();
   Object.defineProperty(globalThis, "localStorage", { value: undefined, configurable: true });
+  if (documentExecCommandDescriptor === undefined) {
+    Reflect.deleteProperty(document, "execCommand");
+  } else {
+    Object.defineProperty(document, "execCommand", documentExecCommandDescriptor);
+  }
+  documentExecCommandDescriptor = undefined;
 });
 
 describe("PromptEditor speech input target boundary", () => {
@@ -178,6 +240,63 @@ describe("PromptEditor speech input target boundary", () => {
     expect(controller.dispose).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalled();
     expect(destroy).toHaveBeenCalledOnce();
+  });
+});
+
+describe("PromptEditor default speech controller bridge", () => {
+  it("renders, clears, refocuses, and commits Browser dictation through the mounted controller lifecycle", async () => {
+    const recognitions = installControlledBrowserRecognition();
+    const editor = await mountedEditor({
+      sessionId: "session-a",
+      speechInputSettings: BROWSER_SPEECH_SETTINGS,
+    });
+    await editor.updateComplete;
+    const view = requiredView(editor);
+    editor.replaceText("draft");
+    view.dispatch({ selection: EditorSelection.cursor(5) });
+
+    expect(mountedSpeechInputButton(editor).title).toBe("Start dictation · Browser");
+    mountedSpeechInputButton(editor).click();
+    const firstRecognition = requiredRecognition(recognitions, 0);
+    expect(firstRecognition.startCalls).toBe(1);
+    expect(view.state.facet(EditorState.readOnly)).toBe(true);
+    await editor.updateComplete;
+    expect(mountedEditorHost(editor).getAttribute("aria-readonly")).toBe("true");
+    expect(mountedSpeechInputButton(editor).title).toBe("Cancel dictation · Browser");
+
+    firstRecognition.emitStart();
+    await editor.updateComplete;
+    expect(mountedSpeechInputButton(editor).title).toBe("Stop dictation · Browser");
+
+    firstRecognition.emitResult([{ transcript: "spoken", isFinal: false }]);
+    expect(view.state.doc.toString()).toBe("draft");
+    expect(loadDraft(machineSessionKey("machine-a", "session-a"))).toBe("draft");
+    expect(view.dom.querySelector(".prompt-speech-interim")?.textContent).toBe("spoken");
+
+    mountedSpeechInputButton(editor).focus();
+    expect(view.hasFocus).toBe(false);
+    expect(editor.cancelSpeechInput()).toBe(true);
+    expect(firstRecognition.abort).toHaveBeenCalledOnce();
+    await editor.updateComplete;
+    await Promise.resolve();
+    expect(view.state.facet(EditorState.readOnly)).toBe(false);
+    expect(view.dom.querySelector(".prompt-speech-interim")).toBeNull();
+    expect(view.hasFocus).toBe(true);
+
+    mountedSpeechInputButton(editor).click();
+    const secondRecognition = requiredRecognition(recognitions, 1);
+    secondRecognition.emitStart();
+    secondRecognition.emitResult([{ transcript: "spoken words", isFinal: true }]);
+    secondRecognition.emitEnd();
+    await editor.updateComplete;
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe("draft spoken words");
+    expect(loadDraft(machineSessionKey("machine-a", "session-a"))).toBe("draft spoken words");
+    expect(view.dom.querySelector(".prompt-speech-interim")).toBeNull();
+    expect(view.state.facet(EditorState.readOnly)).toBe(false);
+    expect(mountedEditorHost(editor).hasAttribute("aria-readonly")).toBe(false);
+    expect(mountedSpeechInputButton(editor).title).toBe("Start dictation · Browser");
   });
 });
 
@@ -325,15 +444,47 @@ describe("PromptEditor speech input controls", () => {
   });
 });
 
-async function mountedEditor(overrides: { sessionId?: string } = {}): Promise<PromptEditor> {
+async function mountedEditor(overrides: { sessionId?: string; speechInputSettings?: SpeechInputSettingsResponse } = {}): Promise<PromptEditor> {
   const editor = new PromptEditor();
   editor.machineId = "machine-a";
   editor.projectId = "project-a";
   editor.workspaceId = "workspace-a";
   if (overrides.sessionId !== undefined) editor.sessionId = overrides.sessionId;
+  if (overrides.speechInputSettings !== undefined) editor.speechInputSettings = overrides.speechInputSettings;
   document.body.append(editor);
   await editor.updateComplete;
   return editor;
+}
+
+function installControlledBrowserRecognition(): ControlledBrowserRecognition[] {
+  const recognitions: ControlledBrowserRecognition[] = [];
+  class TrackedBrowserRecognition extends ControlledBrowserRecognition {
+    constructor() {
+      super();
+      recognitions.push(this);
+    }
+  }
+  vi.stubGlobal("isSecureContext", true);
+  vi.stubGlobal("SpeechRecognition", TrackedBrowserRecognition);
+  return recognitions;
+}
+
+function requiredRecognition(recognitions: readonly ControlledBrowserRecognition[], index: number): ControlledBrowserRecognition {
+  const recognition = recognitions[index];
+  if (recognition === undefined) throw new Error(`Expected Browser recognition instance ${String(index)}`);
+  return recognition;
+}
+
+function mountedSpeechInputButton(editor: PromptEditor): HTMLButtonElement {
+  const shadowRoot = editor.shadowRoot;
+  if (shadowRoot === null) throw new Error("PromptEditor shadow root was unavailable");
+  return requiredButton(shadowRoot, ".speech-input-button");
+}
+
+function mountedEditorHost(editor: PromptEditor): HTMLDivElement {
+  const host = editor.shadowRoot?.querySelector<HTMLDivElement>(".markdown-editor");
+  if (host === null || host === undefined) throw new Error("PromptEditor editor host was unavailable");
+  return host;
 }
 
 function requiredView(editor: PromptEditor) {
