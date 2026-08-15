@@ -194,7 +194,7 @@ describe("workspace tasks client", () => {
     ["read rejection", (files: MemoryFiles) => { files.afterWrite = () => { files.readSteps.push({ kind: "error", error: new Error("offline") }); }; }],
     ["invalid text", (files: MemoryFiles) => { files.afterWrite = () => { files.content = invalidSource; }; }],
     ["missing file", (files: MemoryFiles) => { files.afterWrite = () => { files.content = undefined; }; }],
-    ["different text", (files: MemoryFiles) => { files.afterWrite = () => { files.content = `${nextPayload}changed`; }; }],
+    ["different valid text", (files: MemoryFiles) => { files.afterWrite = () => { files.content = emptySource; }; }],
   ])("classifies a successful write with an unreloadable %s result", async (_label, prepare) => {
     const files = memoryFiles(emptySource);
     prepare(files);

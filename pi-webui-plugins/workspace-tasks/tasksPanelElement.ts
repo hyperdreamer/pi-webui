@@ -217,6 +217,7 @@ class PiWebUiTasksPanel extends HTMLElement {
     if (state.kind === "loading") return `<p class="muted">Loading ${escapeHtml(TASKS_CONFIG_PATH)}…</p>`;
     if (state.kind === "missing") return renderMissingState(state);
     if (state.kind === "unavailable") return renderUnavailableState(state);
+    if (state.kind === "invalid") return renderInvalidState(state);
 
     if (state.config.tasks.length === 0) return `<p class="muted">No tasks are defined in ${escapeHtml(state.path)}. Add tasks to the file, then click Refresh.</p>`;
     return `
@@ -349,8 +350,9 @@ class PiWebUiTasksPanel extends HTMLElement {
       return;
     }
 
-    const taskTitle = this.taskToDelete.title;
-    const updatedTasks = state.config.tasks.filter(t => t.id !== this.taskToDelete!.id);
+    const taskToDelete = this.taskToDelete;
+    const taskTitle = taskToDelete.title;
+    const updatedTasks = state.config.tasks.filter((task) => task.id !== taskToDelete.id);
     const updatedConfig = {
       version: 1 as const,
       tasks: updatedTasks,
@@ -525,6 +527,10 @@ function renderMissingState(state: Extract<ConfigState, { kind: "missing" }>): s
 function renderUnavailableState(state: Extract<ConfigState, { kind: "unavailable" }>): string {
   const detail = state.detail === undefined ? "" : `<pre>${escapeHtml(state.detail)}</pre>`;
   return `<div class="status error"><strong>${escapeHtml(state.message)}</strong><p>${escapeHtml(state.hint)}</p>${detail}</div>`;
+}
+
+function renderInvalidState(state: Extract<ConfigState, { kind: "invalid" }>): string {
+  return `<div class="status error"><strong>${escapeHtml(state.message)}</strong><p>${escapeHtml(state.hint)}</p><pre>${escapeHtml(state.detail)}</pre></div>`;
 }
 
 function renderTaskGroups(tasks: WorkspaceTask[], runningTaskId: string | undefined): string {
