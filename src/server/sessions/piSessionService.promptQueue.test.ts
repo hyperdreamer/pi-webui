@@ -18,6 +18,13 @@ import type { ResolvedUtilityModel } from "./utilityModelResolver.js";
 
 const TEST_AGENT_DIR = "/tmp/pi-webui-test-agent";
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject };
+}
+
 describe("PiSessionService prompt, queue, and auth warnings", () => {
   it("sends prompts to an injected runtime without touching the SDK runtime", async () => {
     const fake = fakeRuntime("prompt-session");
@@ -699,8 +706,113 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     await service.abort(sessionRef("abort-compaction-session"));
 
     expect(fake.calls.clearQueue).toBe(1);
+    expect(fake.calls.abortCompaction).toBe(1);
     expect(fake.calls.prompt).toEqual([]);
     await expect(service.status(sessionRef("abort-compaction-session"))).resolves.toMatchObject({ pendingMessageCount: 0, queuedMessages: [] });
+    await service.dispose();
+  });
+
+  it("settles a stopped manual compaction as cancelled without a session error", async () => {
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("manual-compaction");
+    const pending = deferred<{ summary: string; tokensBefore: number }>();
+    fake.session.compact = vi.fn(() => {
+      fake.session.isCompacting = true;
+      return pending.promise;
+    });
+    fake.session.abortCompaction = vi.fn(() => {
+      fake.session.isCompacting = false;
+    });
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("manual-compaction")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.runCommand(sessionRef("manual-compaction"), "/compact");
+    await service.abort(sessionRef("manual-compaction"));
+    expect(fake.session.abortCompaction).toHaveBeenCalledOnce();
+    pending.reject(new Error("Compaction cancelled"));
+
+    await vi.waitFor(() => {
+      expect(hub.sessionEvents).toContainEqual({
+        sessionId: "manual-compaction",
+        event: {
+          type: "command.output",
+          level: "info",
+          message: "Compaction cancelled.",
+        },
+      });
+    });
+    expect(hub.sessionEvents.some(({ event }) => event.type === "session.error")).toBe(false);
+    const activities = hub.sessionEvents.filter(({ event }) => event.type === "activity.update");
+    expect(activities.at(-1)?.event).toMatchObject({
+      activity: { label: "compaction cancelled", phase: "idle" },
+    });
+    await service.dispose();
+  });
+
+  it("signals automatic compaction without a manual cancellation result", async () => {
+    const hub = new CapturingSessionEventHub();
+    const fake = fakeRuntime("auto-compaction", { isCompacting: true });
+    const service = new PiSessionService(hub, {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("auto-compaction")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.status(sessionRef("auto-compaction"));
+    await service.abort(sessionRef("auto-compaction"));
+
+    expect(fake.calls.abortCompaction).toBe(1);
+    expect(fake.calls.abort).toBe(1);
+    const statuses = hub.sessionEvents.filter(({ event }) => event.type === "status.update");
+    expect(statuses.at(-1)?.event).toMatchObject({
+      status: { isCompacting: false },
+    });
+    expect(hub.sessionEvents.some(({ event }) => (
+      event.type === "command.output" && event.message === "Compaction cancelled."
+    ))).toBe(false);
+    await service.dispose();
+  });
+
+  it("continues branch and agent abort after compaction cancellation fails", async () => {
+    const failure = new Error("compaction abort failed");
+    const order: string[] = [];
+    const fake = fakeRuntime("compaction-abort-failure", {
+      abortCompaction: () => {
+        order.push("compaction");
+        throw failure;
+      },
+      abortBranchSummary: () => {
+        order.push("branch");
+      },
+      abort: () => {
+        order.push("abort");
+        return Promise.resolve();
+      },
+    });
+    const service = new PiSessionService(new CapturingSessionEventHub(), {
+      agentDir: TEST_AGENT_DIR,
+      modelRuntime: testModelRuntime,
+      createAgentRuntime: runtimeCreator(fake.runtime),
+      sessionManager: sessionGateway([sessionRecord("compaction-abort-failure")]),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await service.status(sessionRef("compaction-abort-failure"));
+    await expect(service.abort(sessionRef("compaction-abort-failure"))).rejects.toBe(failure);
+    expect(order).toEqual(["compaction", "branch", "abort"]);
+    // Disarm the throwing hook before dispose: teardown re-runs the abort
+    // orchestration for still-active sessions (see the same pattern in
+    // piSessionService.tree.test.ts for the branch-summary hook).
+    fake.session.abortCompaction = () => {
+      order.push("compaction");
+    };
     await service.dispose();
   });
 

@@ -673,6 +673,7 @@ export interface PiAgentSession {
     aborted?: boolean;
     summaryEntry?: unknown;
   }>;
+  abortCompaction(): void;
   abortBranchSummary?(): void;
   abort(): Promise<void>;
   clearQueue(): { steering: string[]; followUp: string[] };
@@ -1441,12 +1442,12 @@ export class PiSessionService implements SessionRouteService {
         },
         onCompactionEnd: (session, result, detail) => {
           this.endSessionEntryMutation(session);
-          this.publishActivity(
-            session,
-            result === "success" ? "compaction complete" : "compaction failed",
-            result === "success" ? "idle" : "error",
-            detail
-          );
+          const activity = result === "success"
+            ? { label: "compaction complete", phase: "idle" as const }
+            : result === "cancelled"
+              ? { label: "compaction cancelled", phase: "idle" as const }
+              : { label: "compaction failed", phase: "error" as const };
+          this.publishActivity(session, activity.label, activity.phase, detail);
           this.publishStatus(session);
         },
         reloadSession: (session) => this.reloadSessionRuntime(session),
@@ -4204,28 +4205,32 @@ export class PiSessionService implements SessionRouteService {
   }
 
   private async abortSessionOperations(session: PiAgentSession): Promise<void> {
-    let branchSummaryAbortFailed = false;
-    let branchSummaryAbortError: unknown;
+    const failures: unknown[] = [];
+    try {
+      session.abortCompaction();
+      this.commandService.cancelManualCompaction(session.sessionId);
+    } catch (error: unknown) {
+      failures.push(error);
+    }
     try {
       session.abortBranchSummary?.();
     } catch (error: unknown) {
-      branchSummaryAbortFailed = true;
-      branchSummaryAbortError = error;
+      failures.push(error);
     }
-
     try {
       await session.abort();
-    } catch (abortError: unknown) {
-      if (branchSummaryAbortFailed) {
-        throw new AggregateError(
-          [branchSummaryAbortError, abortError],
-          "Failed to abort session operations",
-          { cause: abortError }
-        );
-      }
-      throw abortError;
+    } catch (error: unknown) {
+      failures.push(error);
     }
-    if (branchSummaryAbortFailed) throw branchSummaryAbortError;
+
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        "Failed to abort session operations",
+        { cause: failures[failures.length - 1] },
+      );
+    }
   }
 
   private async assertWritable(ref: PiSessionLookup): Promise<void> {
