@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.1
+
+### Patch Changes
+
+- 42d083b: Allow Stop to cancel manual and automatic session compaction so a stuck compaction no longer blocks the session.
+
 ## 1.14.0
 
 ### Minor Changes
