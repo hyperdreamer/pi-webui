@@ -97,6 +97,8 @@ class PiWebUiTasksPanel extends HTMLElement {
   private idManuallyEdited = false;
   private pendingRefreshFocus: FocusTarget | undefined;
   private operationGeneration = 0;
+  private terminalRunGeneration = 0;
+  private panelRefreshRequired = false;
   private selectionGeneration = 0;
   private connected = false;
   private unsubscribe: (() => void) | undefined;
@@ -104,6 +106,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   private readonly onConfigChanged = (workspaceKey: string): void => {
     const context = this.contextValue;
     if (!this.connected || context === undefined || cacheKeyForContext(context) !== workspaceKey) return;
+    context.host.requestRender();
     this.render();
   };
   private readonly onKeyDown = (event: KeyboardEvent): void => {
@@ -150,6 +153,7 @@ class PiWebUiTasksPanel extends HTMLElement {
 
     this.selectionGeneration += 1;
     this.operationGeneration += 1;
+    this.terminalRunGeneration += 1;
     this.operation = undefined;
     this.runningTaskId = undefined;
     this.mode = "view";
@@ -160,6 +164,7 @@ class PiWebUiTasksPanel extends HTMLElement {
     this.validationErrors = undefined;
     this.pendingRefreshFocus = undefined;
     this.idManuallyEdited = false;
+    this.panelRefreshRequired = false;
     this.status = undefined;
     this.render();
   }
@@ -174,7 +179,9 @@ class PiWebUiTasksPanel extends HTMLElement {
     this.connected = false;
     this.selectionGeneration += 1;
     this.operationGeneration += 1;
+    this.terminalRunGeneration += 1;
     this.operation = undefined;
+    this.runningTaskId = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
   }
@@ -187,11 +194,11 @@ class PiWebUiTasksPanel extends HTMLElement {
     }
 
     const entry = ensureWorkspaceTasksConfig(context.files, cacheKeyForContext(context));
-    const refreshDisabled = this.operation !== undefined;
+    const refreshDisabled = this.operation !== undefined || this.isConfirmationMode();
     const showAdd = this.mode === "view"
-      && !entry.refreshRequired
+      && !this.isRefreshRequired(entry)
       && (entry.state.kind === "loaded" || entry.state.kind === "missing");
-    const showReset = this.mode === "view" && !entry.refreshRequired && entry.state.kind === "invalid";
+    const showReset = this.mode === "view" && !this.isRefreshRequired(entry) && entry.state.kind === "invalid";
 
     this.root.innerHTML = `
       ${taskStyles()}
@@ -212,6 +219,14 @@ class PiWebUiTasksPanel extends HTMLElement {
     `;
 
     this.bindHandlers(context);
+  }
+
+  private isRefreshRequired(entry: WorkspaceTasksCacheEntry): boolean {
+    return this.panelRefreshRequired || entry.refreshRequired;
+  }
+
+  private isConfirmationMode(): boolean {
+    return this.mode === "delete-confirm" || this.mode === "reset-confirm" || this.mode === "refresh-discard-confirm";
   }
 
   private renderBody(entry: WorkspaceTasksCacheEntry, showReset: boolean): string {
@@ -260,12 +275,12 @@ class PiWebUiTasksPanel extends HTMLElement {
     return `
       ${this.renderRefreshRequired(entry)}
       <p class="muted">Tasks run as one script in one dedicated workspace terminal. Use <code>set -e</code> or <code>&amp;&amp;</code> when the script should stop after a failure.</p>
-      ${renderTaskGroups(state.config.tasks, this.runningTaskId, entry.refreshRequired || this.operation !== undefined)}
+      ${renderTaskGroups(state.config.tasks, this.runningTaskId, this.isRefreshRequired(entry) || this.operation !== undefined)}
     `;
   }
 
   private renderRefreshRequired(entry: WorkspaceTasksCacheEntry): string {
-    if (!entry.refreshRequired) return "";
+    if (!this.isRefreshRequired(entry)) return "";
     return `<div class="status warning" data-refresh-required role="status">Refresh the workspace tasks file before making another change.</div>`;
   }
 
@@ -285,13 +300,13 @@ class PiWebUiTasksPanel extends HTMLElement {
     const idError = errors.id;
     const saveDisabled = locked
       || this.operation !== undefined
-      || entry.refreshRequired
+      || this.isRefreshRequired(entry)
       || (entry.state.kind !== "loaded" && entry.state.kind !== "missing")
       || !validation.ok;
     const titleDescribedBy = titleError === undefined ? "" : ` aria-describedby="task-title-error"`;
     const idDescribedBy = idError === undefined ? "" : ` aria-describedby="task-id-error"`;
     const commandDescribedBy = commandError === undefined ? "task-command-help" : "task-command-help task-command-error";
-    const heading = this.mode === "edit" ? "Edit Task" : "Add Task";
+    const heading = editor.originalIndex === undefined ? "Add Task" : "Edit Task";
     const failureRefresh = locked ? `<button type="button" class="secondary" data-refresh-after-failure>Refresh</button>` : "";
 
     return `
@@ -490,7 +505,7 @@ class PiWebUiTasksPanel extends HTMLElement {
     const context = this.contextValue;
     if (context === undefined || this.operation !== undefined) return;
     const entry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-    if (entry === undefined || entry.refreshRequired || (entry.state.kind !== "loaded" && entry.state.kind !== "missing")) return;
+    if (entry === undefined || this.isRefreshRequired(entry) || (entry.state.kind !== "loaded" && entry.state.kind !== "missing")) return;
     const draft = emptyDraft();
     this.editor = {
       draft,
@@ -511,7 +526,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   private openEditTaskEditor(context: WorkspacePanelContext, taskId: string | null): void {
     if (!this.isCurrentContext(context) || this.operation !== undefined || taskId === null) return;
     const entry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-    if (entry === undefined || entry.refreshRequired || entry.state.kind !== "loaded") return;
+    if (entry === undefined || this.isRefreshRequired(entry) || entry.state.kind !== "loaded") return;
     const index = entry.state.config.tasks.findIndex((task) => task.id === taskId);
     const task = index < 0 ? undefined : entry.state.config.tasks[index];
     if (task === undefined) {
@@ -545,7 +560,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   private openDeleteConfirmation(context: WorkspacePanelContext, taskId: string | null): void {
     if (!this.isCurrentContext(context) || this.operation !== undefined || taskId === null) return;
     const entry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-    if (entry === undefined || entry.refreshRequired || entry.state.kind !== "loaded") return;
+    if (entry === undefined || this.isRefreshRequired(entry) || entry.state.kind !== "loaded") return;
     const index = entry.state.config.tasks.findIndex((task) => task.id === taskId);
     const task = index < 0 ? undefined : entry.state.config.tasks[index];
     if (task === undefined) {
@@ -568,7 +583,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   private openResetConfirmation(context: WorkspacePanelContext): void {
     if (!this.isCurrentContext(context) || this.operation !== undefined) return;
     const entry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-    if (entry === undefined || entry.refreshRequired || entry.state.kind !== "invalid") return;
+    if (entry === undefined || this.isRefreshRequired(entry) || entry.state.kind !== "invalid") return;
     this.resetState = { sourceSnapshot: entry.state.snapshot, focusReturn: { kind: "reset" } };
     this.mode = "reset-confirm";
     this.failure = undefined;
@@ -636,6 +651,7 @@ class PiWebUiTasksPanel extends HTMLElement {
 
   private async requestRefresh(context: WorkspacePanelContext, force = false): Promise<void> {
     if (!this.isCurrentContext(context) || this.operation !== undefined) return;
+    if (!force && this.isConfirmationMode()) return;
     if (!force && (this.mode === "add" || this.mode === "edit") && this.editor !== undefined && this.isEditorDirty()) {
       this.pendingRefreshFocus = this.editor.focusReturn;
       this.mode = "refresh-discard-confirm";
@@ -670,6 +686,7 @@ class PiWebUiTasksPanel extends HTMLElement {
         this.render();
         return;
       }
+      this.panelRefreshRequired = false;
       this.operation = undefined;
       this.status = refreshStatus(state);
       this.render();
@@ -761,7 +778,7 @@ class PiWebUiTasksPanel extends HTMLElement {
     if (!this.isCurrentContext(context) || this.operation !== undefined || this.deleteState === undefined || this.mode !== "delete-confirm") return;
     const entry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
     const pending = this.deleteState;
-    if (entry?.state.kind !== "loaded" || entry.refreshRequired || entry.state.config.tasks[pending.index]?.id !== pending.task.id) {
+    if (entry?.state.kind !== "loaded" || this.isRefreshRequired(entry) || entry.state.config.tasks[pending.index]?.id !== pending.task.id) {
       this.enterFailure("conflict", "The task list changed outside this panel. Refresh before trying again.", "delete");
       return;
     }
@@ -831,6 +848,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   }
 
   private applyWriteFailure(result: Exclude<GuardedWorkspaceTasksWriteResult, { kind: "written" }>, action: FailedAction): void {
+    this.panelRefreshRequired = true;
     this.failure = { kind: result.kind, detail: result.detail, action };
     this.mode = result.kind === "conflict" || result.kind === "preflight-unavailable" ? "conflicted" : "needs-refresh-after-write";
     this.status = { kind: "error", message: failureMessage(result.kind), detail: result.detail };
@@ -838,6 +856,7 @@ class PiWebUiTasksPanel extends HTMLElement {
   }
 
   private enterFailure(kind: FailureKind, detail: string, action: FailedAction): void {
+    this.panelRefreshRequired = true;
     this.failure = { kind, detail, action };
     this.mode = kind === "conflict" || kind === "preflight-unavailable" ? "conflicted" : "needs-refresh-after-write";
     this.status = { kind: "error", message: failureMessage(kind), detail };
@@ -863,22 +882,29 @@ class PiWebUiTasksPanel extends HTMLElement {
       return;
     }
     const selectionGeneration = this.selectionGeneration;
-    const operationGeneration = ++this.operationGeneration;
+    const terminalRunGeneration = ++this.terminalRunGeneration;
     this.runningTaskId = task.id;
     this.status = { kind: "info", message: `Starting ${task.title}...` };
     this.render();
     try {
       const handle = await runWorkspaceTaskInTerminal(context.terminal, task);
-      if (!this.ownsOperation(context, selectionGeneration, operationGeneration)) return;
+      if (!this.ownsTerminalRun(context, selectionGeneration, terminalRunGeneration)) return;
       this.runningTaskId = undefined;
-      this.status = { kind: "success", message: `Started terminal command "${handle.run.title}".`, detail: task.command };
-      this.render();
+      this.renderTerminalStatus({ kind: "success", message: `Started terminal command "${handle.run.title}".`, detail: task.command });
     } catch (error) {
-      if (!this.ownsOperation(context, selectionGeneration, operationGeneration)) return;
+      if (!this.ownsTerminalRun(context, selectionGeneration, terminalRunGeneration)) return;
       this.runningTaskId = undefined;
-      this.status = { kind: "error", message: formatError(error) };
-      this.render();
+      this.renderTerminalStatus({ kind: "error", message: formatError(error) });
     }
+  }
+
+  private renderTerminalStatus(status: TaskStatus): void {
+    if (this.operation !== undefined) {
+      this.render();
+      return;
+    }
+    this.status = status;
+    this.render();
   }
 
   private openWorkspaceTerminal(terminalId?: string): void {
@@ -924,7 +950,7 @@ class PiWebUiTasksPanel extends HTMLElement {
       }
     }
     const save = this.root.querySelector<HTMLButtonElement>("button[data-save-task]");
-    if (save !== null) save.disabled = this.operation !== undefined || entry.refreshRequired || !result.ok || this.failure !== undefined;
+    if (save !== null) save.disabled = this.operation !== undefined || this.isRefreshRequired(entry) || !result.ok || this.failure !== undefined;
   }
 
   private isEditorDirty(): boolean {
@@ -962,6 +988,12 @@ class PiWebUiTasksPanel extends HTMLElement {
 
   private isCurrentContext(context: WorkspacePanelContext): boolean {
     return this.connected && this.contextValue !== undefined && cacheKeyForContext(this.contextValue) === cacheKeyForContext(context);
+  }
+
+  private ownsTerminalRun(context: WorkspacePanelContext, selectionGeneration: number, terminalRunGeneration: number): boolean {
+    return this.isCurrentContext(context)
+      && this.selectionGeneration === selectionGeneration
+      && this.terminalRunGeneration === terminalRunGeneration;
   }
 
   private ownsOperation(context: WorkspacePanelContext, selectionGeneration: number, operationGeneration: number): boolean {

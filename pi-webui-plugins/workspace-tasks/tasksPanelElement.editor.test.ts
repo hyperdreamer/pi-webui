@@ -233,6 +233,79 @@ describe("workspace tasks editor", () => {
     expect(runCommand.mock.calls[0]?.[0].command).toBe(command);
   });
 
+  it("clears terminal dispatch after an overlapping refresh completion", async () => {
+    const refreshRead = deferred<FileContentResponse>();
+    const terminalRun = deferred<TerminalCommandRunHandle>();
+    let readCount = 0;
+    const readFile = vi.fn<WorkspacePanelContext["files"]["readFile"]>(() => {
+      readCount += 1;
+      return readCount === 1 ? Promise.resolve(fileResponse(initialConfig)) : refreshRead.promise;
+    });
+    const runCommand = vi.fn<WorkspacePanelContext["terminal"]["runCommand"]>(() => terminalRun.promise);
+    const panel = await mountLoadedPanel(createContext({
+      readFile,
+      terminal: { open: vi.fn(), runCommand },
+    }));
+
+    requireButton(panel, "button[data-task-id='build']").click();
+    await vi.waitFor(() => { expect(runCommand).toHaveBeenCalledTimes(1); });
+    requireButton(panel, "button[data-refresh-config]").click();
+    await vi.waitFor(() => { expect(requireButton(panel, "button[data-refresh-config]").disabled).toBe(true); });
+
+    const run: TerminalCommandRun = {
+      id: "run-1",
+      origin: "plugin",
+      projectId: "proj1",
+      workspaceId: "ws1",
+      terminalId: "terminal-1",
+      title: "Build",
+      command: "npm run build",
+      status: "queued",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      metadata: {},
+    };
+    terminalRun.resolve({ run, completed: Promise.resolve(run) });
+    await vi.waitFor(() => {
+      expect(requireShadow(panel).textContent).not.toContain("Dispatching...");
+    });
+
+    refreshRead.resolve(fileResponse(initialConfig));
+    await vi.waitFor(() => { expect(requireShadow(panel).textContent).toContain("Loaded 2 tasks."); });
+  });
+
+  it("clears terminal dispatch ownership when the panel disconnects", async () => {
+    const terminalRun = deferred<TerminalCommandRunHandle>();
+    const runCommand = vi.fn<WorkspacePanelContext["terminal"]["runCommand"]>(() => terminalRun.promise);
+    const panel = createPanel();
+    panel.context = createContext({
+      content: initialConfig,
+      terminal: { open: vi.fn(), runCommand },
+    });
+    document.body.append(panel);
+    await vi.waitFor(() => { expect(requireShadow(panel).textContent).toContain("Build"); });
+
+    requireButton(panel, "button[data-task-id='build']").click();
+    await vi.waitFor(() => { expect(runCommand).toHaveBeenCalledTimes(1); });
+    document.body.removeChild(panel);
+    const run: TerminalCommandRun = {
+      id: "run-1",
+      origin: "plugin",
+      projectId: "proj1",
+      workspaceId: "ws1",
+      terminalId: "terminal-1",
+      title: "Build",
+      command: "npm run build",
+      status: "queued",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      metadata: {},
+    };
+    terminalRun.resolve({ run, completed: Promise.resolve(run) });
+    document.body.append(panel);
+    await vi.waitFor(() => {
+      expect(requireButton(panel, "button[data-task-id='build']").textContent).toBe("Run");
+    });
+  });
+
   it("offers Reset only for a complete invalid text file and writes the canonical empty config", async () => {
     let savedContent = "{\n  \"version\": 2\n}";
     const writes: string[] = [];
@@ -278,10 +351,12 @@ describe("workspace tasks editor", () => {
       writes.push(savedContent);
       return Promise.resolve(writeResponse(TASKS_CONFIG_PATH));
     });
-    const panel = await mountLoadedPanel(createContext({
+    const context = createContext({
       readFile: () => Promise.resolve(fileResponse(savedContent)),
       writeFile,
-    }));
+    });
+    const hostRender = vi.spyOn(context.host, "requestRender");
+    const panel = await mountLoadedPanel(context);
     requireButton(panel, "button[data-add-task]").click();
     input(requireInput(panel, "input[data-editor-title]"), "Build");
     input(requireTextarea(panel, "textarea[data-editor-command]"), "npm run build");
@@ -290,12 +365,78 @@ describe("workspace tasks editor", () => {
     requireButton(panel, "button[data-save-task]").click();
     await vi.waitFor(() => { expect(requireShadow(panel).textContent).toContain("changed outside this panel"); });
     expect(writes).toHaveLength(0);
+    expect(hostRender).toHaveBeenCalled();
     expect(requireShadow(panel).querySelector("[data-task-editor]")).not.toBeNull();
 
     requireButton(panel, "button[data-cancel-editor]").click();
     expect(requireShadow(panel).querySelector("button[data-add-task]")).toBeNull();
     requireButton(panel, "button[data-refresh-config]").click();
     await vi.waitFor(() => { expect(requireShadow(panel).querySelector("button[data-add-task]")).not.toBeNull(); });
+  });
+
+  it("keeps a local edit conflict refresh-gated after cancellation", async () => {
+    let savedContent = initialConfig;
+    const writes: string[] = [];
+    const writeFile = vi.fn<WorkspacePanelContext["files"]["writeFile"]>((_path, value) => {
+      savedContent = typeof value === "string" ? value : new TextDecoder().decode(value);
+      writes.push(savedContent);
+      return Promise.resolve(writeResponse(TASKS_CONFIG_PATH));
+    });
+    const context = createContext({
+      readFile: () => Promise.resolve(fileResponse(savedContent)),
+      writeFile,
+    });
+    const panelA = await mountLoadedPanel(context);
+    const panelB = await mountLoadedPanel(context);
+
+    requireButton(panelA, "button[data-edit-task='build']").click();
+    requireButton(panelB, "button[data-edit-task='build']").click();
+    input(requireInput(panelB, "input[data-editor-id]"), "release");
+    input(requireInput(panelB, "input[data-editor-title]"), "Release");
+    requireButton(panelB, "button[data-save-task]").click();
+    await vi.waitFor(() => { expect(writes).toHaveLength(1); });
+
+    requireButton(panelA, "button[data-save-task]").click();
+    await vi.waitFor(() => { expect(requireShadow(panelA).textContent).toContain("changed outside this panel"); });
+    expect(writes).toHaveLength(1);
+    requireButton(panelA, "button[data-cancel-editor]").click();
+    expect(requireShadow(panelA).querySelector("button[data-add-task]")).toBeNull();
+    expect(requireButton(panelA, "button[data-edit-task='release']").disabled).toBe(true);
+
+    requireButton(panelA, "button[data-refresh-config]").click();
+    await vi.waitFor(() => { expect(requireShadow(panelA).querySelector("button[data-add-task]")).not.toBeNull(); });
+  });
+
+  it("keeps a local delete conflict refresh-gated after cancellation", async () => {
+    let savedContent = initialConfig;
+    const writes: string[] = [];
+    const writeFile = vi.fn<WorkspacePanelContext["files"]["writeFile"]>((_path, value) => {
+      savedContent = typeof value === "string" ? value : new TextDecoder().decode(value);
+      writes.push(savedContent);
+      return Promise.resolve(writeResponse(TASKS_CONFIG_PATH));
+    });
+    const context = createContext({
+      readFile: () => Promise.resolve(fileResponse(savedContent)),
+      writeFile,
+    });
+    const panelA = await mountLoadedPanel(context);
+    const panelB = await mountLoadedPanel(context);
+
+    requireButton(panelA, "button[data-delete-task='build']").click();
+    requireButton(panelB, "button[data-edit-task='build']").click();
+    input(requireInput(panelB, "input[data-editor-id]"), "release");
+    input(requireInput(panelB, "input[data-editor-title]"), "Release");
+    requireButton(panelB, "button[data-save-task]").click();
+    await vi.waitFor(() => { expect(writes).toHaveLength(1); });
+
+    requireButton(panelA, "button[data-confirm-delete]").click();
+    await vi.waitFor(() => { expect(requireShadow(panelA).textContent).toContain("changed outside this panel"); });
+    expect(writes).toHaveLength(1);
+    requireButton(panelA, "button[data-cancel-delete]").click();
+    expect(requireShadow(panelA).querySelector("button[data-add-task]")).toBeNull();
+
+    requireButton(panelA, "button[data-refresh-config]").click();
+    await vi.waitFor(() => { expect(requireShadow(panelA).querySelector("button[data-add-task]")).not.toBeNull(); });
   });
 
   it("distinguishes an unverifiable preflight and never writes", async () => {
@@ -336,6 +477,17 @@ describe("workspace tasks editor", () => {
     await vi.waitFor(() => { expect(requireShadow(panel).querySelector("button[data-add-task]")).not.toBeNull(); });
   });
 
+  it("keeps a retained Edit draft labeled as Edit Task after a failed write", async () => {
+    const writeFile = vi.fn<WorkspacePanelContext["files"]["writeFile"]>(() => Promise.reject(new Error("disk full")));
+    const panel = await mountLoadedPanel(createContext({ content: initialConfig, writeFile }));
+    requireButton(panel, "button[data-edit-task='build']").click();
+    input(requireTextarea(panel, "textarea[data-editor-command]"), "npm run build:prod");
+    requireButton(panel, "button[data-save-task]").click();
+
+    await vi.waitFor(() => { expect(requireShadow(panel).textContent).toContain("Unable to write"); });
+    expect(requireShadow(panel).querySelector("[data-task-editor] h3")?.textContent).toBe("Edit Task");
+  });
+
   it("asks before discarding a dirty editor on Refresh and performs no load until confirmed", async () => {
     const readFile = vi.fn<WorkspacePanelContext["files"]["readFile"]>(() => Promise.resolve(fileResponse(JSON.stringify({ version: 1, tasks: [] }))));
     const panel = await mountLoadedPanel(createContext({ readFile }));
@@ -343,6 +495,9 @@ describe("workspace tasks editor", () => {
     requireButton(panel, "button[data-add-task]").click();
     input(requireInput(panel, "input[data-editor-title]"), "Draft");
 
+    requireButton(panel, "button[data-refresh-config]").click();
+    expect(requireShadow(panel).querySelector("[data-refresh-discard-confirmation]")).not.toBeNull();
+    expect(requireButton(panel, "button[data-refresh-config]").disabled).toBe(true);
     requireButton(panel, "button[data-refresh-config]").click();
     expect(requireShadow(panel).querySelector("[data-refresh-discard-confirmation]")).not.toBeNull();
     expect(readFile.mock.calls).toHaveLength(readsAfterMount);
