@@ -115,6 +115,87 @@ describe("SessionCommandService", () => {
     expect(active.runtime.session.compact).toHaveBeenCalledWith("focus on tests");
   });
 
+  it("reports an explicitly cancelled manual compaction without a session error", async () => {
+    const pending = deferred<{ summary: string; tokensBefore: number }>();
+    const active = activeSession({ compact: vi.fn(() => pending.promise) });
+    const events = eventPublisher();
+    const onCompactionEnd = vi.fn();
+    const service = new SessionCommandService(
+      () => getActive(active),
+      vi.fn(),
+      events,
+      { onCompactionEnd },
+    );
+
+    await expect(service.run("s1", "/compact")).resolves.toEqual({
+      type: "done",
+      message: "Compaction started…",
+    });
+    service.cancelManualCompaction("s1");
+    pending.reject(new Error("Compaction cancelled"));
+
+    await vi.waitFor(() => {
+      expect(events.publish).toHaveBeenCalledWith("s1", {
+        type: "command.output",
+        level: "info",
+        message: "Compaction cancelled.",
+      });
+      expect(onCompactionEnd).toHaveBeenCalledWith(
+        active.runtime.session,
+        "cancelled",
+      );
+    });
+    expect(events.publish).not.toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ type: "session.error" }),
+    );
+
+    const laterFailure = deferred<{ summary: string; tokensBefore: number }>();
+    vi.mocked(active.runtime.session.compact).mockReturnValueOnce(laterFailure.promise);
+    await service.run("s1", "/compact");
+    laterFailure.reject(new Error("provider failed"));
+    await vi.waitFor(() => {
+      expect(onCompactionEnd).toHaveBeenLastCalledWith(
+        active.runtime.session,
+        "error",
+        "provider failed",
+      );
+    });
+  });
+
+  it("ignores cancellation after the compaction has already settled", async () => {
+    const active = activeSession();
+    const events = eventPublisher();
+    const onCompactionEnd = vi.fn();
+    const service = new SessionCommandService(
+      () => getActive(active),
+      vi.fn(),
+      events,
+      { onCompactionEnd },
+    );
+
+    await service.run("s1", "/compact");
+    await vi.waitFor(() => {
+      expect(onCompactionEnd).toHaveBeenCalledWith(active.runtime.session, "success");
+    });
+
+    // Cancellation arrives after success has already settled the token.
+    service.cancelManualCompaction("s1");
+
+    // Let any pending microtasks flush.
+    await Promise.resolve();
+
+    const infoCalls = vi.mocked(events.publish).mock.calls.filter(
+      ([, event]) => event.type === "command.output" && event.level === "info",
+    );
+    expect(infoCalls).toHaveLength(0);
+    expect(onCompactionEnd).toHaveBeenCalledTimes(1);
+    expect(onCompactionEnd).not.toHaveBeenCalledWith(
+      active.runtime.session,
+      "cancelled",
+    );
+  });
+
   it("reloads runtime resources through the injected lifecycle callback", async () => {
     const active = activeSession();
     const reloadSession = vi.fn(async () => { await Promise.resolve(); });
@@ -337,8 +418,10 @@ describe("SessionCommandService", () => {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((promiseResolve) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
     resolve = promiseResolve;
+    reject = promiseReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }

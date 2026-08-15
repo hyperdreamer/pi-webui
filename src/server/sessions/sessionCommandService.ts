@@ -49,7 +49,7 @@ export interface CommandEventPublisher {
 
 export interface SessionCommandLifecycle<TSession extends CommandSession = CommandSession> {
   onCompactionStart?: (session: TSession) => void;
-  onCompactionEnd?: (session: TSession, result: "success" | "error", detail?: string) => void;
+  onCompactionEnd?: (session: TSession, result: "success" | "error" | "cancelled", detail?: string) => void;
   reloadSession?: (session: TSession) => Promise<void>;
   getSessionTree?: (session: TSession) => ClientSessionTreeSnapshot | undefined;
   hasActiveWork?: (session: TSession) => boolean;
@@ -68,8 +68,13 @@ interface PendingCommandSelect {
   command: "fork";
 }
 
+interface ManualCompaction {
+  cancelled: boolean;
+}
+
 export class SessionCommandService<TSession extends CommandSession = CommandSession> {
   private readonly pendingSelects = new Map<string, PendingCommandSelect>();
+  private readonly manualCompactions = new Map<string, Set<ManualCompaction>>();
 
   constructor(
     private readonly getActive: GetCommandActiveSession<TSession>,
@@ -130,6 +135,11 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
     return { type: "done", message: "Session forked", session: clientSessionFromRuntime(active.runtime), ...promptDraft(result.selectedText) };
   }
 
+  cancelManualCompaction(sessionId: string): void {
+    for (const compaction of this.manualCompactions.get(sessionId) ?? [])
+      compaction.cancelled = true;
+  }
+
   private nameSession(active: CommandActiveSession<TSession>, name: string): ClientCommandResult {
     if (name === "") return { type: "unsupported", message: "Usage: /name <session name>" };
     active.runtime.session.setSessionName(name);
@@ -138,9 +148,14 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
   }
 
   private compact(session: TSession, instructions: string): ClientCommandResult {
+    const compaction = this.beginManualCompaction(session.sessionId);
     this.lifecycle.onCompactionStart?.(session);
     void session.compact(instructions === "" ? undefined : instructions)
       .then((result) => {
+        if (this.settleManualCompaction(session.sessionId, compaction)) {
+          this.publishCompactionCancellation(session);
+          return;
+        }
         this.events.publish(session.sessionId, {
           type: "command.output",
           level: "success",
@@ -149,12 +164,44 @@ export class SessionCommandService<TSession extends CommandSession = CommandSess
         this.lifecycle.onCompactionEnd?.(session, "success");
       })
       .catch((error: unknown) => {
+        if (this.settleManualCompaction(session.sessionId, compaction)) {
+          this.publishCompactionCancellation(session);
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         this.events.publish(session.sessionId, { type: "command.output", level: "error", message: `Compaction failed: ${message}` });
         this.events.publish(session.sessionId, { type: "session.error", message });
         this.lifecycle.onCompactionEnd?.(session, "error", message);
       });
     return { type: "done", message: "Compaction started…" };
+  }
+
+  private beginManualCompaction(sessionId: string): ManualCompaction {
+    const compaction = { cancelled: false };
+    const active = this.manualCompactions.get(sessionId);
+    if (active === undefined)
+      this.manualCompactions.set(sessionId, new Set([compaction]));
+    else active.add(compaction);
+    return compaction;
+  }
+
+  private settleManualCompaction(
+    sessionId: string,
+    compaction: ManualCompaction,
+  ): boolean {
+    const active = this.manualCompactions.get(sessionId);
+    active?.delete(compaction);
+    if (active?.size === 0) this.manualCompactions.delete(sessionId);
+    return compaction.cancelled;
+  }
+
+  private publishCompactionCancellation(session: TSession): void {
+    this.events.publish(session.sessionId, {
+      type: "command.output",
+      level: "info",
+      message: "Compaction cancelled.",
+    });
+    this.lifecycle.onCompactionEnd?.(session, "cancelled");
   }
 
   private async reload(session: TSession): Promise<ClientCommandResult> {
