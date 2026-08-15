@@ -30,7 +30,7 @@ Pi's `abort()` cancels an active agent run and waits for agent idle state. It do
 
 ### Session adapter boundary
 
-Add optional `abortCompaction(): void` to the local `PiAgentSession` interface. The optional declaration preserves compatibility with older runtime objects while allowing current Pi 0.84.1 sessions to use the dedicated cancellation hook. `CommandSession` in `SessionCommandService` does not need this addition — the call site is `PiSessionService`, which holds `PiAgentSession` directly. No Pi package source is modified.
+Add required `abortCompaction(): void` to the local `PiAgentSession` interface. PI WEBUI supports `@earendil-works/pi-coding-agent >=0.84.0 <0.85`, and both 0.84.0 and 0.84.1 expose this SDK method. `CommandSession` in `SessionCommandService` does not need this addition - the call site is `PiSessionService`, which holds `PiAgentSession` directly. No Pi package source is modified.
 
 ### Command service
 
@@ -38,7 +38,7 @@ Add optional `abortCompaction(): void` to the local `PiAgentSession` interface. 
 
 - register an operation token keyed by `sessionId` before calling `session.compact()`;
 - expose a cancellation method `cancelManualCompaction(sessionId: string): void` used by `PiSessionService.abortSessionOperations()`;
-- that method marks the token as cancelled if one exists for the given session, then returns; it does not call `abortCompaction()` itself;
+- that method marks the token as cancelled only after `PiSessionService` has successfully called `session.abortCompaction()`; it does not call the SDK hook itself;
 - on promise settlement, use the token cancellation flag to distinguish intentional cancellation from a genuine compaction failure;
 - remove the token as part of terminal cleanup so a later compaction cannot consume stale cancellation state.
 
@@ -50,8 +50,8 @@ The command lifecycle result type expands from `success | error` to `success | e
 
 `PiSessionService.abortSessionOperations()` remains the single orchestration point for stopping session work. Its order is:
 
-1. call `commandService.cancelManualCompaction(session.sessionId)` to mark any in-flight manual invocation as cancelled;
-2. call `session.abortCompaction?.()` directly — this covers both manual and auto-compaction with one call and does not require the command service to hold the session object;
+1. call `session.abortCompaction()` directly - this covers both manual and auto-compaction with one call and does not require the command service to hold the session object;
+2. after that call succeeds, call `commandService.cancelManualCompaction(session.sessionId)` to mark any in-flight manual invocation as cancelled;
 3. invoke the existing optional branch-summary abort hook;
 4. always attempt `session.abort()` for ordinary agent work;
 5. preserve the existing error aggregation and propagation behavior when a synchronous abort hook or the normal abort operation fails.
@@ -64,7 +64,7 @@ All cancellation attempts are best effort with respect to one another: a failure
 2. `SessionController.stopActiveWork()` calls the existing `sessionsApi.abort()` method.
 3. The existing route calls `PiSessionService.abort()`.
 4. `PiSessionService` clears queued prompts and calls `abortSessionOperations()`.
-5. `abortSessionOperations()` marks any tracked manual compaction token as cancelled, then calls `session.abortCompaction?.()`. This single call covers both manual and auto-compaction.
+5. `abortSessionOperations()` calls `session.abortCompaction()` directly, then marks any tracked manual compaction token as cancelled. This single SDK call covers both manual and auto-compaction.
 6. `abortSessionOperations()` calls the branch-summary hook and awaits `session.abort()` as before.
 7. `abort()` publishes "stopped / idle" activity and status while the compaction promise is still settling.
 8. Asynchronously: Pi detects the aborted signal inside `compact()`, emits `compaction_end { aborted: true }`, and rejects the pending promise.
@@ -75,10 +75,9 @@ The "stopped / idle" activity published in step 7 is superseded by the async lif
 
 ## Error Handling
 
-- A manual compaction rejection is treated as cancellation only when its session token was explicitly marked before `abortCompaction()` was called. Unrelated provider, auth, preparation, or persistence errors remain failures.
+- A manual compaction rejection is treated as cancellation only when its session token was explicitly marked after `abortCompaction()` completed without throwing. Unrelated provider, auth, preparation, or persistence errors remain failures.
 - Cancellation does not become a generic `session.error` event.
-- A throwing optional `abortCompaction` hook is recorded; branch-summary and ordinary abort attempts still run. The stop request reports failure according to the existing `abort()` contract rather than silently swallowing it.
-- If an older runtime does not expose `abortCompaction()`, neither manual nor auto-compaction is signalled and both continue to run until Pi resolves them. The session remains visibly stuck in that case. This change does not add a runtime restart fallback.
+- A throwing `abortCompaction` hook is recorded; its manual token remains unmarked, and branch-summary and ordinary abort attempts still run. The stop request reports failure according to the existing `abort()` contract rather than silently swallowing it.
 - A provider that ignores the abort signal remains a residual upstream/runtime risk; handling that case is explicitly outside this change.
 
 ## Testing
