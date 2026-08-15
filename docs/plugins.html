@@ -434,7 +434,7 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
                 <li><strong>Add</strong> creates a task and appends it to the task array.</li>
                 <li><strong>Edit</strong> updates the task at its existing position in the array.</li>
                 <li><strong>Delete</strong> removes the selected task without reordering the remaining tasks.</li>
-                <li><strong>Reset</strong> is available only when the editor contains invalid JSON text; it discards that invalid text and restores the last valid configuration.</li>
+                <li><strong>Reset</strong> is offered only for a complete, readable task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-1 configuration <code>{"version":1,"tasks":[]}</code>.</li>
               </ul>
               <p>
                 Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order,

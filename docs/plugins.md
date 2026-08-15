@@ -317,7 +317,7 @@ Open a workspace, choose the **Tasks** tab, and use the editor to manage tasks i
 - **Add** creates a task and appends it to the task array.
 - **Edit** updates the task at its existing position in the array.
 - **Delete** removes the selected task without reordering the remaining tasks.
-- **Reset** is available only when the editor contains invalid JSON text; it discards that invalid text and restores the last valid configuration.
+- **Reset** is offered only for a complete, readable task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-1 configuration `{"version":1,"tasks":[]}`.
 
 Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order, but canonicalize whitespace and key order and drop unsupported fields; original JSON formatting is not preserved.
 
