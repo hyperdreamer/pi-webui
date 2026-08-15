@@ -115,7 +115,42 @@ it("reports an explicitly cancelled manual compaction without a session error", 
 });
 ```
 
-Add a second test that lets the standard fake compaction finish, waits for its existing success output, calls `service.cancelManualCompaction("s1")`, then asserts no `info` cancellation output and no `cancelled` lifecycle outcome were added. It pins the required rule that cancellation after terminal settlement is a no-op.
+Add this second test immediately after the cancellation test. It pins the required rule that calling `cancelManualCompaction` after the compaction has already settled is a no-op:
+
+```ts
+it("ignores cancellation after the compaction has already settled", async () => {
+  const active = activeSession();
+  const events = eventPublisher();
+  const onCompactionEnd = vi.fn();
+  const service = new SessionCommandService(
+    () => getActive(active),
+    vi.fn(),
+    events,
+    { onCompactionEnd },
+  );
+
+  await service.run("s1", "/compact");
+  await vi.waitFor(() => {
+    expect(onCompactionEnd).toHaveBeenCalledWith(active.runtime.session, "success");
+  });
+
+  // Cancellation arrives after success has already settled the token.
+  service.cancelManualCompaction("s1");
+
+  // Let any pending microtasks flush.
+  await Promise.resolve();
+
+  const infoCalls = vi.mocked(events.publish).mock.calls.filter(
+    ([, event]) => event.type === "command.output" && event.level === "info",
+  );
+  expect(infoCalls).toHaveLength(0);
+  expect(onCompactionEnd).toHaveBeenCalledTimes(1);
+  expect(onCompactionEnd).not.toHaveBeenCalledWith(
+    active.runtime.session,
+    "cancelled",
+  );
+});
+```
 
 - [ ] **Step 2: Run the focused test and confirm RED**
 
@@ -242,7 +277,20 @@ abortCompaction: () => {
 },
 ```
 
-In `piSessionService.promptQueue.test.ts`, add a local deferred helper with `resolve` and `reject` as in Task 1. Add these cases near the existing abort-during-compaction coverage:
+In `piSessionService.promptQueue.test.ts`, add this local `deferred` helper near the top of the file (the file has no existing helper of this kind):
+
+```ts
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject };
+}
+```
+
+Note: the existing `sessionCommandService.test.ts` has a `deferred` helper that only exposes `resolve`. This helper must also expose `reject` because the manual-compaction test drives Pi's rejection path. Do not copy the resolve-only version.
+
+Add these cases near the existing abort-during-compaction coverage:
 
 ```ts
 it("settles a stopped manual compaction as cancelled without a session error", async () => {
@@ -288,7 +336,13 @@ it("settles a stopped manual compaction as cancelled without a session error", a
 });
 ```
 
-Update the existing `clears prompts queued during compaction when aborting active work` test to assert `fake.calls.abortCompaction === 1` in addition to its existing queue-clearing assertions.
+Update the existing `clears prompts queued during compaction when aborting active work` test (line 687) to add one assertion after `expect(fake.calls.clearQueue).toBe(1)`:
+
+```ts
+expect(fake.calls.abortCompaction).toBe(1);
+```
+
+Note on observability: the manual-compaction test below overrides `fake.session.abortCompaction` with a `vi.fn()`, so it uses `expect(fake.session.abortCompaction).toHaveBeenCalledOnce()` (the Vitest mock API). The existing queue-clearing test and the auto-compaction test use the default fake's plain counter function, so they use `fake.calls.abortCompaction`. Do not use `vi.fn()` as the default implementation in `testSupport.ts` — keep it as a plain counter function.
 
 Add this auto-compaction case. It deliberately does not start `/compact`, so no `SessionCommandService` token exists:
 
@@ -365,6 +419,8 @@ npm test -- --run src/server/sessions/piSessionService.promptQueue.test.ts
 Expected: FAIL because the current stop path never invokes `abortCompaction`, manual cancellation still becomes `session.error`, and a throwing hook is not observed.
 
 - [ ] **Step 3: Add the SDK hook, ordered abort orchestration, and cancelled lifecycle projection**
+
+Note on single-failure propagation: when exactly one hook throws and the others succeed, `abortSessionOperations` rethrows that single error unwrapped (not wrapped in `AggregateError`). The hook-failure test's `.rejects.toBe(failure)` assertion relies on this — if `branch` and `abort` also threw, the error would be an `AggregateError` and `.toBe(failure)` would fail.
 
 In `PiAgentSession`, declare the required SDK method next to the existing abort methods:
 
