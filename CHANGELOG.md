@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.0
+
+### Minor Changes
+
+- a40ae23: Add browser and OpenAI-compatible cloud dictation to prompt composers, with gateway-scoped provider and language settings and redacted Pi-compatible credential sources.
+
 ## 1.13.1
 
 ### Patch Changes
