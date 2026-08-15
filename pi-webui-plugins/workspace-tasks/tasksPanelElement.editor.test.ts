@@ -600,6 +600,64 @@ describe("workspace tasks editor", () => {
     await vi.waitFor(() => { expect(requireShadow(panelB).querySelector("button[data-add-task]")).not.toBeNull(); });
   });
 
+  it("closes a Save editor when a queued same-workspace Refresh supersedes cache publication", async () => {
+    const fixture = createQueuedRefreshFixture(JSON.stringify({ version: 1, tasks: [] }));
+    const panelA = await mountLoadedPanel(fixture.context);
+    const panelB = await mountLoadedPanel(fixture.context);
+
+    requireButton(panelA, "button[data-add-task]").click();
+    input(requireInput(panelA, "input[data-editor-title]"), "Build");
+    input(requireTextarea(panelA, "textarea[data-editor-command]"), "npm run build");
+    requireButton(panelA, "button[data-save-task]").click();
+
+    await queueRefreshBehindMutation(fixture, panelB);
+    await vi.waitFor(() => {
+      expect(requireShadow(panelA).querySelector("[data-task-editor]")).toBeNull();
+      expect(requireShadow(panelA).textContent).toContain('Saved task "Build".');
+    });
+    await vi.waitFor(() => {
+      expect(requireShadow(panelB).querySelector("button[data-edit-task='build']")).not.toBeNull();
+    });
+  });
+
+  it("closes a Delete confirmation when a queued same-workspace Refresh supersedes cache publication", async () => {
+    const fixture = createQueuedRefreshFixture(initialConfig);
+    const panelA = await mountLoadedPanel(fixture.context);
+    const panelB = await mountLoadedPanel(fixture.context);
+
+    requireButton(panelA, "button[data-delete-task='build']").click();
+    requireButton(panelA, "button[data-confirm-delete]").click();
+
+    await queueRefreshBehindMutation(fixture, panelB);
+    await vi.waitFor(() => {
+      expect(requireShadow(panelA).querySelector("[data-delete-confirmation]")).toBeNull();
+      expect(requireShadow(panelA).textContent).toContain('Deleted task "Build".');
+    });
+    await vi.waitFor(() => {
+      expect(requireShadow(panelB).querySelector("button[data-delete-task='build']")).toBeNull();
+      expect(requireShadow(panelB).querySelector("button[data-task-id='test']")).not.toBeNull();
+    });
+  });
+
+  it("closes a Reset confirmation when a queued same-workspace Refresh supersedes cache publication", async () => {
+    const fixture = createQueuedRefreshFixture("{\n  \"version\": 2\n}");
+    const panelA = await mountLoadedPanel(fixture.context);
+    const panelB = await mountLoadedPanel(fixture.context);
+
+    requireButton(panelA, "button[data-reset-tasks-file]").click();
+    requireButton(panelA, "button[data-confirm-reset]").click();
+
+    await queueRefreshBehindMutation(fixture, panelB);
+    await vi.waitFor(() => {
+      expect(requireShadow(panelA).querySelector("[data-reset-confirmation]")).toBeNull();
+      expect(requireShadow(panelA).textContent).toContain("Reset workspace tasks file.");
+    });
+    await vi.waitFor(() => {
+      expect(requireShadow(panelB).querySelector("button[data-add-task]")).not.toBeNull();
+      expect(requireShadow(panelB).querySelector("button[data-reset-tasks-file]")).toBeNull();
+    });
+  });
+
   it("keeps keyboard interaction and responsive script presentation explicit", async () => {
     const panel = await mountLoadedPanel(createContext({ content: initialConfig }));
     requireButton(panel, "button[data-add-task]").click();
@@ -657,6 +715,74 @@ function requireTextarea(panel: HTMLElement, selector: string): HTMLTextAreaElem
 function input(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
   element.value = value;
   element.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+interface QueuedRefreshFixture {
+  context: WorkspacePanelContext;
+  writeStarted: Promise<true>;
+  releaseWrite: () => void;
+  postWriteReadStarted: Promise<true>;
+  releasePostWriteRead: () => void;
+  refreshReadStarted: Promise<true>;
+  releaseRefreshRead: () => void;
+}
+
+function createQueuedRefreshFixture(initialContent: string): QueuedRefreshFixture {
+  let content = initialContent;
+  let readPhase: "initial" | "post-write" | "post-write-pending" | "refresh" | "refresh-pending" | "done" = "initial";
+  const writeStarted = deferred<true>();
+  const writeGate = deferred<true>();
+  const postWriteReadStarted = deferred<true>();
+  const postWriteRead = deferred<FileContentResponse>();
+  const refreshReadStarted = deferred<true>();
+  const refreshRead = deferred<FileContentResponse>();
+  const readFile = vi.fn<WorkspacePanelContext["files"]["readFile"]>(async () => {
+    if (readPhase === "initial") return fileResponse(content);
+    if (readPhase === "post-write") {
+      readPhase = "post-write-pending";
+      postWriteReadStarted.resolve(true);
+      const response = await postWriteRead.promise;
+      readPhase = "refresh";
+      return response;
+    }
+    if (readPhase === "refresh") {
+      readPhase = "refresh-pending";
+      refreshReadStarted.resolve(true);
+      const response = await refreshRead.promise;
+      readPhase = "done";
+      return response;
+    }
+    return fileResponse(content);
+  });
+  const writeFile = vi.fn<WorkspacePanelContext["files"]["writeFile"]>(async (path, value) => {
+    content = typeof value === "string" ? value : new TextDecoder().decode(value);
+    readPhase = "post-write";
+    writeStarted.resolve(true);
+    await writeGate.promise;
+    return writeResponse(path);
+  });
+
+  return {
+    context: createContext({ readFile, writeFile }),
+    writeStarted: writeStarted.promise,
+    releaseWrite: () => { writeGate.resolve(true); },
+    postWriteReadStarted: postWriteReadStarted.promise,
+    releasePostWriteRead: () => { postWriteRead.resolve(fileResponse(content)); },
+    refreshReadStarted: refreshReadStarted.promise,
+    releaseRefreshRead: () => { refreshRead.resolve(fileResponse(content)); },
+  };
+}
+
+async function queueRefreshBehindMutation(fixture: QueuedRefreshFixture, panelB: TasksPanelElement): Promise<void> {
+  await fixture.writeStarted;
+  const refresh = requireButton(panelB, "button[data-refresh-config]");
+  refresh.click();
+  expect(requireButton(panelB, "button[data-refresh-config]").disabled).toBe(true);
+  fixture.releaseWrite();
+  await fixture.postWriteReadStarted;
+  fixture.releasePostWriteRead();
+  await fixture.refreshReadStarted;
+  fixture.releaseRefreshRead();
 }
 
 function createContext(overrides: PartialFixtureOverrides = {}): WorkspacePanelContext {

@@ -738,12 +738,6 @@ class PiWebUiTasksPanel extends HTMLElement {
       if (!this.ownsOperation(context, selectionGeneration, operationGeneration)) return;
       this.operation = undefined;
       if (result.kind === "written") {
-        const currentEntry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-        if (currentEntry?.state !== result.state) {
-          this.status = undefined;
-          this.render();
-          return;
-        }
         const title = validation.task.title;
         this.mode = "view";
         this.editor = undefined;
@@ -817,12 +811,6 @@ class PiWebUiTasksPanel extends HTMLElement {
       if (!this.ownsOperation(context, selectionGeneration, operationGeneration)) return;
       this.operation = undefined;
       if (result.kind === "written") {
-        const currentEntry = getWorkspaceTasksCacheEntry(cacheKeyForContext(context));
-        if (currentEntry?.state !== result.state) {
-          this.status = undefined;
-          this.render();
-          return;
-        }
         this.mode = "view";
         this.editor = undefined;
         this.deleteState = undefined;
