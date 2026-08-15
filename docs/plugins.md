@@ -301,8 +301,6 @@ Configure workspace tasks in `.pi-webui/tasks.json`:
 }
 ```
 
-Open a workspace, choose the **Tasks** tab, and click **Run** next to a task. Commands run in the workspace root because PI WEBUI creates the terminal for that workspace.
-
 Task fields:
 
 - `version`: must be `1`.
@@ -313,6 +311,48 @@ Task fields:
 - `description`: optional explanatory text.
 - `group`: optional group heading.
 - `confirm`: optional boolean. When true, the browser asks before dispatching the command.
+
+Open a workspace, choose the **Tasks** tab, and use the editor to manage tasks in the browser:
+
+- **Add** creates a task and appends it to the task array.
+- **Edit** updates the task at its existing position in the array.
+- **Delete** removes the selected task without reordering the remaining tasks.
+- **Reset** is available only when the editor contains invalid JSON text; it discards that invalid text and restores the last valid configuration.
+
+Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order, but canonicalize whitespace and key order and drop unsupported fields; original JSON formatting is not preserved.
+
+For a multiline script, encode line feeds as `\n` in JSON:
+
+```json
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "verify",
+      "title": "Build and test",
+      "command": "set -e\nnpm run build\nnpm test"
+    }
+  ]
+}
+```
+
+Click **Run** next to a task to send one terminal request. The server starts one dedicated terminal in the workspace root with `$SHELL -lc`, so lines in a multiline script share shell state such as variables and the current directory. The shell's final exit status determines whether the run succeeds or fails. For POSIX-compatible fail-fast behavior, use syntax such as:
+
+```sh
+set -e
+npm run build
+npm test
+```
+
+or:
+
+```sh
+npm run build && npm test
+```
+
+These are POSIX-compatible examples, not shell-neutral guarantees.
+
+If the task file changed after the browser loaded it, the editor refuses the stale save as a best-effort conflict guard instead of merging the changes. Use **Refresh** to load the latest file, review it, and retry. This protects against sequential stale browser edits; it is not an atomic cross-tab or cross-process compare-and-swap guarantee.
 
 Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted shell commands from your repositories.
 
