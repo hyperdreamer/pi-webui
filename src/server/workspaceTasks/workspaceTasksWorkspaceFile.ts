@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import type {
@@ -11,7 +11,7 @@ import type {
 } from "../../shared/apiTypes.js";
 import { MAX_WORKSPACE_FILE_BYTES } from "../../shared/workspaceFiles.js";
 import { TASKS_CONFIG_PATH } from "../../shared/workspaceTasks.js";
-import { readWorkspaceFileBytesFromTarget } from "../workspaces/fileContentService.js";
+import { readWorkspaceFileBytesFromTarget, type WorkspaceFileRawReadHandle } from "../workspaces/fileContentService.js";
 import { ensureInside, isNodeErrorWithCode, normalizeRelativePath } from "../workspaces/pathSafety.js";
 import { resolveWorkspaceContext } from "../workspaces/workspaceContext.js";
 import type { ProjectService } from "../projects/projectService.js";
@@ -37,6 +37,7 @@ export interface WorkspaceTasksWorkspaceFileSystem {
   lstat(path: string): Promise<Stats>;
   realpath(path: string): Promise<string>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+  open(path: string): Promise<WorkspaceFileRawReadHandle>;
   readFile(path: string): Promise<Buffer>;
   writeFile(path: string, bytes: Uint8Array, options?: { flag?: string; mode?: number }): Promise<void>;
   rename(from: string, to: string): Promise<void>;
@@ -78,6 +79,7 @@ const defaultFileSystem: WorkspaceTasksWorkspaceFileSystem = {
   lstat: (path) => lstat(path),
   realpath: (path) => realpath(path),
   mkdir: (path, options) => mkdir(path, options),
+  open: (path) => open(path, "r"),
   readFile: (path) => readFile(path),
   writeFile: (path, bytes, options) => writeFile(path, bytes, options),
   rename: (from, to) => rename(from, to),
@@ -130,7 +132,7 @@ export function createWorkspaceTasksWorkspaceFileResolver(
     try {
       bytes = await readWorkspaceFileBytesFromTarget(resolved.target, {
         stat: fileSystem.stat,
-        readFile: fileSystem.readFile,
+        open: fileSystem.open,
       });
     } catch (error) {
       if (isNodeErrorWithCode(error, "ENOENT")) return { kind: "missing", revision: revisionForMissing() };

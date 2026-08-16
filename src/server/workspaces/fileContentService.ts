@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { DeleteWorkspaceFileResponse, FileContentResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, PiWebUiPathAccessConfig, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse } from "../../shared/apiTypes.js";
 import { MAX_WORKSPACE_FILE_BYTES } from "../../shared/workspaceFiles.js";
@@ -51,24 +51,43 @@ export async function readWorkspaceFileRaw(rootPath: string, path: string | unde
   return readWorkspaceFileBytesFromTarget(target);
 }
 
+export interface WorkspaceFileRawReadHandle {
+  read(buffer: Buffer, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>;
+  close(): Promise<void>;
+}
+
 export interface WorkspaceFileRawReadOperations {
   stat(path: string): Promise<{ isFile(): boolean; size: number }>;
-  readFile(path: string): Promise<Buffer>;
+  open(path: string): Promise<WorkspaceFileRawReadHandle>;
 }
 
 export async function readWorkspaceFileBytesFromTarget(
   target: string,
-  operations: WorkspaceFileRawReadOperations = { stat, readFile },
+  operations: WorkspaceFileRawReadOperations = { stat, open: (path) => open(path, "r") },
 ): Promise<Buffer> {
   const metadata = await operations.stat(target);
   if (!metadata.isFile()) throw new Error("Path is not a file");
   if (metadata.size > MAX_WORKSPACE_FILE_BYTES) {
     throw new Error(`Workspace file exceeds ${String(MAX_WORKSPACE_FILE_BYTES)} bytes`);
   }
-  const bytes = await operations.readFile(target);
-  if (bytes.length > MAX_WORKSPACE_FILE_BYTES) {
+
+  const buffer = Buffer.alloc(MAX_WORKSPACE_FILE_BYTES + 1);
+  const handle = await operations.open(target);
+  let bytesRead = 0;
+  try {
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+
+  if (bytesRead > MAX_WORKSPACE_FILE_BYTES) {
     throw new Error(`Workspace file exceeds ${String(MAX_WORKSPACE_FILE_BYTES)} bytes`);
   }
+  const bytes = buffer.subarray(0, bytesRead);
   if (bytes.includes(0)) throw new Error("Workspace file is binary");
   new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   return bytes;
