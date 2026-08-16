@@ -2,7 +2,7 @@ import { mkdir, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MAX_IMAGE_PREVIEW_BYTES } from "../../shared/workspaceFiles.js";
-import { readWorkspaceFile } from "./fileContentService.js";
+import { readWorkspaceFile, readWorkspaceFileRaw } from "./fileContentService.js";
 import { cleanupTempWorkspaces, createTempWorkspace } from "./fileContentService.testSupport.js";
 import { readWorkspaceImagePreview } from "./imagePreviewService.js";
 
@@ -103,5 +103,16 @@ describe("readWorkspaceFile", () => {
     expect(file.content).toHaveLength(512 * 1024);
     expect(file.truncated).toBe(true);
     expect(file.binary).toBe(false);
+  });
+
+  it("keeps the explorer preview permissive while strict raw reads reject malformed UTF-8", async () => {
+    const root = await createTempWorkspace();
+    await writeFile(join(root, "malformed.json"), Buffer.from([0x7b, 0xc3, 0x28, 0x7d]));
+
+    const preview = await readWorkspaceFile(root, "malformed.json");
+
+    expect(preview.binary).toBe(false);
+    expect(preview.content).toContain("\ufffd");
+    await expect(readWorkspaceFileRaw(root, "malformed.json")).rejects.toThrow();
   });
 });

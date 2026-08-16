@@ -1,18 +1,17 @@
-import { lstat, mkdir, open, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { DeleteWorkspaceFileResponse, FileContentResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, PiWebUiPathAccessConfig, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse } from "../../shared/apiTypes.js";
+import { MAX_WORKSPACE_FILE_BYTES } from "../../shared/workspaceFiles.js";
 import { imageMimeTypeForPath } from "./imagePreviewService.js";
 import { resolveWorkspacePathAccessTarget } from "./pathAccessPolicy.js";
 import { ensureInside, isNodeErrorWithCode, resolveInsideWorkspace, resolveParentInsideWorkspace } from "./pathSafety.js";
-
-const MAX_BYTES = 512 * 1024;
 
 export async function readWorkspaceFile(rootPath: string, path: string | undefined, pathAccess?: PiWebUiPathAccessConfig): Promise<FileContentResponse> {
   if (path === undefined || path === "") throw new Error("path query parameter is required");
   const { target, displayPath } = await resolveWorkspacePathAccessTarget(rootPath, path, pathAccess);
   const s = await stat(target);
   if (!s.isFile()) throw new Error("Path is not a file");
-  const bytesToRead = Math.min(s.size, MAX_BYTES);
+  const bytesToRead = Math.min(s.size, MAX_WORKSPACE_FILE_BYTES);
   const buffer = await readFilePrefix(target, bytesToRead);
   const media = mediaForPath(displayPath);
   const binary = media.mediaType === "image" || isProbablyBinary(buffer);
@@ -24,9 +23,55 @@ export async function readWorkspaceFile(rootPath: string, path: string | undefin
     size: s.size,
     modifiedAt: s.mtime.toISOString(),
     content: binary ? "" : buffer.toString("utf8"),
-    truncated: s.size > MAX_BYTES,
+    truncated: s.size > MAX_WORKSPACE_FILE_BYTES,
     binary,
   };
+}
+
+/**
+ * Read a complete workspace file as bytes while requiring valid UTF-8. This
+ * is intentionally separate from the explorer preview, whose contract keeps
+ * truncation and replacement-character decoding for arbitrary files.
+ */
+export async function readWorkspaceFileRaw(rootPath: string, path: string | undefined, pathAccess?: PiWebUiPathAccessConfig): Promise<Buffer> {
+  if (path === undefined || path === "") throw new Error("path query parameter is required");
+
+  let target: string;
+  if (path.startsWith("/") || path.startsWith("~")) {
+    ({ target } = await resolveWorkspacePathAccessTarget(rootPath, path, pathAccess));
+  } else {
+    const resolved = await resolveParentInsideWorkspace(rootPath, path);
+    const realParent = await realpath(dirname(resolved.target));
+    target = join(realParent, basename(resolved.target));
+    ensureInside(resolved.root, target);
+    const entry = await lstat(target);
+    if (entry.isSymbolicLink()) throw new Error("Workspace file must not be a symbolic link");
+  }
+
+  return readWorkspaceFileBytesFromTarget(target);
+}
+
+export interface WorkspaceFileRawReadOperations {
+  stat(path: string): Promise<{ isFile(): boolean; size: number }>;
+  readFile(path: string): Promise<Buffer>;
+}
+
+export async function readWorkspaceFileBytesFromTarget(
+  target: string,
+  operations: WorkspaceFileRawReadOperations = { stat, readFile },
+): Promise<Buffer> {
+  const metadata = await operations.stat(target);
+  if (!metadata.isFile()) throw new Error("Path is not a file");
+  if (metadata.size > MAX_WORKSPACE_FILE_BYTES) {
+    throw new Error(`Workspace file exceeds ${String(MAX_WORKSPACE_FILE_BYTES)} bytes`);
+  }
+  const bytes = await operations.readFile(target);
+  if (bytes.length > MAX_WORKSPACE_FILE_BYTES) {
+    throw new Error(`Workspace file exceeds ${String(MAX_WORKSPACE_FILE_BYTES)} bytes`);
+  }
+  if (bytes.includes(0)) throw new Error("Workspace file is binary");
+  new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return bytes;
 }
 
 async function readFilePrefix(target: string, bytesToRead: number): Promise<Buffer> {
