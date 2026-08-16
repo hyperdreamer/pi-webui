@@ -428,12 +428,62 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
 }</code></pre>
               </div>
               <p>
-                Open a workspace, choose the <strong>Tasks</strong> tab, and click <strong>Run</strong> next to a task.
-                Commands run in the workspace root because PI WEBUI creates the terminal for that workspace.
+                Open a workspace, choose the <strong>Tasks</strong> tab, and use the editor to manage tasks in the browser:
+              </p>
+              <ul>
+                <li><strong>Add</strong> creates a task and appends it to the task array.</li>
+                <li><strong>Edit</strong> updates the task at its existing position in the array.</li>
+                <li><strong>Delete</strong> removes the selected task without reordering the remaining tasks.</li>
+                <li><strong>Reset</strong> is offered only for a complete, readable task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-1 configuration <code>{"version":1,"tasks":[]}</code>.</li>
+              </ul>
+              <p>
+                Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order,
+                but canonicalize whitespace and key order and drop unsupported fields; original JSON formatting is not preserved.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Multiline task JSON</strong>
+                  <button class="copy-button" data-copy="#workspace-tasks-multiline">Copy</button>
+                </div>
+                <pre id="workspace-tasks-multiline"><code>{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "verify",
+      "title": "Build and test",
+      "command": "set -e\nnpm run build\nnpm test"
+    }
+  ]
+}</code></pre>
+              </div>
+              <p>
+                Encode line feeds as <code>\n</code> in JSON. Click <strong>Run</strong> next to a task to send one terminal request.
+                The server starts one dedicated terminal in the workspace root with <code>$SHELL -lc</code>, so lines in a multiline script share shell state
+                such as variables and the current directory. The shell's final exit status determines whether the run succeeds or fails.
               </p>
               <p>
-                Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted
-                shell commands from your repositories.
+                For POSIX-compatible fail-fast behavior, use syntax such as:
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>POSIX-compatible fail-fast script</strong>
+                  <button class="copy-button" data-copy="#workspace-tasks-fail-fast">Copy</button>
+                </div>
+                <pre id="workspace-tasks-fail-fast"><code>set -e
+npm run build
+npm test</code></pre>
+              </div>
+              <p>
+                Or use <code>npm run build &amp;&amp; npm test</code>. These are POSIX-compatible examples, not shell-neutral guarantees.
+              </p>
+              <p>
+                If the task file changed after the browser loaded it, the editor refuses the stale save as a best-effort conflict guard
+                instead of merging the changes. Use <strong>Refresh</strong> to load the latest file, review it, and retry. This protects
+                against sequential stale browser edits; it is not an atomic cross-tab or cross-process compare-and-swap guarantee.
+              </p>
+              <p>
+                Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted shell commands from
+                your repositories.
               </p>
             </section>
 

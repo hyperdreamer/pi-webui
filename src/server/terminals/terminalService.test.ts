@@ -178,6 +178,28 @@ describe.skipIf(process.platform === "win32")("TerminalService command runs", ()
     }
   });
 
+  it("runs a multiline script in one terminal and reports the shell exit status", async () => {
+    const service = new TerminalService();
+    try {
+      const marker = "__PI_WEBUI_MULTILINE_TASK__";
+      const run = service.runCommand({
+        origin: "workspace-tasks",
+        projectId: "p1",
+        workspaceId: "w1",
+        cwd: process.cwd(),
+        title: "Multiline task",
+        command: `value=${marker}\nprintf '%s\\n' "$value"\nexit 9`,
+      });
+
+      expect(service.list(process.cwd()).map((terminal) => terminal.id)).toEqual([run.terminalId]);
+      expect(service.listCommandRuns({ metadata: {} }).filter((candidate) => candidate.id === run.id)).toHaveLength(1);
+      expect(await terminalExit(service, run.terminalId)).toContain(marker);
+      expect(service.getCommandRun(run.id)).toMatchObject({ status: "failed", exitCode: 9, terminalId: run.terminalId });
+    } finally {
+      service.dispose();
+    }
+  });
+
   it("marks failed command runs when the command exits non-zero", async () => {
     const service = new TerminalService();
     try {
