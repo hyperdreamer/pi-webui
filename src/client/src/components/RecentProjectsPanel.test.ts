@@ -56,14 +56,74 @@ function panelStyles(): string {
 }
 
 describe("recent-projects-panel rendering", () => {
-  it("renders entries in server order with name and full path", async () => {
+  it("places active entries first without letting selection change stable history order", async () => {
+    const beta = project("p-beta", "/work/beta");
+    const alpha = project("p-alpha", "/work/alpha");
+    const gamma = project("p-gamma", "/work/gamma");
+    const delta = project("p-delta", "/work/delta");
     const { panel, teardown } = await mount({
-      state: { kind: "ready", entries: [entry("/work/beta"), entry("/work/alpha")] },
-      projects: [project("p1", "/work/alpha"), project("p2", "/work/beta")],
+      state: {
+        kind: "ready",
+        entries: [entry("/work/beta"), entry("/work/alpha"), entry("/work/gamma"), entry("/work/delta")],
+      },
+      projects: [beta, alpha, gamma, delta],
+      selectedProjectId: beta.id,
+      workspacesByProjectId: {
+        "p-beta": [workspace("p-beta", "/work/beta")],
+        "p-alpha": [workspace("p-alpha", "/work/alpha")],
+        "p-gamma": [workspace("p-gamma", "/work/gamma")],
+        "p-delta": [workspace("p-delta", "/work/delta")],
+      },
+      activities: {
+        "/work/alpha": { cwd: "/work/alpha", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-01-01T00:00:00.000Z" },
+        "/work/gamma": { cwd: "/work/gamma", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-01-01T00:00:00.000Z" },
+      },
     });
 
-    expect(rows(panel).map((row) => row.textContent.includes("/work/beta"))).toEqual([true, false]);
-    expect(panel.renderRoot.textContent).toContain("/work/alpha");
+    expect(rows(panel).map((row) => row.dataset["recentProjectId"])).toEqual([
+      "entry-/work/alpha",
+      "entry-/work/gamma",
+      "entry-/work/beta",
+      "entry-/work/delta",
+    ]);
+    expect(rows(panel)[2]?.classList.contains("selected")).toBe(true);
+
+    teardown();
+  });
+
+  it("keeps focus and activation attached when activity moves an entry", async () => {
+    const alpha = project("p-alpha", "/work/alpha");
+    const beta = project("p-beta", "/work/beta");
+    const onOpenRegistered = vi.fn();
+    const { panel, teardown } = await mount({
+      state: { kind: "ready", entries: [entry("/work/alpha"), entry("/work/beta")] },
+      projects: [alpha, beta],
+      workspacesByProjectId: {
+        "p-alpha": [workspace("p-alpha", "/work/alpha")],
+        "p-beta": [workspace("p-beta", "/work/beta")],
+      },
+      onOpenRegistered,
+    });
+
+    primary(panel, 1)?.focus();
+    expect(panel.shadowRoot?.activeElement?.getAttribute("aria-label")).toBe("beta, /work/beta");
+
+    panel.activities = {
+      "/work/beta": { cwd: "/work/beta", hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "2026-01-01T00:00:00.000Z" },
+    };
+    await panel.updateComplete;
+
+    expect(rows(panel).map((row) => row.dataset["recentProjectId"])).toEqual([
+      "entry-/work/beta",
+      "entry-/work/alpha",
+    ]);
+    const focused = panel.shadowRoot?.activeElement;
+    expect(focused?.getAttribute("aria-label")).toBe("beta, /work/beta");
+    expect(focused).toBe(primary(panel, 0));
+    if (!(focused instanceof HTMLButtonElement)) throw new Error("Expected the focused entry action to be a button");
+
+    focused.click();
+    expect(onOpenRegistered).toHaveBeenCalledWith(beta);
 
     teardown();
   });

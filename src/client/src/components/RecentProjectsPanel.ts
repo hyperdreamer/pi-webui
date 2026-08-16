@@ -1,4 +1,5 @@
 import { LitElement, css, html, type TemplateResult } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { customElement, property } from "lit/decorators.js";
 import type { Project, RecentProjectEntry, Workspace, WorkspaceActivity } from "../api";
 import type { RecentProjectsState } from "../controllers/recentProjectController";
@@ -13,6 +14,25 @@ import { listStyles } from "./shared";
  */
 export function registeredProjectForEntry(entry: RecentProjectEntry, projects: readonly Project[]): Project | undefined {
   return projects.find((project) => project.path === entry.path);
+}
+
+function orderEntriesByActivity(
+  entries: readonly RecentProjectEntry[],
+  projects: readonly Project[],
+  workspacesByProjectId: Readonly<Record<string, Workspace[]>>,
+  activities: Record<string, WorkspaceActivity>,
+): RecentProjectEntry[] {
+  const active: RecentProjectEntry[] = [];
+  const inactive: RecentProjectEntry[] = [];
+  for (const entry of entries) {
+    const project = registeredProjectForEntry(entry, projects);
+    if (project !== undefined && projectActivityIndicator(project, workspacesByProjectId[project.id] ?? [], activities) !== undefined) {
+      active.push(entry);
+    } else {
+      inactive.push(entry);
+    }
+  }
+  return [...active, ...inactive];
 }
 
 @customElement("recent-projects-panel")
@@ -35,9 +55,19 @@ export class RecentProjectsPanel extends LitElement {
     if (this.state.kind === "loading") return html`<p class="muted" role="status">Loading recent projects…</p>`;
     if (this.state.kind === "failed") return this.renderFailure(this.state.message);
     if (this.state.entries.length === 0) return html`<p class="muted recent-projects-empty" role="status" tabindex="-1">No recent projects</p>`;
+    const orderedEntries = orderEntriesByActivity(
+      this.state.entries,
+      this.projects,
+      this.workspacesByProjectId,
+      this.activities,
+    );
     return html`
       <div class="list-body recent-projects-list">
-        ${this.state.entries.map((entry, index) => this.renderEntry(entry, index))}
+        ${repeat(
+          orderedEntries,
+          (entry) => entry.id,
+          (entry, index) => this.renderEntry(entry, index),
+        )}
       </div>
     `;
   }
