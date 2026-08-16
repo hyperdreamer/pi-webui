@@ -6,6 +6,7 @@ import { ActiveAgentProfileAccessError } from "./activeAgentProfileProvider.js";
 import { PiWebUiPluginService, type PiPackageProvider } from "./piWebUiPluginService.js";
 
 let tempDir: string;
+const originalPiWebUiConfig = process.env["PI_WEBUI_CONFIG"];
 
 const originalDockerRuntime = process.env["PI_WEBUI_DOCKER_RUNTIME"];
 const originalDockerMode = process.env["PI_WEBUI_DOCKER_MODE"];
@@ -14,9 +15,11 @@ const originalDockerInstallDir = process.env["PI_WEBUI_DOCKER_INSTALL_DIR"];
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "pi-webui-plugin-service-test-"));
+  process.env["PI_WEBUI_CONFIG"] = join(tempDir, "isolated-config.json");
 });
 
 afterEach(async () => {
+  restoreEnv("PI_WEBUI_CONFIG", originalPiWebUiConfig);
   restoreEnv("PI_WEBUI_DOCKER_RUNTIME", originalDockerRuntime);
   restoreEnv("PI_WEBUI_DOCKER_MODE", originalDockerMode);
   restoreEnv("PI_WEBUI_DOCKER_DEV_REPO_ROOT", originalDockerDevRepoRoot);

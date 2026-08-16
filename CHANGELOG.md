@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.0
+
+### Minor Changes
+
+- 363c1c1: Add browser Add, Edit, Delete, and invalid-text Reset controls for Workspace Tasks. Saves preserve supported task values and order, refuse best-effort stale edits without merging, and run multiline scripts as one terminal command.
+
+### Patch Changes
+
+- 4f7ea60: Show active projects above inactive entries in Recent Projects while preserving each group's history order.
+
 ## 1.14.1
 
 ### Patch Changes
