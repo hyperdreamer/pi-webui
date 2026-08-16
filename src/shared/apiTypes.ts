@@ -1,4 +1,88 @@
 import type { ThinkingLevel } from "./thinkingLevels.js";
+import type { WorkspaceTask, WorkspaceTasksConfig } from "./workspaceTasks.js";
+
+export interface WorkspaceCatalogAddress {
+  projectId: string;
+  workspaceId: string;
+}
+
+export type WorkspaceCatalogExpectation =
+  | { kind: "loaded"; revision: string; config: WorkspaceTasksConfig }
+  | { kind: "missing"; revision: string };
+
+export interface GlobalCatalogExpectation {
+  kind: "loaded";
+  revision: string;
+  config: WorkspaceTasksConfig;
+}
+
+export interface ReplaceWorkspaceTasksRequest {
+  expectedRevision: string;
+  config: WorkspaceTasksConfig;
+}
+
+export interface ReplaceGlobalWorkspaceTasksRequest {
+  expectedRevision: string;
+  config: WorkspaceTasksConfig;
+}
+
+export type MoveWorkspaceTaskIntent = "start" | "retry";
+
+export type MoveWorkspaceTaskSource =
+  | {
+      ref: { scope: "workspace"; id: string };
+      expectedCatalog: Extract<WorkspaceCatalogExpectation, { kind: "loaded" }>;
+    }
+  | {
+      ref: { scope: "global"; id: string };
+      expectedCatalog: GlobalCatalogExpectation;
+    };
+
+export type MoveWorkspaceTaskDestination =
+  | { scope: "workspace"; expectedCatalog: WorkspaceCatalogExpectation; task: WorkspaceTask }
+  | { scope: "global"; expectedCatalog: GlobalCatalogExpectation; task: WorkspaceTask };
+
+export interface MoveWorkspaceTaskRequest {
+  operationId: string;
+  intent: MoveWorkspaceTaskIntent;
+  source: MoveWorkspaceTaskSource;
+  destination: MoveWorkspaceTaskDestination;
+}
+
+export type WorkspaceTasksCatalogResponse =
+  | { kind: "loaded"; config: WorkspaceTasksConfig; revision: string }
+  | { kind: "missing"; message: string; hint: string; revision: string }
+  | { kind: "invalid"; message: string; hint: string; detail: string }
+  | { kind: "unavailable"; message: string; hint: string; detail?: string };
+
+export type GlobalWorkspaceTasksResponse =
+  | { kind: "loaded"; config: WorkspaceTasksConfig; revision: string }
+  | { kind: "invalid"; message: string; hint: string; detail: string };
+
+export type MoveWorkspaceTaskResult =
+  | { kind: "completed"; operationId: string; workspace: WorkspaceTasksCatalogResponse; global: GlobalWorkspaceTasksResponse }
+  | { kind: "partial"; operationId: string; phase: "destination-written"; workspace: WorkspaceTasksCatalogResponse; global: GlobalWorkspaceTasksResponse }
+  | { kind: "conflict"; reason: "source-changed" | "destination-collision" | "invalid-catalog" | "unrecognized-state" | "unowned-intermediate-state" | "move-in-progress" | "retry-pristine"; message: string }
+  | { kind: "validation"; message: string }
+  | { kind: "unavailable"; message: string }
+  | { kind: "unknown-outcome"; message: string };
+
+export type WorkspaceTasksConflictReason =
+  | "revision-conflict"
+  | "invalid-catalog"
+  | "move-in-progress"
+  | "move-recovery-pending"
+  | "unowned-intermediate-state";
+
+export type WorkspaceTasksFailureResponse =
+  | { kind: "validation"; message: string }
+  | { kind: "conflict"; reason: WorkspaceTasksConflictReason; message: string }
+  | { kind: "unavailable"; message: string; retryable: boolean }
+  | { kind: "unknown-outcome"; message: string };
+
+export type WorkspaceTasksRequestResult<T> =
+  | { kind: "success"; value: T }
+  | WorkspaceTasksFailureResponse;
 
 export type MachineKind = "local" | "remote";
 export type MachineStatus = "unknown" | "online" | "offline" | "error";
