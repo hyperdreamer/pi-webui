@@ -160,18 +160,18 @@ describe("WorkspaceTasksGlobalCatalogAdapter", () => {
     }]);
   });
 
-  it("rechecks the authorizer inside the coordinator after asynchronous reconciliation", async () => {
+  it("rechecks the authorizer inside the coordinator after a claim appears at mutation entry", async () => {
     const coordinator = new ControlledCoordinator({
       plugins: { "workspace-tasks": { settings: { globalTasks: emptyCatalog() } } },
     });
     const authorizer = new TestAuthorizer();
     const blocked = new Error("move recovery pending");
-    authorizer.onReconciled = () => {
-      authorizer.globalAssertionError = blocked;
-    };
     const adapter = createAdapter(coordinator, authorizer);
     const current = await adapter.read();
     if (current.kind !== "loaded") throw new Error("expected loaded catalog");
+    coordinator.onMutationEntry = () => {
+      authorizer.globalAssertionError = blocked;
+    };
 
     await expect(adapter.replace({ expectedRevision: current.revision, config: catalogWithTask("build") })).rejects.toBe(blocked);
     expect(authorizer.reconciledSubjects).toEqual([{ scope: "global" }]);
@@ -273,6 +273,7 @@ class ControlledCoordinator implements PiWebUiConfigMutationCoordinator {
   writes = 0;
   readFailure: Error | undefined;
   mutationFailure: MutationFailure | undefined;
+  onMutationEntry: (() => void) | undefined;
   snapshot: PiWebUiConfigMutationSnapshot;
 
   constructor(config: PiWebUiConfigValues) {
@@ -293,6 +294,7 @@ class ControlledCoordinator implements PiWebUiConfigMutationCoordinator {
     options: PiWebUiConfigMutationOptions = {},
   ): Promise<PiWebUiConfigMutationSnapshot> {
     try {
+      this.onMutationEntry?.();
       const before = this.snapshot;
       const next = mutate(before);
       if (options.shouldSave?.(before, next) === false) return Promise.resolve(before);
@@ -314,7 +316,6 @@ class ControlledCoordinator implements PiWebUiConfigMutationCoordinator {
 class TestAuthorizer implements WorkspaceTasksMutationAuthorizer {
   reconciledSubjects: WorkspaceTasksMutationSubject[] = [];
   globalIntents: Extract<WorkspaceTasksMoveWriteIntent, { scope: "global" }>[] = [];
-  onReconciled: (() => void) | undefined;
   globalAssertionError: Error | undefined;
   expectedPermit: WorkspaceTasksMovePermit | undefined;
   expectedIntent: Extract<WorkspaceTasksMoveWriteIntent, { scope: "global" }> | undefined;
@@ -322,7 +323,6 @@ class TestAuthorizer implements WorkspaceTasksMutationAuthorizer {
   reconcileGlobalMoveClaim(subject: WorkspaceTasksMutationSubject, permit?: WorkspaceTasksMovePermit): Promise<void> {
     this.reconciledSubjects.push(subject);
     void permit;
-    this.onReconciled?.();
     return Promise.resolve();
   }
 
