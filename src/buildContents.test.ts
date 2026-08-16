@@ -25,12 +25,17 @@ describe("production build contents", () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "pi-webui-package-contents-"));
     try {
       const fixtureDist = join(fixtureRoot, "dist", "server");
-      await mkdir(fixtureDist, { recursive: true });
+      const fixtureTaskDomain = join(fixtureRoot, "dist", "pi-webui-plugins", "workspace-tasks");
+      await Promise.all([
+        mkdir(fixtureDist, { recursive: true }),
+        mkdir(fixtureTaskDomain, { recursive: true }),
+      ]);
       await Promise.all([
         writeFixturePackageManifest(fixtureRoot),
         writeFile(join(fixtureDist, "app.js"), "export {};\n", "utf8"),
         writeFile(join(fixtureDist, "app.testSupport.js"), "export {};\n", "utf8"),
         writeFile(join(fixtureDist, "app.testSupport.js.map"), "{}\n", "utf8"),
+        writeFile(join(fixtureTaskDomain, "taskDomain.js"), "export {};\n", "utf8"),
       ]);
 
       const npmExecPath = process.env["npm_execpath"];
@@ -41,6 +46,7 @@ describe("production build contents", () => {
       const packagedFiles = packageFilePaths(stdout);
 
       expect(packagedFiles).toContain("dist/server/app.js");
+      expect(packagedFiles).toContain("dist/pi-webui-plugins/workspace-tasks/taskDomain.js");
       expect(packagedFiles.filter(isTestSupportPath)).toEqual([]);
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });

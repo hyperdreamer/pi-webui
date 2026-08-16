@@ -27,7 +27,8 @@
     ],
     "paths": {
       "@hyperdreamer/pi-webui/plugin-api": ["./src/plugin-api.ts"],
-      "@hyperdreamer/pi-webui/plugin-api/unstable": ["./src/plugin-api/unstable.ts"]
+      "@hyperdreamer/pi-webui/plugin-api/unstable": ["./src/plugin-api/unstable.ts"],
+      "@pi-webui/workspace-tasks-domain": ["./src/shared/workspaceTasks.ts"]
     }
   },
   "include": [
