@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseSpeechInputConfig, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled, type PiWebUiConfigFileOperations } from "./config.js";
+import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseSpeechInputConfig, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled, type PiWebUiConfigFileOperations, type SavePiWebUiConfigOptions } from "./config.js";
 import type { UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
 import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
 
@@ -547,6 +547,111 @@ describe("PI WEBUI config atomic file operations", () => {
   it("leaves no temp file behind after a successful write", () => {
     savePiWebUiConfig({ port: 9000 }, testOptions());
     expect(ownedTempFiles(tempDir)).toEqual([]);
+  });
+
+  it("reports publication attempt before rename and persistence immediately after it", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    const events: string[] = [];
+    const options: SavePiWebUiConfigOptions = {
+      env: { PI_WEBUI_CONFIG: configPath },
+      fileOperations: testFileOperations({
+        rename: (from, to) => {
+          events.push("rename");
+          renameSync(from, to);
+        },
+      }),
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onPersisted: () => {
+        events.push("persisted");
+      },
+    };
+
+    savePiWebUiConfig({ port: 9001 }, options);
+
+    expect(events).toEqual(["publication-attempt", "rename", "persisted"]);
+  });
+
+  it("reports persistence before its internal reload can fail", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    const events: string[] = [];
+    const options: SavePiWebUiConfigOptions = {
+      env: { PI_WEBUI_CONFIG: configPath },
+      fileOperations: testFileOperations({
+        rename: (from, to) => {
+          renameSync(from, to);
+          events.push("rename");
+          writeFileSync(to, "{", "utf8");
+        },
+      }),
+      onPersisted: () => {
+        events.push("persisted");
+      },
+    };
+
+    expect(() => savePiWebUiConfig({ port: 9001 }, options)).toThrow();
+    expect(events).toEqual(["rename", "persisted"]);
+  });
+
+  it("does not invoke lifecycle hooks when a pre-rename write fails", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    const events: string[] = [];
+    const options: SavePiWebUiConfigOptions = {
+      env: { PI_WEBUI_CONFIG: configPath },
+      fileOperations: testFileOperations({
+        writeExclusive: () => {
+          throw new Error("injected write failure");
+        },
+      }),
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onPersisted: () => {
+        events.push("persisted");
+      },
+    };
+
+    expect(() => savePiWebUiConfig({ port: 9001 }, options)).toThrow("injected write failure");
+    expect(events).toEqual([]);
+  });
+
+  it("reports publication attempt but not persistence when final rename throws", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+    const events: string[] = [];
+    const options: SavePiWebUiConfigOptions = {
+      env: { PI_WEBUI_CONFIG: configPath },
+      fileOperations: testFileOperations({
+        rename: () => {
+          throw new Error("injected rename failure");
+        },
+      }),
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onPersisted: () => {
+        events.push("persisted");
+      },
+    };
+
+    expect(() => savePiWebUiConfig({ port: 9001 }, options)).toThrow("injected rename failure");
+    expect(events).toEqual(["publication-attempt"]);
+  });
+
+  it("does not let lifecycle callbacks interrupt persistence", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 9000 })}\n`, "utf8");
+
+    const saved = savePiWebUiConfig({ port: 9001 }, {
+      env: { PI_WEBUI_CONFIG: configPath },
+      onPublicationAttempt: () => {
+        throw new Error("callback failure");
+      },
+      onPersisted: () => {
+        throw new Error("callback failure");
+      },
+    });
+
+    expect(saved.config.port).toBe(9001);
   });
 
   it("preserves an existing configured symlink while updating its physical target", async () => {

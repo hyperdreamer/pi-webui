@@ -49,6 +49,13 @@ export interface LoadOptions {
   fileOperations?: PiWebUiConfigFileOperations;
 }
 
+export interface SavePiWebUiConfigOptions extends LoadOptions {
+  /** Runs immediately before the atomic rename that can publish the new file. */
+  onPublicationAttempt?: () => void;
+  /** Runs synchronously after a successful rename and before the internal reload. */
+  onPersisted?: () => void;
+}
+
 export function defaultPiWebUiConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   const xdgConfigHome = env["XDG_CONFIG_HOME"];
   return join(xdgConfigHome !== undefined && xdgConfigHome !== "" ? xdgConfigHome : join(homedir(), ".config"), "pi-webui", "config.json");
@@ -193,7 +200,7 @@ export function resolveEffectivePiWebUiConfig(loaded: LoadedPiWebUiConfig, optio
   };
 }
 
-export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = {}): LoadedPiWebUiConfig {
+export function savePiWebUiConfig(config: PiWebUiConfig, options: SavePiWebUiConfigOptions = {}): LoadedPiWebUiConfig {
   const env = options.env ?? process.env;
   const path = piWebUiConfigPath(env, options.cwd ?? process.cwd());
   const normalized = parsePiWebUiConfig(piWebUiConfigRecord(config), path).config;
@@ -230,7 +237,9 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
   try {
     operations.writeExclusive(tempPath, `${JSON.stringify(merged, null, 2)}\n`, creationMode);
     if (finalMode !== undefined) operations.setMode(tempPath, finalMode);
+    invokeNonThrowing(options.onPublicationAttempt);
     operations.rename(tempPath, target.path);
+    invokeNonThrowing(options.onPersisted);
   } catch (error) {
     // The unique temp is always ours once resolveWriteTarget succeeded, so a
     // best-effort removal cannot touch another writer's file. Cleanup failures
@@ -243,6 +252,14 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: LoadOptions = 
     throw error;
   }
   return loadPiWebUiConfig(options);
+}
+
+function invokeNonThrowing(callback: (() => void) | undefined): void {
+  try {
+    callback?.();
+  } catch {
+    // Publication state observers must never change the persistence outcome.
+  }
 }
 
 function temporaryConfigPath(targetPath: string): string {

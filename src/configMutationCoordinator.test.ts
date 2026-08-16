@@ -16,8 +16,10 @@ import {
   type PiWebUiConfigLockDatabase,
   type PiWebUiConfigLockState,
   type PiWebUiConfigMutationCoordinator,
+  type PiWebUiConfigMutationSnapshot,
 } from "./configMutationCoordinator.js";
-import { loadPiWebUiConfig } from "./config.js";
+import { loadPiWebUiConfig, type LoadedPiWebUiConfig, type SavePiWebUiConfigOptions } from "./config.js";
+import type { PiWebUiConfigValues } from "./shared/apiTypes.js";
 
 let tempDir: string;
 let configPath: string;
@@ -198,6 +200,104 @@ describe("config mutation coordinator acquisition", () => {
     expect(harness.dbs).toHaveLength(0);
     expect(harness.retryCount()).toBe(4);
     expect(harness.fakeNow()).toBe(10_000);
+  });
+
+  it("commits a no-save mutation without calling save or lifecycle callbacks", async () => {
+    const saveCalls: PiWebUiConfigValues[] = [];
+    const harness = fakeHarness({
+      savePiWebUiConfig: (config) => {
+        saveCalls.push(config);
+        return loadPiWebUiConfig({ env: { PI_WEBUI_CONFIG: configPath } });
+      },
+    });
+    const events: string[] = [];
+    let before: PiWebUiConfigMutationSnapshot | undefined;
+
+    const result = await harness.coordinator.mutate((current) => {
+      before = current;
+      return { ...current.loaded.config, port: 9001 };
+    }, {
+      shouldSave: () => false,
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onSaved: () => {
+        events.push("saved");
+      },
+    });
+
+    expect(result).toBe(before);
+    expect(saveCalls).toEqual([]);
+    expect(events).toEqual([]);
+    expect(requireDb(harness.dbs, 0).commitCalls).toBe(1);
+    expect(requireDb(harness.dbs, 0).closeCalls).toBe(1);
+
+    await harness.coordinator.read();
+    expect(requireDb(harness.dbs, 1).commitCalls).toBe(1);
+  });
+
+  it("forwards saved acknowledgement before an in-save reload failure", async () => {
+    const events: string[] = [];
+    const harness = fakeHarness({
+      savePiWebUiConfig: (_config, options = {}) => {
+        options.onPublicationAttempt?.();
+        options.onPersisted?.();
+        events.push("reload");
+        throw new Error("in-save reload failure");
+      },
+    });
+
+    await expect(harness.coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 }), {
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onSaved: () => {
+        events.push("saved");
+      },
+    })).rejects.toThrow("in-save reload failure");
+
+    expect(events).toEqual(["publication-attempt", "saved", "reload"]);
+  });
+
+  it("forwards neither lifecycle callback for a known pre-rename failure", async () => {
+    const events: string[] = [];
+    const harness = fakeHarness({
+      savePiWebUiConfig: () => {
+        throw new Error("pre-rename failure");
+      },
+    });
+
+    await expect(harness.coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 }), {
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onSaved: () => {
+        events.push("saved");
+      },
+    })).rejects.toThrow("pre-rename failure");
+
+    expect(events).toEqual([]);
+  });
+
+  it("reports a failed final rename as possibly persisted through its lifecycle hooks", async () => {
+    const events: string[] = [];
+    const harness = fakeHarness({
+      savePiWebUiConfig: (_config, options = {}) => {
+        options.onPublicationAttempt?.();
+        throw new Error("rename outcome unknown");
+      },
+    });
+
+    await expect(harness.coordinator.mutate((current) => ({ ...current.loaded.config, port: 9001 }), {
+      onPublicationAttempt: () => {
+        events.push("publication-attempt");
+      },
+      onSaved: () => {
+        events.push("saved");
+      },
+    })).rejects.toThrow("rename outcome unknown");
+
+    expect(events).toEqual(["publication-attempt"]);
   });
 
   it("rolls back and closes after a mutation callback failure", async () => {
@@ -725,6 +825,7 @@ function fakeHarness(overrides: {
   openErrors?: Error[];
   retryAdvanceMs?: number;
   readFileIdentity?: (path: string) => PiWebUiConfigFileIdentity;
+  savePiWebUiConfig?: (config: PiWebUiConfigValues, options?: SavePiWebUiConfigOptions) => LoadedPiWebUiConfig;
 } = {}): FakeHarness {
   let fakeNow = 0;
   let retryCount = 0;
@@ -748,6 +849,7 @@ function fakeHarness(overrides: {
       return db;
     },
     ...(overrides.readFileIdentity === undefined ? {} : { readFileIdentity: overrides.readFileIdentity }),
+    ...(overrides.savePiWebUiConfig === undefined ? {} : { savePiWebUiConfig: overrides.savePiWebUiConfig }),
     createRevision: () => `revision-${String(++revisionCounter)}`,
   });
   return {

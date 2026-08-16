@@ -27,11 +27,21 @@ export interface PiWebUiConfigMutationSnapshot {
   speechInputRevision: string;
 }
 
+export interface PiWebUiConfigMutationOptions {
+  rotateSpeechInputRevision?: boolean;
+  /** Evaluated while the config lock remains held, immediately before save. */
+  shouldSave?: (before: PiWebUiConfigMutationSnapshot, next: PiWebUiConfigValues) => boolean;
+  /** Forwarded to the atomic writer immediately before its final rename. */
+  onPublicationAttempt?: () => void;
+  /** Forwarded to the atomic writer immediately after its final rename. */
+  onSaved?: () => void;
+}
+
 export interface PiWebUiConfigMutationCoordinator {
   read(): Promise<PiWebUiConfigMutationSnapshot>;
   mutate(
     mutate: (current: PiWebUiConfigMutationSnapshot) => PiWebUiConfigValues,
-    options?: { rotateSpeechInputRevision?: boolean },
+    options?: PiWebUiConfigMutationOptions,
   ): Promise<PiWebUiConfigMutationSnapshot>;
 }
 
@@ -67,6 +77,8 @@ export interface PiWebUiConfigMutationCoordinatorOptions {
   openDatabase?: (path: string) => PiWebUiConfigLockDatabase;
   readFileIdentity?: (path: string) => PiWebUiConfigFileIdentity;
   createRevision?: () => string;
+  /** Injected only for controlled persistence tests. */
+  savePiWebUiConfig?: typeof savePiWebUiConfig;
 }
 
 const CONFIG_MUTATIONS_CHILD = "config-mutations";
@@ -99,6 +111,7 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
   const openDatabase = options.openDatabase ?? defaultOpenDatabase;
   const readFileIdentity = options.readFileIdentity ?? defaultReadFileIdentity;
   const createRevision = options.createRevision ?? randomUUID;
+  const saveConfig = options.savePiWebUiConfig ?? savePiWebUiConfig;
 
   async function withAcquiredTransaction<T>(run: (db: PiWebUiConfigLockDatabase) => T): Promise<T> {
     // One monotonic ten-second budget for the entire acquisition; wall-clock
@@ -182,7 +195,15 @@ export function createPiWebUiConfigMutationCoordinator(options: PiWebUiConfigMut
       // canonicalization or trimming from an unrelated write still counts as
       // a persisted change and conservatively rotates the CAS revision.
       const beforeRawSpeech = readRawSpeechInputSubtree(resolvedConfigPath);
-      savePiWebUiConfig(next, configOptions);
+      if (mutationOptions.shouldSave?.(before, next) === false) {
+        db.commit();
+        return before;
+      }
+      saveConfig(next, {
+        ...configOptions,
+        ...(mutationOptions.onPublicationAttempt === undefined ? {} : { onPublicationAttempt: mutationOptions.onPublicationAttempt }),
+        ...(mutationOptions.onSaved === undefined ? {} : { onPersisted: mutationOptions.onSaved }),
+      });
       const after = loadPiWebUiConfig(configOptions);
       if (after.path !== resolvedConfigPath) {
         throw new Error("PI WEBUI config path changed during coordinated mutation");
