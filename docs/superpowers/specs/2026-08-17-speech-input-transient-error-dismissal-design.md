@@ -11,7 +11,7 @@ The speech-input state also contains `unavailableReason`. That is a separate per
 
 ## Goals
 
-- Automatically dismiss a transient speech-input run error after exactly five seconds.
+- Automatically dismiss a transient speech-input run error after a fixed five-second delay.
 - Keep persistent availability and configuration reasons visible and accurate.
 - Keep timer ownership inside the speech-input lifecycle module.
 - Make timer behavior deterministic and directly testable.
@@ -22,7 +22,7 @@ The speech-input state also contains `unavailableReason`. That is a separate per
 - Change provider selection or availability resolution.
 - Change the wording or severity of provider errors.
 - Automatically hide genuine `unavailableReason` values.
-- Clear speech errors when an unrelated prompt is submitted.
+- Do not clear the separate `PromptEditor` composer-target preflight error; it is outside this provider-run lifecycle change.
 - Add a user-configurable timeout.
 
 ## Architecture
@@ -30,7 +30,7 @@ The speech-input state also contains `unavailableReason`. That is a separate per
 `SpeechInputController` remains the owner of transient speech-input errors because it owns provider runs, terminal transitions, and disposal. The controller will add:
 
 - a named `5_000` millisecond error-clear duration;
-- an injected one-shot scheduler option with a default `setTimeout` adapter;
+- reuse of the controller's existing one-shot `scheduleDeadline` dependency for the error clear;
 - cancellation state for the pending clear callback;
 - a sequence guard so an old callback cannot clear a newer error or state.
 
@@ -38,28 +38,34 @@ The public state shape remains unchanged. `PromptEditor` continues to render the
 
 ## Behavior
 
-When a provider run settles with an error, the controller publishes the normal idle state with `error` and schedules a clear for five seconds later. If another error replaces it, the previous callback is canceled and only the newest error can expire.
+Every `SpeechInputController`-published idle error from a terminal run outcome expires through this path. That includes provider callback failures, synchronous adapter-start failures, capture or transcription timeouts, controller callback failures, stop failures, and non-inserted final transcript outcomes. The separate `PromptEditor` preflight message for a missing composer target is not a provider-run outcome and remains outside this change.
 
-When the timer fires, the controller rebuilds the current idle state without `error`. The current availability resolution is recalculated, so any `unavailableReason` remains present. A successful completion, cancellation, or a new dictation attempt clears any pending transient-error timer as part of the normal run lifecycle. Disposal cancels the timer and suppresses late callbacks.
+When a provider run settles with an error, the controller publishes the normal idle state with `error` and registers a one-shot `5_000 ms` delay. Browser timer precision is not a user-visible contract: the warning clears when the registered callback runs. If another error replaces it, the previous callback is canceled and only the newest error can expire.
+
+When the callback fires, the controller rebuilds the current idle state without `error`. The current availability resolution is recalculated, so any `unavailableReason` remains present. An accepted new dictation start invalidates the pending clear before publishing `requesting-permission`. A successful completion clears any pending clear as part of terminal cleanup. An idle `cancel()` remains a no-op and does not reset a pending countdown. An idle `configure()` preserves the existing countdown rather than registering a fresh one. Disposal invalidates and cancels the timer even when there is no active provider run and suppresses late callbacks.
 
 The timeout is the only explicit dismissal rule for an idle transient warning. There is no hook from prompt submission into speech-input error state.
 
 ## Error Handling and Lifecycle
 
-Timer scheduling is an injected side effect. The default scheduler is the native one-shot timer; a test scheduler must be deterministic and return a canceler. Timer callbacks must check disposal and the current error sequence before publishing. A stale callback must be a no-op.
+The existing `scheduleDeadline` dependency is reused for the error-clear delay, with a named `ERROR_CLEAR_DELAY_MS = 5_000` constant. The injected scheduler and canceler are best-effort side effects: if either throws, the controller keeps its already-published state, invalidates sequence state, and does not let the exception escape through a provider callback or disposal path. The production scheduler is the native one-shot timer.
+
+Timer callbacks must check disposal and the current error sequence before publishing. A stale callback must be a no-op. An accepted start invalidates the pending clear before publishing an active state. Idle reconfiguration must leave the original countdown untouched, while expiry uses the latest settings and availability snapshot.
 
 Existing provider availability and settings behavior remains unchanged. The microphone control may still be disabled indefinitely when `unavailableReason` accurately describes a persistent unsupported or misconfigured environment.
 
 ## Testing
 
-Extend the existing `SpeechInputController` harness with a fake error-clear scheduler and tracked cancellations. Add focused tests that prove:
+Extend the existing `SpeechInputController` harness to track the controller's `scheduleDeadline` registrations and cancellations. Add focused tests that prove:
 
-1. A provider error publishes the warning, schedules exactly `5_000` milliseconds, and clears after the scheduled callback.
-2. Clearing a transient error preserves a real `unavailableReason`.
-3. A subsequent dictation attempt does not retain the previous idle error while entering its requesting state.
-4. Disposal cancels the scheduled callback and prevents a late callback from publishing state.
+1. A provider error publishes the warning, registers exactly one `5_000 ms` clear delay, and clears after that callback is fired.
+2. Clearing a transient error preserves a real `unavailableReason` from the latest availability snapshot.
+3. A later provider error replaces the first timer: firing the first callback leaves the newer warning intact, and firing the second clears it.
+4. An accepted new start invalidates the old timer; firing the stale callback cannot overwrite `requesting-permission` or a later terminal state.
+5. Disposal from an idle error-pending state cancels the delay and a deliberately invoked late callback cannot publish state.
+6. A controller-originated terminal error such as a rejected final insertion outcome follows the same expiry path as a provider error.
 
-The regression test must fail before the controller change because the current implementation leaves `Microphone is unavailable` in the idle state after the fake timeout callback.
+The red phase should assert that a provider error registers a `5_000 ms` clear delay. The current implementation registers no such delay, so the focused test fails before production code changes. After implementation, fire the captured callbacks to prove expiry and stale-callback suppression.
 
 ## Verification
 
