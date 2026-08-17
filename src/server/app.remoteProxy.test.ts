@@ -1,13 +1,228 @@
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { RemoteMachineRequestError, type MachineClient } from "./machines/machineClient.js";
+import { REMOTE_HTTP_ROUTES } from "./machines/machineProxyRoutes.js";
 import { SESSION_REORDER_SESSION_ID_MAX_LENGTH } from "../shared/apiTypes.js";
-import { PI_PACKAGE_MUTATION_PROXY_TIMEOUT_MS, PI_PACKAGE_PLUGINS_OPERATION_PROXY_TIMEOUT_MS, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS } from "../shared/federatedRoutes.js";
+import { PI_PACKAGE_MUTATION_PROXY_TIMEOUT_MS, PI_PACKAGE_PLUGINS_OPERATION_PROXY_TIMEOUT_MS, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS, FEDERATED_HTTP_ROUTES } from "../shared/federatedRoutes.js";
+import { WORKSPACE_TASKS_MOVE_BODY_LIMIT_BYTES, WORKSPACE_TASKS_REPLACE_BODY_LIMIT_BYTES } from "../shared/workspaceTasksApi.js";
 import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.testSupport.js";
 
 registerAppTestHooks();
 
+const TASK_ROUTE_SPECS = [
+  { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
+  { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
+  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move", timeoutMs: 30_000 },
+  { method: "GET", path: "/workspace-tasks/global" },
+  { method: "PUT", path: "/workspace-tasks/global" },
+];
+
+const EMPTY_TASK_CATALOG = { version: 1 as const, tasks: [] };
+const REPLACE_TASKS_REQUEST = { expectedRevision: "catalog-revision", config: EMPTY_TASK_CATALOG };
+const MOVE_TASKS_REQUEST = {
+  operationId: "00000000-0000-4000-8000-000000000001",
+  intent: "start" as const,
+  source: {
+    ref: { scope: "workspace" as const, id: "build" },
+    expectedCatalog: {
+      kind: "loaded" as const,
+      revision: "workspace-revision",
+      config: {
+        version: 1 as const,
+        tasks: [{ id: "build", title: "Build", command: "npm run build", confirm: false }],
+      },
+    },
+  },
+  destination: {
+    scope: "global" as const,
+    expectedCatalog: { kind: "loaded" as const, revision: "global-revision", config: EMPTY_TASK_CATALOG },
+    task: { id: "build", title: "Build", command: "npm run build", confirm: false },
+  },
+};
+
 describe("buildApp remote machine proxy routes", () => {
+  it("registers task handlers ahead of the generic proxy and translates encoded task paths", async () => {
+    expect(FEDERATED_HTTP_ROUTES).toEqual(expect.arrayContaining(TASK_ROUTE_SPECS));
+    expect(REMOTE_HTTP_ROUTES).not.toEqual(expect.arrayContaining(TASK_ROUTE_SPECS));
+
+    const machineId = "machine / id";
+    await writeRemoteMachine(machineId);
+    const request = vi.fn<MachineClient["request"]>((method, path, body) => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ method, path, body })]),
+    }));
+    appTestContext.remoteClient = fakeRemoteClient({ request });
+
+    const workspacePath = "/api/projects/project%20%2F%20id/workspaces/workspace%20%3F%20id/workspace-tasks";
+    const gatewayPrefix = "/api/machines/machine%20%2F%20id";
+    const responses = [
+      await appTestContext.app.inject({ method: "GET", url: `${gatewayPrefix}/projects/project%20%2F%20id/workspaces/workspace%20%3F%20id/workspace-tasks` }),
+      await appTestContext.app.inject({ method: "PUT", url: `${gatewayPrefix}/projects/project%20%2F%20id/workspaces/workspace%20%3F%20id/workspace-tasks`, payload: REPLACE_TASKS_REQUEST }),
+      await appTestContext.app.inject({ method: "POST", url: `${gatewayPrefix}/projects/project%20%2F%20id/workspaces/workspace%20%3F%20id/workspace-tasks/move`, payload: MOVE_TASKS_REQUEST }),
+      await appTestContext.app.inject({ method: "GET", url: `${gatewayPrefix}/workspace-tasks/global` }),
+      await appTestContext.app.inject({ method: "PUT", url: `${gatewayPrefix}/workspace-tasks/global`, payload: REPLACE_TASKS_REQUEST }),
+    ];
+
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 200, 200, 200, 200]);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", workspacePath, undefined);
+    expect(request).toHaveBeenNthCalledWith(2, "PUT", workspacePath, REPLACE_TASKS_REQUEST);
+    expect(request).toHaveBeenNthCalledWith(3, "POST", `${workspacePath}/move`, MOVE_TASKS_REQUEST, { timeoutMs: 30_000 });
+    expect(request).toHaveBeenNthCalledWith(4, "GET", "/api/workspace-tasks/global", undefined);
+    expect(request).toHaveBeenNthCalledWith(5, "PUT", "/api/workspace-tasks/global", REPLACE_TASKS_REQUEST);
+    expect(request).toHaveBeenCalledTimes(5);
+    expect(appTestContext.piWebUiConfig).toEqual({});
+  });
+
+  it("rejects an invalid portable task mutation before contacting the selected machine", async () => {
+    const request = vi.fn<MachineClient["request"]>();
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({
+      method: "PUT",
+      url: `/api/machines/${machineId}/workspace-tasks/global`,
+      payload: { ...REPLACE_TASKS_REQUEST, unexpected: true },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ kind: "validation" });
+    expect(request).not.toHaveBeenCalled();
+    expect(appTestContext.piWebUiConfig).toEqual({});
+  });
+
+  it.each([400, 409, 500, 503])("forwards target task status %s, body, and safe headers", async (statusCode) => {
+    const targetBody = statusCode === 500
+      ? { kind: "unknown-outcome", message: "Target task write outcome is unknown." }
+      : { kind: "target-error", statusCode };
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "set-cookie": "remote-secret=1",
+      },
+      body: Readable.from([JSON.stringify(targetBody)]),
+    }));
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({ method: "GET", url: `/api/machines/${machineId}/workspace-tasks/global` });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toEqual(targetBody);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(request).toHaveBeenCalledWith("GET", "/api/workspace-tasks/global", undefined);
+  });
+
+  it("permits a portable move between the replace and move body caps", async () => {
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ forwarded: true })]),
+    }));
+    const machineId = await addRemoteMachine(request);
+    const move = moveRequestBetweenBodyCaps();
+    const byteLength = Buffer.byteLength(JSON.stringify(move), "utf8");
+
+    expect(byteLength).toBeGreaterThan(WORKSPACE_TASKS_REPLACE_BODY_LIMIT_BYTES);
+    expect(byteLength).toBeLessThan(WORKSPACE_TASKS_MOVE_BODY_LIMIT_BYTES);
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${machineId}/projects/project-1/workspaces/workspace-1/workspace-tasks/move`,
+      payload: move,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps both gateway and explicit local task body caps to typed 413 responses", async () => {
+    const request = vi.fn<MachineClient["request"]>();
+    const machineId = await addRemoteMachine(request);
+    const oversized = {
+      expectedRevision: "r".repeat(WORKSPACE_TASKS_REPLACE_BODY_LIMIT_BYTES),
+      config: EMPTY_TASK_CATALOG,
+    };
+    const oversizedMove = {
+      ...MOVE_TASKS_REQUEST,
+      source: {
+        ...MOVE_TASKS_REQUEST.source,
+        expectedCatalog: {
+          ...MOVE_TASKS_REQUEST.source.expectedCatalog,
+          revision: "r".repeat(WORKSPACE_TASKS_MOVE_BODY_LIMIT_BYTES),
+        },
+      },
+    };
+
+    const gatewayResponse = await appTestContext.app.inject({
+      method: "PUT",
+      url: `/api/machines/${machineId}/workspace-tasks/global`,
+      payload: oversized,
+    });
+    const localResponse = await appTestContext.app.inject({
+      method: "PUT",
+      url: "/api/machines/local/workspace-tasks/global",
+      payload: oversized,
+    });
+    const moveResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${machineId}/projects/project-1/workspaces/workspace-1/workspace-tasks/move`,
+      payload: oversizedMove,
+    });
+
+    expect(gatewayResponse.statusCode).toBe(413);
+    expect(gatewayResponse.json()).toMatchObject({ kind: "validation" });
+    expect(localResponse.statusCode).toBe(413);
+    expect(localResponse.json()).toMatchObject({ kind: "validation" });
+    expect(moveResponse.statusCode).toBe(413);
+    expect(moveResponse.json()).toMatchObject({ kind: "validation" });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("uses the move-only 30 second timeout and maps a remote timeout to 504", async () => {
+    const request = vi.fn<MachineClient["request"]>(() => Promise.reject(new RemoteMachineRequestError("timed out", 504)));
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${machineId}/projects/project-1/workspaces/workspace-1/workspace-tasks/move`,
+      payload: MOVE_TASKS_REQUEST,
+    });
+
+    expect(response.statusCode).toBe(504);
+    expect(response.json()).toMatchObject({ error: "Remote machine timeout", machineId, statusCode: 504 });
+    expect(request).toHaveBeenCalledWith(
+      "POST",
+      "/api/projects/project-1/workspaces/workspace-1/workspace-tasks/move",
+      MOVE_TASKS_REQUEST,
+      { timeoutMs: 30_000 },
+    );
+  });
+
+  it("returns 404 for an unknown remote machine without dispatching a task request", async () => {
+    const request = vi.fn<MachineClient["request"]>();
+    appTestContext.remoteClient = fakeRemoteClient({ request });
+
+    const response = await appTestContext.app.inject({ method: "GET", url: "/api/machines/missing/workspace-tasks/global" });
+
+    expect(response.statusCode).toBe(404);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("resolves the explicit local task alias locally instead of returning the generic proxy 501", async () => {
+    const ordinary = await appTestContext.app.inject({ method: "GET", url: "/api/workspace-tasks/global" });
+    const alias = await appTestContext.app.inject({ method: "GET", url: "/api/machines/local/workspace-tasks/global" });
+
+    expect(ordinary.statusCode).toBe(200);
+    expect(alias.statusCode).toBe(200);
+    expect(alias.json()).toEqual(ordinary.json());
+  });
+
   it("proxies allowlisted remote HTTP routes through the selected machine", async () => {
     const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();
@@ -362,3 +577,66 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).toHaveBeenCalledWith("POST", "/api/sessions/s1/prompt", { text: "hello" });
   });
 });
+
+function moveRequestBetweenBodyCaps() {
+  const description = "x".repeat(300_000);
+  return {
+    ...MOVE_TASKS_REQUEST,
+    source: {
+      ...MOVE_TASKS_REQUEST.source,
+      expectedCatalog: {
+        ...MOVE_TASKS_REQUEST.source.expectedCatalog,
+        config: {
+          version: 1 as const,
+          tasks: [{
+            id: "build",
+            title: "Build",
+            command: "npm run build",
+            description,
+            confirm: false,
+          }],
+        },
+      },
+    },
+    destination: {
+      ...MOVE_TASKS_REQUEST.destination,
+      expectedCatalog: {
+        ...MOVE_TASKS_REQUEST.destination.expectedCatalog,
+        config: {
+          version: 1 as const,
+          tasks: [{
+            id: "existing",
+            title: "Existing",
+            command: "npm run existing",
+            description,
+            confirm: false,
+          }],
+        },
+      },
+    },
+  };
+}
+
+async function addRemoteMachine(request: MachineClient["request"]): Promise<string> {
+  const addResponse = await appTestContext.app.inject({
+    method: "POST",
+    url: "/api/machines",
+    payload: { name: "Remote", baseUrl: "https://remote.example.test/" },
+  });
+  const remote = addResponse.json<{ id: string }>();
+  appTestContext.remoteClient = fakeRemoteClient({ request });
+  return remote.id;
+}
+
+async function writeRemoteMachine(machineId: string): Promise<void> {
+  await writeFile(join(appTestContext.tempDir, "machines.json"), JSON.stringify({
+    machines: [{
+      id: machineId,
+      name: "Encoded remote",
+      kind: "remote",
+      baseUrl: "https://remote.example.test",
+      createdAt: "2026-05-25T00:00:00.000Z",
+      updatedAt: "2026-05-25T00:00:00.000Z",
+    }],
+  }), "utf8");
+}

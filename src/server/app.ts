@@ -53,6 +53,7 @@ import { createWorkspaceTasksComposition, type WorkspaceTasksComposition } from 
 import { WorkspaceTasksGlobalMutationGate } from "./workspaceTasks/workspaceTasksGlobalMutationGate.js";
 import { WorkspaceTasksWorkspacePathGate } from "./workspaceTasks/workspaceTasksWorkspacePathGate.js";
 import { registerWorkspaceTasksRoutes } from "./workspaceTasks/workspaceTasksRoutes.js";
+import { registerWorkspaceTasksProxyRoutes } from "./workspaceTasks/workspaceTasksProxyRoutes.js";
 import type { HostSpeech } from "./tts/hostSpeech.js";
 import type { Project, Workspace } from "./types.js";
 
@@ -423,6 +424,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   registerTtsRoutes(app, hostSpeech);
   app.addHook("onClose", () => hostSpeech.close());
 
+  registerWorkspaceTasksProxyRoutes(app, machines);
   registerMachineProxyRoutes(app, machines);
 
   const packagedClientDist = join(dirname(fileURLToPath(import.meta.url)), "..", "client");

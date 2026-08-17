@@ -11,6 +11,16 @@ export interface FederatedHttpRouteSpec {
   timeoutMs?: number;
 }
 
+export const WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS = 30_000;
+
+export const WORKSPACE_TASKS_FEDERATED_HTTP_ROUTES = [
+  { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
+  { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
+  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move", timeoutMs: WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS },
+  { method: "GET", path: "/workspace-tasks/global" },
+  { method: "PUT", path: "/workspace-tasks/global" },
+] as const satisfies readonly FederatedHttpRouteSpec[];
+
 export const FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/pi-webui/status" },
   { method: "GET", path: "/pi-webui/system-info" },
@@ -61,6 +71,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/file/move" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/file/preview" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/files" },
+  ...WORKSPACE_TASKS_FEDERATED_HTTP_ROUTES,
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/git/status" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/git/diff" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/terminals" },
@@ -129,6 +140,13 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "POST", path: "/auth/oauth/:flowId/respond" },
   { method: "POST", path: "/auth/oauth/:flowId/cancel" },
 ] as const satisfies readonly FederatedHttpRouteSpec[];
+
+export function isWorkspaceTasksFederatedHttpRoute(spec: FederatedHttpRouteSpec): boolean {
+  return WORKSPACE_TASKS_FEDERATED_HTTP_ROUTES.some((route) => {
+    const timeoutMs = "timeoutMs" in route ? route.timeoutMs : undefined;
+    return route.method === spec.method && route.path === spec.path && timeoutMs === spec.timeoutMs;
+  });
+}
 
 export const FEDERATED_WEBSOCKET_ROUTES = [
   "/events",

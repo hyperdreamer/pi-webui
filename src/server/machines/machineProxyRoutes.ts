@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import type { PiWebUiAgentConfig } from "../../shared/apiTypes.js";
-import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, type FederatedHttpRouteSpec } from "../../shared/federatedRoutes.js";
+import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, isWorkspaceTasksFederatedHttpRoute, type FederatedHttpRouteSpec } from "../../shared/federatedRoutes.js";
 import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, selectedMachineConfigResponse } from "../configRoutes.js";
 import { bridgeSockets } from "../webSocketBridge.js";
 import { RemoteMachineRequestError, type MachineClient, type MachineJsonResponse, type MachineRequestOptions } from "./machineClient.js";
 import { MachineService } from "./machineService.js";
 
-export const REMOTE_HTTP_ROUTES = FEDERATED_HTTP_ROUTES;
+export const REMOTE_HTTP_ROUTES = FEDERATED_HTTP_ROUTES.filter((spec) => !isWorkspaceTasksFederatedHttpRoute(spec));
 export const REMOTE_WEBSOCKET_ROUTES = FEDERATED_WEBSOCKET_ROUTES;
 
 const SAFE_RESPONSE_HEADERS = new Set([
@@ -25,7 +25,7 @@ export function registerMachineProxyRoutes(app: FastifyInstance, machines = new 
     app.route<{ Params: { machineId: string }; Body: unknown }>({
       method: spec.method,
       url: `/api/machines/:machineId${spec.path}`,
-      handler: (request, reply) => proxyHttpRequest(machines, spec, request.params.machineId, request.method, request.url, request.body, request.headers["content-type"], reply),
+      handler: (request, reply) => proxyMachineHttpRequest(machines, spec, request.params.machineId, request.method, request.url, request.body, request.headers["content-type"], reply),
     });
   }
 
@@ -36,7 +36,7 @@ export function registerMachineProxyRoutes(app: FastifyInstance, machines = new 
   }
 }
 
-async function proxyHttpRequest(machines: MachineService, spec: FederatedHttpRouteSpec, machineId: string, method: string, requestUrl: string, body: unknown, contentType: string | string[] | undefined, reply: FastifyReply): Promise<FastifyReply> {
+export async function proxyMachineHttpRequest(machines: MachineService, spec: FederatedHttpRouteSpec, machineId: string, method: string, requestUrl: string, body: unknown, contentType: string | string[] | undefined, reply: FastifyReply): Promise<FastifyReply> {
   if (machineId === "local") {
     return reply.code(501).send({ error: "Local machine route is not registered for this endpoint" });
   }
