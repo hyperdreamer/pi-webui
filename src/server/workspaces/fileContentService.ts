@@ -105,6 +105,14 @@ async function readFilePrefix(target: string, bytesToRead: number): Promise<Buff
   }
 }
 
+/**
+ * Resolve a mutation path through the existing workspace containment boundary
+ * before a route decides whether a fixed task-file operation owns it.
+ */
+export async function resolveWorkspaceFileMutationPath(rootPath: string, path: string | undefined): Promise<string> {
+  return (await resolveParentInsideWorkspace(rootPath, path ?? "")).relativePath;
+}
+
 export async function writeWorkspaceFile(rootPath: string, path: string | undefined, content: Buffer, options: WriteWorkspaceFileOptions = {}): Promise<WriteWorkspaceFileResponse> {
   if (path === undefined || path === "") throw new Error("path query parameter is required");
 

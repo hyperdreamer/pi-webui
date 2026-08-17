@@ -62,6 +62,15 @@ describe("buildApp local machine aliases", () => {
     expect(appTestContext.sessionDaemonRequests[2]).toEqual({ method: "DELETE", path: `/terminals?cwd=${encodeURIComponent(appTestContext.projectDir)}` });
   });
 
+  it("keeps the explicit local Workspace Tasks aliases ahead of generic machine proxy handling", async () => {
+    const ordinary = await appTestContext.app.inject({ method: "GET", url: "/api/workspace-tasks/global" });
+    const alias = await appTestContext.app.inject({ method: "GET", url: "/api/machines/local/workspace-tasks/global" });
+
+    expect(ordinary.statusCode).toBe(200);
+    expect(alias.statusCode).toBe(200);
+    expect(alias.json()).toEqual(ordinary.json());
+  });
+
   it("serves local projects and workspaces through machine-scoped aliases", async () => {
     const addResponse = await appTestContext.app.inject({
       method: "POST",

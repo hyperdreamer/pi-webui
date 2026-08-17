@@ -49,6 +49,10 @@ import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./mac
 import { registerTtsRoutes } from "./tts/ttsRoutes.js";
 import { HostSpeechService } from "./tts/hostSpeechService.js";
 import { SpeechDispatcherAdapter } from "./tts/speechDispatcherAdapter.js";
+import { createWorkspaceTasksComposition, type WorkspaceTasksComposition } from "./workspaceTasks/workspaceTasksComposition.js";
+import { WorkspaceTasksGlobalMutationGate } from "./workspaceTasks/workspaceTasksGlobalMutationGate.js";
+import { WorkspaceTasksWorkspacePathGate } from "./workspaceTasks/workspaceTasksWorkspacePathGate.js";
+import { registerWorkspaceTasksRoutes } from "./workspaceTasks/workspaceTasksRoutes.js";
 import type { HostSpeech } from "./tts/hostSpeech.js";
 import type { Project, Workspace } from "./types.js";
 
@@ -69,6 +73,8 @@ export interface AppDependencies {
   speechInputSettings?: SpeechInputSettingsService;
   /** Gateway-only cloud transcription authority; production pairs it with the shared coordinator. */
   speechInputTranscription?: SpeechInputTranscriptionService;
+  /** One fixed task service, registry, file resolver, and mutation coordinator per app. */
+  workspaceTasks?: WorkspaceTasksComposition;
   clientDist?: string | false;
   logger?: FastifyServerOptions["logger"];
   /** Maximum accepted HTTP request body size in bytes. */
@@ -309,6 +315,13 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   // create no filesystem state in the real data directory.
   const configMutationCoordinator = sharedConfigMutationCoordinator(deps.configMutationCoordinator);
   const configService = deps.config ?? createFilePiWebUiConfigService(undefined, configMutationCoordinator);
+  const workspaceTasks = deps.workspaceTasks ?? createWorkspaceTasksComposition({
+    configMutationCoordinator,
+    projects,
+    workspaces,
+  });
+  const workspaceTasksGlobalMutationGate = new WorkspaceTasksGlobalMutationGate(workspaceTasks.registry);
+  const workspaceTasksWorkspacePathGate = new WorkspaceTasksWorkspacePathGate(workspaceTasks.registry, workspaceTasks.workspaceMutations);
   const readConfig = () => readEffectiveConfig(configService);
   const sessionDaemon = deps.sessionDaemon ?? new SessionDaemonClient();
   const agentProfileProvider = deps.agentProfileProvider ?? new SessionDaemonActiveAgentProfileProvider(sessionDaemon);
@@ -360,8 +373,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   registerPiPackagePluginsConfigRoutes(app, piPackagePlugins);
   registerPiPackagePluginsConfigRoutes(app, piPackagePlugins, "/api/machines/local");
   const invalidatingConfigService = invalidatePiWebUiStatusOnWrite(configService, piWebUiStatusCache);
-  registerConfigRoutes(app, invalidatingConfigService);
-  registerLocalMachineConfigRoutes(app, invalidatingConfigService);
+  const guardedConfigService = workspaceTasksGlobalMutationGate.decorate(invalidatingConfigService);
+  registerConfigRoutes(app, guardedConfigService);
+  registerLocalMachineConfigRoutes(app, guardedConfigService);
 
   const speechInputSettingsService = deps.speechInputSettings ?? createSpeechInputSettingsService({
     coordinator: configMutationCoordinator,
@@ -389,8 +403,10 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerSessionProxyRoutes(app, sessionDaemon);
   registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local");
-  registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api", { config: configService });
-  registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api/machines/local", { config: configService });
+  registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api", { config: configService, taskPathGate: workspaceTasksWorkspacePathGate, taskFiles: workspaceTasks.workspaceFiles });
+  registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api/machines/local", { config: configService, taskPathGate: workspaceTasksWorkspacePathGate, taskFiles: workspaceTasks.workspaceFiles });
+  registerWorkspaceTasksRoutes(app, workspaceTasks.service, "/api");
+  registerWorkspaceTasksRoutes(app, workspaceTasks.service, "/api/machines/local");
   registerGitRoutes(app, projects, workspaces);
   registerGitRoutes(app, projects, workspaces, "/api/machines/local");
   registerTerminalProxyRoutes(app, projects, workspaces, sessionDaemon);

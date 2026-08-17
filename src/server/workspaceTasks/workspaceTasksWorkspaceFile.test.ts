@@ -10,6 +10,8 @@ import { WorkspaceService } from "../workspaces/workspaceService.js";
 import { cleanupTempWorkspaces, createTempWorkspace } from "../workspaces/fileContentService.testSupport.js";
 import {
   createWorkspaceTasksWorkspaceFileResolver,
+  isWorkspaceTasksPath,
+  normalizeWorkspaceTasksPath,
   type WorkspaceTasksWorkspaceFileResolver,
 } from "./workspaceTasksWorkspaceFile.js";
 
@@ -90,6 +92,11 @@ describe("WorkspaceTasksWorkspaceFileResolver", () => {
     }
   });
 
+  it("normalizes explorer aliases before identifying the fixed task file", () => {
+    expect(normalizeWorkspaceTasksPath("./.pi-webui\\tasks.json")).toBe(".pi-webui/tasks.json");
+    expect(isWorkspaceTasksPath("./.pi-webui/tasks.json")).toBe(true);
+    expect(isWorkspaceTasksPath(".pi-webui/other.json")).toBe(false);
+  });
   it("publishes through an exclusive temporary file and acknowledges after final rename", async () => {
     const root = await createTempWorkspace();
     const project = projectFor("project", root);

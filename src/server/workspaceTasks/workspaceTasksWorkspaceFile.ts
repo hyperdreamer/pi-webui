@@ -303,5 +303,13 @@ function revisionForBytes(bytes: Buffer): string {
 }
 
 function isTaskPath(path: string): boolean {
-  return normalizeRelativePath(path) === TASKS_CONFIG_PATH;
+  return isWorkspaceTasksPath(path);
+}
+
+export function normalizeWorkspaceTasksPath(path: string | undefined): string {
+  return normalizeRelativePath(path);
+}
+
+export function isWorkspaceTasksPath(path: string | undefined): boolean {
+  return normalizeWorkspaceTasksPath(path) === TASKS_CONFIG_PATH;
 }

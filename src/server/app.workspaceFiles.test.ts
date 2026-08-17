@@ -1,4 +1,4 @@
-import { mkdir, truncate, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_IMAGE_PREVIEW_BYTES } from "../shared/workspaceFiles.js";
@@ -196,6 +196,60 @@ describe("buildApp workspace file routes", () => {
       headers: { "content-type": "text/plain" },
     });
     expect(dirWriteResponse.statusCode).toBe(400);
+  });
+
+  it("routes normalized task-file explorer mutations through the fixed resolver", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Task file", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+
+    const body = JSON.stringify({ version: 1, tasks: [] });
+    const writeResponse = await appTestContext.app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent("./.pi-webui/tasks.json")}`,
+      payload: body,
+      headers: { "content-type": "text/plain" },
+    });
+    expect(writeResponse.statusCode).toBe(200);
+    expect(writeResponse.json()).toMatchObject({ path: ".pi-webui/tasks.json", created: true });
+    await expect(readFile(join(appTestContext.projectDir, ".pi-webui", "tasks.json"), "utf8")).resolves.toBe(body);
+
+    const deleteResponse = await appTestContext.app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent(".pi-webui/tasks.json")}`,
+    });
+    expect(deleteResponse.statusCode).toBe(200);
+    expect(deleteResponse.json()).toMatchObject({ path: ".pi-webui/tasks.json", existed: true });
+  });
+
+  it("rejects task-file symlinks before explorer mutation helpers can follow them", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Task symlink", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+    const outside = join(appTestContext.tempDir, "outside-tasks.json");
+    await writeFile(outside, "outside", "utf8");
+    await mkdir(join(appTestContext.projectDir, ".pi-webui"), { recursive: true });
+    await symlink(outside, join(appTestContext.projectDir, ".pi-webui", "tasks.json"));
+
+    const response = await appTestContext.app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent(".pi-webui/tasks.json")}`,
+      payload: "replacement",
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await expect(readFile(outside, "utf8")).resolves.toBe("outside");
   });
 
   it("deletes workspace files through the HTTP contract", async () => {

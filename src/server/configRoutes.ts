@@ -3,6 +3,11 @@ import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverrid
 import { PiWebUiConfigMutationBusyError, createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
 import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
+import {
+  WorkspaceTasksMoveConflictError,
+  WorkspaceTasksMoveInProgressError,
+  WorkspaceTasksMoveRecoveryPendingError,
+} from "./workspaceTasks/workspaceTasksMoveRegistry.js";
 
 export interface PiWebUiConfigService {
   read: () => PiWebUiConfigResponse | Promise<PiWebUiConfigResponse>;
@@ -374,6 +379,9 @@ function isConfigValidationError(error: unknown): boolean {
 
 function configMutationErrorStatus(error: unknown): number {
   if (error instanceof PiWebUiConfigMutationBusyError) return 503;
+  if (error instanceof WorkspaceTasksMoveRecoveryPendingError
+    || error instanceof WorkspaceTasksMoveInProgressError
+    || error instanceof WorkspaceTasksMoveConflictError) return 409;
   if (isConfigValidationError(error)) return 400;
   return 500;
 }

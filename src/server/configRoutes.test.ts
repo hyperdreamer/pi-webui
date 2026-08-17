@@ -7,6 +7,9 @@ import { loadPiWebUiConfig } from "../config.js";
 import { PiWebUiConfigMutationBusyError } from "../configMutationCoordinator.js";
 import { createFilePiWebUiConfigService, parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
 import type { PiWebUiConfigResponse, PiWebUiSpeechInputConfig, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import type { WorkspaceTasksMutationAuthorizer } from "./workspaceTasks/workspaceTasksErrors.js";
+import { WorkspaceTasksMoveRecoveryPendingError } from "./workspaceTasks/workspaceTasksMoveRegistry.js";
+import { WorkspaceTasksGlobalMutationGate } from "./workspaceTasks/workspaceTasksGlobalMutationGate.js";
 
 let app: FastifyInstance;
 let savedConfig: PiWebUiConfigValues;
@@ -400,6 +403,28 @@ describe("config route speech redaction", () => {
     expect(write.json()).toEqual({ error: "unexpected mutation failure" });
   });
 
+  it("maps a guarded global-task mutation to a safe 409 in both config route families", async () => {
+    const gatedApp = Fastify({ logger: false });
+    const authorizer: WorkspaceTasksMutationAuthorizer = {
+      reconcileGlobalMoveClaim: vi.fn(() => Promise.resolve()),
+      assertGlobalMutationAllowed: vi.fn(() => { throw new WorkspaceTasksMoveRecoveryPendingError(); }),
+      assertWorkspaceMutationAllowed: vi.fn(),
+    };
+    const gatedService = new WorkspaceTasksGlobalMutationGate(authorizer).decorate(service);
+    registerConfigRoutes(gatedApp, gatedService);
+    registerLocalMachineConfigRoutes(gatedApp, gatedService);
+    await gatedApp.ready();
+
+    const guardedGlobalTasks = { version: 1, tasks: [{ id: "build", title: "Build", command: "npm run build", confirm: false }] };
+    const global = await gatedApp.inject({ method: "PUT", url: "/api/config", payload: { config: { plugins: { "workspace-tasks": { settings: { globalTasks: guardedGlobalTasks } } } } } });
+    const selected = await gatedApp.inject({ method: "PUT", url: "/api/machines/local/config", payload: { config: { plugins: { "workspace-tasks": { settings: { globalTasks: guardedGlobalTasks } } } } } });
+
+    expect(global.statusCode).toBe(409);
+    expect(global.json()).toEqual({ error: "Workspace task move recovery is pending. Refresh before changing the affected catalog." });
+    expect(selected.statusCode).toBe(409);
+    expect(selected.json()).toEqual({ error: "Workspace task move recovery is pending. Refresh before changing the affected catalog." });
+    await gatedApp.close();
+  });
   it("returns each mutation's own committed response even when a later mutation commits first", async () => {
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });

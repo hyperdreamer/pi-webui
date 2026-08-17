@@ -5,6 +5,8 @@ import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach } from "vitest";
 import { buildApp } from "./app.js";
+import type { PiWebUiConfigMutationCoordinator, PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
+import { createWorkspaceTasksComposition } from "./workspaceTasks/workspaceTasksComposition.js";
 import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
 import type { MachineClient } from "./machines/machineClient.js";
@@ -138,9 +140,13 @@ export function registerAppTestHooks(): void {
       { onError: () => undefined },
     );
     speechInputCoordinator = createInMemorySpeechInputConfigCoordinator({});
+    const projects = new ProjectService(new ProjectStore(join(tempDir, "projects.json")));
+    const workspaces = new WorkspaceService();
+    const configMutationCoordinator = createAppTestConfigMutationCoordinator();
+    const workspaceTasks = createWorkspaceTasksComposition({ configMutationCoordinator, projects, workspaces });
     app = await buildApp({
-      projects: new ProjectService(new ProjectStore(join(tempDir, "projects.json"))),
-      workspaces: new WorkspaceService(),
+      projects,
+      workspaces,
       machines: new MachineService(new MachineStore(join(tempDir, "machines.json")), {
         remoteClientFactory: () => {
           if (remoteClient === undefined) throw new Error("No remote machine client configured");
@@ -160,6 +166,8 @@ export function registerAppTestHooks(): void {
       sessionDaemon,
       agentProfileProvider,
       config: fakeConfigService(),
+      configMutationCoordinator,
+      workspaceTasks,
       speechInputSettings: createSpeechInputSettingsService({
         coordinator: speechInputCoordinator,
         onCommitted: () => piWebUiStatusCache?.invalidate(),
@@ -249,6 +257,29 @@ interface CapturedPiPackagePluginRequest {
   cwd: string;
   source?: string;
   scope?: PiPackagePluginMutationRequest["scope"];
+}
+
+function createAppTestConfigMutationCoordinator(): PiWebUiConfigMutationCoordinator {
+  const snapshot = (): PiWebUiConfigMutationSnapshot => ({
+    loaded: {
+      path: join(tempDir ?? "/tmp", "config.json"),
+      exists: false,
+      config: piWebUiConfig,
+    },
+    speechInputRevision: "test-speech-revision",
+  });
+  return {
+    read: () => Promise.resolve(snapshot()),
+    mutate: (mutate, options = {}) => Promise.resolve().then(() => {
+      const before = snapshot();
+      const next = mutate(before);
+      if (options.shouldSave?.(before, next) === false) return before;
+      options.onPublicationAttempt?.();
+      piWebUiConfig = next;
+      options.onSaved?.();
+      return snapshot();
+    }),
+  };
 }
 
 export function fakeConfigService() {
