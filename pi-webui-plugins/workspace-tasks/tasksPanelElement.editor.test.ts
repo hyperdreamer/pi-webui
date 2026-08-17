@@ -31,6 +31,24 @@ interface WorkspaceTasksActions {
   retryMove(): Promise<void>;
   refresh(): Promise<void>;
 }
+
+type BridgeActionName = keyof WorkspaceTasksActions;
+type MockedWorkspaceTasksActions = WorkspaceTasksActions & {
+  readonly create: ReturnType<typeof vi.fn>;
+  readonly update: ReturnType<typeof vi.fn>;
+  readonly remove: ReturnType<typeof vi.fn>;
+  readonly move: ReturnType<typeof vi.fn>;
+  readonly retryMove: ReturnType<typeof vi.fn>;
+  readonly refresh: ReturnType<typeof vi.fn>;
+};
+
+interface ControllableBridge {
+  readonly actions: MockedWorkspaceTasksActions;
+  attach(panel: TasksPanelElement): void;
+  publish(nextState: WorkspaceTasksWorkspaceState): void;
+  resolve(action: BridgeActionName): void;
+  complete(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState): void;
+}
 import { defineTasksPanelElement, tasksPanelTagName } from "./tasksPanelElement.js";
 
 interface TasksPanelElement extends HTMLElement {
@@ -120,36 +138,236 @@ describe("workspace tasks editor", () => {
     expect(actions.move).not.toHaveBeenCalled();
   });
 
-  it("keeps a partial move recoverable, enables Retry only after authoritative state, and preserves manual-resolution copy", async () => {
-    const actions = createActions();
-    const panel = mount(loadedState([task()], []), actions);
-    button(panel, "[data-edit-task='workspace:build']").click();
-    input(panel, "[data-editor-global]").click();
+  it.each([
+    ["create", "validation", "workspace"],
+    ["create", "unavailable", "global"],
+    ["update", "validation", "workspace"],
+    ["update", "unavailable", "global"],
+    ["remove", "validation", "workspace"],
+    ["remove", "unavailable", "global"],
+  ] as const)("retains the %s context when its %s result publishes a source refresh error", async (action, result, scope) => {
+    const bridge = createControllableBridge();
+    const initial = loadedState([
+      task({ id: "workspace-build", title: "Project Build" }),
+    ], [
+      task({ id: "global-build", title: "Global Build" }),
+    ]);
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    const failure = `${result} ${scope} task mutation`;
+
+    if (action === "create") {
+      button(panel, "[data-add-task]").click();
+      if (scope === "global") input(panel, "[data-editor-global]").click();
+      input(panel, "[data-editor-title]").value = "Release";
+      input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+      textarea(panel).value = "npm run release";
+      textarea(panel).dispatchEvent(new Event("input", { bubbles: true }));
+      button(panel, "[data-save-task]").click();
+    } else if (action === "update") {
+      const id = scope === "workspace" ? "workspace-build" : "global-build";
+      button(panel, `[data-edit-task='${scope}:${id}']`).click();
+      button(panel, "[data-save-task]").click();
+    } else {
+      const id = scope === "workspace" ? "workspace-build" : "global-build";
+      button(panel, `[data-delete-task='${scope}:${id}']`).click();
+      button(panel, "[data-confirm-delete]").click();
+    }
+
+    await vi.waitFor(() => expect(bridge.actions[action]).toHaveBeenCalledTimes(1));
+    bridge.complete(action, withSourceRefreshError(initial, scope, failure));
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain(failure));
+    expect(panel.shadowRoot?.querySelector(action === "remove" ? "[data-delete-confirmation]" : "[data-task-editor]")).not.toBeNull();
+    expect(panelStatusText(panel)).not.toMatch(/Saved task|Deleted task/);
+  });
+
+  it("retains a draft when Create resolves without an authoritative source publication", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState(), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-add-task]").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    textarea(panel).value = "npm run release";
+    textarea(panel).dispatchEvent(new Event("input", { bubbles: true }));
     button(panel, "[data-save-task]").click();
-    button(panel, "[data-confirm-move]").click();
-    await vi.waitFor(() => expect(actions.move).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(bridge.actions.create).toHaveBeenCalledTimes(1));
 
-    panel.workspaceTasksState = {
-      workspace: { kind: "loaded", config: { version: 1, tasks: [task()] }, refreshing: false },
-      global: { kind: "loaded", config: { version: 1, tasks: [task()] }, refreshing: false },
-      move: { kind: "partial", message: "Move is partially complete.", retryAllowed: false },
-      mutationGate: { scopes: ["workspace", "global"], message: "Move recovery pending." },
+    bridge.resolve("create");
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("could not be confirmed"));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+  });
+
+  it("does not treat a re-assigned stale state object as update confirmation", async () => {
+    const bridge = createControllableBridge();
+    const initial = loadedState([task()], []);
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.complete("update", initial);
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("could not be confirmed"));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+  });
+
+  it("does not mistake a pre-existing source refresh error for a failed update after newer data confirms the save", async () => {
+    const bridge = createControllableBridge();
+    const initial = withSourceRefreshError(loadedState([task()], []), "workspace", "Earlier workspace refresh failed");
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.complete("update", loadedState([task({ title: "Release" })], []));
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+  });
+
+  it("retains an update when its post-action refresh error matches an earlier error", async () => {
+    const bridge = createControllableBridge();
+    const initial = withSourceRefreshError(loadedState([task()], []), "workspace", "Workspace write unavailable");
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.complete("update", withSourceRefreshError(initial, "workspace", "Workspace write unavailable"));
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Workspace write unavailable"));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+    expect(panelStatusText(panel)).not.toContain('Saved task "Build".');
+  });
+
+  it("retains an editor when an update publishes an authoritative invalid source", async () => {
+    const bridge = createControllableBridge();
+    const initial = loadedState([task()], []);
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.complete("update", {
+      ...initial,
+      workspace: { kind: "invalid", message: "Project task catalog is invalid", hint: "Repair the catalog.", detail: "Invalid JSON" },
+    });
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Project task catalog is invalid"));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+  });
+
+  it("reports source failures after an explicit Refresh instead of reporting success", async () => {
+    const bridge = createControllableBridge();
+    const initial = loadedState([task()], []);
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-refresh]").click();
+    await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
+
+    bridge.complete("refresh", {
+      ...initial,
+      global: { kind: "unavailable", message: "Global tasks are unavailable", hint: "Refresh and try again." },
+    });
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Global tasks are unavailable"));
+    expect(panelStatusText(panel)).not.toContain("Workspace task catalogs refreshed.");
+  });
+
+  it("keeps promotion recovery scoped to the original refs and enables one retry only after Refresh proves the destination", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    startScopeMove(panel, "workspace", "release");
+    await vi.waitFor(() => expect(bridge.actions.move).toHaveBeenCalledTimes(1));
+    expect(bridge.actions.move).toHaveBeenCalledWith(
+      { scope: "workspace", id: "build" },
+      expect.objectContaining({ id: "release" }),
+    );
+
+    const partial = {
+      ...loadedState([task()], [task({ id: "release" })]),
+      move: { kind: "partial" as const, message: "Move is partially complete.", retryAllowed: false },
+      mutationGate: { scopes: ["workspace", "global"] as const, message: "Move recovery pending." },
     };
+    bridge.complete("move", partial);
+    // Wait for the move callback to settle; its in-flight state independently disables Retry.
+    await vi.waitFor(() => expect(panel.shadowRoot?.querySelector("[data-panel-status]")).toBeNull());
     expect(button(panel, "[data-retry-move]").disabled).toBe(true);
-    panel.workspaceTasksState = {
-      ...panel.workspaceTasksState,
+    expect(bridge.actions.retryMove).not.toHaveBeenCalled();
+    expect(panel.shadowRoot?.querySelector("[data-move-confirmation]")).not.toBeNull();
+
+    button(panel, "[data-refresh]").click();
+    expect(panel.shadowRoot?.querySelector("[data-refresh-discard-confirmation]")).not.toBeNull();
+    button(panel, "[data-confirm-refresh-discard]").click();
+    await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
+    bridge.complete("refresh", {
+      ...partial,
       move: { kind: "partial", message: "Move is partially complete.", retryAllowed: true },
-    };
-    expect(button(panel, "[data-retry-move]").disabled).toBe(false);
-    button(panel, "[data-retry-move]").click();
-    await vi.waitFor(() => expect(actions.retryMove).toHaveBeenCalledTimes(1));
+    });
 
-    panel.workspaceTasksState = {
-      ...panel.workspaceTasksState,
-      move: { kind: "conflict", message: "Manual resolution required.", retryAllowed: false },
-    };
+    await vi.waitFor(() => expect(button(panel, "[data-retry-move]").disabled).toBe(false));
+    expect(bridge.actions.retryMove).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("[data-panel-heading]")));
+    button(panel, "[data-retry-move]").click();
+    await vi.waitFor(() => expect(bridge.actions.retryMove).toHaveBeenCalledTimes(1));
+    bridge.complete("retryMove", loadedState([], [task({ id: "release" })]));
+    await vi.waitFor(() => expect(bridge.actions.retryMove).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a demotion draft through unknown-outcome recovery and preserves manual resolution after a lost retry claim", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([], [task()]), bridge.actions);
+    bridge.attach(panel);
+    startScopeMove(panel, "global", "project-build");
+    await vi.waitFor(() => expect(bridge.actions.move).toHaveBeenCalledTimes(1));
+    expect(bridge.actions.move).toHaveBeenCalledWith(
+      { scope: "global", id: "build" },
+      expect.objectContaining({ id: "project-build" }),
+    );
+
+    bridge.publish({
+      ...loadedState([], [task()]),
+      move: { kind: "unknown-outcome", message: "Move outcome is unknown.", retryAllowed: false },
+      mutationGate: { scopes: ["workspace", "global"] as const, message: "Move recovery pending." },
+    });
+    bridge.publish({
+      ...loadedState([task({ id: "project-build" })], [task()]),
+      move: { kind: "partial", message: "Move is partially complete.", retryAllowed: true },
+      mutationGate: { scopes: ["workspace", "global"] as const, message: "Move recovery pending." },
+    });
+    bridge.resolve("move");
+
+    await vi.waitFor(() => expect(button(panel, "[data-retry-move]").disabled).toBe(false));
+    expect(bridge.actions.retryMove).not.toHaveBeenCalled();
+    expect(panel.shadowRoot?.textContent).toContain("Global to Project");
+    expect(panel.shadowRoot?.querySelector("[data-move-confirmation]")).not.toBeNull();
+
+    button(panel, "[data-retry-move]").click();
+    await vi.waitFor(() => expect(bridge.actions.retryMove).toHaveBeenCalledTimes(1));
+    bridge.publish({
+      ...loadedState([task({ id: "project-build" })], [task()]),
+      move: { kind: "conflict", message: "The move claim was lost.", retryAllowed: false },
+      mutationGate: { scopes: ["workspace", "global"] as const, message: "The move claim was lost." },
+    });
+    bridge.resolve("retryMove");
+
+    await vi.waitFor(() => expect(panel.shadowRoot?.querySelector("[data-manual-resolution]")).not.toBeNull());
+    expect(panel.shadowRoot?.querySelector("[data-mutation-gate]")?.textContent).toContain("The move claim was lost.");
+    expect(panel.shadowRoot?.textContent).toContain("The move claim was lost.");
     expect(panel.shadowRoot?.textContent).toContain("Manual resolution required.");
+    expect(panel.shadowRoot?.querySelector("[data-move-confirmation]")).not.toBeNull();
     expect(button(panel, "[data-retry-move]").disabled).toBe(true);
+    expect(bridge.actions.retryMove).toHaveBeenCalledTimes(1);
   });
 
   it("requires confirmation before Refresh discards a dirty draft, and Cancel leaves the mutation gate", () => {
@@ -190,7 +408,7 @@ function mount(nextState: WorkspaceTasksWorkspaceState, actions = createActions(
   return panel;
 }
 
-function createActions(): WorkspaceTasksActions & { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn>; retryMove: ReturnType<typeof vi.fn>; refresh: ReturnType<typeof vi.fn> } {
+function createActions(): MockedWorkspaceTasksActions {
   return {
     create: vi.fn(() => Promise.resolve()),
     update: vi.fn(() => Promise.resolve()),
@@ -199,6 +417,69 @@ function createActions(): WorkspaceTasksActions & { create: ReturnType<typeof vi
     retryMove: vi.fn(() => Promise.resolve()),
     refresh: vi.fn(() => Promise.resolve()),
   };
+}
+
+function createControllableBridge(): ControllableBridge {
+  let panel: TasksPanelElement | undefined;
+  const pending: { readonly action: BridgeActionName; readonly resolve: () => void }[] = [];
+  const dispatch = (action: BridgeActionName): Promise<void> => new Promise((resolve) => {
+    pending.push({ action, resolve });
+  });
+  const actions: MockedWorkspaceTasksActions = {
+    create: vi.fn(() => dispatch("create")),
+    update: vi.fn(() => dispatch("update")),
+    remove: vi.fn(() => dispatch("remove")),
+    move: vi.fn(() => dispatch("move")),
+    retryMove: vi.fn(() => dispatch("retryMove")),
+    refresh: vi.fn(() => dispatch("refresh")),
+  };
+
+  return {
+    actions,
+    attach(nextPanel) {
+      panel = nextPanel;
+    },
+    publish(nextState) {
+      if (panel === undefined) throw new Error("Attach the bridge before publishing state.");
+      panel.workspaceTasksState = nextState;
+    },
+    resolve(action) {
+      const pendingAction = pending.shift();
+      if (pendingAction?.action !== action) throw new Error(`Expected pending ${action} action.`);
+      pendingAction.resolve();
+    },
+    complete(action, nextState) {
+      this.publish(nextState);
+      this.resolve(action);
+    },
+  };
+}
+
+function withSourceRefreshError(
+  state: WorkspaceTasksWorkspaceState,
+  scope: WorkspaceTaskScope,
+  refreshError: string,
+): WorkspaceTasksWorkspaceState {
+  if (scope === "workspace") {
+    if (state.workspace.kind !== "loaded") throw new Error("Expected loaded workspace catalog.");
+    return { ...state, workspace: { ...state.workspace, refreshError } };
+  }
+  if (state.global.kind !== "loaded") throw new Error("Expected loaded global catalog.");
+  return { ...state, global: { ...state.global, refreshError } };
+}
+
+function startScopeMove(panel: TasksPanelElement, sourceScope: WorkspaceTaskScope, destinationId: string): void {
+  button(panel, `[data-edit-task='${sourceScope}:build']`).click();
+  const global = input(panel, "[data-editor-global]");
+  if (global.checked === (sourceScope === "global")) global.click();
+  input(panel, "[data-editor-id]").value = destinationId;
+  input(panel, "[data-editor-id]").dispatchEvent(new Event("input", { bubbles: true }));
+  button(panel, "[data-save-task]").click();
+  button(panel, "[data-confirm-move]").click();
+}
+
+function panelStatusText(panel: HTMLElement): string {
+  return panel.shadowRoot?.querySelector("[data-panel-status]")?.textContent ?? "";
 }
 
 function button(panel: HTMLElement, selector: string): HTMLButtonElement {

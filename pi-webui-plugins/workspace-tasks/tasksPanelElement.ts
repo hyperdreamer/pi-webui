@@ -66,6 +66,14 @@ interface PanelOperation {
   readonly scopes: readonly WorkspaceTaskScope[];
 }
 
+interface ActionStateObservation {
+  readonly sourcePublications: Readonly<Record<WorkspaceTaskScope, number>>;
+}
+
+interface CatalogFailure {
+  readonly message: string;
+}
+
 interface EditorState {
   draft: WorkspaceTaskDraft;
   initialDraft: WorkspaceTaskDraft;
@@ -126,6 +134,8 @@ class PiWebUiTasksPanel extends BaseElement {
   private validationErrors: WorkspaceTaskDraftErrors | undefined;
   private status: TaskStatus | undefined;
   private runningTaskKey: string | undefined;
+  private statePublication = 0;
+  private readonly sourcePublicationVersions: Record<WorkspaceTaskScope, number> = { workspace: 0, global: 0 };
   private idManuallyEdited = false;
   private connected = false;
   private selectionGeneration = 0;
@@ -168,6 +178,7 @@ class PiWebUiTasksPanel extends BaseElement {
 
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
     const previous = this.stateValue;
+    if (value !== previous) this.recordStatePublication();
     this.stateValue = value;
     if (value.move !== undefined) this.moveRecoveryObserved = true;
     this.rememberOpenGroups();
@@ -647,6 +658,7 @@ class PiWebUiTasksPanel extends BaseElement {
     this.moveRecoveryObserved = false;
     this.mode = "view";
     this.operation = { kind: "refresh", scopes: [] };
+    const observation = this.captureActionState();
     const generation = this.selectionGeneration;
     this.status = { kind: "info", message: "Refreshing workspace task catalogs..." };
     this.render();
@@ -654,6 +666,13 @@ class PiWebUiTasksPanel extends BaseElement {
       await this.actionsValue.refresh();
       if (!this.ownsSelection(generation)) return;
       this.operation = undefined;
+      const completionIssue = this.actionCompletionIssue(["workspace", "global"], observation, false);
+      if (completionIssue !== undefined) {
+        this.status = { kind: "error", message: "Could not refresh workspace task catalogs.", detail: completionIssue };
+        this.render();
+        this.focusTarget(target);
+        return;
+      }
       this.status = { kind: "success", message: "Workspace task catalogs refreshed." };
       this.render();
       this.focusTarget(target);
@@ -687,6 +706,7 @@ class PiWebUiTasksPanel extends BaseElement {
     }
 
     const generation = this.selectionGeneration;
+    const observation = this.captureActionState();
     this.operation = { kind: "mutation", scopes: [destinationScope] };
     this.status = { kind: "info", message: editor.sourceRef === undefined ? "Creating workspace task..." : "Saving workspace task..." };
     this.render();
@@ -695,8 +715,12 @@ class PiWebUiTasksPanel extends BaseElement {
       else await this.actionsValue.update(editor.sourceRef, validation.task);
       if (!this.ownsSelection(generation)) return;
       this.operation = undefined;
-      if (this.mutationBlocked(destinationScope)) {
-        this.status = { kind: "error", message: this.stateValue.mutationGate?.message ?? "Refresh before trying another task change." };
+      const completionIssue = this.actionCompletionIssue([destinationScope], observation, true)
+        ?? (this.catalogContainsTask(destinationScope, validation.task)
+          ? undefined
+          : "The authoritative task catalog update could not be confirmed. Refresh before trying again.");
+      if (completionIssue !== undefined) {
+        this.status = { kind: "error", message: "Could not save workspace task.", detail: completionIssue };
         this.render();
         return;
       }
@@ -759,6 +783,7 @@ class PiWebUiTasksPanel extends BaseElement {
     const pending = this.deleteState;
     if (pending === undefined || this.operation !== undefined || this.isScopeDisabled(pending.ref.scope)) return;
     const generation = this.selectionGeneration;
+    const observation = this.captureActionState();
     this.operation = { kind: "mutation", scopes: [pending.ref.scope] };
     this.status = { kind: "info", message: "Deleting workspace task..." };
     this.render();
@@ -766,8 +791,12 @@ class PiWebUiTasksPanel extends BaseElement {
       await this.actionsValue.remove(pending.ref);
       if (!this.ownsSelection(generation)) return;
       this.operation = undefined;
-      if (this.mutationBlocked(pending.ref.scope)) {
-        this.status = { kind: "error", message: this.stateValue.mutationGate?.message ?? "Refresh before trying another task change." };
+      const completionIssue = this.actionCompletionIssue([pending.ref.scope], observation, true)
+        ?? (this.catalogDoesNotContainTask(pending.ref)
+          ? undefined
+          : "The authoritative task catalog update could not be confirmed. Refresh before trying again.");
+      if (completionIssue !== undefined) {
+        this.status = { kind: "error", message: "Could not delete workspace task.", detail: completionIssue };
         this.render();
         return;
       }
@@ -911,7 +940,7 @@ class PiWebUiTasksPanel extends BaseElement {
     if (target?.kind === "edit") element = findButtonByValue(this.root, "data-edit-task", workspaceTaskRefKey(target.ref));
     if (target?.kind === "delete") element = findButtonByValue(this.root, "data-delete-task", workspaceTaskRefKey(target.ref));
     if (target?.kind === "refresh") element = this.root.querySelector("[data-refresh]");
-    if (target?.kind === "heading" || element === null) element = this.root.querySelector("[data-panel-heading]");
+    if (target?.kind === "heading" || element === null || element instanceof HTMLButtonElement && element.disabled) element = this.root.querySelector("[data-panel-heading]");
     element?.focus();
   }
 
@@ -946,6 +975,48 @@ class PiWebUiTasksPanel extends BaseElement {
 
   private catalog(scope: WorkspaceTaskScope): WorkspaceCatalogState | GlobalCatalogState {
     return scope === "workspace" ? this.stateValue.workspace : this.stateValue.global;
+  }
+
+  private recordStatePublication(): void {
+    const publication = ++this.statePublication;
+    for (const scope of ["workspace", "global"] as const) this.sourcePublicationVersions[scope] = publication;
+  }
+
+  private captureActionState(): ActionStateObservation {
+    return { sourcePublications: { ...this.sourcePublicationVersions } };
+  }
+
+  private actionCompletionIssue(
+    scopes: readonly WorkspaceTaskScope[],
+    observation: ActionStateObservation,
+    includeMutationGate: boolean,
+  ): string | undefined {
+    for (const scope of scopes) {
+      const catalog = this.catalog(scope);
+      if (this.sourcePublicationVersions[scope] <= observation.sourcePublications[scope] || !hasAuthoritativeCatalogState(catalog)) {
+        return "The authoritative task catalog update could not be confirmed. Refresh before trying again.";
+      }
+    }
+    for (const scope of scopes) {
+      const failure = catalogFailure(this.catalog(scope));
+      if (failure !== undefined) return failure.message;
+    }
+    if (includeMutationGate) {
+      for (const scope of scopes) {
+        if (this.mutationBlocked(scope)) return this.stateValue.mutationGate?.message ?? "Refresh before trying another task change.";
+      }
+    }
+    return undefined;
+  }
+
+  private catalogContainsTask(scope: WorkspaceTaskScope, expected: WorkspaceTask): boolean {
+    const catalog = this.catalog(scope);
+    return catalog.kind === "loaded" && catalog.config.tasks.some((task) => sameTask(task, expected));
+  }
+
+  private catalogDoesNotContainTask(ref: WorkspaceTaskRef): boolean {
+    const catalog = this.catalog(ref.scope);
+    return catalog.kind === "loaded" && !catalog.config.tasks.some((task) => task.id === ref.id);
   }
 
   private canWriteScope(scope: WorkspaceTaskScope): boolean {
@@ -1069,6 +1140,31 @@ function loadedCount(catalog: WorkspaceCatalogState | GlobalCatalogState): numbe
 
 function catalogNeedsAttention(catalog: WorkspaceCatalogState | GlobalCatalogState): boolean {
   return catalog.kind === "invalid" || catalog.kind === "unavailable" || catalog.kind === "error" || catalog.kind === "loaded" && catalog.refreshError !== undefined || catalog.kind === "missing" && catalog.refreshError !== undefined;
+}
+
+function catalogFailure(catalog: WorkspaceCatalogState | GlobalCatalogState): CatalogFailure | undefined {
+  if ((catalog.kind === "loaded" || catalog.kind === "missing") && catalog.refreshError !== undefined) {
+    return { message: catalog.refreshError };
+  }
+  if (catalog.kind === "invalid" || catalog.kind === "unavailable" || catalog.kind === "error") {
+    return { message: catalog.message };
+  }
+  return undefined;
+}
+
+function hasAuthoritativeCatalogState(catalog: WorkspaceCatalogState | GlobalCatalogState): boolean {
+  if (catalog.kind === "loading") return false;
+  if (catalog.kind === "loaded" || catalog.kind === "missing") return !catalog.refreshing;
+  return true;
+}
+
+function sameTask(left: Readonly<WorkspaceTask>, right: Readonly<WorkspaceTask>): boolean {
+  return left.id === right.id
+    && left.title === right.title
+    && left.command === right.command
+    && left.description === right.description
+    && left.group === right.group
+    && left.confirm === right.confirm;
 }
 
 function scopeLabel(scope: WorkspaceTaskScope): "Global" | "Project" {
