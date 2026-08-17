@@ -125,6 +125,12 @@ class FakeTimers {
   }
 }
 
+function errorClearDeadline(timers: FakeTimers, index = 0): ScheduledCallback {
+  const timer = timers.deadlines.filter((candidate) => candidate.delayMs === 5_000)[index];
+  if (timer === undefined) throw new Error("Expected speech-input error-clear deadline");
+  return timer;
+}
+
 interface Harness {
   controller: SpeechInputController;
   browser: FakeAdapter;
@@ -443,6 +449,169 @@ describe("SpeechInputController", () => {
     expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error: "No speech detected" });
     expect(harness.browser.starts).toHaveLength(1);
     expect(harness.cloud.starts).toHaveLength(0);
+  });
+
+  it("expires a provider error after the error-clear deadline while preserving latest availability", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser" }));
+    harness.controller.start(TARGET);
+    emitError(harness.browser, { code: "microphone-unavailable", message: "Microphone is unavailable" });
+
+    const deadline = errorClearDeadline(harness.timers);
+    expect(deadline.delayMs).toBe(5_000);
+    harness.browser.availabilityValue = { available: false, reason: "Browser speech is unavailable" };
+    harness.controller.configure(settings({ provider: "browser" }));
+    expect(errorClearDeadline(harness.timers)).toBe(deadline);
+
+    deadline.callback();
+    expect(harness.controller.state).toEqual({ kind: "idle", unavailableReason: "Browser speech is unavailable" });
+  });
+
+  it("keeps a newer terminal error when an earlier error-clear callback fires", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser" }));
+    harness.controller.start(TARGET);
+    emitError(harness.browser, { code: "network", message: "First error" });
+    const first = errorClearDeadline(harness.timers);
+
+    harness.controller.start(TARGET);
+    emitError(harness.browser, { code: "network", message: "Second error" });
+    const second = errorClearDeadline(harness.timers, 1);
+
+    expect(first.cancelled).toBe(true);
+    first.callback();
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error: "Second error" });
+    second.callback();
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser" });
+  });
+
+  it("does not let an expired error callback overwrite a later requesting run", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser" }));
+    harness.controller.start(TARGET);
+    emitError(harness.browser, { code: "network", message: "Retry me" });
+    const deadline = errorClearDeadline(harness.timers);
+
+    harness.controller.start(TARGET);
+    deadline.callback();
+
+    expect(deadline.cancelled).toBe(true);
+    expect(harness.controller.state).toEqual({ kind: "requesting-permission", runId: "run-2", provider: "browser" });
+  });
+
+  it("cancels an idle error-clear deadline during disposal and suppresses its late callback", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser" }));
+    harness.controller.start(TARGET);
+    emitError(harness.browser, { code: "network", message: "Dispose me" });
+    const deadline = errorClearDeadline(harness.timers);
+    const stateCount = harness.states.length;
+
+    harness.controller.dispose();
+    deadline.callback();
+
+    expect(deadline.cancelled).toBe(true);
+    expect(harness.states).toHaveLength(stateCount);
+  });
+
+  it("expires a controller-originated final insertion error", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser" }));
+    harness.setFinalOutcome("empty");
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "final words");
+
+    errorClearDeadline(harness.timers).callback();
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser" });
+  });
+
+  it("contains error-clear scheduler failures", () => {
+    const browser = new FakeAdapter("browser");
+    const controller = new SpeechInputController({
+      browser,
+      cloud: new FakeAdapter("cloud"),
+      createRunId: () => "run-1",
+      scheduleDeadline: (_callback, delayMs) => {
+        if (delayMs === 5_000) throw new Error("error-clear scheduler failed");
+        return () => undefined;
+      },
+      callbacks: {
+        onStateChange: () => undefined,
+        onInterim: () => undefined,
+        onFinal: () => "inserted",
+        onClearInterim: () => undefined,
+      },
+    });
+    controller.configure(settings({ provider: "browser" }));
+
+    expect(() => {
+      controller.start(TARGET);
+      emitError(browser, { code: "network", message: "Scheduler failure" });
+    }).not.toThrow();
+    expect(controller.state).toEqual({ kind: "idle", provider: "browser", error: "Scheduler failure" });
+  });
+
+  it("contains a throwing error-clear canceler during an accepted retry", () => {
+    const browser = new FakeAdapter("browser");
+    let staleCallback: (() => void) | undefined;
+    const controller = new SpeechInputController({
+      browser,
+      cloud: new FakeAdapter("cloud"),
+      createRunId: (() => {
+        const ids = ["run-1", "run-2"];
+        return () => ids.shift() ?? "run-extra";
+      })(),
+      scheduleDeadline: (callback, delayMs) => {
+        if (delayMs !== 5_000) return () => undefined;
+        staleCallback = callback;
+        return () => { throw new Error("error-clear canceler failed"); };
+      },
+      callbacks: {
+        onStateChange: () => undefined,
+        onInterim: () => undefined,
+        onFinal: () => "inserted",
+        onClearInterim: () => undefined,
+      },
+    });
+    controller.configure(settings({ provider: "browser" }));
+    controller.start(TARGET);
+    emitError(browser, { code: "network", message: "Retry failure" });
+
+    expect(() => { controller.start(TARGET); }).not.toThrow();
+    if (staleCallback === undefined) throw new Error("Expected stale error-clear callback");
+    staleCallback();
+    expect(controller.state).toEqual({ kind: "requesting-permission", runId: "run-2", provider: "browser" });
+  });
+
+  it("contains a throwing error-clear canceler during idle disposal", () => {
+    const browser = new FakeAdapter("browser");
+    let lateCallback: (() => void) | undefined;
+    const states: SpeechInputControllerState[] = [];
+    const controller = new SpeechInputController({
+      browser,
+      cloud: new FakeAdapter("cloud"),
+      createRunId: () => "run-1",
+      scheduleDeadline: (callback, delayMs) => {
+        if (delayMs !== 5_000) return () => undefined;
+        lateCallback = callback;
+        return () => { throw new Error("error-clear canceler failed"); };
+      },
+      callbacks: {
+        onStateChange: (state) => { states.push(state); },
+        onInterim: () => undefined,
+        onFinal: () => "inserted",
+        onClearInterim: () => undefined,
+      },
+    });
+    controller.configure(settings({ provider: "browser" }));
+    controller.start(TARGET);
+    emitError(browser, { code: "network", message: "Dispose failure" });
+    const stateCount = states.length;
+
+    expect(() => { controller.dispose(); }).not.toThrow();
+    if (lateCallback === undefined) throw new Error("Expected late error-clear callback");
+    lateCallback();
+    expect(states).toHaveLength(stateCount);
   });
 
   it("handles synchronous listening, completion, and error callbacks before start returns", () => {

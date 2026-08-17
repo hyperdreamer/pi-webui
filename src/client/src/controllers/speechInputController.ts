@@ -20,6 +20,7 @@ import type {
 const CAPTURE_LIMIT_MS = 10 * 60 * 1_000;
 const TRANSCRIPTION_LIMIT_MS = 130 * 1_000;
 const ELAPSED_UPDATE_MS = 1_000;
+const ERROR_CLEAR_DELAY_MS = 5_000;
 const SETTINGS_LOADING_REASON = "Speech settings are still loading.";
 const EMPTY_TRANSCRIPT_ERROR = "No speech detected";
 const CHANGED_DRAFT_ERROR = "Dictation was canceled because the draft changed.";
@@ -87,6 +88,8 @@ export class SpeechInputController {
   private settingsValue: SpeechInputSettingsResponse | undefined;
   private stateValue: SpeechInputControllerState = { kind: "idle", unavailableReason: SETTINGS_LOADING_REASON };
   private active: ActiveSpeechInputRun | undefined;
+  private errorClearCancel: (() => void) | undefined;
+  private errorClearSequence = 0;
   private nextGeneration = 0;
   private disposed = false;
 
@@ -129,6 +132,7 @@ export class SpeechInputController {
     }
 
     const provider = resolution.provider;
+    this.clearErrorClear();
     const active: ActiveSpeechInputRun = {
       generation: ++this.nextGeneration,
       runId: this.createRunId(),
@@ -198,6 +202,7 @@ export class SpeechInputController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearErrorClear();
     const active = this.active;
     if (active === undefined) return;
     this.settleTerminal(active, { cancelAdapter: true, publish: false });
@@ -390,7 +395,7 @@ export class SpeechInputController {
     }
 
     if (options.publish !== false && !this.disposed && !this.hasActiveRun()) {
-      this.publishIdle(error);
+      this.publishTerminalIdle(error);
     } else if (options.publish === false && !this.hasActiveRun()) {
       this.stateValue = this.idleState(error);
     }
@@ -501,6 +506,64 @@ export class SpeechInputController {
 
   private publishIdle(error: string | undefined): void {
     this.publish(this.idleState(error));
+  }
+
+  private clearErrorClear(): void {
+    const cancel = this.errorClearCancel;
+    this.errorClearCancel = undefined;
+    this.errorClearSequence += 1;
+    try {
+      cancel?.();
+    } catch {
+      // A timer canceler is best effort; sequence invalidation still blocks it.
+    }
+  }
+
+  private armErrorClear(): void {
+    const sequence = ++this.errorClearSequence;
+    let cancel: (() => void) | undefined;
+    try {
+      cancel = this.scheduleDeadline(() => {
+        if (
+          this.disposed
+          || sequence !== this.errorClearSequence
+          || this.active !== undefined
+          || this.stateValue.kind !== "idle"
+          || this.stateValue.error === undefined
+        ) return;
+        this.errorClearCancel = undefined;
+        this.errorClearSequence += 1;
+        this.publishIdle(undefined);
+      }, ERROR_CLEAR_DELAY_MS);
+    } catch {
+      return;
+    }
+    if (
+      this.disposed
+      || sequence !== this.errorClearSequence
+      || this.active !== undefined
+      || this.stateValue.kind !== "idle"
+      || this.stateValue.error === undefined
+    ) {
+      try {
+        cancel();
+      } catch {
+        // The callback is already invalidated by the sequence guard.
+      }
+      return;
+    }
+    this.errorClearCancel = cancel;
+  }
+
+  private publishTerminalIdle(error: string | undefined): void {
+    this.clearErrorClear();
+    this.publishIdle(error);
+    if (
+      error !== undefined
+      && this.active === undefined
+      && this.stateValue.kind === "idle"
+      && this.stateValue.error === error
+    ) this.armErrorClear();
   }
 
   private publish(state: SpeechInputControllerState): void {
