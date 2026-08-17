@@ -62,4 +62,13 @@ describe("requestJson", () => {
       expect.objectContaining({ method: "PUT", body: "{}" }),
     );
   });
+
+  it("preserves a non-JSON response status while leaving its body unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.resolve(new Response("not-json", { status: 404 }))));
+
+    await expect(requestJson("api/machines/remote/workspace-tasks")).resolves.toEqual({
+      status: 404,
+      body: undefined,
+    });
+  });
 });

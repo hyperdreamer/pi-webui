@@ -28,7 +28,15 @@ export async function requestJson(url: string, init?: RequestInit): Promise<Http
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(resolveAppUrl(url), { ...init, headers });
-  return { status: response.status, body: await response.json() };
+  const body: unknown = await response.json().catch((error: unknown): undefined => {
+    if (init?.signal?.aborted === true || isAbortError(error)) throw error;
+    return undefined;
+  });
+  return { status: response.status, body };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function errorMessage(value: unknown): string | undefined {

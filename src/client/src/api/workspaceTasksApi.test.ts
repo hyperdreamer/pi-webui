@@ -47,6 +47,21 @@ const partialMove = {
   workspace: { kind: "loaded" as const, config, revision: "workspace-before" },
   global: { kind: "loaded" as const, config, revision: "global-after" },
 };
+const validationFailure = { kind: "validation" as const, message: "Invalid request" };
+const conflictFailure = { kind: "conflict" as const, reason: "revision-conflict" as const, message: "Catalog changed" };
+const unavailableFailure = { kind: "unavailable" as const, message: "Busy", retryable: false };
+const unknownOutcomeFailure = { kind: "unknown-outcome" as const, message: "Server could not confirm the write" };
+const moveConflict = { kind: "conflict" as const, reason: "destination-collision" as const, message: "Task already exists" };
+const moveUnavailable = { kind: "unavailable" as const, message: "Busy" };
+const readStatusMismatchFallback = {
+  kind: "unavailable" as const,
+  message: "Workspace Tasks could not be loaded. Refresh and try again.",
+  retryable: true,
+};
+const writeStatusMismatchFallback = {
+  kind: "unknown-outcome" as const,
+  message: "Workspace task write outcome is unknown. Refresh before trying again.",
+};
 
 beforeEach(() => {
   vi.stubEnv("BASE_URL", "./");
@@ -96,6 +111,38 @@ describe("workspaceTasksApi", () => {
     expect(JSON.parse(requestBody(fetchCall(fetchMock, 4)[1]))).toEqual(moveRequest);
   });
 
+  it("propagates in-flight read cancellation after passing the signal to fetch", async () => {
+    const controller = new AbortController();
+    const abortError = new DOMException("Read cancelled", "AbortError");
+    const fetchMock = vi.fn<FetchLike>((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => { reject(abortError); }, { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pendingRead = workspaceTasksApi.readWorkspace(address, controller.signal);
+    expect(fetchCall(fetchMock, 0)[1]?.signal).toBe(controller.signal);
+
+    controller.abort();
+
+    await expect(pendingRead).rejects.toBe(abortError);
+  });
+
+  it("propagates an AbortError from a read without a caller signal", async () => {
+    const abortError = new DOMException("Read cancelled", "AbortError");
+    vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.reject(abortError)));
+
+    await expect(workspaceTasksApi.readGlobal(address.machineId)).rejects.toBe(abortError);
+  });
+
+  it("propagates an AbortError while decoding a read response", async () => {
+    const abortError = new DOMException("Read cancelled", "AbortError");
+    const response = new Response(JSON.stringify(globalLoaded));
+    vi.spyOn(response, "json").mockRejectedValue(abortError);
+    vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.resolve(response)));
+
+    await expect(workspaceTasksApi.readGlobal(address.machineId)).rejects.toBe(abortError);
+  });
+
   it.each([
     [400, { kind: "validation", message: "Invalid request" }],
     [409, { kind: "conflict", reason: "revision-conflict", message: "Catalog changed" }],
@@ -139,6 +186,70 @@ describe("workspaceTasksApi", () => {
     await expect(workspaceTasksApi.move({ ...address, ...moveRequest })).resolves.toEqual(body);
   });
 
+  it.each([
+    [400, "conflict", conflictFailure],
+    [400, "unavailable", unavailableFailure],
+    [400, "unknown-outcome", unknownOutcomeFailure],
+    [409, "validation", validationFailure],
+    [409, "unavailable", unavailableFailure],
+    [409, "unknown-outcome", unknownOutcomeFailure],
+    [413, "conflict", conflictFailure],
+    [413, "unavailable", unavailableFailure],
+    [413, "unknown-outcome", unknownOutcomeFailure],
+    [500, "validation", validationFailure],
+    [500, "conflict", conflictFailure],
+    [500, "unavailable", unavailableFailure],
+    [503, "validation", validationFailure],
+    [503, "conflict", conflictFailure],
+    [503, "unknown-outcome", unknownOutcomeFailure],
+  ] as const)("maps a regular %i response with a syntactically valid %s body to operation-safe fallbacks", async (status, _kind, body) => {
+    stubSequenceFetch([jsonResponse(body, status), jsonResponse(body, status)]);
+
+    const [read, replace] = await Promise.all([
+      workspaceTasksApi.readWorkspace(address),
+      workspaceTasksApi.replaceWorkspace({ ...address, expectedRevision: "workspace-revision", config }),
+    ]);
+
+    expect(read).toEqual(readStatusMismatchFallback);
+    expect(replace).toEqual(writeStatusMismatchFallback);
+  });
+
+  it.each([
+    [200, "partial", partialMove],
+    [200, "conflict", moveConflict],
+    [200, "validation", validationFailure],
+    [200, "unavailable", moveUnavailable],
+    [200, "unknown-outcome", unknownOutcomeFailure],
+    [400, "completed", completedMove],
+    [400, "partial", partialMove],
+    [400, "conflict", moveConflict],
+    [400, "unavailable", moveUnavailable],
+    [400, "unknown-outcome", unknownOutcomeFailure],
+    [409, "completed", completedMove],
+    [409, "validation", validationFailure],
+    [409, "unavailable", moveUnavailable],
+    [409, "unknown-outcome", unknownOutcomeFailure],
+    [413, "completed", completedMove],
+    [413, "partial", partialMove],
+    [413, "conflict", moveConflict],
+    [413, "unavailable", moveUnavailable],
+    [413, "unknown-outcome", unknownOutcomeFailure],
+    [500, "completed", completedMove],
+    [500, "partial", partialMove],
+    [500, "conflict", moveConflict],
+    [500, "validation", validationFailure],
+    [500, "unavailable", moveUnavailable],
+    [503, "completed", completedMove],
+    [503, "partial", partialMove],
+    [503, "conflict", moveConflict],
+    [503, "validation", validationFailure],
+    [503, "unknown-outcome", unknownOutcomeFailure],
+  ] as const)("maps a move %i response with a syntactically valid %s body to unknown outcome", async (status, _kind, body) => {
+    stubSequenceFetch([jsonResponse(body, status)]);
+
+    await expect(workspaceTasksApi.move({ ...address, ...moveRequest })).resolves.toEqual(writeStatusMismatchFallback);
+  });
+
   it("maps a 404 to scoped unavailability instead of write ambiguity", async () => {
     stubSequenceFetch([
       jsonResponse({ error: "Route unavailable" }, 404),
@@ -155,6 +266,34 @@ describe("workspaceTasksApi", () => {
     expect(read).toMatchObject({ kind: "unavailable", retryable: false });
     expect(replace).toMatchObject({ kind: "unavailable", retryable: false });
     expect(move).toMatchObject({ kind: "unavailable" });
+  });
+
+  it.each([
+    ["non-JSON", () => new Response("not-json", { status: 404 })],
+    ["empty", () => new Response(null, { status: 404 })],
+  ] as const)("maps a %s 404 to scoped unavailability for reads, replacements, and moves", async (_label, response) => {
+    stubSequenceFetch([response(), response(), response()]);
+
+    const [read, replace, move] = await Promise.all([
+      workspaceTasksApi.readGlobal(address.machineId),
+      workspaceTasksApi.replaceGlobal({ machineId: address.machineId, expectedRevision: "global-revision", config }),
+      workspaceTasksApi.move({ ...address, ...moveRequest }),
+    ]);
+
+    expect(read).toEqual({
+      kind: "unavailable",
+      message: "Workspace Tasks are unavailable on the selected machine.",
+      retryable: false,
+    });
+    expect(replace).toEqual({
+      kind: "unavailable",
+      message: "Workspace Tasks are unavailable on the selected machine.",
+      retryable: false,
+    });
+    expect(move).toEqual({
+      kind: "unavailable",
+      message: "Workspace Tasks are unavailable on the selected machine.",
+    });
   });
 
   it.each([
