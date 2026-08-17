@@ -2,6 +2,7 @@ import type { TemplateResult } from "lit";
 import type { AppAction } from "../actions";
 import type { DeleteWorkspaceFileResponse, FileContentResponse, FileTreeEntry, GitDiffResponse, GitStatusResponse, Machine, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, RunTerminalCommandInput, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace } from "../api";
 import type { AppState } from "../appState";
+import type { WorkspaceTasksActions, WorkspaceTasksWorkspaceState } from "../controllers/workspaceTasksController";
 import type { SettingsSection } from "../settingsRoute";
 import type { LocalContributionId, PluginId, QualifiedContributionId } from "./ids";
 
@@ -11,6 +12,18 @@ export type SvgTemplateTag = (strings: TemplateStringsArray, ...values: unknown[
 
 export interface PluginHostCapabilities {
   activityRailItems?: true;
+}
+
+export interface PluginContributionIdentity {
+  readonly pluginId: PluginId;
+  readonly sourcePluginId?: PluginId;
+  readonly localId: LocalContributionId;
+  readonly machineId?: string;
+}
+
+export interface WorkspaceTasksPanelBridge {
+  readonly state: WorkspaceTasksWorkspaceState;
+  readonly actions: WorkspaceTasksActions;
 }
 
 export interface PiWebUiPluginRegistration {

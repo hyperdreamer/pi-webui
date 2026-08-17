@@ -1,10 +1,10 @@
 import { html, svg } from "lit";
-import type { ActivityRailContext, ActivityRailContribution, PiWebUiPluginRegistration, PluginAction, PluginRuntimeContext, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedPluginAction, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspaceLabelContribution, QualifiedWorkspacePanelContribution, ThemeContribution, ThemePairContribution, WorkspaceLabelContext, WorkspaceLabelContribution, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelContribution } from "./types";
+import type { ActivityRailContext, ActivityRailContribution, PiWebUiPluginRegistration, PluginAction, PluginContributionIdentity, PluginRuntimeContext, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedPluginAction, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspaceLabelContribution, QualifiedWorkspacePanelContribution, ThemeContribution, ThemePairContribution, WorkspaceLabelContext, WorkspaceLabelContribution, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelContribution } from "./types";
 
 const idPattern = /^[a-z][a-z0-9.-]*$/u;
 const localIdPattern = /^[a-z][a-z0-9.-]*$/u;
 const pluginRuntimeScopes = new WeakMap<PluginRuntimeContext, (pluginId: string) => PluginRuntimeContext>();
-const workspacePanelScopes = new WeakMap<WorkspacePanelContext, (pluginId: string) => WorkspacePanelContext>();
+const workspacePanelScopes = new WeakMap<WorkspacePanelContext, (identity: PluginContributionIdentity) => WorkspacePanelContext>();
 const activityRailScopes = new WeakMap<ActivityRailContext, (pluginId: string) => ActivityRailContext>();
 
 type RegisteredPluginAction = Omit<PluginAction, "id"> & {
@@ -126,6 +126,12 @@ export class PluginRegistry {
 
   private qualifyWorkspacePanel(pluginId: string, panel: WorkspacePanelContribution, machineId: string | undefined, sourcePluginId: string | undefined): QualifiedWorkspacePanelContribution {
     const id = this.qualify(pluginId, panel.id);
+    const identity: PluginContributionIdentity = {
+      pluginId,
+      ...(sourcePluginId === undefined ? {} : { sourcePluginId }),
+      localId: panel.id,
+      ...(machineId === undefined ? {} : { machineId }),
+    };
     const badge = panel.badge;
     const visible = panel.visible;
     return {
@@ -135,9 +141,9 @@ export class PluginRegistry {
       localId: panel.id,
       ...(machineId === undefined ? {} : { machineId }),
       ...(sourcePluginId === undefined ? {} : { sourcePluginId }),
-      visible: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) && (visible?.(workspacePanelContextFor(context, pluginId)) ?? true),
-      ...(badge === undefined ? {} : { badge: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) ? badge(workspacePanelContextFor(context, pluginId)) : undefined }),
-      render: (context: WorkspacePanelContext) => panel.render(workspacePanelContextFor(context, pluginId)),
+      visible: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) && (visible?.(workspacePanelContextFor(context, identity)) ?? true),
+      ...(badge === undefined ? {} : { badge: (context: WorkspacePanelContext) => this.isContributionActive(pluginId, machineId, context.machine.id, sourcePluginId) ? badge(workspacePanelContextFor(context, identity)) : undefined }),
+      render: (context: WorkspacePanelContext) => panel.render(workspacePanelContextFor(context, identity)),
     };
   }
 
@@ -249,8 +255,8 @@ function pluginRuntimeContextFor(context: PluginRuntimeContext, pluginId: string
   return pluginRuntimeScopes.get(context)?.(pluginId) ?? context;
 }
 
-function workspacePanelContextFor(context: WorkspacePanelContext, pluginId: string): WorkspacePanelContext {
-  return workspacePanelScopes.get(context)?.(pluginId) ?? context;
+function workspacePanelContextFor(context: WorkspacePanelContext, identity: PluginContributionIdentity): WorkspacePanelContext {
+  return workspacePanelScopes.get(context)?.(identity) ?? context;
 }
 
 function activityRailContextFor(context: ActivityRailContext, pluginId: string): ActivityRailContext {
@@ -262,7 +268,7 @@ export function installPluginRuntimeScope(context: PluginRuntimeContext, scope: 
   return context;
 }
 
-export function installWorkspacePanelScope(context: WorkspacePanelContext, scope: (pluginId: string) => WorkspacePanelContext): WorkspacePanelContext {
+export function installWorkspacePanelScope(context: WorkspacePanelContext, scope: (identity: PluginContributionIdentity) => WorkspacePanelContext): WorkspacePanelContext {
   workspacePanelScopes.set(context, scope);
   return context;
 }

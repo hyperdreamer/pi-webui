@@ -30,6 +30,7 @@ import { SessionNotificationController } from "../controllers/sessionNotificatio
 import { HostSpeechController } from "../controllers/hostSpeechController";
 import { resolveAssistantSpeechSource } from "../hostSpeechText";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
+import { WorkspaceTasksController, type WorkspaceTasksControllerDependencies, type WorkspaceTasksSelection } from "../controllers/workspaceTasksController";
 import { emptyMachineNavigationSnapshot, machineNavigationSnapshotFromState, routeFromMachineNavigationSnapshot, SessionStorageMachineNavigationMemory, type MachineNavigationSnapshot, type WorkspaceRouteSurface } from "../controllers/machineNavigationMemory";
 import { SessionStorageSessionSelectionMemory } from "../controllers/sessionSelection";
 import { SessionStorageTerminalSelectionMemory } from "../controllers/terminalSelection";
@@ -45,7 +46,7 @@ import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPer
 import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
-import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal } from "../plugins/types";
+import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginContributionIdentity, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal, WorkspaceTasksPanelBridge } from "../plugins/types";
 import { isActivityRailItemVisible, visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
 import { CLASSIC_THEME_ID, DEFAULT_THEME_PREFERENCE, applyPiWebUiTheme, findThemePairForTheme, readStoredThemePreference, resolveThemePreference, writeStoredThemePreference, type ThemePreference, type ThemePreferenceResolution } from "../theme";
 import { corePlugin } from "../plugins/core";
@@ -129,6 +130,8 @@ const MEMORY_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-memory:works
 const LEARNED_SKILLS_ACTIVITY_RAIL_PLUGIN_ID: PluginId = "workspace-learned-skills";
 const LEARNED_SKILLS_ACTIVITY_RAIL_LOCAL_ID: LocalContributionId = "workspace.learned-skills";
 const LEARNED_SKILLS_ACTIVITY_RAIL_ID: QualifiedContributionId = "workspace-learned-skills:workspace.learned-skills";
+const WORKSPACE_TASKS_PLUGIN_ID: PluginId = "workspace-tasks";
+const WORKSPACE_TASKS_LOCAL_ID: LocalContributionId = "workspace.tasks";
 const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
@@ -175,6 +178,17 @@ interface InternalActivityRailContext extends ActivityRailContext {
   onRefreshLearnedSkills: () => void;
 }
 
+interface WorkspaceTasksControllerLike {
+  readonly state: WorkspaceTasksController["state"];
+  readonly actions: WorkspaceTasksController["actions"];
+  observe(enabled: boolean): void;
+  dispose(): void;
+}
+
+interface InternalWorkspaceTasksPanelContext extends WorkspacePanelContext {
+  readonly workspaceTasks: WorkspaceTasksPanelBridge;
+}
+
 interface ResolvedActivityRailItem {
   activity: QualifiedActivityRailContribution;
   context: ActivityRailContext;
@@ -187,6 +201,7 @@ interface ActiveActivityRailItem extends ResolvedActivityRailItem {
 export interface PiWebUiAppDependencies {
   speechInputApi?: Pick<typeof speechInputApi, "settings">;
   createSpeechInputSettingsChannel?: (onRevision: (revision: string) => void) => SpeechInputSettingsChannelLike;
+  createWorkspaceTasksController?: (dependencies: WorkspaceTasksControllerDependencies) => WorkspaceTasksControllerLike;
 }
 
 interface ProjectWorkTarget {
@@ -208,6 +223,11 @@ export class PiWebUiApp extends LitElement {
     this.speechInputSettingsApi = dependencies.speechInputApi ?? speechInputApi;
     this.createSpeechInputSettingsChannel = dependencies.createSpeechInputSettingsChannel
       ?? ((onRevision) => new SpeechInputSettingsChannel(onRevision));
+    this.workspaceTasks = (dependencies.createWorkspaceTasksController
+      ?? ((controllerDependencies) => new WorkspaceTasksController(controllerDependencies)))({
+      selectedScope: () => workspaceTasksSelectionFromState(this.state),
+      onChange: () => { this.requestUpdate(); },
+    });
   }
 
   private readonly sessionUnread = new SessionUnreadController({
@@ -350,6 +370,7 @@ export class PiWebUiApp extends LitElement {
     () => this.state,
     (patch) => { this.setState(patch); },
   );
+  private readonly workspaceTasks: WorkspaceTasksControllerLike;
   private readonly recentProjects = new RecentProjectController({
     machineId: () => selectedMachineId(this.state),
     onChange: () => { this.requestUpdate(); },
@@ -708,6 +729,7 @@ export class PiWebUiApp extends LitElement {
     void this.recentProjects.load();
     void this.loadClientConfig();
     void this.ensureGatewayPluginsLoaded();
+    this.synchronizeWorkspaceTasksObservationForSelectedWorkspace();
     void this.loadProjectsAndRestoreRoute().finally(() => { this.schedulePiWebUiStatusRefresh(); });
     this.syncWindowTitle();
   }
@@ -745,6 +767,8 @@ export class PiWebUiApp extends LitElement {
     this.workspaceDeletionPollTimer = undefined;
     this.clearPendingRemoteRouteRestore();
     this.disconnectWindowTitle();
+    this.workspaceTasks.observe(false);
+    this.workspaceTasks.dispose();
     super.disconnectedCallback();
   }
 
@@ -1395,6 +1419,7 @@ export class PiWebUiApp extends LitElement {
       if (scopeChanged) {
         this.synchronizeMemoryPollingForSelectedWorkspace();
         this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
+        this.synchronizeWorkspaceTasksObservationForSelectedWorkspace();
       }
       return;
     }
@@ -1411,6 +1436,7 @@ export class PiWebUiApp extends LitElement {
     if (next.selectedWorkspace === undefined) {
       this.synchronizeMemoryPollingForSelectedWorkspace();
       this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
+      this.synchronizeWorkspaceTasksObservationForSelectedWorkspace();
       return;
     }
     void this.refreshActiveTerminals(next.selectedWorkspace);
@@ -1419,6 +1445,7 @@ export class PiWebUiApp extends LitElement {
     this.git.updatePolling();
     this.synchronizeMemoryPollingForSelectedWorkspace();
     this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
+    this.synchronizeWorkspaceTasksObservationForSelectedWorkspace();
   }
 
   private async loadStarterSessionDefaults(
@@ -1685,10 +1712,12 @@ export class PiWebUiApp extends LitElement {
       icon: renderBuiltinTabIcon("history"),
       render: () => this.renderRecentProjectsTab(),
     }];
+    const panels = this.plugins.getWorkspacePanels();
+    this.synchronizeWorkspaceTasksObservationForSelectedWorkspace(panels);
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return tabs;
     const context = this.createWorkspacePanelContext(workspace);
-    for (const panel of this.plugins.getWorkspacePanels()) {
+    for (const panel of panels) {
       if (!(panel.visible?.(context) ?? true)) continue;
       const badge = panel.badge?.(context);
       tabs.push({
@@ -2695,10 +2724,11 @@ export class PiWebUiApp extends LitElement {
   }
 
   private workspacePanels(): QualifiedWorkspacePanelContribution[] {
+    const panels = this.plugins.getWorkspacePanels();
+    this.synchronizeWorkspaceTasksObservationForSelectedWorkspace(panels);
     const workspace = this.state.selectedWorkspace;
     if (workspace === undefined) return [];
     const context = this.createWorkspacePanelContext(workspace);
-    const panels = this.plugins.getWorkspacePanels();
     return panels.filter((panel) => panel.visible?.(context) ?? true);
   }
 
@@ -2744,6 +2774,20 @@ export class PiWebUiApp extends LitElement {
         this.reportActivityRailError,
       ));
     this.learnedSkills.updatePolling(observed);
+  }
+
+  private synchronizeWorkspaceTasksObservationForSelectedWorkspace(
+    panels: readonly QualifiedWorkspacePanelContribution[] = this.plugins.getWorkspacePanels(),
+  ): void {
+    const workspace = this.state.selectedWorkspace;
+    if (workspace === undefined) {
+      this.workspaceTasks.observe(false);
+      return;
+    }
+    const context = this.createWorkspacePanelContext(workspace);
+    const observed = panels.some((panel) => isWorkspaceTasksPanelContribution(panel)
+      && (panel.visible?.(context) ?? true));
+    this.workspaceTasks.observe(observed);
   }
 
   private visibleWorkspacePanels(): QualifiedWorkspacePanelContribution[] {
@@ -3156,9 +3200,9 @@ export class PiWebUiApp extends LitElement {
   private createWorkspacePanelContext(workspace: Workspace): WorkspacePanelContext {
     const machine = pluginMachineFromState(this.state);
     const machineId = machine.id;
-    const createContext = (origin: string): WorkspacePanelContext => {
+    const createContext = (origin: string, identity?: PluginContributionIdentity): WorkspacePanelContext => {
       const terminalCommandRuns = this.terminalCommandRunsForOrigin(origin, machineId);
-      return installWorkspacePanelScope({
+      const baseContext: WorkspacePanelContext = {
         machine,
         workspace,
         state: this.state,
@@ -3192,7 +3236,11 @@ export class PiWebUiApp extends LitElement {
         onRefreshMemory: () => { void this.memory.refresh(); },
         onSelectDiff: (path: string) => { void this.git.selectDiff(path); },
         onSelectTerminal: (terminalId: string | undefined, options?: { replace?: boolean | undefined }) => { this.selectTerminal(terminalId, options); },
-      }, createContext);
+      };
+      const context: WorkspacePanelContext | InternalWorkspaceTasksPanelContext = isWorkspaceTasksPanelIdentity(identity)
+        ? { ...baseContext, workspaceTasks: { state: this.workspaceTasks.state, actions: this.workspaceTasks.actions } }
+        : baseContext;
+      return installWorkspacePanelScope(context, (scopedIdentity) => createContext(scopedIdentity.pluginId, scopedIdentity));
     };
     return createContext("core");
   }
@@ -3348,6 +3396,7 @@ export class PiWebUiApp extends LitElement {
       }
       this.synchronizeMemoryPollingForSelectedWorkspace();
       this.synchronizeLearnedSkillsPollingForSelectedWorkspace();
+      this.synchronizeWorkspaceTasksObservationForSelectedWorkspace();
       this.applyPreferredTheme(false);
       this.requestUpdate();
       return true;
@@ -4932,6 +4981,32 @@ function isLearnedSkillsActivityRailItem(activity: QualifiedActivityRailContribu
   return activity.id === LEARNED_SKILLS_ACTIVITY_RAIL_ID
     || (activity.sourcePluginId === LEARNED_SKILLS_ACTIVITY_RAIL_PLUGIN_ID
       && activity.localId === LEARNED_SKILLS_ACTIVITY_RAIL_LOCAL_ID);
+}
+
+function isWorkspaceTasksPanelIdentity(identity: PluginContributionIdentity | undefined): boolean {
+  return identity !== undefined
+    && (identity.sourcePluginId ?? identity.pluginId) === WORKSPACE_TASKS_PLUGIN_ID
+    && identity.localId === WORKSPACE_TASKS_LOCAL_ID;
+}
+
+function isWorkspaceTasksPanelContribution(
+  contribution: Pick<PluginContributionIdentity, "pluginId" | "sourcePluginId" | "localId">,
+): boolean {
+  return (contribution.sourcePluginId ?? contribution.pluginId) === WORKSPACE_TASKS_PLUGIN_ID
+    && contribution.localId === WORKSPACE_TASKS_LOCAL_ID;
+}
+
+function workspaceTasksSelectionFromState(
+  state: Pick<AppState, "selectedMachine" | "selectedWorkspace">,
+): WorkspaceTasksSelection | undefined {
+  const workspace = state.selectedWorkspace;
+  if (workspace === undefined) return undefined;
+  return {
+    machineId: selectedMachineId(state),
+    projectId: workspace.projectId,
+    workspaceId: workspace.id,
+    workspacePath: workspace.path,
+  };
 }
 
 function workspaceScopeChanged(previous: AppState, next: AppState): boolean {

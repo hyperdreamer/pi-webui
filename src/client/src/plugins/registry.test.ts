@@ -6,7 +6,7 @@ import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { machineScopedPluginId } from "../../../shared/machinePluginIds";
 import { corePlugin } from "./core";
-import { installActivityRailScope, PluginRegistry } from "./registry";
+import { installActivityRailScope, installWorkspacePanelScope, PluginRegistry } from "./registry";
 import { themePackPlugin } from "./themes";
 import type { ActivityRailContext, PiWebUiPlugin, PluginRuntimeContext, ThemeTokens, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext } from "./types";
 
@@ -113,6 +113,48 @@ describe("PluginRegistry", () => {
 
     expect(panel?.icon).toBeDefined();
     expect(panel?.render(createWorkspacePanelContext("local"))).toBeDefined();
+  });
+
+  it("passes full contribution identity to a scoped remote workspace panel", () => {
+    const registry = new PluginRegistry();
+    const remotePluginId = machineScopedPluginId("remote-1", "workspace-tasks");
+    let scopedIdentity: unknown;
+    registry.register({
+      id: remotePluginId,
+      machineId: "remote-1",
+      sourcePluginId: "workspace-tasks",
+      machineSpecific: true,
+      plugin: {
+        apiVersion: 1,
+        name: "Remote Tasks",
+        activate: () => ({
+          contributions: {
+            workspacePanels: [{
+              id: "workspace.tasks",
+              title: "Tasks",
+              render: () => html`<p>Tasks</p>`,
+            }],
+          },
+        }),
+      },
+    });
+
+    const context = createWorkspacePanelContext("remote-1");
+    installWorkspacePanelScope(context, (identity: unknown) => {
+      scopedIdentity = identity;
+      return context;
+    });
+    const panel = registry.getWorkspacePanels().find((candidate) => candidate.id === `${remotePluginId}:workspace.tasks`);
+    if (panel === undefined) throw new Error("Expected the remote Tasks panel");
+
+    panel.render(context);
+
+    expect(scopedIdentity).toEqual({
+      pluginId: remotePluginId,
+      sourcePluginId: "workspace-tasks",
+      localId: "workspace.tasks",
+      machineId: "remote-1",
+    });
   });
 
   it("qualifies activity Rail items, passes the host capability, and scopes remote items", () => {
