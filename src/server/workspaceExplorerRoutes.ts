@@ -51,7 +51,10 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
         createDirs: request.query.createDirs !== "false",
         overwrite: request.query.overwrite !== "false",
       };
-      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, { stopAt: isWorkspaceTasksPath });
+      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, {
+        stopAt: isWorkspaceTasksPath,
+        followFinalSymlink: true,
+      });
       const taskFiles = options.taskFiles;
       const taskPath = taskFiles === undefined ? undefined : mutationPath.resolvedPaths.find(isWorkspaceTasksPath);
       if (taskFiles !== undefined && taskPath !== undefined) {
@@ -78,7 +81,10 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
   app.delete<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (request, reply) => {
     try {
       const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, { stopAt: isWorkspaceTasksPath });
+      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, {
+        stopAt: isWorkspaceTasksPath,
+        followFinalSymlink: false,
+      });
       const taskFiles = options.taskFiles;
       const taskPath = taskFiles === undefined ? undefined : mutationPath.resolvedPaths.find(isWorkspaceTasksPath);
       if (taskFiles !== undefined && taskPath !== undefined) {
@@ -103,8 +109,14 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
   app.post<{ Params: { projectId: string; workspaceId: string }; Querystring: { fromPath?: string; toPath?: string; createDirs?: string; overwrite?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/move`, async (request, reply) => {
     try {
       const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const fromMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.fromPath, { stopAt: isWorkspaceTasksPath });
-      const toMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.toPath, { stopAt: isWorkspaceTasksPath });
+      const fromMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.fromPath, {
+        stopAt: isWorkspaceTasksPath,
+        followFinalSymlink: true,
+      });
+      const toMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.toPath, {
+        stopAt: isWorkspaceTasksPath,
+        followFinalSymlink: false,
+      });
       const taskFiles = options.taskFiles;
       const fromTaskPath = taskFiles === undefined ? undefined : fromMutationPath.resolvedPaths.find(isWorkspaceTasksPath);
       const toTaskPath = taskFiles === undefined ? undefined : toMutationPath.resolvedPaths.find(isWorkspaceTasksPath);

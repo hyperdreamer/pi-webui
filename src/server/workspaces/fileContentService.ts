@@ -113,6 +113,8 @@ export interface WorkspaceFileMutationPath {
 export interface WorkspaceFileMutationPathOptions {
   /** Stop before following a fixed target's final entry so its no-follow owner can inspect it. */
   stopAt?: (relativePath: string) => boolean;
+  /** Preserve the final symlink entry for operations that do not dereference it. */
+  followFinalSymlink?: boolean;
 }
 
 /**
@@ -155,6 +157,10 @@ export async function resolveWorkspaceFileMutationPath(
     if (!entry.isSymbolicLink()) {
       current = target;
       continue;
+    }
+
+    if (remaining.length === 0 && options.followFinalSymlink === false) {
+      return { normalizedPath: relativePath, resolvedPaths: [...resolvedPaths] };
     }
 
     resolvedLinks += 1;

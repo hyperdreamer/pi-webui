@@ -252,6 +252,59 @@ describe("buildApp workspace file routes", () => {
     await expect(readFile(outside, "utf8")).resolves.toBe("outside");
   });
 
+  it("deletes an unrelated outside-pointing final symlink without touching its target", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Delete final symlink", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+    const outside = join(appTestContext.tempDir, "outside-delete-target.txt");
+    const link = join(appTestContext.projectDir, "delete-link.txt");
+    await writeFile(outside, "outside", "utf8");
+    await symlink(outside, link);
+
+    const response = await appTestContext.app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent("delete-link.txt")}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ path: "delete-link.txt", existed: true });
+    await expect(lstat(link)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(outside, "utf8")).resolves.toBe("outside");
+  });
+
+  it("overwrites an unrelated outside-pointing final symlink without touching its target", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Move final symlink", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+    const source = join(appTestContext.projectDir, "move-source.txt");
+    const destination = join(appTestContext.projectDir, "move-destination.txt");
+    const outside = join(appTestContext.tempDir, "outside-move-target.txt");
+    await writeFile(source, "source", "utf8");
+    await writeFile(outside, "outside", "utf8");
+    await symlink(outside, destination);
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file/move?fromPath=${encodeURIComponent("move-source.txt")}&toPath=${encodeURIComponent("move-destination.txt")}&overwrite=true`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ fromPath: "move-source.txt", toPath: "move-destination.txt" });
+    expect((await lstat(destination)).isSymbolicLink()).toBe(false);
+    await expect(readFile(destination, "utf8")).resolves.toBe("source");
+    await expect(readFile(outside, "utf8")).resolves.toBe("outside");
+  });
+
   it.each(["write", "delete", "move source", "move destination"])("does not let a real directory alias bypass the fixed resolver during %s", async (operation) => {
     const addResponse = await appTestContext.app.inject({
       method: "POST",
