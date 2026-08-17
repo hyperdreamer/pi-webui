@@ -7,6 +7,11 @@ export class HttpRequestError extends Error {
   }
 }
 
+export interface HttpJsonResponse {
+  status: number;
+  body: unknown;
+}
+
 export async function request<T>(url: string, parse: (value: unknown) => T, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
@@ -17,6 +22,13 @@ export async function request<T>(url: string, parse: (value: unknown) => T, init
   }
   const body: unknown = await response.json();
   return parse(body);
+}
+
+export async function requestJson(url: string, init?: RequestInit): Promise<HttpJsonResponse> {
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const response = await fetch(resolveAppUrl(url), { ...init, headers });
+  return { status: response.status, body: await response.json() };
 }
 
 function errorMessage(value: unknown): string | undefined {

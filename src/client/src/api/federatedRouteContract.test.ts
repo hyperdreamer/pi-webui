@@ -4,6 +4,7 @@ import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, SESSION_TREE_NAVIGAT
 import { activityApi, configApi, filesApi, gitApi, learnedSkillsApi, memoryApi, modelsConfigApi, piPackagePluginsApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, terminalsApi, workspacesApi } from "./clients";
 import { globalSessionEvents, realtimeEvents, sessionEvents, terminalSocket } from "./sockets";
 import { workspaceImagePreviewUrl } from "./urls";
+import { workspaceTasksApi } from "./workspaceTasksApi";
 
 const machineId = "remote-a";
 const workspace: Workspace = {
@@ -16,6 +17,24 @@ const workspace: Workspace = {
   isGitWorktree: true,
 };
 const session = { id: "s 1", cwd: workspace.path };
+const workspaceTask = { id: "build", title: "Build", command: "npm run build", confirm: false };
+const workspaceTasksConfig = {
+  version: 1 as const,
+  tasks: [workspaceTask],
+};
+const workspaceTaskMove = {
+  operationId: "00000000-0000-4000-8000-000000000001",
+  intent: "start" as const,
+  source: {
+    ref: { scope: "workspace" as const, id: "build" },
+    expectedCatalog: { kind: "loaded" as const, revision: "workspace-revision", config: workspaceTasksConfig },
+  },
+  destination: {
+    scope: "global" as const,
+    expectedCatalog: { kind: "loaded" as const, revision: "global-revision", config: { version: 1 as const, tasks: [] } },
+    task: workspaceTask,
+  },
+};
 
 beforeEach(() => {
   vi.stubGlobal("document", { baseURI: "https://pi.example.test/" });
@@ -144,6 +163,11 @@ describe("federated route contract", () => {
       ignoreParseFailure(workspacesApi.writeWorkspaceFile("p 1", "w 1", "README.md", "hello", { overwrite: false }, machineId)),
       ignoreParseFailure(workspacesApi.deleteWorkspaceFile("p 1", "w 1", "README.md", machineId)),
       ignoreParseFailure(workspacesApi.moveWorkspaceFile("p 1", "w 1", "README.md", "docs/README.md", { overwrite: false }, machineId)),
+      ignoreParseFailure(workspaceTasksApi.readWorkspace({ projectId: "p 1", workspaceId: "w 1", machineId })),
+      ignoreParseFailure(workspaceTasksApi.replaceWorkspace({ projectId: "p 1", workspaceId: "w 1", machineId, expectedRevision: "workspace-revision", config: workspaceTasksConfig })),
+      ignoreParseFailure(workspaceTasksApi.move({ projectId: "p 1", workspaceId: "w 1", machineId, ...workspaceTaskMove })),
+      ignoreParseFailure(workspaceTasksApi.readGlobal(machineId)),
+      ignoreParseFailure(workspaceTasksApi.replaceGlobal({ machineId, expectedRevision: "global-revision", config: workspaceTasksConfig })),
       ignoreParseFailure(filesApi.files("/repo", "README", { kind: "tracked", mode: "file", machineId })),
       ignoreParseFailure(filesApi.files("/repo", "README", { kind: "tracked", mode: "file", projectId: "p 1", workspaceId: "w 1", machineId, workspaceScoped: true })),
       ignoreParseFailure(gitApi.gitStatus("p 1", "w 1", machineId)),
@@ -227,6 +251,17 @@ describe("federated route contract", () => {
       method: "POST",
       path: `/sessions/${encodeURIComponent(session.id)}/reorder`,
     });
+    const workspaceTaskRoutes = observedRoutes.filter((route) => route.path.includes("workspace-tasks"));
+    expect(workspaceTaskRoutes).toEqual([
+      { method: "GET", path: "/projects/p%201/workspaces/w%201/workspace-tasks" },
+      { method: "PUT", path: "/projects/p%201/workspaces/w%201/workspace-tasks" },
+      { method: "POST", path: "/projects/p%201/workspaces/w%201/workspace-tasks/move" },
+      { method: "GET", path: "/workspace-tasks/global" },
+      { method: "PUT", path: "/workspace-tasks/global" },
+    ]);
+    for (const route of workspaceTaskRoutes) {
+      expect(FEDERATED_HTTP_ROUTES.filter((spec) => spec.method === route.method && pathMatchesPattern(route.path, spec.path))).toHaveLength(1);
+    }
     expect(unmatched).toEqual([]);
   });
 
