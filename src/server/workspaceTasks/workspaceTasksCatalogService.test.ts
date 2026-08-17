@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MoveWorkspaceTaskRequest } from "../../shared/apiTypes.js";
 import { ProjectService } from "../projects/projectService.js";
 import { ProjectStore } from "../storage/projectStore.js";
@@ -146,6 +146,8 @@ describe("WorkspaceTasksCatalogService", () => {
       expectedRevision: loadedGlobal(destination).revision,
       config: { version: 1, tasks: [...destination.tasks, task("renamed-global")] },
     });
+    expect(fixture.global.readCalls).toBe(5);
+    expect(fixture.workspace.readCalls).toHaveLength(5);
   });
 
   it("demotes with workspace destination first and removes the global source second", async () => {
@@ -183,6 +185,8 @@ describe("WorkspaceTasksCatalogService", () => {
     });
     expect(fixture.global.writes).toBe(1);
     expect(fixture.workspace.writes).toBe(0);
+    expect(fixture.workspace.readCalls).toHaveLength(4);
+    expect(fixture.global.readCalls).toBe(4);
 
     await expect(fixture.service.replaceGlobal({
       expectedRevision: loadedGlobal({ version: 1, tasks: [task("release")] }).revision,
@@ -227,11 +231,15 @@ describe("WorkspaceTasksCatalogService", () => {
       phase: "unknown",
       error: new WorkspaceTasksUnknownOutcomeError(),
     };
+    fixture.global.readResponses = [loadedGlobal(destination), new Error("verification unavailable")];
     const request = promotionRequest(source, destination, "release");
 
     await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({ kind: "unknown-outcome" });
     expect(fixture.global.writes).toBe(1);
     expect(fixture.workspace.writes).toBe(0);
+    expect(fixture.global.writeEvents).toEqual(["unknown"]);
+    expect(fixture.global.readCalls).toBe(2);
+    expect(fixture.workspace.readCalls).toHaveLength(2);
     expect(fixture.global.writeOptions[0]?.onWriteAcknowledged).toBeTypeOf("function");
     expect(fixture.global.writeOptions[0]?.onWriteOutcomeUnknown).toBeTypeOf("function");
   });
@@ -274,7 +282,7 @@ describe("WorkspaceTasksCatalogService", () => {
     expect(fixture.workspace.writes).toBe(1);
   });
 
-  it("returns unknown outcome after an ambiguous source removal and never compensates or starts again", async () => {
+  it("returns partial when an authoritative reread proves the source intact after an unknown source removal", async () => {
     const fixture = createFixture();
     const source = catalogWithTasks("build");
     const destination = emptyCatalog();
@@ -287,11 +295,105 @@ describe("WorkspaceTasksCatalogService", () => {
       error: new WorkspaceTasksUnknownOutcomeError(),
     };
 
-    await expect(fixture.service.move({ ...TEST_ADDRESS, ...start })).resolves.toMatchObject({ kind: "unknown-outcome" });
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...start })).resolves.toMatchObject({
+      kind: "partial",
+      phase: "destination-written",
+    });
     expect(fixture.global.writes).toBe(1);
     expect(fixture.workspace.writes).toBe(1);
     expect(fixture.global.replaceCalls).toHaveLength(1);
     expect(fixture.workspace.replaceCalls).toHaveLength(1);
+    expect(fixture.global.readCalls).toBe(4);
+    expect(fixture.workspace.readCalls).toHaveLength(4);
+  });
+
+  it("does not mint a retry permit for a retransmitted start in the destination-applied phase", async () => {
+    const fixture = createFixture();
+    const source = catalogWithTasks("build");
+    const destination = emptyCatalog();
+    const request = promotionRequest(source, destination, "release");
+    fixture.workspace.response = loadedWorkspace(source);
+    fixture.global.response = loadedGlobal(destination);
+    fixture.workspace.writeFailure = { phase: "before-publication", error: new Error("source unavailable") };
+
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({ kind: "partial" });
+    fixture.workspace.writeFailure = undefined;
+    const beginRetry = vi.spyOn(fixture.composition.registry, "beginRetry");
+
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({
+      kind: "partial",
+      phase: "destination-written",
+    });
+
+    expect(beginRetry).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a stale claim before entering the shared workspace mutation queue", async () => {
+    const fixture = createFixture();
+    const source = catalogWithTasks("build");
+    const destination = emptyCatalog();
+    const request = promotionRequest(source, destination, "release");
+    fixture.workspace.response = loadedWorkspace(source);
+    fixture.global.response = loadedGlobal(destination);
+    fixture.workspace.writeFailure = { phase: "before-publication", error: new Error("source unavailable") };
+
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({ kind: "partial" });
+    fixture.workspace.writeFailure = undefined;
+    fixture.workspace.response = loadedWorkspace(emptyCatalog());
+    const reconcile = vi.spyOn(fixture.composition.registry, "reconcileGlobalMoveClaim");
+    const queue = vi.spyOn(fixture.composition.registry, "run");
+
+    await expect(fixture.service.replaceWorkspace({
+      ...TEST_ADDRESS,
+      expectedRevision: fixture.workspace.response.revision,
+      config: catalogWithTasks("after-recovery"),
+    })).resolves.toMatchObject({ kind: "loaded" });
+
+    expect(reconcile).toHaveBeenCalledWith({ scope: "workspace", address: TEST_ADDRESS }, undefined);
+    expect(queue).toHaveBeenCalledWith(TEST_ADDRESS, expect.any(Function));
+    expect(reconcile.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY)
+      .toBeLessThan(queue.mock.invocationCallOrder[0] ?? Number.NEGATIVE_INFINITY);
+    expect(fixture.workspace.readCalls).toHaveLength(5);
+    expect(fixture.global.readCalls).toBe(5);
+  });
+
+  it("returns a refresh-gated conflict for an authoritative unexpected source-removal pair", async () => {
+    const fixture = createFixture();
+    const source = catalogWithTasks("build");
+    const destination = emptyCatalog();
+    const applied = catalogWithTasks("release");
+    const changed = catalogWithTasks("changed");
+    const request = promotionRequest(source, destination, "release");
+    fixture.workspace.response = loadedWorkspace(source);
+    fixture.global.response = loadedGlobal(destination);
+    fixture.workspace.readResponses = [
+      loadedWorkspace(source),
+      loadedWorkspace(source),
+      loadedWorkspace(source),
+      loadedWorkspace(changed),
+      loadedWorkspace(changed),
+    ];
+    fixture.global.readResponses = [
+      loadedGlobal(destination),
+      loadedGlobal(applied),
+      loadedGlobal(applied),
+      loadedGlobal(applied),
+      loadedGlobal(applied),
+    ];
+    fixture.workspace.writeFailure = {
+      phase: "unknown",
+      published: false,
+      error: new WorkspaceTasksUnknownOutcomeError(),
+    };
+
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({
+      kind: "conflict",
+      reason: "unrecognized-state",
+    });
+    expect(fixture.global.writes).toBe(1);
+    expect(fixture.workspace.writes).toBe(1);
+    expect(fixture.global.readCalls).toBe(5);
+    expect(fixture.workspace.readCalls).toHaveLength(5);
   });
 
   it("treats an exact complete pair as an idempotent replay with zero writes", async () => {

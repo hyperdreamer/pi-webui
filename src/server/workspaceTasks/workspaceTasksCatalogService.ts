@@ -126,13 +126,13 @@ export function createWorkspaceTasksCatalogService(
 
     if (reconciliation.kind === "recovery-pending") {
       if (state === "destination-applied") {
+        if (plan.intent === "start") return partialResult(plan, before.observed);
         let permit: WorkspaceTasksMovePermit;
         try {
           permit = registry.beginRetry(asRetryPlan(plan));
         } catch (error) {
           return resultFromMoveError(error);
         }
-        if (plan.intent === "start") return partialResult(plan, before.observed);
         return removeSource(plan, permit);
       }
       if (state === "complete") {
@@ -230,37 +230,32 @@ export function createWorkspaceTasksCatalogService(
   ): Promise<MoveWorkspaceTaskResult> {
     try {
       await writeIntent(plan.sourceRemoval, { permit });
-    } catch (error) {
-      const sourceOutcomeUnknown = error instanceof WorkspaceTasksUnknownOutcomeError
-        || error instanceof WorkspaceTasksMoveRecoveryPendingError;
-      return handleSourceFailure(plan, permit, sourceOutcomeUnknown);
+    } catch {
+      return handleSourceFailure(plan, permit);
     }
 
     const verification = await readAfterWrite(plan.address);
     if (verification.kind === "result") return verification.result;
-    return settleSourceObservation(plan, permit, verification.observed, false);
+    return settleSourceObservation(plan, permit, verification.observed);
   }
 
   async function handleSourceFailure(
     plan: WorkspaceTasksMovePlan,
     permit: WorkspaceTasksMovePermit,
-    sourceOutcomeUnknown: boolean,
   ): Promise<MoveWorkspaceTaskResult> {
     const verification = await readAfterWrite(plan.address);
     if (verification.kind === "result") return verification.result;
-    return settleSourceObservation(plan, permit, verification.observed, sourceOutcomeUnknown);
+    return settleSourceObservation(plan, permit, verification.observed);
   }
 
   async function settleSourceObservation(
     plan: WorkspaceTasksMovePlan,
     permit: WorkspaceTasksMovePermit,
     observed: MoveObservation,
-    sourceOutcomeUnknown: boolean,
   ): Promise<MoveWorkspaceTaskResult> {
     const state = classifyWorkspaceTasksMovePair(plan, observed);
     if (state === "complete") return completeWithPermit(plan, permit, observed);
-    if (state === "destination-applied" && !sourceOutcomeUnknown) return partialResult(plan, observed);
-    if (sourceOutcomeUnknown) return unknownOutcomeResult(UNKNOWN_OUTCOME_MESSAGE);
+    if (state === "destination-applied") return partialResult(plan, observed);
 
     try {
       await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);

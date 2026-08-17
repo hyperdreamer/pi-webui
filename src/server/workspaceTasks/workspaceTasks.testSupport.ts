@@ -27,6 +27,9 @@ export const TEST_ADDRESS: WorkspaceCatalogAddress = { projectId: "project", wor
 export class ControlledGlobalCatalogAdapter implements WorkspaceTasksGlobalCatalogAdapter {
   response: GlobalWorkspaceTasksResponse = loadedGlobal(emptyCatalog());
   readFailure: Error | undefined;
+  readResponses: (GlobalWorkspaceTasksResponse | Error)[] = [];
+  readonly writeEvents: ("acknowledged" | "unknown")[] = [];
+  readCalls = 0;
   writeFailure: ControlledWriteFailure | undefined;
   readonly replaceCalls: ReplaceGlobalWorkspaceTasksRequest[] = [];
   readonly writeOptions: WorkspaceTasksCatalogWriteOptions[] = [];
@@ -35,8 +38,11 @@ export class ControlledGlobalCatalogAdapter implements WorkspaceTasksGlobalCatal
   authorizer: WorkspaceTasksMutationAuthorizer | undefined;
 
   read(): Promise<GlobalWorkspaceTasksResponse> {
+    this.readCalls += 1;
     if (this.readFailure !== undefined) return Promise.reject(this.readFailure);
-    return Promise.resolve(this.response);
+    const next = this.readResponses.shift();
+    if (next instanceof Error) return Promise.reject(next);
+    return Promise.resolve(next ?? this.response);
   }
 
   async replace(
@@ -59,12 +65,14 @@ export class ControlledGlobalCatalogAdapter implements WorkspaceTasksGlobalCatal
     this.writes += 1;
     const published = this.writeFailure?.published !== false;
     if (published) this.response = loadedGlobal(input.config);
-    options.onWriteAcknowledged?.();
-    if (this.writeFailure?.phase === "after-acknowledged") throw this.writeFailure.error;
     if (this.writeFailure?.phase === "unknown") {
+      this.writeEvents.push("unknown");
       options.onWriteOutcomeUnknown?.();
       throw this.writeFailure.error;
     }
+    this.writeEvents.push("acknowledged");
+    options.onWriteAcknowledged?.();
+    if (this.writeFailure?.phase === "after-acknowledged") throw this.writeFailure.error;
     return this.response;
   }
 }
@@ -72,6 +80,9 @@ export class ControlledGlobalCatalogAdapter implements WorkspaceTasksGlobalCatal
 export class ControlledWorkspaceCatalogAdapter implements WorkspaceTasksWorkspaceCatalogAdapter {
   response: WorkspaceTasksCatalogResponse = missingWorkspace("workspace-missing");
   readFailure: Error | undefined;
+  readResponses: (WorkspaceTasksCatalogResponse | Error)[] = [];
+  readCalls: WorkspaceCatalogAddress[] = [];
+  readonly writeEvents: ("acknowledged" | "unknown")[] = [];
   writeFailure: ControlledWriteFailure | undefined;
   readonly replaceCalls: { address: WorkspaceCatalogAddress; input: ReplaceWorkspaceTasksRequest }[] = [];
   readonly writeOptions: WorkspaceTasksCatalogWriteOptions[] = [];
@@ -80,9 +91,12 @@ export class ControlledWorkspaceCatalogAdapter implements WorkspaceTasksWorkspac
   authorizer: WorkspaceTasksMutationAuthorizer | undefined;
   workspaceMutations: WorkspaceTasksWorkspaceMutationCoordinator | undefined;
 
-  read(): Promise<WorkspaceTasksCatalogResponse> {
+  read(address: WorkspaceCatalogAddress): Promise<WorkspaceTasksCatalogResponse> {
+    this.readCalls.push(address);
     if (this.readFailure !== undefined) return Promise.reject(this.readFailure);
-    return Promise.resolve(this.response);
+    const next = this.readResponses.shift();
+    if (next instanceof Error) return Promise.reject(next);
+    return Promise.resolve(next ?? this.response);
   }
 
   async replace(
@@ -93,29 +107,36 @@ export class ControlledWorkspaceCatalogAdapter implements WorkspaceTasksWorkspac
     this.replaceCalls.push({ address, input });
     this.writeOptions.push(options);
     await this.authorizer?.reconcileGlobalMoveClaim({ scope: "workspace", address }, options.permit);
-    if (this.response.kind === "invalid" || this.response.kind === "unavailable") {
-      throw new Error("workspace catalog is not writable");
-    }
-    if (this.response.revision !== input.expectedRevision) throw new Error("revision conflict");
-    const intent = { scope: "workspace" as const, address, expectedRevision: input.expectedRevision, config: input.config };
-    this.intents.push(intent);
-    this.authorizer?.assertWorkspaceMutationAllowed(address, intent, options.permit);
-    if (this.response.kind === "loaded"
-      && serializeWorkspaceTasksConfig(this.response.config) === serializeWorkspaceTasksConfig(input.config)) {
-      return this.response;
-    }
+    const performReplace = (): Promise<WorkspaceTasksCatalogResponse> => {
+      if (this.response.kind === "invalid" || this.response.kind === "unavailable") {
+        throw new Error("workspace catalog is not writable");
+      }
+      if (this.response.revision !== input.expectedRevision) throw new Error("revision conflict");
+      const intent = { scope: "workspace" as const, address, expectedRevision: input.expectedRevision, config: input.config };
+      this.intents.push(intent);
+      this.authorizer?.assertWorkspaceMutationAllowed(address, intent, options.permit);
+      if (this.response.kind === "loaded"
+        && serializeWorkspaceTasksConfig(this.response.config) === serializeWorkspaceTasksConfig(input.config)) {
+        return Promise.resolve(this.response);
+      }
 
-    if (this.writeFailure?.phase === "before-publication") throw this.writeFailure.error;
-    this.writes += 1;
-    const published = this.writeFailure?.published !== false;
-    if (published) this.response = loadedWorkspace(input.config);
-    options.onWriteAcknowledged?.();
-    if (this.writeFailure?.phase === "after-acknowledged") throw this.writeFailure.error;
-    if (this.writeFailure?.phase === "unknown") {
-      options.onWriteOutcomeUnknown?.();
-      throw this.writeFailure.error;
-    }
-    return this.response;
+      if (this.writeFailure?.phase === "before-publication") throw this.writeFailure.error;
+      this.writes += 1;
+      const published = this.writeFailure?.published !== false;
+      if (published) this.response = loadedWorkspace(input.config);
+      if (this.writeFailure?.phase === "unknown") {
+        this.writeEvents.push("unknown");
+        options.onWriteOutcomeUnknown?.();
+        throw this.writeFailure.error;
+      }
+      this.writeEvents.push("acknowledged");
+      options.onWriteAcknowledged?.();
+      if (this.writeFailure?.phase === "after-acknowledged") throw this.writeFailure.error;
+      return Promise.resolve(this.response);
+    };
+    return this.workspaceMutations === undefined
+      ? performReplace()
+      : this.workspaceMutations.run(address, performReplace);
   }
 }
 
