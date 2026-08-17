@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   GlobalWorkspaceTasksResponse,
   WorkspaceCatalogAddress,
@@ -88,6 +89,8 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
   private claim: MoveClaim | undefined;
   private moveTail: Promise<void> = Promise.resolve();
   private activeMoveOperationId: string | undefined;
+  private activeMoveLockToken: object | undefined;
+  private readonly moveLockContext = new AsyncLocalStorage<object>();
   private readonly workspaceTails = new Map<string, Promise<void>>();
 
   constructor(private readonly observationPort: WorkspaceTasksMoveObservationPort) {}
@@ -104,12 +107,15 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
     this.moveTail = previous.then(() => current);
     await previous;
 
+    const lockToken = {};
     this.activeMoveOperationId = operationId;
+    this.activeMoveLockToken = lockToken;
     try {
-      return await operation();
+      return await this.moveLockContext.run(lockToken, operation);
     } finally {
       this.clearPendingClaim(operationId);
       this.activeMoveOperationId = undefined;
+      this.activeMoveLockToken = undefined;
       releaseLock();
     }
   }
@@ -166,7 +172,6 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
       throw new WorkspaceTasksMoveConflictError("unowned-intermediate-state", "The retry does not match the live move claim.");
     }
     if (claim.phase === "destination-pending") throw new WorkspaceTasksMoveInProgressError();
-    if (claim.destinationOutcome === "unknown") throw new WorkspaceTasksMoveRecoveryPendingError();
     return this.createPermit(claim, "retry");
   }
 
@@ -320,7 +325,8 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
   }
 
   private assertLock(plan: WorkspaceTasksMovePlan, expectedIntent: "start" | "retry"): void {
-    if (this.activeMoveOperationId === undefined || this.activeMoveOperationId !== plan.operationId) {
+    if (this.activeMoveOperationId === undefined || this.activeMoveOperationId !== plan.operationId
+      || this.activeMoveLockToken === undefined || this.moveLockContext.getStore() !== this.activeMoveLockToken) {
       throw new WorkspaceTasksMoveAuthorizationError("Move permits can only be created inside their operation lock.");
     }
     if (plan.intent !== expectedIntent) {

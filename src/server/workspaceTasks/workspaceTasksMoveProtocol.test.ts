@@ -88,6 +88,48 @@ describe("workspace task move protocol", () => {
     });
   });
 
+  it("preserves removal and append ordering for both promotion and demotion", () => {
+    const promotionSource = catalogWithTasks("first", "move", "last");
+    const promotionDestination = catalogWithTasks("global-first", "global-last");
+    const promotion = deriveWorkspaceTasksMovePlan(addressFor("promotion"), {
+      operationId: "33333333-3333-4333-8333-333333333333",
+      intent: "start",
+      source: {
+        ref: { scope: "workspace", id: "move" },
+        expectedCatalog: { kind: "loaded", revision: "promotion-source", config: promotionSource },
+      },
+      destination: {
+        scope: "global",
+        expectedCatalog: loadedGlobal(promotionDestination, globalRevision(promotionDestination)),
+        task: task("move-global"),
+      },
+    });
+
+    expect(promotion.sourceRemoval.config.tasks.map((entry) => entry.id)).toEqual(["first", "last"]);
+    expect(promotion.destinationWrite.config.tasks.map((entry) => entry.id))
+      .toEqual(["global-first", "global-last", "move-global"]);
+
+    const demotionSource = catalogWithTasks("global-first", "move", "global-last");
+    const demotionDestination = catalogWithTasks("local-first", "local-last");
+    const demotion = deriveWorkspaceTasksMovePlan(addressFor("demotion"), {
+      operationId: "44444444-4444-4444-8444-444444444444",
+      intent: "start",
+      source: {
+        ref: { scope: "global", id: "move" },
+        expectedCatalog: loadedGlobal(demotionSource, globalRevision(demotionSource)),
+      },
+      destination: {
+        scope: "workspace",
+        expectedCatalog: loadedWorkspace(demotionDestination, workspaceRevision(demotionDestination)),
+        task: task("move-local"),
+      },
+    });
+
+    expect(demotion.sourceRemoval.config.tasks.map((entry) => entry.id)).toEqual(["global-first", "global-last"]);
+    expect(demotion.destinationWrite.config.tasks.map((entry) => entry.id))
+      .toEqual(["local-first", "local-last", "move-local"]);
+  });
+
   it.each<WorkspaceTasksMovePairState>(["pristine", "destination-applied", "complete", "unrecognized"])(
     "classifies the %s pair using full configs and revisions",
     (state) => {
@@ -160,6 +202,10 @@ function task(id: string): WorkspaceTask {
 
 function catalogWithTask(id: string): WorkspaceTasksConfig {
   return { version: 1, tasks: [task(id)] };
+}
+
+function catalogWithTasks(...ids: string[]): WorkspaceTasksConfig {
+  return { version: 1, tasks: ids.map(task) };
 }
 
 function emptyCatalog(): WorkspaceTasksConfig {
