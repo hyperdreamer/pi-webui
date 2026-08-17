@@ -1,4 +1,4 @@
-import { mkdir, readFile, symlink, truncate, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_IMAGE_PREVIEW_BYTES } from "../shared/workspaceFiles.js";
@@ -250,6 +250,90 @@ describe("buildApp workspace file routes", () => {
 
     expect(response.statusCode).toBe(400);
     await expect(readFile(outside, "utf8")).resolves.toBe("outside");
+  });
+
+  it.each(["write", "delete", "move source", "move destination"])("does not let a real directory alias bypass the fixed resolver during %s", async (operation) => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: `Task alias ${operation}`, path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+    const taskDirectory = join(appTestContext.projectDir, ".pi-webui");
+    const taskFile = join(taskDirectory, "tasks.json");
+    const protectedFile = join(appTestContext.projectDir, "protected-task-file.json");
+    const alias = join(appTestContext.projectDir, "task-alias");
+    const source = join(appTestContext.projectDir, "move-source.json");
+    const moved = join(appTestContext.projectDir, "moved.json");
+    await mkdir(taskDirectory, { recursive: true });
+    await writeFile(protectedFile, "protected", "utf8");
+    await writeFile(source, "source", "utf8");
+    await symlink(protectedFile, taskFile);
+    await symlink(taskDirectory, alias);
+    const base = `/api/projects/${project.id}/workspaces/${workspace.id}/file`;
+
+    let response;
+    if (operation === "write") {
+      response = await appTestContext.app.inject({
+        method: "PUT",
+        url: `${base}?path=${encodeURIComponent("task-alias/tasks.json")}`,
+        payload: "replacement",
+        headers: { "content-type": "text/plain" },
+      });
+    } else if (operation === "delete") {
+      response = await appTestContext.app.inject({
+        method: "DELETE",
+        url: `${base}?path=${encodeURIComponent("task-alias/tasks.json")}`,
+      });
+    } else if (operation === "move source") {
+      response = await appTestContext.app.inject({
+        method: "POST",
+        url: `${base}/move?fromPath=${encodeURIComponent("task-alias/tasks.json")}&toPath=${encodeURIComponent("moved.json")}`,
+      });
+    } else {
+      response = await appTestContext.app.inject({
+        method: "POST",
+        url: `${base}/move?fromPath=${encodeURIComponent("move-source.json")}&toPath=${encodeURIComponent("task-alias/tasks.json")}&overwrite=true`,
+      });
+    }
+
+    expect(response.statusCode).toBe(400);
+    await expect(readFile(protectedFile, "utf8")).resolves.toBe("protected");
+    expect((await lstat(taskFile)).isSymbolicLink()).toBe(true);
+    if (operation === "move source") await expect(readFile(moved, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    if (operation === "move destination") await expect(readFile(source, "utf8")).resolves.toBe("source");
+  });
+
+  it("rejects a dangling final alias chain before a generic write can create its target", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Dangling task alias", path: appTestContext.projectDir, create: true },
+    });
+    const project = addResponse.json<Project>();
+    const workspace = (await appTestContext.app.inject({ method: "GET", url: `/api/projects/${project.id}/workspaces` })).json<Workspace[]>()[0];
+    if (workspace === undefined) throw new Error("Expected workspace");
+    const taskDirectory = join(appTestContext.projectDir, ".pi-webui");
+    const taskFile = join(taskDirectory, "tasks.json");
+    const alias = join(appTestContext.projectDir, "task-alias");
+    const missingTarget = join(appTestContext.projectDir, "must-not-exist.json");
+    await mkdir(taskDirectory, { recursive: true });
+    await symlink(missingTarget, taskFile);
+    await symlink(taskFile, alias);
+
+    const response = await appTestContext.app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/workspaces/${workspace.id}/file?path=${encodeURIComponent("task-alias")}`,
+      payload: "replacement",
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await expect(readFile(missingTarget, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(taskFile)).isSymbolicLink()).toBe(true);
+    expect((await lstat(alias)).isSymbolicLink()).toBe(true);
   });
 
   it("deletes workspace files through the HTTP contract", async () => {

@@ -1,10 +1,10 @@
-import { lstat, mkdir, open, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { lstat, mkdir, open, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DeleteWorkspaceFileResponse, FileContentResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, PiWebUiPathAccessConfig, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse } from "../../shared/apiTypes.js";
 import { MAX_WORKSPACE_FILE_BYTES } from "../../shared/workspaceFiles.js";
 import { imageMimeTypeForPath } from "./imagePreviewService.js";
 import { resolveWorkspacePathAccessTarget } from "./pathAccessPolicy.js";
-import { ensureInside, isNodeErrorWithCode, resolveInsideWorkspace, resolveParentInsideWorkspace } from "./pathSafety.js";
+import { ensureInside, isNodeErrorWithCode, normalizeRelativePath, resolveInsideWorkspace, resolveParentInsideWorkspace } from "./pathSafety.js";
 
 export async function readWorkspaceFile(rootPath: string, path: string | undefined, pathAccess?: PiWebUiPathAccessConfig): Promise<FileContentResponse> {
   if (path === undefined || path === "") throw new Error("path query parameter is required");
@@ -105,12 +105,74 @@ async function readFilePrefix(target: string, bytesToRead: number): Promise<Buff
   }
 }
 
+export interface WorkspaceFileMutationPath {
+  normalizedPath: string;
+  resolvedPaths: readonly string[];
+}
+
+export interface WorkspaceFileMutationPathOptions {
+  /** Stop before following a fixed target's final entry so its no-follow owner can inspect it. */
+  stopAt?: (relativePath: string) => boolean;
+}
+
 /**
- * Resolve a mutation path through the existing workspace containment boundary
- * before a route decides whether a fixed task-file operation owns it.
+ * Resolve existing aliases before a route decides whether a fixed-file owner
+ * owns a mutation. A caller can stop at its fixed target to preserve that
+ * owner's final-entry no-follow checks.
  */
-export async function resolveWorkspaceFileMutationPath(rootPath: string, path: string | undefined): Promise<string> {
-  return (await resolveParentInsideWorkspace(rootPath, path ?? "")).relativePath;
+export async function resolveWorkspaceFileMutationPath(
+  rootPath: string,
+  path: string | undefined,
+  options: WorkspaceFileMutationPathOptions = {},
+): Promise<WorkspaceFileMutationPath> {
+  const { root, relativePath } = await resolveParentInsideWorkspace(rootPath, path ?? "");
+  const resolvedPaths = new Set<string>([relativePath]);
+  if (options.stopAt?.(relativePath) === true) {
+    return { normalizedPath: relativePath, resolvedPaths: [...resolvedPaths] };
+  }
+
+  let current = root;
+  let remaining = relativePath === "" ? [] : relativePath.split("/");
+  let resolvedLinks = 0;
+  while (remaining.length > 0) {
+    const part = remaining.shift();
+    if (part === undefined) break;
+    const target = join(current, part);
+    ensureInside(root, target);
+
+    let entry;
+    try {
+      entry = await lstat(target);
+    } catch (error) {
+      if (!isNodeErrorWithCode(error, "ENOENT")) throw error;
+      const unresolvedTarget = join(target, ...remaining);
+      ensureInside(root, unresolvedTarget);
+      const unresolvedPath = normalizeRelativePath(relative(root, unresolvedTarget));
+      resolvedPaths.add(unresolvedPath);
+      return { normalizedPath: relativePath, resolvedPaths: [...resolvedPaths] };
+    }
+
+    if (!entry.isSymbolicLink()) {
+      current = target;
+      continue;
+    }
+
+    resolvedLinks += 1;
+    if (resolvedLinks > 40) throw new Error("Too many symbolic links in workspace mutation path");
+    const link = await readlink(target);
+    const linkTarget = isAbsolute(link) ? link : resolve(dirname(target), link);
+    ensureInside(root, linkTarget);
+    const linkPath = normalizeRelativePath(relative(root, linkTarget));
+    remaining = [...(linkPath === "" ? [] : linkPath.split("/")), ...remaining];
+    const resolvedPath = remaining.join("/");
+    resolvedPaths.add(resolvedPath);
+    if (options.stopAt?.(resolvedPath) === true) {
+      return { normalizedPath: relativePath, resolvedPaths: [...resolvedPaths] };
+    }
+    current = root;
+  }
+
+  return { normalizedPath: relativePath, resolvedPaths: [...resolvedPaths] };
 }
 
 export async function writeWorkspaceFile(rootPath: string, path: string | undefined, content: Buffer, options: WriteWorkspaceFileOptions = {}): Promise<WriteWorkspaceFileResponse> {

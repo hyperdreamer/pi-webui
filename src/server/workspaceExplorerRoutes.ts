@@ -51,24 +51,25 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
         createDirs: request.query.createDirs !== "false",
         overwrite: request.query.overwrite !== "false",
       };
-      const normalizedPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path);
+      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, { stopAt: isWorkspaceTasksPath });
       const taskFiles = options.taskFiles;
-      const taskTarget = taskFiles !== undefined && isWorkspaceTasksPath(normalizedPath);
-      const operation = taskTarget
-        ? () => taskFiles.writeExplorerTaskFile(
+      const taskPath = taskFiles === undefined ? undefined : mutationPath.resolvedPaths.find(isWorkspaceTasksPath);
+      if (taskFiles !== undefined && taskPath !== undefined) {
+        const operation = () => taskFiles.writeExplorerTaskFile(
           { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
           request.body,
           writeOptions,
-        )
-        : () => writeWorkspaceFile(context.root, request.query.path, request.body, writeOptions);
-      if (options.taskPathGate !== undefined && taskTarget) {
-        return await options.taskPathGate.run(
-          { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
-          [normalizedPath],
-          operation,
         );
+        if (options.taskPathGate !== undefined) {
+          return await options.taskPathGate.run(
+            { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
+            [taskPath],
+            operation,
+          );
+        }
+        return await operation();
       }
-      return await operation();
+      return await writeWorkspaceFile(context.root, request.query.path, request.body, writeOptions);
     } catch (error) {
       return sendWorkspaceExplorerError(reply, error);
     }
@@ -77,22 +78,23 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
   app.delete<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file`, async (request, reply) => {
     try {
       const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const normalizedPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path);
+      const mutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.path, { stopAt: isWorkspaceTasksPath });
       const taskFiles = options.taskFiles;
-      const taskTarget = taskFiles !== undefined && isWorkspaceTasksPath(normalizedPath);
-      const operation = taskTarget
-        ? () => taskFiles.deleteExplorerTaskFile(
+      const taskPath = taskFiles === undefined ? undefined : mutationPath.resolvedPaths.find(isWorkspaceTasksPath);
+      if (taskFiles !== undefined && taskPath !== undefined) {
+        const operation = () => taskFiles.deleteExplorerTaskFile(
           { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
-        )
-        : () => deleteWorkspaceFile(context.root, request.query.path);
-      if (options.taskPathGate !== undefined && taskTarget) {
-        return await options.taskPathGate.run(
-          { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
-          [normalizedPath],
-          operation,
         );
+        if (options.taskPathGate !== undefined) {
+          return await options.taskPathGate.run(
+            { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
+            [taskPath],
+            operation,
+          );
+        }
+        return await operation();
       }
-      return await operation();
+      return await deleteWorkspaceFile(context.root, request.query.path);
     } catch (error) {
       return sendWorkspaceExplorerError(reply, error);
     }
@@ -101,32 +103,35 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
   app.post<{ Params: { projectId: string; workspaceId: string }; Querystring: { fromPath?: string; toPath?: string; createDirs?: string; overwrite?: string } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/move`, async (request, reply) => {
     try {
       const context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId);
-      const normalizedMove: WorkspaceTasksNormalizedFileMove = {
-        fromPath: await resolveWorkspaceFileMutationPath(context.root, request.query.fromPath),
-        toPath: await resolveWorkspaceFileMutationPath(context.root, request.query.toPath),
-        createDirs: request.query.createDirs !== "false",
-        overwrite: request.query.overwrite === "true",
-      };
+      const fromMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.fromPath, { stopAt: isWorkspaceTasksPath });
+      const toMutationPath = await resolveWorkspaceFileMutationPath(context.root, request.query.toPath, { stopAt: isWorkspaceTasksPath });
       const taskFiles = options.taskFiles;
-      const taskTarget = taskFiles !== undefined
-        && (isWorkspaceTasksPath(normalizedMove.fromPath) || isWorkspaceTasksPath(normalizedMove.toPath));
-      const operation = taskTarget
-        ? () => taskFiles.moveExplorerTaskFile(
-          { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
-          normalizedMove,
-        )
-        : () => moveWorkspaceFile(context.root, request.query.fromPath, request.query.toPath, {
+      const fromTaskPath = taskFiles === undefined ? undefined : fromMutationPath.resolvedPaths.find(isWorkspaceTasksPath);
+      const toTaskPath = taskFiles === undefined ? undefined : toMutationPath.resolvedPaths.find(isWorkspaceTasksPath);
+      if (taskFiles !== undefined && (fromTaskPath !== undefined || toTaskPath !== undefined)) {
+        const normalizedMove: WorkspaceTasksNormalizedFileMove = {
+          fromPath: fromTaskPath ?? fromMutationPath.normalizedPath,
+          toPath: toTaskPath ?? toMutationPath.normalizedPath,
           createDirs: request.query.createDirs !== "false",
           overwrite: request.query.overwrite === "true",
-        });
-      if (options.taskPathGate !== undefined && taskTarget) {
-        return await options.taskPathGate.run(
+        };
+        const operation = () => taskFiles.moveExplorerTaskFile(
           { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
-          [normalizedMove.fromPath, normalizedMove.toPath],
-          operation,
+          normalizedMove,
         );
+        if (options.taskPathGate !== undefined) {
+          return await options.taskPathGate.run(
+            { projectId: request.params.projectId, workspaceId: request.params.workspaceId },
+            [normalizedMove.fromPath, normalizedMove.toPath],
+            operation,
+          );
+        }
+        return await operation();
       }
-      return await operation();
+      return await moveWorkspaceFile(context.root, request.query.fromPath, request.query.toPath, {
+        createDirs: request.query.createDirs !== "false",
+        overwrite: request.query.overwrite === "true",
+      });
     } catch (error) {
       return sendWorkspaceExplorerError(reply, error);
     }

@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach } from "vitest";
 import { buildApp } from "./app.js";
 import type { PiWebUiConfigMutationCoordinator, PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
-import { createWorkspaceTasksComposition } from "./workspaceTasks/workspaceTasksComposition.js";
+import { createWorkspaceTasksComposition, type WorkspaceTasksComposition } from "./workspaceTasks/workspaceTasksComposition.js";
 import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
 import type { MachineClient } from "./machines/machineClient.js";
@@ -47,6 +47,8 @@ interface AppTestContext {
   readonly hostSpeech: FakeHostSpeech;
   readonly piWebUiStatusCache: PiWebUiStatusCache;
   readonly speechInputCoordinator: InMemorySpeechInputConfigCoordinator;
+  readonly workspaceTasks: WorkspaceTasksComposition;
+  beforeConfigMutation: (() => void | Promise<void>) | undefined;
 }
 
 let app: FastifyInstance | undefined;
@@ -56,6 +58,8 @@ let remoteClient: MachineClient | undefined;
 let hostSpeech: FakeHostSpeech | undefined;
 let piWebUiStatusCache: PiWebUiStatusCache | undefined;
 let speechInputCoordinator: InMemorySpeechInputConfigCoordinator | undefined;
+let workspaceTasks: WorkspaceTasksComposition | undefined;
+let beforeConfigMutation: (() => void | Promise<void>) | undefined;
 let sessionDaemonRequests: CapturedSessionDaemonRequest[] = [];
 let piPackageRequests: CapturedPiPackageRequest[] = [];
 let piPackagePluginRequests: CapturedPiPackagePluginRequest[] = [];
@@ -114,6 +118,16 @@ export const appTestContext: AppTestContext = {
     if (speechInputCoordinator === undefined) throw new Error("App test harness was not initialized");
     return speechInputCoordinator;
   },
+  get workspaceTasks() {
+    if (workspaceTasks === undefined) throw new Error("App test harness was not initialized");
+    return workspaceTasks;
+  },
+  get beforeConfigMutation() {
+    return beforeConfigMutation;
+  },
+  set beforeConfigMutation(callback) {
+    beforeConfigMutation = callback;
+  },
 };
 
 export function registerAppTestHooks(): void {
@@ -125,6 +139,7 @@ export function registerAppTestHooks(): void {
     piPackageRequests = [];
     piPackagePluginRequests = [];
     piWebUiConfig = {};
+    beforeConfigMutation = undefined;
     agentProfileResult = { status: "available", profile: appTestAgentProfile(join(tempDir, "agent")) };
     hostSpeech = createFakeHostSpeech();
     const agentProfileProvider = { getActiveAgentProfile: () => Promise.resolve(agentProfileResult) };
@@ -142,8 +157,9 @@ export function registerAppTestHooks(): void {
     speechInputCoordinator = createInMemorySpeechInputConfigCoordinator({});
     const projects = new ProjectService(new ProjectStore(join(tempDir, "projects.json")));
     const workspaces = new WorkspaceService();
-    const configMutationCoordinator = createAppTestConfigMutationCoordinator();
-    const workspaceTasks = createWorkspaceTasksComposition({ configMutationCoordinator, projects, workspaces });
+    const configMutationCoordinator = createAppTestConfigMutationCoordinator(() => beforeConfigMutation?.());
+    const appWorkspaceTasks = createWorkspaceTasksComposition({ configMutationCoordinator, projects, workspaces });
+    workspaceTasks = appWorkspaceTasks;
     app = await buildApp({
       projects,
       workspaces,
@@ -165,9 +181,9 @@ export function registerAppTestHooks(): void {
       }),
       sessionDaemon,
       agentProfileProvider,
-      config: fakeConfigService(),
+      config: fakeConfigService(configMutationCoordinator),
       configMutationCoordinator,
-      workspaceTasks,
+      workspaceTasks: appWorkspaceTasks,
       speechInputSettings: createSpeechInputSettingsService({
         coordinator: speechInputCoordinator,
         onCommitted: () => piWebUiStatusCache?.invalidate(),
@@ -202,6 +218,8 @@ export function registerAppTestHooks(): void {
     hostSpeech = undefined;
     piWebUiStatusCache = undefined;
     speechInputCoordinator = undefined;
+    workspaceTasks = undefined;
+    beforeConfigMutation = undefined;
 
     if (appToClose !== undefined) await appToClose.close();
     if (tempDirToRemove !== undefined) await rm(tempDirToRemove, { recursive: true, force: true });
@@ -259,7 +277,9 @@ interface CapturedPiPackagePluginRequest {
   scope?: PiPackagePluginMutationRequest["scope"];
 }
 
-function createAppTestConfigMutationCoordinator(): PiWebUiConfigMutationCoordinator {
+function createAppTestConfigMutationCoordinator(
+  beforeMutation?: () => void | Promise<void>,
+): PiWebUiConfigMutationCoordinator {
   const snapshot = (): PiWebUiConfigMutationSnapshot => ({
     loaded: {
       path: join(tempDir ?? "/tmp", "config.json"),
@@ -270,29 +290,32 @@ function createAppTestConfigMutationCoordinator(): PiWebUiConfigMutationCoordina
   });
   return {
     read: () => Promise.resolve(snapshot()),
-    mutate: (mutate, options = {}) => Promise.resolve().then(() => {
+    mutate: async (mutate, options = {}) => {
       const before = snapshot();
+      await beforeMutation?.();
       const next = mutate(before);
       if (options.shouldSave?.(before, next) === false) return before;
       options.onPublicationAttempt?.();
       piWebUiConfig = next;
       options.onSaved?.();
       return snapshot();
-    }),
+    },
   };
 }
 
-export function fakeConfigService() {
-  return {
-    read: () => piWebUiConfigResponse(piWebUiConfig),
-    write: (config: PiWebUiConfigValues) => {
-      piWebUiConfig = config;
-      return piWebUiConfigResponse(config);
-    },
-    update: (mutate: (current: PiWebUiConfigValues) => PiWebUiConfigValues) => {
+export function fakeConfigService(coordinator?: PiWebUiConfigMutationCoordinator) {
+  const mutateConfig = (mutate: (current: PiWebUiConfigValues) => PiWebUiConfigValues) => {
+    if (coordinator === undefined) {
       piWebUiConfig = mutate(piWebUiConfig);
       return piWebUiConfigResponse(piWebUiConfig);
-    },
+    }
+    return coordinator.mutate((snapshot) => mutate(snapshot.loaded.config))
+      .then((snapshot) => piWebUiConfigResponse(snapshot.loaded.config));
+  };
+  return {
+    read: () => piWebUiConfigResponse(piWebUiConfig),
+    write: (config: PiWebUiConfigValues) => mutateConfig(() => config),
+    update: mutateConfig,
   };
 }
 
