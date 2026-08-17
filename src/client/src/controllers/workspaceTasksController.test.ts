@@ -1425,6 +1425,206 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state.mutationGate).toBeUndefined();
   });
 
+  it("keeps both CRUD scopes gated while a partial move is retryable", async () => {
+    const operationId = "15151515-1515-4515-8515-151515151515";
+    let attemptedSynchronousCrud = false;
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-1", [buildTask])),
+        success(workspaceLoaded("workspace-1", [buildTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [])),
+        success(globalLoaded("global-2", [deployTask])),
+      ],
+      moves: [
+        {
+          kind: "partial",
+          operationId,
+          phase: "destination-written",
+          workspace: workspaceLoaded("workspace-1", [buildTask]),
+          global: globalLoaded("global-2", [deployTask]),
+        },
+        {
+          kind: "completed",
+          operationId,
+          workspace: workspaceLoaded("workspace-2", []),
+          global: globalLoaded("global-2", [deployTask]),
+        },
+      ],
+      uuids: [operationId],
+      onChange: (state, controller) => {
+        if (attemptedSynchronousCrud || state.move?.kind !== "partial" || !state.move.retryAllowed) return;
+        attemptedSynchronousCrud = true;
+        void controller.actions.create("workspace", extraTask);
+      },
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
+    await settle();
+
+    expect(attemptedSynchronousCrud).toBe(true);
+    expect(harness.controller.state.move).toEqual({
+      kind: "partial",
+      message: "Move is partially complete. Refresh before retrying.",
+      retryAllowed: true,
+    });
+    expect(harness.controller.state.mutationGate).toEqual({
+      scopes: ["workspace", "global"],
+      message: "Move is partially complete. Refresh before retrying.",
+    });
+    expect(harness.client.replaceWorkspace).not.toHaveBeenCalled();
+    expect(harness.client.replaceGlobal).not.toHaveBeenCalled();
+
+    await harness.controller.actions.create("workspace", extraTask);
+    await harness.controller.actions.update({ scope: "workspace", id: "build" }, editedBuildTask);
+    await harness.controller.actions.remove({ scope: "workspace", id: "build" });
+    await harness.controller.actions.create("global", extraTask);
+    await harness.controller.actions.update({ scope: "global", id: "deploy" }, { ...deployTask, title: "Deploy release" });
+    await harness.controller.actions.remove({ scope: "global", id: "deploy" });
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, extraTask);
+
+    expect(harness.client.replaceWorkspace).not.toHaveBeenCalled();
+    expect(harness.client.replaceGlobal).not.toHaveBeenCalled();
+    expect(harness.client.move).toHaveBeenCalledTimes(1);
+
+    await harness.controller.actions.retryMove();
+
+    expect(harness.client.move.mock.calls.map(([input]) => ({ operationId: input.operationId, intent: input.intent }))).toEqual([
+      { operationId, intent: "start" },
+      { operationId, intent: "retry" },
+    ]);
+    expect(harness.controller.state.move).toBeUndefined();
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+  });
+
+  it.each([
+    ["workspace", "validation", { kind: "validation", message: "Workspace task is invalid" }],
+    ["workspace", "unavailable", { kind: "unavailable", message: "Workspace write unavailable", retryable: true }],
+    ["global", "validation", { kind: "validation", message: "Global task is invalid" }],
+    ["global", "unavailable", { kind: "unavailable", message: "Global write unavailable", retryable: true }],
+  ] as const)("publishes a newer active %s catalog error after a delayed %s result", async (scope, _kind, result) => {
+    const workspaceWrite = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const globalWrite = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const newerWorkspace = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const newerGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const options: HarnessOptions = {
+      workspaceReads: [
+        success(workspaceLoaded("workspace-1", [buildTask])),
+        newerWorkspace.promise,
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [deployTask])),
+        newerGlobal.promise,
+      ],
+    };
+    if (scope === "workspace") options.workspaceReplacements = [workspaceWrite.promise];
+    else options.globalReplacements = [globalWrite.promise];
+    const harness = createHarness(options);
+    harness.controller.observe(true);
+    await settle();
+
+    const saving = harness.controller.actions.create(scope, extraTask);
+    await settle();
+    const refreshing = harness.controller.actions.refresh();
+    await settle();
+    newerWorkspace.resolve(success(workspaceLoaded("workspace-newer", [editedBuildTask])));
+    newerGlobal.resolve(success(globalLoaded("global-newer", [deployTask, buildTask])));
+    await refreshing;
+    const publicationsBeforeResult = harness.published.length;
+
+    if (scope === "workspace") workspaceWrite.resolve(failure(result));
+    else globalWrite.resolve(failure(result));
+    await saving;
+
+    const source = scope === "workspace" ? harness.controller.state.workspace : harness.controller.state.global;
+    expect(source).toEqual({
+      kind: "loaded",
+      config: scope === "workspace" ? config([editedBuildTask]) : config([deployTask, buildTask]),
+      refreshing: false,
+      refreshError: result.message,
+    });
+    expect(harness.published).toHaveLength(publicationsBeforeResult + 1);
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(2);
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(2);
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+    expect(harness.controller.state.move).toBeUndefined();
+  });
+
+  it.each([
+    ["workspace", "validation", { kind: "validation", message: "Workspace task is invalid" }],
+    ["workspace", "unavailable", { kind: "unavailable", message: "Workspace write unavailable", retryable: true }],
+    ["global", "validation", { kind: "validation", message: "Global task is invalid" }],
+    ["global", "unavailable", { kind: "unavailable", message: "Global write unavailable", retryable: true }],
+  ] as const)("retains a delayed %s %s result on its inactive keyed cache", async (scope, _kind, result) => {
+    const workspaceWrite = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const globalWrite = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const newerWorkspace = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const newerGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const inactiveSelection = scope === "workspace" ? workspaceB : remoteWorkspace;
+    const options: HarnessOptions = {
+      workspaceReads: [
+        success(workspaceLoaded("workspace-a-1", [buildTask])),
+        newerWorkspace.promise,
+        success(workspaceLoaded(scope === "workspace" ? "workspace-b-1" : "workspace-remote-1", [extraTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-a-1", [deployTask])),
+        newerGlobal.promise,
+        ...(scope === "workspace" ? [] : [success(globalLoaded("global-remote-1", [extraTask]))]),
+      ],
+    };
+    if (scope === "workspace") options.workspaceReplacements = [workspaceWrite.promise];
+    else options.globalReplacements = [globalWrite.promise];
+    const harness = createHarness(options);
+    harness.controller.observe(true);
+    await settle();
+
+    const saving = harness.controller.actions.create(scope, extraTask);
+    await settle();
+    const refreshing = harness.controller.actions.refresh();
+    await settle();
+    newerWorkspace.resolve(success(workspaceLoaded("workspace-a-newer", [editedBuildTask])));
+    newerGlobal.resolve(success(globalLoaded("global-a-newer", [deployTask, buildTask])));
+    await refreshing;
+
+    harness.setSelection(inactiveSelection);
+    harness.controller.observe(true);
+    await settle();
+    const publicationsBeforeResult = harness.published.length;
+    if (scope === "workspace") workspaceWrite.resolve(failure(result));
+    else globalWrite.resolve(failure(result));
+    await saving;
+
+    const activeSource = scope === "workspace" ? harness.controller.state.workspace : harness.controller.state.global;
+    expect(activeSource).toEqual({
+      kind: "loaded",
+      config: config([extraTask]),
+      refreshing: false,
+    });
+    expect(harness.published).toHaveLength(publicationsBeforeResult);
+
+    const workspaceReadCount = harness.client.readWorkspace.mock.calls.length;
+    const globalReadCount = harness.client.readGlobal.mock.calls.length;
+    harness.setSelection(workspaceA);
+    harness.controller.observe(true);
+    await settle();
+
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(workspaceReadCount);
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(globalReadCount);
+    const source = scope === "workspace" ? harness.controller.state.workspace : harness.controller.state.global;
+    expect(source).toEqual({
+      kind: "loaded",
+      config: scope === "workspace" ? config([editedBuildTask]) : config([deployTask, buildTask]),
+      refreshing: false,
+      refreshError: result.message,
+    });
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+    expect(harness.controller.state.move).toBeUndefined();
+  });
+
   it("keeps public catalog snapshots isolated from later CAS and move inputs", async () => {
     const operationId = "14141414-1414-4414-8414-141414141414";
     const harness = createHarness({

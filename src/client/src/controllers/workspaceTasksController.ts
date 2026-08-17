@@ -523,10 +523,6 @@ export class WorkspaceTasksController {
       }
       case "validation":
       case "unavailable":
-        if (cache.dataGeneration !== context.dataGeneration) {
-          cache.dirty = true;
-          return;
-        }
         this.applyLoadFailure(cache, failureFromResult(result), false);
         this.publishForDirectMutation(context);
         return;
@@ -648,7 +644,7 @@ export class WorkspaceTasksController {
     }
     if (this.matchesMovePair(context.destinationApplied, context)) {
       this.moveState = { kind: "partial", message: PARTIAL_MOVE_MESSAGE, retryAllowed: true };
-      this.clearMoveMutationGate(context);
+      this.setMoveMutationGate(context, this.moveState.message);
       return;
     }
 
