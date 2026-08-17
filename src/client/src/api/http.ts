@@ -36,7 +36,7 @@ export async function requestJson(url: string, init?: RequestInit): Promise<Http
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
 function errorMessage(value: unknown): string | undefined {

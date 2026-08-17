@@ -159,7 +159,7 @@ function abortable(signal: AbortSignal | undefined): RequestInit | undefined {
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
 function machinePrefixPath(machineId: string): string {

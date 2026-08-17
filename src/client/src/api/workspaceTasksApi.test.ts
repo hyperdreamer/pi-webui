@@ -113,7 +113,7 @@ describe("workspaceTasksApi", () => {
 
   it("propagates in-flight read cancellation after passing the signal to fetch", async () => {
     const controller = new AbortController();
-    const abortError = new DOMException("Read cancelled", "AbortError");
+    const abortError = Object.assign(new Error("Read cancelled"), { name: "AbortError" });
     const fetchMock = vi.fn<FetchLike>((_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => { reject(abortError); }, { once: true });
     }));
@@ -128,14 +128,14 @@ describe("workspaceTasksApi", () => {
   });
 
   it("propagates an AbortError from a read without a caller signal", async () => {
-    const abortError = new DOMException("Read cancelled", "AbortError");
+    const abortError = Object.assign(new Error("Read cancelled"), { name: "AbortError" });
     vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.reject(abortError)));
 
     await expect(workspaceTasksApi.readGlobal(address.machineId)).rejects.toBe(abortError);
   });
 
   it("propagates an AbortError while decoding a read response", async () => {
-    const abortError = new DOMException("Read cancelled", "AbortError");
+    const abortError = Object.assign(new Error("Read cancelled"), { name: "AbortError" });
     const response = new Response(JSON.stringify(globalLoaded));
     vi.spyOn(response, "json").mockRejectedValue(abortError);
     vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.resolve(response)));

@@ -71,4 +71,13 @@ describe("requestJson", () => {
       body: undefined,
     });
   });
+
+  it("rethrows a structurally identified AbortError from response decoding", async () => {
+    const abortError = Object.assign(new Error("Response cancelled"), { name: "AbortError" });
+    const response = new Response(JSON.stringify({ kind: "conflict" }));
+    vi.spyOn(response, "json").mockRejectedValue(abortError);
+    vi.stubGlobal("fetch", vi.fn<FetchLike>(() => Promise.resolve(response)));
+
+    await expect(requestJson("api/machines/remote/workspace-tasks")).rejects.toBe(abortError);
+  });
 });
