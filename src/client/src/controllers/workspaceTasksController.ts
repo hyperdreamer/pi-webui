@@ -25,6 +25,7 @@ import { CancellableLoadScope, isLoadCancellation } from "./cancellableLoadScope
 const REFRESH_HINT = "Refresh and try again.";
 const PARTIAL_MOVE_MESSAGE = "Move is partially complete. Refresh before retrying.";
 const MANUAL_RESOLUTION_MESSAGE = "The move could not be verified. Refresh and resolve it manually.";
+const DIRECT_RECONCILIATION_MESSAGE = "Task data changed while saving. Refresh before editing it.";
 
 interface WorkspaceTasksSnapshotConfig {
   readonly version: WorkspaceTasksConfig["version"];
@@ -78,6 +79,8 @@ export interface WorkspaceTasksControllerDependencies {
 }
 
 type LoadOutcome = "success" | "failure" | "cancelled" | "skipped";
+type RefreshMode = "ordinary" | "recovery";
+type SourceLoadMode = "reuse" | "replace";
 
 type CatalogFailure =
   | { kind: "unavailable"; message: string; detail?: string }
@@ -95,7 +98,9 @@ interface CatalogCache<TResponse> {
   failure: CatalogFailure | undefined;
   refreshError: string | undefined;
   requestGeneration: number;
+  readGeneration: number;
   dataGeneration: number;
+  dirty: boolean;
   inFlight: InFlightCatalogRequest | undefined;
 }
 
@@ -118,9 +123,15 @@ interface ActiveSelection {
 }
 
 interface RefreshOperation {
+  readonly context: RefreshContext;
+  readonly promise: Promise<void>;
+}
+
+interface RefreshContext {
+  readonly selection: ActiveSelection;
   readonly selectionKey: string;
   readonly generation: number;
-  readonly promise: Promise<void>;
+  readonly mode: RefreshMode;
 }
 
 type WorkspacePattern =
@@ -151,8 +162,23 @@ interface MoveContext {
   manualMessage: string | undefined;
 }
 
-interface MutationGate {
+interface DirectMutationContext {
+  readonly selection: ActiveSelection;
+  readonly scope: WorkspaceTaskScope;
+  readonly cacheKey: string;
+  readonly dataGeneration: number;
+}
+
+interface SourceMutationGate {
+  readonly message: string;
+  readonly readGeneration: number;
+  readonly requiresRecovery: boolean;
+}
+
+interface MoveMutationGate {
   readonly selectionKey: string;
+  readonly workspaceKey: string;
+  readonly globalKey: string;
   readonly scopes: readonly WorkspaceTaskScope[];
   readonly message: string;
 }
@@ -177,7 +203,9 @@ export class WorkspaceTasksController {
   private moveContext: MoveContext | undefined;
   private moveState: WorkspaceTasksWorkspaceState["move"] | undefined;
   private moveStateSelectionKey: string | undefined;
-  private mutationGate: MutationGate | undefined;
+  private readonly workspaceMutationGates = new Map<string, SourceMutationGate>();
+  private readonly globalMutationGates = new Map<string, SourceMutationGate>();
+  private moveMutationGate: MoveMutationGate | undefined;
 
   readonly actions: WorkspaceTasksActions;
 
@@ -220,15 +248,28 @@ export class WorkspaceTasksController {
     const selection = this.syncSelection();
     if (selection === undefined) return Promise.resolve();
 
+    return this.startRefresh(selection, "ordinary");
+  }
+
+  private startRefresh(selection: ActiveSelection, mode: RefreshMode): Promise<void> {
     const current = this.refreshOperation;
-    if (current?.selectionKey === selection.selectionKey && current.generation === this.selectionGeneration) {
+    if (
+      current?.context.selectionKey === selection.selectionKey
+      && current.context.generation === this.selectionGeneration
+      && mode === "ordinary"
+    ) {
       return current.promise;
     }
 
-    const promise = this.refreshSelection(selection);
-    const operation: RefreshOperation = {
+    const context: RefreshContext = {
+      selection,
       selectionKey: selection.selectionKey,
       generation: this.selectionGeneration,
+      mode,
+    };
+    const promise = this.refreshSelection(context);
+    const operation: RefreshOperation = {
+      context,
       promise,
     };
     this.refreshOperation = operation;
@@ -248,115 +289,155 @@ export class WorkspaceTasksController {
   private ensureLoaded(selection: ActiveSelection): void {
     const workspace = this.workspaceCache(selection);
     const global = this.globalCache(selection);
-    void Promise.all([
-      this.loadWorkspace(workspace, false),
-      this.loadGlobal(global, false),
-    ]);
+    if (this.requiresRecoveryRefresh(workspace, global)) {
+      void this.startRefresh(selection, "recovery");
+      return;
+    }
+    void this.loadWorkspace(workspace, false).then((outcome) => {
+      this.finalizeObservedSourceLoad("workspace", workspace, outcome);
+    });
+    void this.loadGlobal(global, false).then((outcome) => {
+      this.finalizeObservedSourceLoad("global", global, outcome);
+    });
   }
 
-  private async refreshSelection(selection: ActiveSelection): Promise<void> {
+  private async refreshSelection(context: RefreshContext): Promise<void> {
+    const selection = context.selection;
     const [workspace, global] = await Promise.all([
-      this.loadWorkspace(this.workspaceCache(selection), true),
-      this.loadGlobal(this.globalCache(selection), true),
+      this.loadWorkspace(this.workspaceCache(selection), true, context.mode === "recovery" ? "replace" : "reuse"),
+      this.loadGlobal(this.globalCache(selection), true, context.mode === "recovery" ? "replace" : "reuse"),
     ]);
-    if (!this.isSelectionCurrent(selection)) return;
+    if (!this.isRefreshContextCurrent(context)) return;
 
-    this.clearGateAfterRefresh(selection, workspace, global);
+    this.clearDirectGatesAfterRefresh(selection, workspace, global);
     this.reconcileMoveAfterRefresh(selection, workspace, global);
+    this.publishCurrent();
   }
 
   private async create(scope: WorkspaceTaskScope, task: WorkspaceTask): Promise<void> {
     const selection = this.actionSelection();
-    if (selection === undefined || this.isMutationBlocked(scope)) return;
+    if (selection === undefined || this.isMutationBlocked(selection, scope)) return;
 
     const catalog = this.catalogForCreate(selection, scope);
     if (catalog === undefined) return;
+    const context = this.createDirectMutationContext(selection, scope);
     await this.runMutation([scope], async () => {
       if (!this.isSelectionCurrent(selection)) return;
-      const result = scope === "workspace"
-        ? await this.client.replaceWorkspace({
+      if (scope === "workspace") {
+        const cache = this.workspaceCache(selection);
+        const result = await this.client.replaceWorkspace({
           machineId: selection.machineId,
           projectId: selection.projectId,
           workspaceId: selection.workspaceId,
           expectedRevision: catalog.revision,
           config: appendWorkspaceTask(catalog.config, cloneTask(task)),
-        })
-        : await this.client.replaceGlobal({
+        });
+        await this.handleDirectMutationResult(context, cache, result, (response) => {
+          this.setWorkspaceResponse(cache, response);
+        });
+        return;
+      }
+      const cache = this.globalCache(selection);
+      const result = await this.client.replaceGlobal({
           machineId: selection.machineId,
           expectedRevision: catalog.revision,
           config: appendWorkspaceTask(catalog.config, cloneTask(task)),
         });
-      await this.handleDirectMutationResult(selection, scope, result);
+      await this.handleDirectMutationResult(context, cache, result, (response) => {
+        this.setGlobalResponse(cache, response);
+      });
     });
   }
 
   private async update(ref: WorkspaceTaskRef, task: WorkspaceTask): Promise<void> {
     const selection = this.actionSelection();
-    if (selection === undefined || this.isMutationBlocked(ref.scope)) return;
+    if (selection === undefined || this.isMutationBlocked(selection, ref.scope)) return;
 
     const catalog = this.loadedCatalogForMutation(selection, ref.scope);
     if (catalog === undefined) return;
+    const context = this.createDirectMutationContext(selection, ref.scope);
     const index = catalog.config.tasks.findIndex((candidate) => candidate.id === ref.id);
     if (index === -1) {
-      this.setMutationGate(selection, [ref.scope], "The task changed. Refresh before editing it.");
+      this.setDirectMutationGate(ref.scope, context.cacheKey, "The task changed. Refresh before editing it.");
+      this.publishCurrent();
       return;
     }
 
     await this.runMutation([ref.scope], async () => {
       if (!this.isSelectionCurrent(selection)) return;
       const config = replaceWorkspaceTaskAt(catalog.config, index, cloneTask(task));
-      const result = ref.scope === "workspace"
-        ? await this.client.replaceWorkspace({
+      if (ref.scope === "workspace") {
+        const cache = this.workspaceCache(selection);
+        const result = await this.client.replaceWorkspace({
           machineId: selection.machineId,
           projectId: selection.projectId,
           workspaceId: selection.workspaceId,
           expectedRevision: catalog.revision,
           config,
-        })
-        : await this.client.replaceGlobal({
+        });
+        await this.handleDirectMutationResult(context, cache, result, (response) => {
+          this.setWorkspaceResponse(cache, response);
+        });
+        return;
+      }
+      const cache = this.globalCache(selection);
+      const result = await this.client.replaceGlobal({
           machineId: selection.machineId,
           expectedRevision: catalog.revision,
           config,
         });
-      await this.handleDirectMutationResult(selection, ref.scope, result);
+      await this.handleDirectMutationResult(context, cache, result, (response) => {
+        this.setGlobalResponse(cache, response);
+      });
     });
   }
 
   private async remove(ref: WorkspaceTaskRef): Promise<void> {
     const selection = this.actionSelection();
-    if (selection === undefined || this.isMutationBlocked(ref.scope)) return;
+    if (selection === undefined || this.isMutationBlocked(selection, ref.scope)) return;
 
     const catalog = this.loadedCatalogForMutation(selection, ref.scope);
     if (catalog === undefined) return;
+    const context = this.createDirectMutationContext(selection, ref.scope);
     const index = catalog.config.tasks.findIndex((candidate) => candidate.id === ref.id);
     if (index === -1) {
-      this.setMutationGate(selection, [ref.scope], "The task changed. Refresh before removing it.");
+      this.setDirectMutationGate(ref.scope, context.cacheKey, "The task changed. Refresh before removing it.");
+      this.publishCurrent();
       return;
     }
 
     await this.runMutation([ref.scope], async () => {
       if (!this.isSelectionCurrent(selection)) return;
       const config = removeWorkspaceTaskAt(catalog.config, index);
-      const result = ref.scope === "workspace"
-        ? await this.client.replaceWorkspace({
+      if (ref.scope === "workspace") {
+        const cache = this.workspaceCache(selection);
+        const result = await this.client.replaceWorkspace({
           machineId: selection.machineId,
           projectId: selection.projectId,
           workspaceId: selection.workspaceId,
           expectedRevision: catalog.revision,
           config,
-        })
-        : await this.client.replaceGlobal({
+        });
+        await this.handleDirectMutationResult(context, cache, result, (response) => {
+          this.setWorkspaceResponse(cache, response);
+        });
+        return;
+      }
+      const cache = this.globalCache(selection);
+      const result = await this.client.replaceGlobal({
           machineId: selection.machineId,
           expectedRevision: catalog.revision,
           config,
         });
-      await this.handleDirectMutationResult(selection, ref.scope, result);
+      await this.handleDirectMutationResult(context, cache, result, (response) => {
+        this.setGlobalResponse(cache, response);
+      });
     });
   }
 
   private async move(ref: WorkspaceTaskRef, destinationTask: WorkspaceTask): Promise<void> {
     const selection = this.actionSelection();
-    if (selection === undefined || this.isMutationBlocked("workspace") || this.isMutationBlocked("global")) return;
+    if (selection === undefined || this.isMutationBlocked(selection, "workspace") || this.isMutationBlocked(selection, "global")) return;
 
     const context = this.createMoveContext(selection, ref, destinationTask);
     if (context === undefined) return;
@@ -382,6 +463,7 @@ export class WorkspaceTasksController {
     if (context === undefined || this.moveState?.retryAllowed !== true || !this.isMoveContextCurrent(context)) return;
     if (!this.matchesMovePair(context.destinationApplied, context)) {
       this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+      this.publishCurrent();
       return;
     }
 
@@ -389,6 +471,7 @@ export class WorkspaceTasksController {
       if (!this.isMoveContextCurrent(context) || this.moveState?.retryAllowed !== true) return;
       if (!this.matchesMovePair(context.destinationApplied, context)) {
         this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+        this.publishCurrent();
         return;
       }
       try {
@@ -402,32 +485,53 @@ export class WorkspaceTasksController {
     });
   }
 
-  private async handleDirectMutationResult(
-    selection: ActiveSelection,
-    scope: WorkspaceTaskScope,
-    result: WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>
-      | WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>,
+  private async handleDirectMutationResult<TResponse extends WorkspaceTasksCatalogResponse | GlobalWorkspaceTasksResponse>(
+    context: DirectMutationContext,
+    cache: CatalogCache<TResponse>,
+    result: WorkspaceTasksRequestResult<TResponse>,
+    applyResponse: (response: TResponse) => void,
   ): Promise<void> {
-    if (!this.isSelectionCurrent(selection)) return;
-    if (result.kind === "success") {
-      if (scope === "workspace") {
-        this.setWorkspaceResponse(this.workspaceCache(selection), result.value);
-      } else if (result.value.kind === "loaded" || result.value.kind === "invalid") {
-        this.setGlobalResponse(this.globalCache(selection), result.value);
+    switch (result.kind) {
+      case "success":
+        if (cache.dataGeneration !== context.dataGeneration) {
+          await this.reconcileStaleDirectMutation(context, cache);
+          return;
+        }
+        applyResponse(result.value);
+        this.clearDirectMutationGate(context.scope, context.cacheKey);
+        this.publishForDirectMutation(context);
+        return;
+      case "conflict": {
+        const requiresRecovery = result.reason === "invalid-catalog";
+        if (requiresRecovery) cache.dirty = true;
+        this.cancelLoad(cache);
+        this.setDirectMutationGate(context.scope, context.cacheKey, result.message, requiresRecovery);
+        this.publishForDirectMutation(context);
+        if (result.reason === "invalid-catalog") {
+          const selection = this.activeSelectionForDirectMutation(context);
+          if (selection !== undefined) await this.startRefresh(selection, "recovery");
+        }
+        return;
       }
-      this.clearMutationGate(selection, [scope]);
-      this.publishCurrent();
-      return;
-    }
-
-    if (result.kind === "conflict") {
-      this.setMutationGate(selection, [scope], result.message);
-      if (result.reason === "invalid-catalog") await this.refresh();
-      return;
-    }
-    if (result.kind === "unknown-outcome") {
-      this.setMutationGate(selection, [scope], result.message);
-      await this.refresh();
+      case "unknown-outcome": {
+        cache.dirty = true;
+        this.setDirectMutationGate(context.scope, context.cacheKey, result.message, true);
+        this.publishForDirectMutation(context);
+        const selection = this.activeSelectionForDirectMutation(context);
+        if (selection !== undefined) await this.startRefresh(selection, "recovery");
+        return;
+      }
+      case "validation":
+      case "unavailable":
+        if (cache.dataGeneration !== context.dataGeneration) {
+          cache.dirty = true;
+          return;
+        }
+        this.applyLoadFailure(cache, failureFromResult(result), false);
+        this.publishForDirectMutation(context);
+        return;
+      default:
+        return assertNever(result);
     }
   }
 
@@ -438,54 +542,71 @@ export class WorkspaceTasksController {
       case "completed":
         if (result.operationId !== context.request.operationId) {
           this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+          this.publishCurrent();
           return;
         }
         if (!matchesMoveObservations(context.complete, result.workspace, result.global)) {
           this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+          this.publishCurrent();
           return;
         }
         this.applyMoveCatalogs(context, result.workspace, result.global);
         this.moveContext = undefined;
         this.moveState = undefined;
         this.moveStateSelectionKey = undefined;
-        this.clearMutationGate(contextSelection(context), ["workspace", "global"]);
+        this.clearMoveMutationGate(context);
         this.publishCurrent();
         return;
       case "partial":
         if (result.operationId !== context.request.operationId) {
           this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+          this.publishCurrent();
           return;
         }
         if (!matchesMoveObservations(context.destinationApplied, result.workspace, result.global)) {
           this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
+          this.publishCurrent();
           return;
         }
         this.applyMoveCatalogs(context, result.workspace, result.global);
-        this.moveState = { kind: "partial", message: PARTIAL_MOVE_MESSAGE, retryAllowed: true };
-        this.publishCurrent();
+        await this.beginMoveRecovery(context, { kind: "partial", message: PARTIAL_MOVE_MESSAGE, retryAllowed: false });
         return;
       case "unknown-outcome":
         await this.handleUnknownMoveOutcome(context, result.message);
         return;
       case "conflict":
+        if (result.reason === "invalid-catalog") {
+          await this.beginMoveRecovery(context, { kind: "unknown-outcome", message: result.message, retryAllowed: false });
+          return;
+        }
         this.markManualMoveResolution(context, result.message);
+        this.publishCurrent();
         return;
       case "validation":
       case "unavailable":
         this.moveContext = undefined;
         this.moveStateSelectionKey = context.selectionKey;
         this.moveState = { kind: "conflict", message: result.message, retryAllowed: false };
+        this.clearMoveMutationGate(context);
         this.publishCurrent();
         return;
     }
   }
 
   private async handleUnknownMoveOutcome(context: MoveContext, message: string): Promise<void> {
+    await this.beginMoveRecovery(context, { kind: "unknown-outcome", message, retryAllowed: false });
+  }
+
+  private async beginMoveRecovery(
+    context: MoveContext,
+    state: NonNullable<WorkspaceTasksWorkspaceState["move"]>,
+  ): Promise<void> {
     if (!this.isMoveContextCurrent(context)) return;
     this.moveStateSelectionKey = context.selectionKey;
-    this.moveState = { kind: "unknown-outcome", message, retryAllowed: false };
+    this.moveState = state;
+    this.setMoveMutationGate(context, state.message);
     this.publishCurrent();
-    await this.refresh();
+    await this.startRefresh(contextSelection(context), "recovery");
   }
 
   private reconcileMoveAfterRefresh(
@@ -503,7 +624,7 @@ export class WorkspaceTasksController {
         message: "Move recovery could not be verified. Refresh before retrying.",
         retryAllowed: false,
       };
-      this.setMutationGate(selection, ["workspace", "global"], this.moveState.message);
+      this.setMoveMutationGate(context, this.moveState.message);
       return;
     }
 
@@ -511,16 +632,14 @@ export class WorkspaceTasksController {
       this.moveContext = undefined;
       this.moveState = undefined;
       this.moveStateSelectionKey = undefined;
-      this.clearMutationGate(selection, ["workspace", "global"]);
-      this.publishCurrent();
+      this.clearMoveMutationGate(context);
       return;
     }
     if (this.matchesMovePair(context.pristine, context)) {
       this.moveContext = undefined;
       this.moveState = undefined;
       this.moveStateSelectionKey = undefined;
-      this.clearMutationGate(selection, ["workspace", "global"]);
-      this.publishCurrent();
+      this.clearMoveMutationGate(context);
       return;
     }
     if (context.retryProhibited) {
@@ -529,8 +648,7 @@ export class WorkspaceTasksController {
     }
     if (this.matchesMovePair(context.destinationApplied, context)) {
       this.moveState = { kind: "partial", message: PARTIAL_MOVE_MESSAGE, retryAllowed: true };
-      this.clearMutationGate(selection, ["workspace", "global"]);
-      this.publishCurrent();
+      this.clearMoveMutationGate(context);
       return;
     }
 
@@ -543,7 +661,7 @@ export class WorkspaceTasksController {
     this.moveStateSelectionKey = context.selectionKey;
     context.retryProhibited = true;
     context.manualMessage = message;
-    this.setMutationGate(contextSelection(context), ["workspace", "global"], message);
+    this.setMoveMutationGate(context, message);
   }
 
   private createMoveContext(
@@ -741,7 +859,7 @@ export class WorkspaceTasksController {
     this.moveContext = undefined;
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
-    this.mutationGate = undefined;
+    this.moveMutationGate = undefined;
     if (previous !== undefined) {
       if (previous.workspaceKey !== next.workspaceKey) this.cancelWorkspaceLoad(previous.workspaceKey);
       if (previous.globalKey !== next.globalKey) this.cancelGlobalLoad(previous.globalKey);
@@ -757,7 +875,7 @@ export class WorkspaceTasksController {
     this.moveContext = undefined;
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
-    this.mutationGate = undefined;
+    this.moveMutationGate = undefined;
     for (const cache of this.workspaceCaches.values()) this.cancelLoad(cache);
     for (const cache of this.globalCaches.values()) this.cancelLoad(cache);
   }
@@ -801,7 +919,9 @@ export class WorkspaceTasksController {
         refreshError: undefined,
         inFlight: undefined,
         requestGeneration: 0,
+        readGeneration: 0,
         dataGeneration: 0,
+        dirty: false,
       };
       this.workspaceCaches.set(cache.key, cache);
     }
@@ -820,28 +940,40 @@ export class WorkspaceTasksController {
         refreshError: undefined,
         inFlight: undefined,
         requestGeneration: 0,
+        readGeneration: 0,
         dataGeneration: 0,
+        dirty: false,
       };
       this.globalCaches.set(cache.key, cache);
     }
     return cache;
   }
 
-  private loadWorkspace(cache: WorkspaceCatalogCache, force: boolean): Promise<LoadOutcome> {
+  private loadWorkspace(
+    cache: WorkspaceCatalogCache,
+    force: boolean,
+    mode: SourceLoadMode = "reuse",
+  ): Promise<LoadOutcome> {
     return this.loadSource(
       cache,
       force,
       (signal) => this.client.readWorkspace(cache.selection, signal),
       cloneWorkspaceResponse,
+      mode,
     );
   }
 
-  private loadGlobal(cache: GlobalCatalogCache, force: boolean): Promise<LoadOutcome> {
+  private loadGlobal(
+    cache: GlobalCatalogCache,
+    force: boolean,
+    mode: SourceLoadMode = "reuse",
+  ): Promise<LoadOutcome> {
     return this.loadSource(
       cache,
       force,
       (signal) => this.client.readGlobal(cache.machineId, signal),
       cloneGlobalResponse,
+      mode,
     );
   }
 
@@ -850,9 +982,14 @@ export class WorkspaceTasksController {
     force: boolean,
     request: (signal: AbortSignal) => Promise<WorkspaceTasksRequestResult<TResponse>>,
     cloneResponse: (response: TResponse) => TResponse,
+    mode: SourceLoadMode,
   ): Promise<LoadOutcome> {
+    if (mode === "replace") {
+      cache.dirty = true;
+      this.cancelLoad(cache);
+    }
     if (cache.inFlight !== undefined) return cache.inFlight.promise;
-    if (!force && cache.response !== undefined) return Promise.resolve("skipped");
+    if (!force && cache.response !== undefined && !cache.dirty) return Promise.resolve("skipped");
 
     const requestId = ++cache.requestGeneration;
     const dataGeneration = cache.dataGeneration;
@@ -881,7 +1018,9 @@ export class WorkspaceTasksController {
         cache.response = cloneResponse(result.value);
         cache.failure = undefined;
         cache.refreshError = undefined;
+        cache.readGeneration += 1;
         cache.dataGeneration += 1;
+        cache.dirty = false;
         this.finishSourceRequest(cache, requestId);
         this.publishCurrent();
         return "success";
@@ -905,14 +1044,14 @@ export class WorkspaceTasksController {
     if (cache.inFlight?.id === requestId) cache.inFlight = undefined;
   }
 
-  private applyLoadFailure<TResponse>(cache: CatalogCache<TResponse>, failure: CatalogFailure): void {
+  private applyLoadFailure<TResponse>(cache: CatalogCache<TResponse>, failure: CatalogFailure, publish = true): void {
     if (cache.response !== undefined && retainsCatalogData(cache.response)) {
       cache.refreshError = failure.message;
     } else {
       cache.failure = failure;
       cache.refreshError = undefined;
     }
-    this.publishCurrent();
+    if (publish) this.publishCurrent();
   }
 
   private isCurrentSourceRequest<TResponse>(cache: CatalogCache<TResponse>, requestId: number, dataGeneration: number): boolean {
@@ -942,6 +1081,7 @@ export class WorkspaceTasksController {
     cache.failure = undefined;
     cache.refreshError = undefined;
     cache.dataGeneration += 1;
+    cache.dirty = false;
   }
 
   private setGlobalResponse(cache: GlobalCatalogCache, response: GlobalWorkspaceTasksResponse): void {
@@ -950,6 +1090,7 @@ export class WorkspaceTasksController {
     cache.failure = undefined;
     cache.refreshError = undefined;
     cache.dataGeneration += 1;
+    cache.dirty = false;
   }
 
   private isSelectionCurrent(selection: ActiveSelection): boolean {
@@ -965,34 +1106,170 @@ export class WorkspaceTasksController {
       && this.moveContext === context;
   }
 
-  private isMutationBlocked(scope: WorkspaceTaskScope): boolean {
-    return this.mutationGate?.scopes.includes(scope) ?? false;
+  private isRefreshContextCurrent(context: RefreshContext): boolean {
+    return this.isSelectionCurrent(context.selection)
+      && this.selectionGeneration === context.generation
+      && this.refreshOperation?.context === context;
   }
 
-  private setMutationGate(selection: ActiveSelection, scopes: readonly WorkspaceTaskScope[], message: string): void {
-    if (!this.isSelectionCurrent(selection)) return;
-    this.mutationGate = { selectionKey: selection.selectionKey, scopes: [...scopes], message };
-    this.publishCurrent();
+  private createDirectMutationContext(selection: ActiveSelection, scope: WorkspaceTaskScope): DirectMutationContext {
+    const cache = this.cacheForScope(selection, scope);
+    return {
+      selection,
+      scope,
+      cacheKey: cache.key,
+      dataGeneration: cache.dataGeneration,
+    };
   }
 
-  private clearMutationGate(selection: ActiveSelection, scopes: readonly WorkspaceTaskScope[]): void {
-    const gate = this.mutationGate;
-    if (gate?.selectionKey !== selection.selectionKey) return;
-    if (!scopes.every((scope) => gate.scopes.includes(scope))) return;
-    this.mutationGate = undefined;
+  private cacheForScope(
+    selection: ActiveSelection,
+    scope: WorkspaceTaskScope,
+  ): WorkspaceCatalogCache | GlobalCatalogCache {
+    return scope === "workspace" ? this.workspaceCache(selection) : this.globalCache(selection);
   }
 
-  private clearGateAfterRefresh(
+  private gatesForScope(scope: WorkspaceTaskScope): Map<string, SourceMutationGate> {
+    return scope === "workspace" ? this.workspaceMutationGates : this.globalMutationGates;
+  }
+
+  private setDirectMutationGate(
+    scope: WorkspaceTaskScope,
+    cacheKey: string,
+    message: string,
+    requiresRecovery = false,
+  ): void {
+    const cache = scope === "workspace"
+      ? this.workspaceCaches.get(cacheKey)
+      : this.globalCaches.get(cacheKey);
+    if (cache === undefined) return;
+    this.gatesForScope(scope).set(cacheKey, { message, readGeneration: cache.readGeneration, requiresRecovery });
+  }
+
+  private clearDirectMutationGate(scope: WorkspaceTaskScope, cacheKey: string): void {
+    this.gatesForScope(scope).delete(cacheKey);
+  }
+
+  private clearDirectGatesAfterRefresh(
     selection: ActiveSelection,
     workspaceOutcome: LoadOutcome,
     globalOutcome: LoadOutcome,
   ): void {
-    const gate = this.mutationGate;
-    if (gate?.selectionKey !== selection.selectionKey) return;
-    const canClear = gate.scopes.every((scope) => (scope === "workspace" ? workspaceOutcome : globalOutcome) === "success");
-    if (!canClear) return;
-    this.mutationGate = undefined;
-    this.publishCurrent();
+    this.clearDirectGateAfterSourceRefresh("workspace", this.workspaceCache(selection), workspaceOutcome);
+    this.clearDirectGateAfterSourceRefresh("global", this.globalCache(selection), globalOutcome);
+  }
+
+  private requiresRecoveryRefresh(
+    workspace: WorkspaceCatalogCache,
+    global: GlobalCatalogCache,
+  ): boolean {
+    return this.requiresSourceRecoveryRefresh("workspace", workspace)
+      || this.requiresSourceRecoveryRefresh("global", global);
+  }
+
+  private requiresSourceRecoveryRefresh<TResponse>(
+    scope: WorkspaceTaskScope,
+    cache: CatalogCache<TResponse>,
+  ): boolean {
+    return cache.dirty
+      && cache.inFlight === undefined
+      && this.gatesForScope(scope).get(cache.key)?.requiresRecovery === true;
+  }
+
+  private finalizeObservedSourceLoad<TResponse>(
+    scope: WorkspaceTaskScope,
+    cache: CatalogCache<TResponse>,
+    outcome: LoadOutcome,
+  ): void {
+    if (!this.clearDirectGateAfterSourceRefresh(scope, cache, outcome)) return;
+    const selection = this.activeSelection;
+    if (selection === undefined || !this.isSelectionCurrent(selection)) return;
+    const cacheKey = scope === "workspace" ? selection.workspaceKey : selection.globalKey;
+    if (cacheKey === cache.key) this.publishCurrent();
+  }
+
+  private clearDirectGateAfterSourceRefresh<TResponse>(
+    scope: WorkspaceTaskScope,
+    cache: CatalogCache<TResponse>,
+    outcome: LoadOutcome,
+  ): boolean {
+    const gate = this.gatesForScope(scope).get(cache.key);
+    if (gate === undefined || outcome !== "success" || cache.readGeneration <= gate.readGeneration) return false;
+    this.gatesForScope(scope).delete(cache.key);
+    return true;
+  }
+
+  private activeSelectionForDirectMutation(context: DirectMutationContext): ActiveSelection | undefined {
+    const selection = this.activeSelection;
+    if (selection === undefined || !this.isSelectionCurrent(selection)) return undefined;
+    const cacheKey = context.scope === "workspace" ? selection.workspaceKey : selection.globalKey;
+    return cacheKey === context.cacheKey ? selection : undefined;
+  }
+
+  private publishForDirectMutation(context: DirectMutationContext): void {
+    if (this.activeSelectionForDirectMutation(context) !== undefined) this.publishCurrent();
+  }
+
+  private async reconcileStaleDirectMutation<TResponse>(
+    context: DirectMutationContext,
+    cache: CatalogCache<TResponse>,
+  ): Promise<void> {
+    cache.dirty = true;
+    this.setDirectMutationGate(context.scope, context.cacheKey, DIRECT_RECONCILIATION_MESSAGE, true);
+    this.publishForDirectMutation(context);
+    const selection = this.activeSelectionForDirectMutation(context);
+    if (selection !== undefined) await this.startRefresh(selection, "recovery");
+  }
+
+  private isMutationBlocked(selection: ActiveSelection, scope: WorkspaceTaskScope): boolean {
+    const cacheKey = scope === "workspace" ? selection.workspaceKey : selection.globalKey;
+    if (this.gatesForScope(scope).has(cacheKey)) return true;
+    const moveGate = this.moveMutationGate;
+    return moveGate?.selectionKey === selection.selectionKey
+      && moveGate.workspaceKey === selection.workspaceKey
+      && moveGate.globalKey === selection.globalKey
+      && moveGate.scopes.includes(scope);
+  }
+
+  private setMoveMutationGate(context: MoveContext, message: string): void {
+    this.moveMutationGate = {
+      selectionKey: context.selectionKey,
+      workspaceKey: context.workspaceKey,
+      globalKey: context.globalKey,
+      scopes: ["workspace", "global"],
+      message,
+    };
+  }
+
+  private clearMoveMutationGate(context: MoveContext): void {
+    const gate = this.moveMutationGate;
+    if (gate?.selectionKey !== context.selectionKey) return;
+    this.moveMutationGate = undefined;
+  }
+
+  private mutationGateForSelection(
+    selection: ActiveSelection,
+  ): { scopes: readonly WorkspaceTaskScope[]; message: string } | undefined {
+    const moveGate = this.moveMutationGate;
+    if (
+      moveGate?.selectionKey === selection.selectionKey
+      && moveGate.workspaceKey === selection.workspaceKey
+      && moveGate.globalKey === selection.globalKey
+    ) {
+      return { scopes: moveGate.scopes, message: moveGate.message };
+    }
+
+    const workspaceGate = this.workspaceMutationGates.get(selection.workspaceKey);
+    const globalGate = this.globalMutationGates.get(selection.globalKey);
+    if (workspaceGate === undefined && globalGate === undefined) return undefined;
+    const entries = [
+      ...(workspaceGate === undefined ? [] : [{ scope: "workspace" as const, message: workspaceGate.message }]),
+      ...(globalGate === undefined ? [] : [{ scope: "global" as const, message: globalGate.message }]),
+    ];
+    return {
+      scopes: entries.map((entry) => entry.scope),
+      message: entries.map((entry) => entry.message).join(" "),
+    };
   }
 
   private publishCurrent(): void {
@@ -1001,7 +1278,7 @@ export class WorkspaceTasksController {
     if (selection === undefined || this.readSelection()?.selectionKey !== selection.selectionKey) return;
     const workspace = this.workspaceCache(selection);
     const global = this.globalCache(selection);
-    const gate = this.mutationGate?.selectionKey === selection.selectionKey ? this.mutationGate : undefined;
+    const gate = this.mutationGateForSelection(selection);
     this.currentState = immutableState({
       workspace: workspaceState(workspace),
       global: globalState(global),
@@ -1253,4 +1530,8 @@ function immutableState(state: WorkspaceTasksWorkspaceState): WorkspaceTasksWork
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled Workspace Tasks result: ${JSON.stringify(value)}`);
 }
