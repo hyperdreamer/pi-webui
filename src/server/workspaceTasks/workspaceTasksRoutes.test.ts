@@ -1,5 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   GlobalWorkspaceTasksResponse,
   MoveWorkspaceTaskRequest,
@@ -20,8 +23,13 @@ import {
   WorkspaceTasksUnknownOutcomeError,
 } from "./workspaceTasksErrors.js";
 import type { WorkspaceTasksCatalogService } from "./workspaceTasksCatalogService.js";
+import { ControlledConfigCoordinator } from "./workspaceTasks.testSupport.js";
+import { createWorkspaceTasksComposition } from "./workspaceTasksComposition.js";
 import { WorkspaceTasksMoveConflictError } from "./workspaceTasksMoveRegistry.js";
 import { registerWorkspaceTasksRoutes } from "./workspaceTasksRoutes.js";
+import { ProjectService } from "../projects/projectService.js";
+import { ProjectStore } from "../storage/projectStore.js";
+import { WorkspaceService } from "../workspaces/workspaceService.js";
 
 const address: WorkspaceCatalogAddress = { projectId: "project-1", workspaceId: "workspace-1" };
 const catalog = { version: 1 as const, tasks: [] };
@@ -133,18 +141,39 @@ describe("workspace task local routes", () => {
     }
   });
 
-  it("returns a known unavailable response for an unknown workspace identity", async () => {
-    service.replaceWorkspaceError = new WorkspaceTasksUnavailableError();
-    const response = await app.inject({
-      method: "PUT",
-      url: `/api/projects/${address.projectId}/workspaces/${address.workspaceId}/workspace-tasks`,
-      payload: { expectedRevision: "workspace-revision", config: catalog },
-    });
+  it("returns unavailable for a deleted workspace before queueing or publishing with the real composition", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-webui-workspace-tasks-routes-"));
+    const integratedApp = Fastify({ logger: false });
+    try {
+      const projects = new ProjectService(new ProjectStore(join(root, "projects.json")));
+      const project = await projects.add({ name: "Workspace task route test", path: root });
+      const composition = createWorkspaceTasksComposition({
+        configMutationCoordinator: new ControlledConfigCoordinator(),
+        projects,
+        workspaces: new WorkspaceService(),
+      });
+      registerWorkspaceTasksRoutes(integratedApp, composition.service);
+      await integratedApp.ready();
+      const queue = vi.spyOn(composition.workspaceMutations, "run");
+      const publish = vi.spyOn(composition.workspaceFiles, "publishCatalog");
 
-    expect(response.statusCode).toBe(503);
-    expect(response.json<unknown>()).toMatchObject({ kind: "unavailable", retryable: true });
-    expect(response.json<unknown>()).not.toMatchObject({ kind: "unknown-outcome" });
+      const response = await integratedApp.inject({
+        method: "PUT",
+        url: `/api/projects/${project.id}/workspaces/deleted/workspace-tasks`,
+        payload: { expectedRevision: "missing-revision", config: catalog },
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json<unknown>()).toMatchObject({ kind: "unavailable", retryable: true });
+      expect(response.json<unknown>()).not.toMatchObject({ kind: "unknown-outcome" });
+      expect(queue).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await integratedApp.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
+
   it("maps a recovered unrecognized registry state to the public manual-resolution conflict reason", async () => {
     service.replaceGlobalError = new WorkspaceTasksMoveConflictError("unrecognized-state");
 

@@ -225,15 +225,10 @@ export function createWorkspaceTasksCatalogService(
     return unknownOutcomeResult(UNKNOWN_OUTCOME_MESSAGE);
   }
 
-  async function reconcileDestinationObservation(permit: WorkspaceTasksMovePermit): Promise<MoveWorkspaceTaskResult> {
-    try {
-      await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);
-    } catch (error) {
-      if (error instanceof WorkspaceTasksMoveConflictError) {
-        return conflictResult(error.reason, error.message);
-      }
-      return resultFromMoveError(error);
-    }
+  function reconcileDestinationObservation(permit: WorkspaceTasksMovePermit): MoveWorkspaceTaskResult {
+    // The post-destination pair was already observed and classified by this move.
+    // Releasing here avoids replacing that authoritative observation with a racy reread.
+    registry.release(permit);
     return conflictResult("unrecognized-state", "The move state no longer matches its live claim.");
   }
   async function removeSource(

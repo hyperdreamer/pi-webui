@@ -251,7 +251,7 @@ describe("WorkspaceTasksCatalogService", () => {
     const request = promotionRequest(source, destination, "release");
     fixture.workspace.response = loadedWorkspace(source);
     fixture.global.response = loadedGlobal(destination);
-    fixture.global.readResponses = [loadedGlobal(destination), loadedGlobal(destination), loadedGlobal(catalogWithTasks("external"))];
+    fixture.global.readResponses = [loadedGlobal(destination), loadedGlobal(destination), loadedGlobal(catalogWithTasks("release"))];
 
     await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({
       kind: "conflict",
