@@ -211,7 +211,7 @@ class PiWebUiTasksPanel extends BaseElement {
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
     const previous = this.stateValue;
     this.stateValue = value;
-    this.recordPendingSourceObservations(value);
+    this.recordPendingSourceObservations(value, previous !== value);
     if (value.move !== undefined) this.moveRecoveryObserved = true;
     this.rememberOpenGroups();
     this.pruneExpandedGroups();
@@ -1034,10 +1034,16 @@ class PiWebUiTasksPanel extends BaseElement {
     };
   }
 
-  private recordPendingSourceObservations(next: WorkspaceTasksPanelState): void {
+  private recordPendingSourceObservations(next: WorkspaceTasksPanelState, published: boolean): void {
     const pending = this.pendingAction;
     if (pending === undefined || !this.ownsSelection(pending.generation)) return;
     // The controller recreates both source objects for each top-level publication.
+    let changedAnyScope = false;
+    for (const scope of ["workspace", "global"] as const) {
+      const nextCatalog = scope === "workspace" ? next.workspace : next.global;
+      const nextKey = catalogStateKey(nextCatalog);
+      if (pending.observation.sources[scope].lastKey !== nextKey) changedAnyScope = true;
+    }
     for (const scope of ["workspace", "global"] as const) {
       if (!pending.scopes.includes(scope)) continue;
       const nextCatalog = scope === "workspace" ? next.workspace : next.global;
@@ -1046,6 +1052,11 @@ class PiWebUiTasksPanel extends BaseElement {
       if (source.lastKey === nextKey) continue;
       source.lastKey = nextKey;
       source.delivered = true;
+    }
+    // A fresh authoritative snapshot can be semantically unchanged after a
+    // canonical no-op. Its top-level publication identity is the acknowledgement.
+    if (published && !changedAnyScope && pending.scopes.every((scope) => hasAuthoritativeCatalogState(this.catalog(scope)))) {
+      for (const scope of pending.scopes) pending.observation.sources[scope].delivered = true;
     }
   }
 

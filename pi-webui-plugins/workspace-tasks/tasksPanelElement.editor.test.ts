@@ -214,6 +214,22 @@ describe("workspace tasks editor", () => {
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
   });
 
+  it("settles a canonical no-op update after its unchanged source publication", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-description]").value = " ";
+    input(panel, "[data-editor-description]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.settleThenPublish("update", loadedState([task()], []));
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Build".'));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+    expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("[data-edit-task='workspace:build']"));
+  });
   it("keeps a successful update pending until its delayed authoritative snapshot arrives", async () => {
     const bridge = createControllableBridge();
     const panel = mount(loadedState([task()], []), bridge.actions);

@@ -244,6 +244,29 @@ describe("WorkspaceTasksCatalogService", () => {
     expect(fixture.global.writeOptions[0]?.onWriteOutcomeUnknown).toBeTypeOf("function");
   });
 
+  it("reconciles a post-destination pristine observation before returning and releases the claim for direct writers", async () => {
+    const fixture = createFixture();
+    const source = catalogWithTasks("build");
+    const destination = emptyCatalog();
+    const request = promotionRequest(source, destination, "release");
+    fixture.workspace.response = loadedWorkspace(source);
+    fixture.global.response = loadedGlobal(destination);
+    fixture.global.readResponses = [loadedGlobal(destination), loadedGlobal(destination), loadedGlobal(catalogWithTasks("external"))];
+
+    await expect(fixture.service.move({ ...TEST_ADDRESS, ...request })).resolves.toMatchObject({
+      kind: "conflict",
+      reason: "unrecognized-state",
+    });
+    expect(fixture.global.writes).toBe(1);
+
+    const applied = loadedGlobal(catalogWithTasks("release"));
+    await expect(fixture.service.replaceGlobal({
+      expectedRevision: applied.revision,
+      config: catalogWithTasks("after-recovery"),
+    })).resolves.toMatchObject({ kind: "loaded" });
+    expect(fixture.global.writes).toBe(2);
+  });
+
   it("returns partial for a retransmitted start with the matching live destination claim", async () => {
     const fixture = createFixture();
     const source = catalogWithTasks("build");

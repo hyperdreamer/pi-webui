@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceCatalogAddress } from "../../shared/apiTypes.js";
+import type { Project, Workspace } from "../types.js";
+import { ProjectService } from "../projects/projectService.js";
+import { ProjectStore } from "../storage/projectStore.js";
+import { WorkspaceService } from "../workspaces/workspaceService.js";
 import { serializeWorkspaceTasksConfig, type WorkspaceTasksConfig } from "../../shared/workspaceTasks.js";
 import {
   WorkspaceTasksRevisionConflictError,
+  WorkspaceTasksUnavailableError,
   WorkspaceTasksUnknownOutcomeError,
   type WorkspaceTasksMovePermit,
   type WorkspaceTasksMutationAuthorizer,
@@ -63,6 +68,22 @@ describe("WorkspaceTasksWorkspaceCatalogAdapter", () => {
 
     expect(files.publishCalls).toBe(0);
     expect(coordinator.addresses).toEqual([address]);
+  });
+
+  it("classifies an unknown workspace identity as unavailable before queueing or publication", async () => {
+    const address = addressFor("deleted");
+    const files = new FakeWorkspaceFiles({ [key(address)]: { kind: "missing", revision: "missing-revision" } });
+    const coordinator = new RecordingWorkspaceMutationCoordinator();
+    const adapter = createAdapter(files, {
+      coordinator,
+      projects: new FakeProjectService(projectFor("project")),
+      workspaces: new FakeWorkspaceService([]),
+    });
+
+    await expect(adapter.replace(address, { expectedRevision: "missing-revision", config: catalogWithTask("test") }))
+      .rejects.toBeInstanceOf(WorkspaceTasksUnavailableError);
+    expect(coordinator.addresses).toEqual([]);
+    expect(files.publishCalls).toBe(0);
   });
 
   it("asserts the exact workspace intent inside the queue immediately before publication", async () => {
@@ -269,13 +290,41 @@ function createAdapter(
   overrides: {
     coordinator?: WorkspaceTasksWorkspaceMutationCoordinator;
     authorizer?: TestAuthorizer;
+    projects?: ProjectService;
+    workspaces?: WorkspaceService;
   } = {},
 ): WorkspaceTasksWorkspaceCatalogAdapter {
   return createWorkspaceTasksWorkspaceCatalogAdapter({
     files,
     authorizer: overrides.authorizer ?? new TestAuthorizer(),
     workspaceMutations: overrides.coordinator ?? new RecordingWorkspaceMutationCoordinator(),
+    ...(overrides.projects === undefined ? {} : { projects: overrides.projects }),
+    ...(overrides.workspaces === undefined ? {} : { workspaces: overrides.workspaces }),
   });
+}
+
+class FakeProjectService extends ProjectService {
+  constructor(private readonly project: Project) {
+    super(new ProjectStore("/tmp/pi-webui-workspace-tasks-adapter-test-projects.json"));
+  }
+
+  override requireProject(id: string): Promise<Project> {
+    return id === this.project.id ? Promise.resolve(this.project) : Promise.reject(new Error("Project not found"));
+  }
+}
+
+class FakeWorkspaceService extends WorkspaceService {
+  constructor(private readonly workspaces: Workspace[]) {
+    super();
+  }
+
+  override list(project: Project): Promise<Workspace[]> {
+    return Promise.resolve(this.workspaces.filter((workspace) => workspace.projectId === project.id));
+  }
+}
+
+function projectFor(id: string): Project {
+  return { id, name: id, path: "/tmp/workspace-tasks-adapter-test", createdAt: new Date(0).toISOString() };
 }
 
 function addressFor(workspaceId: string): WorkspaceCatalogAddress {

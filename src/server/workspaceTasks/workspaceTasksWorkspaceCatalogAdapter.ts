@@ -94,7 +94,11 @@ export function createWorkspaceTasksWorkspaceCatalogAdapter(
     },
 
     async replace(address, input, writeOptions): Promise<WorkspaceTasksCatalogResponse> {
-      await validateAddress(address);
+      try {
+        await validateAddress(address);
+      } catch {
+        throw new WorkspaceTasksUnavailableError();
+      }
       await authorizer.reconcileGlobalMoveClaim({ scope: "workspace", address }, writeOptions?.permit);
 
       let authorizationError: unknown;

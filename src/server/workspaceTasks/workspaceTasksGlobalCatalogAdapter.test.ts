@@ -202,7 +202,7 @@ describe("WorkspaceTasksGlobalCatalogAdapter", () => {
     expect(coordinator.writes).toBe(0);
   });
 
-  it("acknowledges a published write before a post-save verification failure", async () => {
+  it("maps a post-save persistence failure to an unknown write outcome after acknowledgement", async () => {
     const coordinator = new ControlledCoordinator({
       plugins: { "workspace-tasks": { settings: { globalTasks: emptyCatalog() } } },
     });
@@ -219,9 +219,9 @@ describe("WorkspaceTasksGlobalCatalogAdapter", () => {
       onWriteOutcomeUnknown: () => {
         events.push("unknown");
       },
-    })).rejects.toBeInstanceOf(WorkspaceTasksUnavailableError);
+    })).rejects.toBeInstanceOf(WorkspaceTasksUnknownOutcomeError);
 
-    expect(events).toEqual(["acknowledged"]);
+    expect(events).toEqual(["acknowledged", "unknown"]);
   });
 
   it("marks a failed final rename as an unknown write outcome", async () => {

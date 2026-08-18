@@ -123,7 +123,7 @@ export function createWorkspaceTasksGlobalCatalogAdapter(
         if (error instanceof WorkspaceTasksInvalidCatalogError || error instanceof WorkspaceTasksRevisionConflictError) {
           throw error;
         }
-        if (publication.attempted && !publication.saved) {
+        if (publication.attempted || publication.saved) {
           invokeNonThrowing(writeOptions?.onWriteOutcomeUnknown);
           throw new WorkspaceTasksUnknownOutcomeError();
         }

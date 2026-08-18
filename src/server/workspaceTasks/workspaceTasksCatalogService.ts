@@ -205,7 +205,7 @@ export function createWorkspaceTasksCatalogService(
     if (verification.kind === "result") return verification.result;
     const state = classifyWorkspaceTasksMovePair(plan, verification.observed);
     if (state === "complete") return completeWithPermit(plan, permit, verification.observed);
-    if (state !== "destination-applied") return unknownOutcomeResult("Destination verification did not prove the derived catalog state.");
+    if (state !== "destination-applied") return reconcileDestinationObservation(permit);
     return removeSource(plan, permit);
   }
 
@@ -221,9 +221,21 @@ export function createWorkspaceTasksCatalogService(
     if (state === "destination-applied" && !destinationOutcomeUnknown) {
       return partialResult(plan, verification.observed);
     }
+    if (state !== "destination-applied") return reconcileDestinationObservation(permit);
     return unknownOutcomeResult(UNKNOWN_OUTCOME_MESSAGE);
   }
 
+  async function reconcileDestinationObservation(permit: WorkspaceTasksMovePermit): Promise<MoveWorkspaceTaskResult> {
+    try {
+      await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);
+    } catch (error) {
+      if (error instanceof WorkspaceTasksMoveConflictError) {
+        return conflictResult(error.reason, error.message);
+      }
+      return resultFromMoveError(error);
+    }
+    return conflictResult("unrecognized-state", "The move state no longer matches its live claim.");
+  }
   async function removeSource(
     plan: WorkspaceTasksMovePlan,
     permit: WorkspaceTasksMovePermit,

@@ -35,6 +35,7 @@ class ControlledService implements WorkspaceTasksCatalogService {
   readonly readGlobalCalls: undefined[] = [];
   readonly replaceGlobalCalls: ReplaceGlobalWorkspaceTasksRequest[] = [];
   readonly moveCalls: (WorkspaceCatalogAddress & MoveWorkspaceTaskRequest)[] = [];
+  replaceWorkspaceError: Error | undefined;
   replaceGlobalError: Error | undefined;
   moveResult: MoveWorkspaceTaskResult = completed;
 
@@ -45,7 +46,9 @@ class ControlledService implements WorkspaceTasksCatalogService {
 
   replaceWorkspace(input: WorkspaceCatalogAddress & ReplaceWorkspaceTasksRequest): Promise<WorkspaceTasksCatalogResponse> {
     this.replaceWorkspaceCalls.push(input);
-    return Promise.resolve(workspace);
+    return this.replaceWorkspaceError === undefined
+      ? Promise.resolve(workspace)
+      : Promise.reject(this.replaceWorkspaceError);
   }
 
   readGlobal(): Promise<GlobalWorkspaceTasksResponse> {
@@ -130,6 +133,18 @@ describe("workspace task local routes", () => {
     }
   });
 
+  it("returns a known unavailable response for an unknown workspace identity", async () => {
+    service.replaceWorkspaceError = new WorkspaceTasksUnavailableError();
+    const response = await app.inject({
+      method: "PUT",
+      url: `/api/projects/${address.projectId}/workspaces/${address.workspaceId}/workspace-tasks`,
+      payload: { expectedRevision: "workspace-revision", config: catalog },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json<unknown>()).toMatchObject({ kind: "unavailable", retryable: true });
+    expect(response.json<unknown>()).not.toMatchObject({ kind: "unknown-outcome" });
+  });
   it("maps a recovered unrecognized registry state to the public manual-resolution conflict reason", async () => {
     service.replaceGlobalError = new WorkspaceTasksMoveConflictError("unrecognized-state");
 
