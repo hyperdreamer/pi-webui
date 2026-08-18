@@ -66,13 +66,45 @@ interface PanelOperation {
   readonly scopes: readonly WorkspaceTaskScope[];
 }
 
+interface SourceStateObservation {
+  readonly state: WorkspaceCatalogState | GlobalCatalogState;
+  readonly key: string;
+}
+
 interface ActionStateObservation {
-  readonly sourcePublications: Readonly<Record<WorkspaceTaskScope, number>>;
+  readonly sources: Readonly<Record<WorkspaceTaskScope, SourceStateObservation>>;
+  readonly mutationGateKey: string | undefined;
 }
 
 interface CatalogFailure {
   readonly message: string;
 }
+
+interface PendingActionBase {
+  readonly generation: number;
+  readonly scopes: readonly WorkspaceTaskScope[];
+  readonly observation: ActionStateObservation;
+  readonly focusReturn: FocusTarget;
+  settled: boolean;
+}
+
+interface PendingRefreshAction extends PendingActionBase {
+  readonly kind: "refresh";
+}
+
+interface PendingSaveAction extends PendingActionBase {
+  readonly kind: "save";
+  readonly scope: WorkspaceTaskScope;
+  readonly task: WorkspaceTask;
+}
+
+interface PendingDeleteAction extends PendingActionBase {
+  readonly kind: "delete";
+  readonly ref: WorkspaceTaskRef;
+  readonly task: WorkspaceTask;
+}
+
+type PendingAction = PendingRefreshAction | PendingSaveAction | PendingDeleteAction;
 
 interface EditorState {
   draft: WorkspaceTaskDraft;
@@ -134,8 +166,7 @@ class PiWebUiTasksPanel extends BaseElement {
   private validationErrors: WorkspaceTaskDraftErrors | undefined;
   private status: TaskStatus | undefined;
   private runningTaskKey: string | undefined;
-  private statePublication = 0;
-  private readonly sourcePublicationVersions: Record<WorkspaceTaskScope, number> = { workspace: 0, global: 0 };
+  private pendingAction: PendingAction | undefined;
   private idManuallyEdited = false;
   private connected = false;
   private selectionGeneration = 0;
@@ -163,6 +194,7 @@ class PiWebUiTasksPanel extends BaseElement {
     this.selectionGeneration += 1;
     this.terminalGeneration += 1;
     this.operation = undefined;
+    this.pendingAction = undefined;
     this.editor = undefined;
     this.deleteState = undefined;
     this.pendingRefreshFocus = undefined;
@@ -178,11 +210,11 @@ class PiWebUiTasksPanel extends BaseElement {
 
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
     const previous = this.stateValue;
-    if (value !== previous) this.recordStatePublication();
     this.stateValue = value;
     if (value.move !== undefined) this.moveRecoveryObserved = true;
     this.rememberOpenGroups();
     this.pruneExpandedGroups();
+    if (this.reconcilePendingAction()) return;
     if (previous.move !== undefined && value.move === undefined && this.moveRecoveryObserved && this.editor !== undefined) {
       if (this.isMoveComplete(this.editor, value)) {
         const target = this.editor.focusReturn;
@@ -223,6 +255,7 @@ class PiWebUiTasksPanel extends BaseElement {
     this.selectionGeneration += 1;
     this.terminalGeneration += 1;
     this.operation = undefined;
+    this.pendingAction = undefined;
     this.runningTaskKey = undefined;
   }
 
@@ -660,24 +693,25 @@ class PiWebUiTasksPanel extends BaseElement {
     this.operation = { kind: "refresh", scopes: [] };
     const observation = this.captureActionState();
     const generation = this.selectionGeneration;
+    const pending: PendingRefreshAction = {
+      kind: "refresh",
+      generation,
+      scopes: ["workspace", "global"],
+      observation,
+      focusReturn: target,
+      settled: false,
+    };
+    this.pendingAction = pending;
     this.status = { kind: "info", message: "Refreshing workspace task catalogs..." };
     this.render();
     try {
       await this.actionsValue.refresh();
-      if (!this.ownsSelection(generation)) return;
-      this.operation = undefined;
-      const completionIssue = this.actionCompletionIssue(["workspace", "global"], observation, false);
-      if (completionIssue !== undefined) {
-        this.status = { kind: "error", message: "Could not refresh workspace task catalogs.", detail: completionIssue };
-        this.render();
-        this.focusTarget(target);
-        return;
-      }
-      this.status = { kind: "success", message: "Workspace task catalogs refreshed." };
-      this.render();
-      this.focusTarget(target);
+      if (!this.ownsSelection(generation) || this.pendingAction !== pending) return;
+      pending.settled = true;
+      this.reconcilePendingAction();
     } catch (error) {
-      if (!this.ownsSelection(generation)) return;
+      if (!this.ownsSelection(generation) || this.pendingAction !== pending) return;
+      this.pendingAction = undefined;
       this.operation = undefined;
       this.status = { kind: "error", message: "Could not refresh workspace task catalogs.", detail: formatError(error) };
       this.render();
@@ -705,35 +739,43 @@ class PiWebUiTasksPanel extends BaseElement {
       return;
     }
 
+    if (editor.sourceRef !== undefined && !this.isEditorDirty()) {
+      const target = editor.focusReturn;
+      this.editor = undefined;
+      this.mode = "view";
+      this.validationErrors = undefined;
+      this.idManuallyEdited = false;
+      this.status = { kind: "info", message: "No changes to save." };
+      this.render();
+      this.focusTarget(target);
+      return;
+    }
+
     const generation = this.selectionGeneration;
     const observation = this.captureActionState();
+    const pending: PendingSaveAction = {
+      kind: "save",
+      generation,
+      scopes: [destinationScope],
+      observation,
+      focusReturn: editor.focusReturn,
+      scope: destinationScope,
+      task: cloneTask(validation.task),
+      settled: false,
+    };
+    this.pendingAction = pending;
     this.operation = { kind: "mutation", scopes: [destinationScope] };
     this.status = { kind: "info", message: editor.sourceRef === undefined ? "Creating workspace task..." : "Saving workspace task..." };
     this.render();
     try {
       if (editor.sourceRef === undefined) await this.actionsValue.create(destinationScope, validation.task);
       else await this.actionsValue.update(editor.sourceRef, validation.task);
-      if (!this.ownsSelection(generation)) return;
-      this.operation = undefined;
-      const completionIssue = this.actionCompletionIssue([destinationScope], observation, true)
-        ?? (this.catalogContainsTask(destinationScope, validation.task)
-          ? undefined
-          : "The authoritative task catalog update could not be confirmed. Refresh before trying again.");
-      if (completionIssue !== undefined) {
-        this.status = { kind: "error", message: "Could not save workspace task.", detail: completionIssue };
-        this.render();
-        return;
-      }
-      const target = editor.focusReturn;
-      this.editor = undefined;
-      this.mode = "view";
-      this.validationErrors = undefined;
-      this.idManuallyEdited = false;
-      this.status = { kind: "success", message: `Saved task "${validation.task.title}".` };
-      this.render();
-      this.focusTarget(target);
+      if (!this.ownsSelection(generation) || this.pendingAction !== pending) return;
+      pending.settled = true;
+      this.reconcilePendingAction();
     } catch (error) {
-      if (!this.ownsSelection(generation)) return;
+      if (!this.ownsSelection(generation) || this.pendingAction !== pending) return;
+      this.pendingAction = undefined;
       this.operation = undefined;
       this.status = { kind: "error", message: "Could not save workspace task.", detail: formatError(error) };
       this.render();
@@ -784,30 +826,28 @@ class PiWebUiTasksPanel extends BaseElement {
     if (pending === undefined || this.operation !== undefined || this.isScopeDisabled(pending.ref.scope)) return;
     const generation = this.selectionGeneration;
     const observation = this.captureActionState();
+    const pendingAction: PendingDeleteAction = {
+      kind: "delete",
+      generation,
+      scopes: [pending.ref.scope],
+      observation,
+      focusReturn: pending.focusReturn,
+      ref: { ...pending.ref },
+      task: cloneTask(pending.task),
+      settled: false,
+    };
+    this.pendingAction = pendingAction;
     this.operation = { kind: "mutation", scopes: [pending.ref.scope] };
     this.status = { kind: "info", message: "Deleting workspace task..." };
     this.render();
     try {
       await this.actionsValue.remove(pending.ref);
-      if (!this.ownsSelection(generation)) return;
-      this.operation = undefined;
-      const completionIssue = this.actionCompletionIssue([pending.ref.scope], observation, true)
-        ?? (this.catalogDoesNotContainTask(pending.ref)
-          ? undefined
-          : "The authoritative task catalog update could not be confirmed. Refresh before trying again.");
-      if (completionIssue !== undefined) {
-        this.status = { kind: "error", message: "Could not delete workspace task.", detail: completionIssue };
-        this.render();
-        return;
-      }
-      const target = pending.focusReturn;
-      this.deleteState = undefined;
-      this.mode = "view";
-      this.status = { kind: "success", message: `Deleted task "${pending.task.title}".` };
-      this.render();
-      this.focusTarget(target);
+      if (!this.ownsSelection(generation) || this.pendingAction !== pendingAction) return;
+      pendingAction.settled = true;
+      this.reconcilePendingAction();
     } catch (error) {
-      if (!this.ownsSelection(generation)) return;
+      if (!this.ownsSelection(generation) || this.pendingAction !== pendingAction) return;
+      this.pendingAction = undefined;
       this.operation = undefined;
       this.status = { kind: "error", message: "Could not delete workspace task.", detail: formatError(error) };
       this.render();
@@ -977,36 +1017,100 @@ class PiWebUiTasksPanel extends BaseElement {
     return scope === "workspace" ? this.stateValue.workspace : this.stateValue.global;
   }
 
-  private recordStatePublication(): void {
-    const publication = ++this.statePublication;
-    for (const scope of ["workspace", "global"] as const) this.sourcePublicationVersions[scope] = publication;
-  }
-
   private captureActionState(): ActionStateObservation {
-    return { sourcePublications: { ...this.sourcePublicationVersions } };
+    return {
+      sources: {
+        workspace: {
+          state: this.stateValue.workspace,
+          key: catalogStateKey(this.stateValue.workspace),
+        },
+        global: {
+          state: this.stateValue.global,
+          key: catalogStateKey(this.stateValue.global),
+        },
+      },
+      mutationGateKey: mutationGateKey(this.stateValue.mutationGate),
+    };
   }
 
-  private actionCompletionIssue(
-    scopes: readonly WorkspaceTaskScope[],
-    observation: ActionStateObservation,
-    includeMutationGate: boolean,
-  ): string | undefined {
-    for (const scope of scopes) {
-      const catalog = this.catalog(scope);
-      if (this.sourcePublicationVersions[scope] <= observation.sourcePublications[scope] || !hasAuthoritativeCatalogState(catalog)) {
-        return "The authoritative task catalog update could not be confirmed. Refresh before trying again.";
+  private reconcilePendingAction(): boolean {
+    const pending = this.pendingAction;
+    if (pending === undefined || !pending.settled || !this.ownsSelection(pending.generation)) return false;
+
+    if (pending.kind === "refresh") {
+      if (!pending.scopes.every((scope) => this.sourceSnapshotDelivered(scope, pending.observation))) return false;
+      if (pending.scopes.some((scope) => !hasAuthoritativeCatalogState(this.catalog(scope)))) return false;
+      for (const scope of pending.scopes) {
+        const failure = catalogFailure(this.catalog(scope));
+        if (failure !== undefined) return this.finishPendingFailure(pending, failure.message);
       }
+      this.pendingAction = undefined;
+      this.operation = undefined;
+      this.status = { kind: "success", message: "Workspace task catalogs refreshed." };
+      this.render();
+      this.focusTarget(pending.focusReturn);
+      return true;
     }
-    for (const scope of scopes) {
-      const failure = catalogFailure(this.catalog(scope));
-      if (failure !== undefined) return failure.message;
+
+    const scope = pending.kind === "save" ? pending.scope : pending.ref.scope;
+    const delivered = this.sourceSnapshotDelivered(scope, pending.observation);
+    const gateChanged = this.mutationGateChanged(scope, pending.observation);
+    if (!delivered && !gateChanged) return false;
+    if (!hasAuthoritativeCatalogState(this.catalog(scope)) && !gateChanged) return false;
+
+    const failure = catalogFailure(this.catalog(scope));
+    if (failure !== undefined) return this.finishPendingFailure(pending, failure.message);
+    if (gateChanged || this.mutationBlocked(scope)) {
+      return this.finishPendingFailure(pending, this.stateValue.mutationGate?.message ?? "Refresh before trying another task change.");
     }
-    if (includeMutationGate) {
-      for (const scope of scopes) {
-        if (this.mutationBlocked(scope)) return this.stateValue.mutationGate?.message ?? "Refresh before trying another task change.";
-      }
+
+    const confirmed = pending.kind === "save"
+      ? this.catalogContainsTask(scope, pending.task)
+      : this.catalogDoesNotContainTask(pending.ref);
+    if (!confirmed) return false;
+
+    this.pendingAction = undefined;
+    this.operation = undefined;
+    if (pending.kind === "save") {
+      this.editor = undefined;
+      this.mode = "view";
+      this.validationErrors = undefined;
+      this.idManuallyEdited = false;
+      this.status = { kind: "success", message: `Saved task "${pending.task.title}".` };
+    } else {
+      this.deleteState = undefined;
+      this.mode = "view";
+      this.status = { kind: "success", message: `Deleted task "${pending.task.title}".` };
     }
-    return undefined;
+    this.render();
+    this.focusTarget(pending.focusReturn);
+    return true;
+  }
+
+  private sourceSnapshotDelivered(scope: WorkspaceTaskScope, observation: ActionStateObservation): boolean {
+    const current = this.catalog(scope);
+    const previous = observation.sources[scope];
+    return current !== previous.state || catalogStateKey(current) !== previous.key;
+  }
+
+  private mutationGateChanged(scope: WorkspaceTaskScope, observation: ActionStateObservation): boolean {
+    const gate = this.stateValue.mutationGate;
+    return mutationGateKey(gate) !== observation.mutationGateKey && gate?.scopes.includes(scope) === true;
+  }
+
+  private finishPendingFailure(pending: PendingAction, detail: string): boolean {
+    if (this.pendingAction !== pending) return false;
+    this.pendingAction = undefined;
+    this.operation = undefined;
+    const message = pending.kind === "refresh"
+      ? "Could not refresh workspace task catalogs."
+      : pending.kind === "save"
+        ? "Could not save workspace task."
+        : "Could not delete workspace task.";
+    this.status = { kind: "error", message, detail };
+    this.render();
+    if (pending.kind === "refresh") this.focusTarget(pending.focusReturn);
+    return true;
   }
 
   private catalogContainsTask(scope: WorkspaceTaskScope, expected: WorkspaceTask): boolean {
@@ -1150,6 +1254,14 @@ function catalogFailure(catalog: WorkspaceCatalogState | GlobalCatalogState): Ca
     return { message: catalog.message };
   }
   return undefined;
+}
+
+function catalogStateKey(catalog: WorkspaceCatalogState | GlobalCatalogState): string {
+  return JSON.stringify(catalog);
+}
+
+function mutationGateKey(gate: WorkspaceTasksPanelState["mutationGate"]): string | undefined {
+  return gate === undefined ? undefined : JSON.stringify({ scopes: [...gate.scopes], message: gate.message });
 }
 
 function hasAuthoritativeCatalogState(catalog: WorkspaceCatalogState | GlobalCatalogState): boolean {

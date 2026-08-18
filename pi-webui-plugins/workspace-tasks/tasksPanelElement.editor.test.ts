@@ -48,6 +48,7 @@ interface ControllableBridge {
   publish(nextState: WorkspaceTasksWorkspaceState): void;
   resolve(action: BridgeActionName): void;
   complete(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState): void;
+  settleThenPublish(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState): void;
 }
 import { defineTasksPanelElement, tasksPanelTagName } from "./tasksPanelElement.js";
 
@@ -110,7 +111,16 @@ describe("workspace tasks editor", () => {
     }));
   });
 
-  it("confirms promotion, supports a changed destination ID, and sends the source ref separately", async () => {
+  it("short-circuits an unchanged edit without sending a write", () => {
+    const actions = createActions();
+    const panel = mount(loadedState([task()], []), actions);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    button(panel, "[data-save-task]").click();
+
+    expect(actions.update).not.toHaveBeenCalled();
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+    expect(panelStatusText(panel)).toContain("No changes to save.");
+  });  it("confirms promotion, supports a changed destination ID, and sends the source ref separately", async () => {
     const actions = createActions();
     const panel = mount(loadedState([task()], []), actions);
     button(panel, "[data-edit-task='workspace:build']").click();
@@ -167,6 +177,8 @@ describe("workspace tasks editor", () => {
     } else if (action === "update") {
       const id = scope === "workspace" ? "workspace-build" : "global-build";
       button(panel, `[data-edit-task='${scope}:${id}']`).click();
+      input(panel, "[data-editor-title]").value = "Changed";
+      input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
       button(panel, "[data-save-task]").click();
     } else {
       const id = scope === "workspace" ? "workspace-build" : "global-build";
@@ -175,7 +187,7 @@ describe("workspace tasks editor", () => {
     }
 
     await vi.waitFor(() => expect(bridge.actions[action]).toHaveBeenCalledTimes(1));
-    bridge.complete(action, withSourceRefreshError(initial, scope, failure));
+    bridge.settleThenPublish(action, withSourceRefreshError(initial, scope, failure));
 
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain(failure));
     expect(panel.shadowRoot?.querySelector(action === "remove" ? "[data-delete-confirmation]" : "[data-task-editor]")).not.toBeNull();
@@ -196,23 +208,125 @@ describe("workspace tasks editor", () => {
 
     bridge.resolve("create");
 
-    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("could not be confirmed"));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Creating workspace task..."));
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
   });
 
+  it("keeps a successful update pending until its delayed authoritative snapshot arrives", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("update");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    bridge.publish(loadedState([task({ title: "Release" })], []));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+  });
+
+  it("keeps a successful create pending until its delayed authoritative snapshot arrives", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([], []), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-add-task]").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    textarea(panel).value = "npm run release";
+    textarea(panel).dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.create).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("create");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Creating workspace task..."));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    bridge.publish(loadedState([task({ id: "release", title: "Release", command: "npm run release" })], []));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+  });
+
+  it("keeps a successful delete pending until its delayed authoritative snapshot arrives", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-delete-task='workspace:build']").click();
+    button(panel, "[data-confirm-delete]").click();
+    await vi.waitFor(() => expect(bridge.actions.remove).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("remove");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Deleting workspace task..."));
+    expect(panel.shadowRoot?.querySelector("[data-delete-confirmation]")).not.toBeNull();
+
+    bridge.publish(loadedState([], []));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Deleted task "Build".'));
+    expect(panel.shadowRoot?.querySelector("[data-delete-confirmation]")).toBeNull();
+  });
+
+  it("waits for a freshly delivered unchanged catalog before completing Refresh", async () => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-refresh]").click();
+    await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("refresh");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Refreshing workspace task catalogs..."));
+
+    bridge.publish(loadedState([task()], []));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Workspace task catalogs refreshed."));
+  });
+
+  it("does not let an unrelated source publication complete a pending update", async () => {
+    const bridge = createControllableBridge();
+    const initial = loadedState([task()], []);
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("update");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    bridge.publish({
+      ...initial,
+      global: { kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Build" })] }, refreshing: false },
+    });
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    bridge.publish({
+      ...initial,
+      workspace: { kind: "loaded", config: { version: 1, tasks: [task({ title: "Release" })] }, refreshing: false },
+      global: { kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Build" })] }, refreshing: false },
+    });
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
+  });
   it("does not treat a re-assigned stale state object as update confirmation", async () => {
     const bridge = createControllableBridge();
     const initial = loadedState([task()], []);
     const panel = mount(initial, bridge.actions);
     bridge.attach(panel);
     button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
     button(panel, "[data-save-task]").click();
     await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
 
-    bridge.complete("update", initial);
+    bridge.complete("update", loadedState([task()], []));
 
-    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("could not be confirmed"));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+    bridge.publish(loadedState([task({ title: "Release" })], []));
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
   });
 
   it("does not mistake a pre-existing source refresh error for a failed update after newer data confirms the save", async () => {
@@ -238,6 +352,8 @@ describe("workspace tasks editor", () => {
     const panel = mount(initial, bridge.actions);
     bridge.attach(panel);
     button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Changed";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
     button(panel, "[data-save-task]").click();
     await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
 
@@ -254,6 +370,8 @@ describe("workspace tasks editor", () => {
     const panel = mount(initial, bridge.actions);
     bridge.attach(panel);
     button(panel, "[data-edit-task='workspace:build']").click();
+    input(panel, "[data-editor-title]").value = "Changed";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
     button(panel, "[data-save-task]").click();
     await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
 
@@ -275,7 +393,7 @@ describe("workspace tasks editor", () => {
     await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
 
     bridge.complete("refresh", {
-      ...initial,
+      ...loadedState([task()], []),
       global: { kind: "unavailable", message: "Global tasks are unavailable", hint: "Refresh and try again." },
     });
 
@@ -311,7 +429,7 @@ describe("workspace tasks editor", () => {
     button(panel, "[data-confirm-refresh-discard]").click();
     await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
     bridge.complete("refresh", {
-      ...partial,
+      ...loadedState([task()], [task({ id: "release" })]),
       move: { kind: "partial", message: "Move is partially complete.", retryAllowed: true },
     });
 
@@ -448,9 +566,13 @@ function createControllableBridge(): ControllableBridge {
       if (pendingAction?.action !== action) throw new Error(`Expected pending ${action} action.`);
       pendingAction.resolve();
     },
-    complete(action, nextState) {
+    complete(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState) {
       this.publish(nextState);
       this.resolve(action);
+    },
+    settleThenPublish(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState) {
+      this.resolve(action);
+      this.publish(nextState);
     },
   };
 }
