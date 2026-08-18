@@ -67,8 +67,8 @@ interface PanelOperation {
 }
 
 interface SourceStateObservation {
-  readonly state: WorkspaceCatalogState | GlobalCatalogState;
-  readonly key: string;
+  lastKey: string;
+  delivered: boolean;
 }
 
 interface ActionStateObservation {
@@ -211,6 +211,7 @@ class PiWebUiTasksPanel extends BaseElement {
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
     const previous = this.stateValue;
     this.stateValue = value;
+    this.recordPendingSourceObservations(value);
     if (value.move !== undefined) this.moveRecoveryObserved = true;
     this.rememberOpenGroups();
     this.pruneExpandedGroups();
@@ -1021,16 +1022,31 @@ class PiWebUiTasksPanel extends BaseElement {
     return {
       sources: {
         workspace: {
-          state: this.stateValue.workspace,
-          key: catalogStateKey(this.stateValue.workspace),
+          lastKey: catalogStateKey(this.stateValue.workspace),
+          delivered: false,
         },
         global: {
-          state: this.stateValue.global,
-          key: catalogStateKey(this.stateValue.global),
+          lastKey: catalogStateKey(this.stateValue.global),
+          delivered: false,
         },
       },
       mutationGateKey: mutationGateKey(this.stateValue.mutationGate),
     };
+  }
+
+  private recordPendingSourceObservations(next: WorkspaceTasksPanelState): void {
+    const pending = this.pendingAction;
+    if (pending === undefined || !this.ownsSelection(pending.generation)) return;
+    // The controller recreates both source objects for each top-level publication.
+    for (const scope of ["workspace", "global"] as const) {
+      if (!pending.scopes.includes(scope)) continue;
+      const nextCatalog = scope === "workspace" ? next.workspace : next.global;
+      const source = pending.observation.sources[scope];
+      const nextKey = catalogStateKey(nextCatalog);
+      if (source.lastKey === nextKey) continue;
+      source.lastKey = nextKey;
+      source.delivered = true;
+    }
   }
 
   private reconcilePendingAction(): boolean {
@@ -1088,9 +1104,7 @@ class PiWebUiTasksPanel extends BaseElement {
   }
 
   private sourceSnapshotDelivered(scope: WorkspaceTaskScope, observation: ActionStateObservation): boolean {
-    const current = this.catalog(scope);
-    const previous = observation.sources[scope];
-    return current !== previous.state || catalogStateKey(current) !== previous.key;
+    return observation.sources[scope].delivered;
   }
 
   private mutationGateChanged(scope: WorkspaceTaskScope, observation: ActionStateObservation): boolean {

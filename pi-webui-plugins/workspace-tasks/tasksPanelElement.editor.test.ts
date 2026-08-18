@@ -46,6 +46,8 @@ interface ControllableBridge {
   readonly actions: MockedWorkspaceTasksActions;
   attach(panel: TasksPanelElement): void;
   publish(nextState: WorkspaceTasksWorkspaceState): void;
+  publishWorkspace(nextCatalog: CatalogState): void;
+  publishGlobal(nextCatalog: CatalogState): void;
   resolve(action: BridgeActionName): void;
   complete(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState): void;
   settleThenPublish(action: BridgeActionName, nextState: WorkspaceTasksWorkspaceState): void;
@@ -269,9 +271,10 @@ describe("workspace tasks editor", () => {
     expect(panel.shadowRoot?.querySelector("[data-delete-confirmation]")).toBeNull();
   });
 
-  it("waits for a freshly delivered unchanged catalog before completing Refresh", async () => {
+  it("waits for source refresh lifecycles before completing unchanged Refresh", async () => {
     const bridge = createControllableBridge();
-    const panel = mount(loadedState([task()], []), bridge.actions);
+    const initial = loadedState([task()], [task({ id: "global-build", title: "Global Build" })]);
+    const panel = mount(initial, bridge.actions);
     bridge.attach(panel);
     button(panel, "[data-refresh]").click();
     await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
@@ -279,13 +282,31 @@ describe("workspace tasks editor", () => {
     bridge.resolve("refresh");
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Refreshing workspace task catalogs..."));
 
-    bridge.publish(loadedState([task()], []));
+    const beforeUnrelatedPublication = panel.workspaceTasksState;
+    bridge.publishGlobal({ kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Release" })] }, refreshing: false });
+    expect(panel.workspaceTasksState.workspace).not.toBe(beforeUnrelatedPublication.workspace);
+    expect(panel.workspaceTasksState.global).not.toBe(beforeUnrelatedPublication.global);
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Refreshing workspace task catalogs..."));
+
+    const refreshing = loadedState([task()], [task({ id: "global-build", title: "Global Release" })]);
+    bridge.publish({
+      ...refreshing,
+      workspace: { ...refreshing.workspace, refreshing: true },
+      global: { ...refreshing.global, refreshing: true },
+    });
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Refreshing workspace task catalogs..."));
+
+    bridge.publish(refreshing);
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Workspace task catalogs refreshed."));
   });
 
-  it("does not let an unrelated source publication complete a pending update", async () => {
+  it("does not let a fresh unrelated source publication surface a pre-existing workspace error", async () => {
     const bridge = createControllableBridge();
-    const initial = loadedState([task()], []);
+    const initial = withSourceRefreshError(
+      loadedState([task()], [task({ id: "global-build", title: "Global Build" })]),
+      "workspace",
+      "Earlier workspace refresh failed",
+    );
     const panel = mount(initial, bridge.actions);
     bridge.attach(panel);
     button(panel, "[data-edit-task='workspace:build']").click();
@@ -296,20 +317,47 @@ describe("workspace tasks editor", () => {
 
     bridge.resolve("update");
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
-    bridge.publish({
-      ...initial,
-      global: { kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Build" })] }, refreshing: false },
-    });
+    const beforeUnrelatedPublication = panel.workspaceTasksState;
+    bridge.publishGlobal({ kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Release" })] }, refreshing: false });
+    expect(panel.workspaceTasksState.workspace).not.toBe(beforeUnrelatedPublication.workspace);
+    expect(panel.workspaceTasksState.global).not.toBe(beforeUnrelatedPublication.global);
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    expect(panelStatusText(panel)).not.toContain("Earlier workspace refresh failed");
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
 
-    bridge.publish({
-      ...initial,
-      workspace: { kind: "loaded", config: { version: 1, tasks: [task({ title: "Release" })] }, refreshing: false },
-      global: { kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Build" })] }, refreshing: false },
-    });
+    bridge.publishWorkspace({ kind: "loaded", config: { version: 1, tasks: [task({ title: "Release" })] }, refreshing: false });
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Release".'));
   });
+
+  it("does not let a fresh unrelated source publication surface a pre-existing global error", async () => {
+    const bridge = createControllableBridge();
+    const initial = withSourceRefreshError(
+      loadedState([task({ id: "project-build", title: "Project Build" })], [task({ id: "global-build", title: "Global Build" })]),
+      "global",
+      "Earlier global refresh failed",
+    );
+    const panel = mount(initial, bridge.actions);
+    bridge.attach(panel);
+    button(panel, "[data-edit-task='global:global-build']").click();
+    input(panel, "[data-editor-title]").value = "Global Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+
+    bridge.resolve("update");
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    const beforeUnrelatedPublication = panel.workspaceTasksState;
+    bridge.publishWorkspace({ kind: "loaded", config: { version: 1, tasks: [task({ id: "project-build", title: "Project Release" })] }, refreshing: false });
+    expect(panel.workspaceTasksState.workspace).not.toBe(beforeUnrelatedPublication.workspace);
+    expect(panel.workspaceTasksState.global).not.toBe(beforeUnrelatedPublication.global);
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    expect(panelStatusText(panel)).not.toContain("Earlier global refresh failed");
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    bridge.publishGlobal({ kind: "loaded", config: { version: 1, tasks: [task({ id: "global-build", title: "Global Release" })] }, refreshing: false });
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Global Release".'));
+  });
+
   it("does not treat a re-assigned stale state object as update confirmation", async () => {
     const bridge = createControllableBridge();
     const initial = loadedState([task()], []);
@@ -357,7 +405,12 @@ describe("workspace tasks editor", () => {
     button(panel, "[data-save-task]").click();
     await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
 
-    bridge.complete("update", withSourceRefreshError(initial, "workspace", "Workspace write unavailable"));
+    bridge.publish({
+      ...initial,
+      workspace: { ...initial.workspace, refreshing: true },
+    });
+    bridge.publish(withSourceRefreshError(initial, "workspace", "Workspace write unavailable"));
+    bridge.resolve("update");
 
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Workspace write unavailable"));
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
@@ -392,10 +445,16 @@ describe("workspace tasks editor", () => {
     button(panel, "[data-refresh]").click();
     await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
 
-    bridge.complete("refresh", {
+    const unavailable = {
       ...loadedState([task()], []),
-      global: { kind: "unavailable", message: "Global tasks are unavailable", hint: "Refresh and try again." },
+      global: { kind: "unavailable" as const, message: "Global tasks are unavailable", hint: "Refresh and try again." },
+    };
+    bridge.publish({
+      ...unavailable,
+      workspace: { ...unavailable.workspace, refreshing: true },
     });
+    bridge.publish(unavailable);
+    bridge.resolve("refresh");
 
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Global tasks are unavailable"));
     expect(panelStatusText(panel)).not.toContain("Workspace task catalogs refreshed.");
@@ -428,10 +487,17 @@ describe("workspace tasks editor", () => {
     expect(panel.shadowRoot?.querySelector("[data-refresh-discard-confirmation]")).not.toBeNull();
     button(panel, "[data-confirm-refresh-discard]").click();
     await vi.waitFor(() => expect(bridge.actions.refresh).toHaveBeenCalledTimes(1));
-    bridge.complete("refresh", {
+    const recovery = {
       ...loadedState([task()], [task({ id: "release" })]),
-      move: { kind: "partial", message: "Move is partially complete.", retryAllowed: true },
+      move: { kind: "partial" as const, message: "Move is partially complete.", retryAllowed: true },
+    };
+    bridge.publish({
+      ...recovery,
+      workspace: { ...recovery.workspace, refreshing: true },
+      global: { ...recovery.global, refreshing: true },
     });
+    bridge.publish(recovery);
+    bridge.resolve("refresh");
 
     await vi.waitFor(() => expect(button(panel, "[data-retry-move]").disabled).toBe(false));
     expect(bridge.actions.retryMove).not.toHaveBeenCalled();
@@ -559,7 +625,16 @@ function createControllableBridge(): ControllableBridge {
     },
     publish(nextState) {
       if (panel === undefined) throw new Error("Attach the bridge before publishing state.");
-      panel.workspaceTasksState = nextState;
+      // WorkspaceTasksController.publishCurrent() creates fresh snapshots for both sources.
+      panel.workspaceTasksState = cloneBridgeState(nextState);
+    },
+    publishWorkspace(nextCatalog) {
+      if (panel === undefined) throw new Error("Attach the bridge before publishing state.");
+      this.publish({ ...panel.workspaceTasksState, workspace: nextCatalog });
+    },
+    publishGlobal(nextCatalog) {
+      if (panel === undefined) throw new Error("Attach the bridge before publishing state.");
+      this.publish({ ...panel.workspaceTasksState, global: nextCatalog });
     },
     resolve(action) {
       const pendingAction = pending.shift();
@@ -574,6 +649,28 @@ function createControllableBridge(): ControllableBridge {
       this.resolve(action);
       this.publish(nextState);
     },
+  };
+}
+
+function cloneBridgeState(state: WorkspaceTasksWorkspaceState): WorkspaceTasksWorkspaceState {
+  return {
+    ...state,
+    workspace: cloneCatalogState(state.workspace),
+    global: cloneCatalogState(state.global),
+    ...(state.move === undefined ? {} : { move: { ...state.move } }),
+    ...(state.mutationGate === undefined ? {} : { mutationGate: { ...state.mutationGate, scopes: [...state.mutationGate.scopes] } }),
+  };
+}
+
+function cloneCatalogState(state: CatalogState): CatalogState {
+  return {
+    ...state,
+    ...(state.config === undefined ? {} : {
+      config: {
+        version: 1,
+        tasks: state.config.tasks.map((candidate) => ({ ...candidate })),
+      },
+    }),
   };
 }
 
