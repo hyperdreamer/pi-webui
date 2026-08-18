@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.1
+
+### Patch Changes
+
+- 4bf9291: Automatically dismiss transient speech-input errors after five seconds.
+
 ## 1.15.0
 
 ### Minor Changes
