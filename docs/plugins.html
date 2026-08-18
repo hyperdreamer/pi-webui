@@ -384,13 +384,31 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
 
               <h3>Workspace Tasks</h3>
               <p>
-                <strong>Workspace Tasks</strong> adds a <strong>Tasks</strong> workspace tab for running configured shell
+                <strong>Workspace Tasks</strong> adds a <strong>Tasks</strong> workspace tab for browsing, editing, and running configured shell
                 commands in dedicated PI WEBUI terminals. It is built into PI WEBUI and enabled by default.
               </p>
               <ul>
                 <li>Plugin id: <code>workspace-tasks</code></li>
-                <li>Config file: <code>.pi-webui/tasks.json</code></li>
+                <li>Project catalog file: <code>.pi-webui/tasks.json</code></li>
+                <li>Global catalog setting: <code>plugins.workspace-tasks.settings.globalTasks</code></li>
               </ul>
+              <p>
+                The Tasks panel has <strong>All</strong>, <strong>Global</strong>, and <strong>Project</strong> filters. <strong>All</strong> shows
+                separate Global and Project headings, while the other filters show one catalog. Counts reflect the tasks currently loaded in each
+                scope. Equal task IDs are valid in both scopes: a Global task and a Project task with the same ID remain separate rows with
+                independent edit, delete, and run actions.
+              </p>
+              <p>
+                Tasks with a <code>group</code> use native collapsible disclosure groups. Groups keep their first-seen order within each catalog,
+                start collapsed, and retain their open state while the panel remains mounted. The <strong>All</strong> view keeps the scopes and
+                their groups distinct even when group names or task IDs match.
+              </p>
+              <p>
+                The UI calls the workspace-rooted catalog <strong>Project</strong>. A Project task is stored at the selected workspace's
+                <code>.pi-webui/tasks.json</code>, so the main checkout and each linked Git worktree have separate catalogs. A Global task is
+                stored once in the selected machine's PI WEBUI configuration and is independently editable from every workspace on that machine;
+                it is not linked to the workspace where it was created.
+              </p>
               <div class="code-card">
                 <div class="copy-row">
                   <strong>Disable Workspace Tasks</strong>
@@ -428,38 +446,51 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
 }</code></pre>
               </div>
               <p>
-                Open a workspace, choose the <strong>Tasks</strong> tab, and use the editor to manage tasks in the browser:
+                The editor uses the <strong>Available in all projects on this machine</strong> checkbox. It is unchecked for a new Project task
+                and checked for a new Global task. Creating a new task in either scope writes directly to that catalog. Changing the checkbox for
+                an existing task asks for confirmation, names the source and destination scope, and then performs a guarded promotion or demotion
+                that removes the source definition only after the destination definition is written and verified.
               </p>
               <ul>
-                <li><strong>Add</strong> creates a task and appends it to the task array.</li>
-                <li><strong>Edit</strong> updates the task at its existing position in the array.</li>
+                <li><strong>Add</strong> creates a task and appends it to the selected catalog.</li>
+                <li><strong>Edit</strong> preserves its position in that catalog.</li>
                 <li><strong>Delete</strong> removes the selected task without reordering the remaining tasks.</li>
-                <li><strong>Reset</strong> is offered only for a complete, readable task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-1 configuration <code>{"version":1,"tasks":[]}</code>.</li>
+                <li><strong>Reset</strong> is offered only for a complete, readable Project task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-one configuration <code>{"version":1,"tasks":[]}</code>.</li>
               </ul>
               <p>
-                Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order,
-                but canonicalize whitespace and key order and drop unsupported fields; original JSON formatting is not preserved.
+                Browser writes canonicalize whitespace and key order, preserve supported task values and array order, and drop unknown fields;
+                original JSON formatting and unsupported fields are not preserved.
               </p>
               <div class="code-card">
                 <div class="copy-row">
-                  <strong>Multiline task JSON</strong>
-                  <button class="copy-button" data-copy="#workspace-tasks-multiline">Copy</button>
+                  <strong>Global catalog with a multiline command</strong>
+                  <button class="copy-button" data-copy="#workspace-tasks-global-config">Copy</button>
                 </div>
-                <pre id="workspace-tasks-multiline"><code>{
+                <pre id="workspace-tasks-global-config"><code>{
   "version": 1,
   "tasks": [
     {
       "id": "verify",
       "title": "Build and test",
-      "command": "set -e\nnpm run build\nnpm test"
+      "group": "Quality",
+      "command": "set -e\nnpm run build\nnpm test",
+      "confirm": true
     }
   ]
 }</code></pre>
               </div>
               <p>
-                Encode line feeds as <code>\n</code> in JSON. Click <strong>Run</strong> next to a task to send one terminal request.
-                The server starts one dedicated terminal in the workspace root with <code>$SHELL -lc</code>, so lines in a multiline script share shell state
-                such as variables and the current directory. The shell's final exit status determines whether the run succeeds or fails.
+                The global catalog uses the same version-one task shape as a Project catalog. A missing global catalog is treated as an empty
+                version-one catalog. If the stored global value is malformed, the Tasks panel reports it as invalid and does not replace it with
+                an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's
+                Project-file reset does not repair global configuration.
+              </p>
+              <p>
+                For a multiline command, encode line feeds as <code>\n</code> in JSON. Click <strong>Run</strong> next to a task to send one
+                terminal request. Both Project and Global tasks run in the currently selected workspace root, so a Global task adapts to the
+                workspace in which it is launched. The server starts one dedicated terminal with <code>$SHELL -lc</code>; all lines in a
+                multiline command share shell state such as variables and the current directory, and the shell's final exit status determines
+                whether the run succeeds or fails. This is one terminal request, not one request per line.
               </p>
               <p>
                 For POSIX-compatible fail-fast behavior, use syntax such as:
@@ -477,13 +508,16 @@ npm test</code></pre>
                 Or use <code>npm run build &amp;&amp; npm test</code>. These are POSIX-compatible examples, not shell-neutral guarantees.
               </p>
               <p>
-                If the task file changed after the browser loaded it, the editor refuses the stale save as a best-effort conflict guard
-                instead of merging the changes. Use <strong>Refresh</strong> to load the latest file, review it, and retry. This protects
-                against sequential stale browser edits; it is not an atomic cross-tab or cross-process compare-and-swap guarantee.
+                A stale catalog save or destination collision leaves the affected catalogs unchanged. Use <strong>Refresh</strong> to load
+                authoritative data, review the draft, and try again. A partial or uncertain promotion/demotion remains in guarded recovery:
+                <strong>Retry move</strong> is available only after Refresh confirms the exact destination-written state, and it is still checked
+                by the server before the source is removed. There is no automatic merge, retry, compensation, or overwrite of an unrecognized
+                intermediate state. A server restart loses process-local move ownership, so any intermediate state left after restart requires
+                manual resolution rather than an automatic retry.
               </p>
               <p>
-                Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted shell commands from
-                your repositories.
+                Review task definitions before running them, especially in shared repositories. Workspace Tasks runs trusted shell commands from
+                your repositories, and both Global and Project tasks execute in the selected workspace root.
               </p>
             </section>
 

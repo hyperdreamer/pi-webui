@@ -158,7 +158,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Utility model routing | `utilityModels` | — | Global | Not supported locally | Saved settings apply immediately on the next utility operation; requires remote peer capability `settings.utilityModels` |
 | Local gateway text to speech | `tts` | — | Global | Not supported locally | Next utterance after settings save; no service restart |
 | Speech input (dictation) | `speechInput` | — | Global (gateway) | Not supported locally | Next dictation run after settings save; installing/updating this feature requires one manual session-daemon restart |
-| Plugin enablement/settings | `plugins.<id>.enabled`, `plugins.<id>.settings` | — | Global | Not core local config; plugins may read their own project files | Reload browser tab |
+| Plugin enablement/settings and global tasks | `plugins.<id>.enabled`, `plugins.<id>.settings`, `plugins.workspace-tasks.settings.globalTasks` | — | Global | Plugin-owned global settings; Project task catalogs remain in each selected workspace's `.pi-webui/tasks.json` | Reload browser tab / Tasks panel |
 | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
 | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
 | **Runtime-only environment variables** |  |  |  |  |  |
@@ -419,20 +419,38 @@ In **Settings → Session daemon**, these keys are saved on the selected machine
 
 ### Plugin config
 
-The `plugins` key is only for PI WEBUI browser plugin enablement/settings on the machine whose config you are editing. It does not install, remove, or update Pi packages; use **Settings → Pi packages** or Pi's package manager for package operations. In a federated setup, **Settings → PI WEBUI plugins** and **Settings → Pi packages** both target the currently selected machine, and each panel labels where changes will be saved or run.
+The `plugins` key is for PI WEBUI browser plugin enablement and plugin-owned settings on the machine whose config you are editing. It does not install, remove, or update Pi packages; use **Settings → Pi packages** or Pi's package manager for package operations. In a federated setup, **Settings → PI WEBUI plugins** and **Settings → Pi packages** both target the currently selected machine, and each panel labels where changes will be saved or run.
 
 Plugins are enabled by default. Set `plugins.<id>.enabled` to `false` to remove a plugin from that machine's `/pi-webui-plugins/manifest.json` before the browser imports it. Settings lists discovered plugins from the selected machine, including disabled entries exposed by that machine.
+
+The built-in Workspace Tasks plugin stores its machine-global catalog at the exact nested key `plugins.workspace-tasks.settings.globalTasks`. The value is a version-one task catalog, uses the same task fields as `.pi-webui/tasks.json`, and does not add a scope field to individual tasks:
 
 ```json
 {
   "plugins": {
-    "workspace-tasks": { "enabled": true, "settings": {} },
+    "workspace-tasks": {
+      "enabled": true,
+      "settings": {
+        "globalTasks": {
+          "version": 1,
+          "tasks": []
+        }
+      }
+    },
     "updates": { "enabled": false }
   }
 }
 ```
 
-Reload the browser tab after changing plugin enablement. Already-loaded plugin JavaScript is not unloaded from the current page.
+If `globalTasks` is absent, Workspace Tasks treats it as the canonical empty version-one catalog. If it is present but malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty value. Repair malformed global data through normal PI WEBUI configuration administration, such as a reviewed configuration update or a carefully reviewed config-file change while the relevant service is stopped; do not use the Tasks panel's Project-file reset for global data.
+
+Global reads and writes use an opaque semantic revision for compare-and-swap (CAS). The revision represents the canonical supported task projection: unchanged task content keeps the same revision, a semantic change produces a new one, and replacing a catalog with the same content is a no-op. A stale conditional write is rejected without changing either the catalog or unrelated configuration, so the browser must **Refresh** before trying again. Browser writes canonicalize supported fields and drop unknown fields.
+
+This protection covers coordinated PI WEBUI task mutations, not arbitrary external editors, Git operations, or other processes writing the same files. External conflict detection is best-effort and is not an atomic cross-process CAS guarantee. Promotion and demotion use guarded server-owned recovery: a destination collision or source conflict leaves both catalogs unchanged; an uncertain or partial move requires **Refresh** and, only when offered, **Retry move**. There is no automatic merge, retry, compensation, or overwrite of an unrecognized intermediate state.
+
+Move ownership is process-local. A web/API restart loses ownership of an intermediate move, so the resulting state is manual-resolution-only rather than automatically retried. Run exactly one active web/API route owner for a machine's PI WEBUI config; multiple web/API processes serving the same config are unsupported for guarded moves because process-local recovery is not a distributed lock.
+
+Reload the browser tab after changing plugin enablement or the global task catalog. Already-loaded plugin JavaScript is not unloaded from the current page.
 
 ### Shortcut config
 

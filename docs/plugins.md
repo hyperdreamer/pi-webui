@@ -264,8 +264,9 @@ Updates is enabled by default. It declares `machineSpecific: true` so the gatewa
 ### Workspace Tasks
 
 **Plugin id:** `workspace-tasks`
-**Config file:** `.pi-webui/tasks.json`
-**What it does:** adds a **Tasks** workspace tab for running configured shell commands in dedicated PI WEBUI terminals.
+**Project catalog file:** `.pi-webui/tasks.json`
+**Global catalog setting:** `plugins.workspace-tasks.settings.globalTasks`
+**What it does:** adds a **Tasks** workspace tab for browsing, editing, and running configured shell commands in dedicated PI WEBUI terminals.
 
 Workspace Tasks is enabled by default. To hide it, disable `workspace-tasks` in **Settings → PI WEBUI plugins** or set:
 
@@ -277,7 +278,7 @@ Workspace Tasks is enabled by default. To hide it, disable `workspace-tasks` in 
 }
 ```
 
-Configure workspace tasks in `.pi-webui/tasks.json`:
+Configure Project tasks in `.pi-webui/tasks.json`:
 
 ```json
 {
@@ -312,16 +313,24 @@ Task fields:
 - `group`: optional group heading.
 - `confirm`: optional boolean. When true, the browser asks before dispatching the command.
 
-Open a workspace, choose the **Tasks** tab, and use the editor to manage tasks in the browser:
+The Tasks panel has **All**, **Global**, and **Project** filters. **All** shows separate Global and Project headings, while the other filters show one catalog. Counts reflect the tasks currently loaded in each scope. Equal task IDs are valid in both scopes: a Global task and a Project task with the same ID remain separate rows with independent edit, delete, and run actions.
 
-- **Add** creates a task and appends it to the task array.
-- **Edit** updates the task at its existing position in the array.
+Tasks with a `group` use native collapsible disclosure groups. Groups keep their first-seen order within each catalog, start collapsed, and retain their open state while the panel remains mounted. The **All** view keeps the scopes and their groups distinct even when group names or task IDs match.
+
+The UI calls the workspace-rooted catalog **Project**. A Project task is stored at the selected workspace's `.pi-webui/tasks.json`, so the main checkout and each linked Git worktree have separate catalogs. A Global task is stored once in the selected machine's PI WEBUI configuration and is independently editable from every workspace on that machine; it is not linked to the workspace where it was created.
+
+The editor uses the **Available in all projects on this machine** checkbox. It is unchecked for a new Project task and checked for a new Global task. Creating a new task in either scope writes directly to that catalog. Changing the checkbox for an existing task asks for confirmation, names the source and destination scope, and then performs a guarded promotion or demotion that removes the source definition only after the destination definition is written and verified.
+
+- **Add** creates a task and appends it to the selected catalog.
+- **Edit** preserves its position in that catalog.
 - **Delete** removes the selected task without reordering the remaining tasks.
-- **Reset** is offered only for a complete, readable task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-1 configuration `{"version":1,"tasks":[]}`.
+- **Reset** is offered only for a complete, readable Project task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-one configuration `{"version":1,"tasks":[]}`.
 
-Browser saves write canonical JSON for the supported task fields. They preserve supported task values and task-array order, but canonicalize whitespace and key order and drop unsupported fields; original JSON formatting is not preserved.
+Browser writes canonicalize whitespace and key order, preserve supported task values and array order, and drop unknown fields; original JSON formatting and unsupported fields are not preserved.
 
-For a multiline script, encode line feeds as `\n` in JSON:
+The global catalog uses the same version-one task shape as a Project catalog. A missing global catalog is treated as an empty version-one catalog. If the stored global value is malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's Project-file reset does not repair global configuration.
+
+For a multiline command, encode line feeds as `\n` in JSON:
 
 ```json
 {
@@ -330,13 +339,15 @@ For a multiline script, encode line feeds as `\n` in JSON:
     {
       "id": "verify",
       "title": "Build and test",
-      "command": "set -e\nnpm run build\nnpm test"
+      "group": "Quality",
+      "command": "set -e\nnpm run build\nnpm test",
+      "confirm": true
     }
   ]
 }
 ```
 
-Click **Run** next to a task to send one terminal request. The server starts one dedicated terminal in the workspace root with `$SHELL -lc`, so lines in a multiline script share shell state such as variables and the current directory. The shell's final exit status determines whether the run succeeds or fails. For POSIX-compatible fail-fast behavior, use syntax such as:
+Click **Run** next to a task to send one terminal request. Both Project and Global tasks run in the currently selected workspace root, so a Global task adapts to the workspace in which it is launched. The server starts one dedicated terminal with `$SHELL -lc`; all lines in a multiline command share shell state such as variables and the current directory, and the shell's final exit status determines whether the run succeeds or fails. This is one terminal request, not one request per line. For POSIX-compatible fail-fast behavior, use syntax such as:
 
 ```sh
 set -e
@@ -352,9 +363,9 @@ npm run build && npm test
 
 These are POSIX-compatible examples, not shell-neutral guarantees.
 
-If the task file changed after the browser loaded it, the editor refuses the stale save as a best-effort conflict guard instead of merging the changes. Use **Refresh** to load the latest file, review it, and retry. This protects against sequential stale browser edits; it is not an atomic cross-tab or cross-process compare-and-swap guarantee.
+A stale catalog save or destination collision leaves the affected catalogs unchanged. Use **Refresh** to load authoritative data, review the draft, and try again. A partial or uncertain promotion/demotion remains in guarded recovery: **Retry move** is available only after Refresh confirms the exact destination-written state, and it is still checked by the server before the source is removed. There is no automatic merge, retry, compensation, or overwrite of an unrecognized intermediate state. A server restart loses process-local move ownership, so any intermediate state left after restart requires manual resolution rather than an automatic retry.
 
-Review task configs before running them, especially in shared projects. Workspace Tasks runs trusted shell commands from your repositories.
+Review task definitions before running them, especially in shared repositories. Workspace Tasks runs trusted shell commands from your repositories, and both Global and Project tasks execute in the selected workspace root.
 
 ## Discovery and packaging
 
