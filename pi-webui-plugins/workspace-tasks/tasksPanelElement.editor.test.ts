@@ -19,7 +19,9 @@ interface CatalogState {
 interface WorkspaceTasksWorkspaceState {
   readonly workspace: CatalogState;
   readonly global: CatalogState;
+  readonly sourceGenerations?: { readonly workspace: number; readonly global: number };
   readonly move?: { readonly kind: "partial" | "unknown-outcome" | "conflict"; readonly message: string; readonly retryAllowed: boolean };
+  readonly moveError?: { readonly kind: "validation" | "unavailable"; readonly message: string };
   readonly mutationGate?: { readonly scopes: readonly WorkspaceTaskScope[]; readonly message: string };
 }
 
@@ -71,6 +73,7 @@ const task = (overrides: Partial<WorkspaceTask> = {}): WorkspaceTask => ({
 const loadedState = (workspace: readonly WorkspaceTask[] = [task()], global: readonly WorkspaceTask[] = []): WorkspaceTasksWorkspaceState => ({
   workspace: { kind: "loaded", config: { version: 1, tasks: workspace }, refreshing: false },
   global: { kind: "loaded", config: { version: 1, tasks: global }, refreshing: false },
+  sourceGenerations: { workspace: 1, global: 1 },
 });
 
 beforeEach(() => {
@@ -214,7 +217,7 @@ describe("workspace tasks editor", () => {
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
   });
 
-  it("settles a canonical no-op update after its unchanged source publication", async () => {
+  it("settles a canonical no-op update only after its matching source generation publication", async () => {
     const bridge = createControllableBridge();
     const panel = mount(loadedState([task()], []), bridge.actions);
     bridge.attach(panel);
@@ -224,12 +227,51 @@ describe("workspace tasks editor", () => {
     button(panel, "[data-save-task]").click();
     await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
 
-    bridge.settleThenPublish("update", loadedState([task()], []));
+    bridge.resolve("update");
+    bridge.publish({
+      ...loadedState([task()], []),
+      sourceGenerations: { workspace: 1, global: 2 },
+    });
+
+    await vi.waitFor(() => expect(panelStatusText(panel)).toContain("Saving workspace task..."));
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    bridge.publish({
+      ...loadedState([task()], []),
+      sourceGenerations: { workspace: 2, global: 2 },
+    });
 
     await vi.waitFor(() => expect(panelStatusText(panel)).toContain('Saved task "Build".'));
     expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
     expect(panel.shadowRoot?.activeElement).toBe(panel.shadowRoot?.querySelector("[data-edit-task='workspace:build']"));
   });
+
+  it.each(["validation", "unavailable"] as const)("retains the move editor for a known %s error without blocking later task actions", async (kind) => {
+    const bridge = createControllableBridge();
+    const panel = mount(loadedState([task()], []), bridge.actions);
+    bridge.attach(panel);
+    startScopeMove(panel, "workspace", "release");
+    await vi.waitFor(() => expect(bridge.actions.move).toHaveBeenCalledTimes(1));
+
+    bridge.complete("move", {
+      ...loadedState([task()], []),
+      moveError: { kind, message: `${kind} move failed before any catalog write.` },
+    });
+
+    await vi.waitFor(() => expect(panel.shadowRoot?.querySelector("[data-move-error]")?.textContent).toContain(`${kind} move failed`));
+    expect(panel.shadowRoot?.querySelector("[data-move-confirmation]")).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("[data-retry-move]")).toBeNull();
+    expect(button(panel, "[data-cancel-move]")).not.toBeNull();
+
+    button(panel, "[data-cancel-move]").click();
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+    if (input(panel, "[data-editor-global]").checked) input(panel, "[data-editor-global]").click();
+    input(panel, "[data-editor-title]").value = "Release";
+    input(panel, "[data-editor-title]").dispatchEvent(new Event("input", { bubbles: true }));
+    button(panel, "[data-save-task]").click();
+    await vi.waitFor(() => expect(bridge.actions.update).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps a successful update pending until its delayed authoritative snapshot arrives", async () => {
     const bridge = createControllableBridge();
     const panel = mount(loadedState([task()], []), bridge.actions);
@@ -673,7 +715,9 @@ function cloneBridgeState(state: WorkspaceTasksWorkspaceState): WorkspaceTasksWo
     ...state,
     workspace: cloneCatalogState(state.workspace),
     global: cloneCatalogState(state.global),
+    ...(state.sourceGenerations === undefined ? {} : { sourceGenerations: { ...state.sourceGenerations } }),
     ...(state.move === undefined ? {} : { move: { ...state.move } }),
+    ...(state.moveError === undefined ? {} : { moveError: { ...state.moveError } }),
     ...(state.mutationGate === undefined ? {} : { mutationGate: { ...state.mutationGate, scopes: [...state.mutationGate.scopes] } }),
   };
 }

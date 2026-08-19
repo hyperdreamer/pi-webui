@@ -50,7 +50,9 @@ type GlobalTasksCatalogState =
 export interface WorkspaceTasksWorkspaceState {
   readonly workspace: WorkspaceTasksCatalogState;
   readonly global: GlobalTasksCatalogState;
+  readonly sourceGenerations?: Readonly<Record<WorkspaceTaskScope, number>>;
   readonly move?: { kind: "partial" | "unknown-outcome" | "conflict"; message: string; retryAllowed: boolean };
+  readonly moveError?: { kind: "validation" | "unavailable"; message: string };
   readonly mutationGate?: { scopes: readonly WorkspaceTaskScope[]; message: string };
 }
 
@@ -196,7 +198,11 @@ export class WorkspaceTasksController {
   private readonly workspaceCaches = new Map<string, WorkspaceCatalogCache>();
   private readonly globalCaches = new Map<string, GlobalCatalogCache>();
   private readonly activeMutationLocks = new Set<string>();
-  private currentState = immutableState({ workspace: { kind: "loading" }, global: { kind: "loading" } });
+  private currentState = immutableState({
+    workspace: { kind: "loading" },
+    global: { kind: "loading" },
+    sourceGenerations: { workspace: 0, global: 0 },
+  });
   private activeSelection: ActiveSelection | undefined;
   private observing = false;
   private disposed = false;
@@ -205,6 +211,7 @@ export class WorkspaceTasksController {
   private moveContext: MoveContext | undefined;
   private moveState: WorkspaceTasksWorkspaceState["move"] | undefined;
   private moveStateSelectionKey: string | undefined;
+  private moveError: WorkspaceTasksWorkspaceState["moveError"] | undefined;
   private readonly workspaceMutationGates = new Map<string, SourceMutationGate>();
   private readonly globalMutationGates = new Map<string, SourceMutationGate>();
   private moveMutationGate: MoveMutationGate | undefined;
@@ -254,6 +261,7 @@ export class WorkspaceTasksController {
   }
 
   private startRefresh(selection: ActiveSelection, mode: RefreshMode): Promise<void> {
+    this.clearMoveError();
     const current = this.refreshOperation;
     if (
       current?.context.selectionKey === selection.selectionKey
@@ -443,6 +451,7 @@ export class WorkspaceTasksController {
 
     const context = this.createMoveContext(selection, ref, destinationTask);
     if (context === undefined) return;
+    this.clearMoveError();
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
 
@@ -587,9 +596,10 @@ export class WorkspaceTasksController {
       case "validation":
       case "unavailable":
         this.moveContext = undefined;
-        this.moveStateSelectionKey = context.selectionKey;
-        this.moveState = { kind: "conflict", message: result.message, retryAllowed: false };
+        this.moveState = undefined;
+        this.moveStateSelectionKey = undefined;
         this.clearMoveMutationGate(context);
+        this.moveError = { kind: result.kind, message: result.message };
         this.publishCurrent();
         return;
     }
@@ -873,6 +883,7 @@ export class WorkspaceTasksController {
     this.moveContext = undefined;
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
+    this.moveError = undefined;
     this.moveMutationGate = undefined;
     if (previous !== undefined) {
       if (previous.workspaceKey !== next.workspaceKey) this.cancelWorkspaceLoad(previous.workspaceKey);
@@ -891,6 +902,7 @@ export class WorkspaceTasksController {
     this.moveContext = undefined;
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
+    this.moveError = undefined;
     this.moveMutationGate = undefined;
     for (const cache of this.workspaceCaches.values()) {
       this.cancelLoad(cache);
@@ -1287,6 +1299,12 @@ export class WorkspaceTasksController {
     };
   }
 
+  private clearMoveError(): void {
+    if (this.moveError === undefined) return;
+    this.moveError = undefined;
+    this.publishCurrent();
+  }
+
   private clearMoveMutationGate(context: MoveContext): void {
     const gate = this.moveMutationGate;
     if (gate?.selectionKey !== context.selectionKey) return;
@@ -1328,7 +1346,9 @@ export class WorkspaceTasksController {
     this.currentState = immutableState({
       workspace: workspaceState(workspace),
       global: globalState(global),
+      sourceGenerations: { workspace: workspace.dataGeneration, global: global.dataGeneration },
       ...(this.moveStateSelectionKey === selection.selectionKey && this.moveState !== undefined ? { move: this.moveState } : {}),
+      ...(this.moveError === undefined ? {} : { moveError: this.moveError }),
       ...(gate === undefined ? {} : { mutationGate: { scopes: [...gate.scopes], message: gate.message } }),
     });
     this.onChange(this.currentState);
@@ -1562,14 +1582,21 @@ function snapshotConfig(config: WorkspaceTasksConfig): WorkspaceTasksSnapshotCon
 function immutableState(state: WorkspaceTasksWorkspaceState): WorkspaceTasksWorkspaceState {
   const workspace = Object.freeze({ ...state.workspace });
   const global = Object.freeze({ ...state.global });
+  const sourceGenerations = Object.freeze({
+    workspace: state.sourceGenerations?.workspace ?? 0,
+    global: state.sourceGenerations?.global ?? 0,
+  });
   const move = state.move === undefined ? undefined : Object.freeze({ ...state.move });
+  const moveError = state.moveError === undefined ? undefined : Object.freeze({ ...state.moveError });
   const mutationGate = state.mutationGate === undefined
     ? undefined
     : Object.freeze({ scopes: Object.freeze([...state.mutationGate.scopes]), message: state.mutationGate.message });
   return Object.freeze({
     workspace,
     global,
+    sourceGenerations,
     ...(move === undefined ? {} : { move }),
+    ...(moveError === undefined ? {} : { moveError }),
     ...(mutationGate === undefined ? {} : { mutationGate }),
   });
 }

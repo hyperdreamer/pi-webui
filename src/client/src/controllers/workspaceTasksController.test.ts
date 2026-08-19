@@ -78,6 +78,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([buildTask]), refreshing: false },
       global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+      sourceGenerations: { workspace: 1, global: 1 },
     });
   });
 
@@ -102,6 +103,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([buildTask]), refreshing: false },
       global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+      sourceGenerations: { workspace: 1, global: 1 },
     });
   });
 
@@ -169,6 +171,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([deployTask]), refreshing: false },
       global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+      sourceGenerations: { workspace: 1, global: 1 },
     });
 
     harness.setSelection(workspaceBAtNewPath);
@@ -216,6 +219,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([editedBuildTask]), refreshing: false },
       global: { kind: "loaded", config: config([buildTask]), refreshing: false },
+      sourceGenerations: { workspace: 2, global: 2 },
     });
   });
 
@@ -234,6 +238,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([deployTask]), refreshing: false },
       global: { kind: "loaded", config: config([buildTask]), refreshing: false },
+      sourceGenerations: { workspace: 1, global: 1 },
     });
 
     const publicationCount = harness.published.length;
@@ -369,6 +374,37 @@ describe("WorkspaceTasksController", () => {
       config([deployTask, editedBuildTask]),
       config([deployTask]),
     ]);
+  });
+
+  it("publishes a source-scoped generation for a canonical no-op direct response", async () => {
+    let tracking = false;
+    let updateResolved = false;
+    let publicationBeforeResolution = false;
+    let initialWorkspaceGeneration = 0;
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask]))],
+      globalReads: [success(globalLoaded("global-1", [deployTask]))],
+      workspaceReplacements: [success(workspaceLoaded("workspace-1", [buildTask]))],
+      onChange: (state) => {
+        if (!tracking) return;
+        const workspaceGeneration = readSourceGeneration(state, "workspace");
+        if (workspaceGeneration > initialWorkspaceGeneration) publicationBeforeResolution ||= !updateResolved;
+      },
+    });
+    harness.controller.observe(true);
+    await settle();
+    initialWorkspaceGeneration = readSourceGeneration(harness.controller.state, "workspace");
+    const initialGlobalGeneration = readSourceGeneration(harness.controller.state, "global");
+    tracking = true;
+
+    const saving = harness.controller.actions.update({ scope: "workspace", id: "build" }, buildTask).then(() => {
+      updateResolved = true;
+    });
+    await saving;
+
+    expect(readSourceGeneration(harness.controller.state, "workspace")).toBe(initialWorkspaceGeneration + 1);
+    expect(readSourceGeneration(harness.controller.state, "global")).toBe(initialGlobalGeneration);
+    expect(publicationBeforeResolution).toBe(true);
   });
 
   it("allows workspace mutations for different cache identities to run concurrently", async () => {
@@ -802,6 +838,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([]), refreshing: false },
       global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+      sourceGenerations: { workspace: 2, global: 2 },
     });
     expect(Object.keys(harness.controller.state)).not.toContain("operationId");
   });
@@ -831,25 +868,36 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state.mutationGate).toBeUndefined();
   });
 
-  it("publishes known move validation errors without creating recovery context", async () => {
+  it.each([
+    ["validation", { kind: "validation", message: "Task is invalid" }],
+    ["unavailable", { kind: "unavailable", message: "Task service is unavailable", retryable: true }],
+  ] as const)("publishes a nonblocking known move %s error that Refresh clears", async (kind, result) => {
     const harness = createHarness({
-      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask]))],
-      globalReads: [success(globalLoaded("global-1", []))],
-      moves: [{ kind: "validation", message: "Task is invalid" }],
-      uuids: ["34343434-3434-4343-8343-343434343434"],
+      workspaceReads: [
+        success(workspaceLoaded("workspace-1", [buildTask])),
+        success(workspaceLoaded("workspace-3", [buildTask, extraTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [])),
+        success(globalLoaded("global-2", [])),
+      ],
+      workspaceReplacements: [success(workspaceLoaded("workspace-2", [buildTask, extraTask]))],
+      moves: [result],
     });
     harness.controller.observe(true);
     await settle();
 
     await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
 
-    expect(harness.controller.state.move).toEqual({
-      kind: "conflict",
-      message: "Task is invalid",
-      retryAllowed: false,
-    });
-    await harness.controller.actions.retryMove();
-    expect(harness.client.move).toHaveBeenCalledTimes(1);
+    expect(harness.controller.state.move).toBeUndefined();
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({ kind, message: result.message });
+
+    await harness.controller.actions.create("workspace", extraTask);
+    expect(harness.client.replaceWorkspace).toHaveBeenCalledTimes(1);
+
+    await harness.controller.actions.refresh();
+    expect(Reflect.get(harness.controller.state, "moveError")).toBeUndefined();
   });
 
   it("publishes completed demotion results", async () => {
@@ -884,6 +932,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([deployTask]), refreshing: false },
       global: { kind: "loaded", config: config([]), refreshing: false },
+      sourceGenerations: { workspace: 2, global: 2 },
     });
   });
 
@@ -1127,6 +1176,7 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state).toEqual({
       workspace: { kind: "loaded", config: config([]), refreshing: false },
       global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+      sourceGenerations: { workspace: 2, global: 2 },
     });
   });
 
@@ -2005,6 +2055,11 @@ function createHarness(options: HarnessOptions = {}) {
   };
 }
 
+function readSourceGeneration(state: WorkspaceTasksWorkspaceState, scope: "workspace" | "global"): number {
+  const generation = state.sourceGenerations?.[scope];
+  if (generation === undefined) throw new Error(`Expected ${scope} source generation.`);
+  return generation;
+}
 function selection(machineId: string, projectId: string, workspaceId: string, workspacePath: string): WorkspaceTasksSelection {
   return { machineId, projectId, workspaceId, workspacePath };
 }

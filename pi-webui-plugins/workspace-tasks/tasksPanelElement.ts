@@ -36,7 +36,9 @@ type GlobalCatalogState =
 interface WorkspaceTasksPanelState {
   readonly workspace: WorkspaceCatalogState;
   readonly global: GlobalCatalogState;
+  readonly sourceGenerations?: Readonly<Record<WorkspaceTaskScope, number>>;
   readonly move?: { readonly kind: "partial" | "unknown-outcome" | "conflict"; readonly message: string; readonly retryAllowed: boolean };
+  readonly moveError?: { readonly kind: "validation" | "unavailable"; readonly message: string };
   readonly mutationGate?: { readonly scopes: readonly WorkspaceTaskScope[]; readonly message: string };
 }
 
@@ -68,6 +70,7 @@ interface PanelOperation {
 
 interface SourceStateObservation {
   lastKey: string;
+  readonly generation: number;
   delivered: boolean;
 }
 
@@ -138,7 +141,7 @@ export function tasksPanelBadge(context: WorkspacePanelContext): string | undefi
   const bridge = (context as InternalWorkspacePanelContext).workspaceTasks;
   if (bridge === undefined) return undefined;
   const state = bridge.state;
-  if (state.move !== undefined || state.mutationGate !== undefined) return "!";
+  if (state.move !== undefined || state.moveError !== undefined || state.mutationGate !== undefined) return "!";
   if (catalogNeedsAttention(state.workspace) || catalogNeedsAttention(state.global)) return "!";
   return undefined;
 }
@@ -211,7 +214,7 @@ class PiWebUiTasksPanel extends BaseElement {
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
     const previous = this.stateValue;
     this.stateValue = value;
-    this.recordPendingSourceObservations(value, previous !== value);
+    this.recordPendingSourceObservations(value);
     if (value.move !== undefined) this.moveRecoveryObserved = true;
     this.rememberOpenGroups();
     this.pruneExpandedGroups();
@@ -305,6 +308,10 @@ class PiWebUiTasksPanel extends BaseElement {
         ${move.kind === "conflict" ? `<p data-manual-resolution>Refresh the catalogs and resolve the definitions manually.</p>` : ""}
         <button type="button" class="secondary" data-retry-move ${retryDisabled ? "disabled" : ""}>Retry move</button>
       </div>`);
+    }
+    const moveError = this.stateValue.moveError;
+    if (moveError !== undefined) {
+      parts.push(`<div class="status error" data-move-error role="status"><strong>Move was not applied.</strong><p>${escapeHtml(moveError.message)}</p></div>`);
     }
     if (this.status !== undefined) {
       const detail = this.status.detail === undefined ? "" : `<pre class="diagnostic">${escapeHtml(this.status.detail)}</pre>`;
@@ -798,8 +805,10 @@ class PiWebUiTasksPanel extends BaseElement {
       await this.actionsValue.move(editor.sourceRef, validation.task);
       if (!this.ownsSelection(generation)) return;
       this.operation = undefined;
-      if (this.stateValue.move !== undefined || this.mutationBlocked("workspace") || this.mutationBlocked("global")) {
-        this.status = this.stateValue.move === undefined ? { kind: "error", message: this.stateValue.mutationGate?.message ?? "Refresh before trying another task change." } : undefined;
+      if (this.stateValue.move !== undefined || this.stateValue.moveError !== undefined || this.mutationBlocked("workspace") || this.mutationBlocked("global")) {
+        if (this.stateValue.moveError === undefined) {
+          this.status = this.stateValue.move === undefined ? { kind: "error", message: this.stateValue.mutationGate?.message ?? "Refresh before trying another task change." } : undefined;
+        }
         this.render();
         return;
       }
@@ -1025,10 +1034,12 @@ class PiWebUiTasksPanel extends BaseElement {
       sources: {
         workspace: {
           lastKey: catalogStateKey(this.stateValue.workspace),
+          generation: sourceGeneration(this.stateValue, "workspace"),
           delivered: false,
         },
         global: {
           lastKey: catalogStateKey(this.stateValue.global),
+          generation: sourceGeneration(this.stateValue, "global"),
           delivered: false,
         },
       },
@@ -1036,29 +1047,19 @@ class PiWebUiTasksPanel extends BaseElement {
     };
   }
 
-  private recordPendingSourceObservations(next: WorkspaceTasksPanelState, published: boolean): void {
+  private recordPendingSourceObservations(next: WorkspaceTasksPanelState): void {
     const pending = this.pendingAction;
     if (pending === undefined || !this.ownsSelection(pending.generation)) return;
-    // The controller recreates both source objects for each top-level publication.
-    let changedAnyScope = false;
-    for (const scope of ["workspace", "global"] as const) {
-      const nextCatalog = scope === "workspace" ? next.workspace : next.global;
-      const nextKey = catalogStateKey(nextCatalog);
-      if (pending.observation.sources[scope].lastKey !== nextKey) changedAnyScope = true;
-    }
     for (const scope of ["workspace", "global"] as const) {
       if (!pending.scopes.includes(scope)) continue;
       const nextCatalog = scope === "workspace" ? next.workspace : next.global;
       const source = pending.observation.sources[scope];
       const nextKey = catalogStateKey(nextCatalog);
-      if (source.lastKey === nextKey) continue;
+      if (source.generation < sourceGeneration(next, scope)
+        || source.lastKey !== nextKey && hasAuthoritativeCatalogState(nextCatalog)) {
+        source.delivered = true;
+      }
       source.lastKey = nextKey;
-      source.delivered = true;
-    }
-    // A fresh authoritative snapshot can be semantically unchanged after a
-    // canonical no-op. Its top-level publication identity is the acknowledgement.
-    if (published && !changedAnyScope && pending.scopes.every((scope) => hasAuthoritativeCatalogState(this.catalog(scope)))) {
-      for (const scope of pending.scopes) pending.observation.sources[scope].delivered = true;
     }
   }
 
@@ -1283,6 +1284,11 @@ function catalogFailure(catalog: WorkspaceCatalogState | GlobalCatalogState): Ca
   return undefined;
 }
 
+function sourceGeneration(state: WorkspaceTasksPanelState, scope: WorkspaceTaskScope): number {
+  const generation = state.sourceGenerations?.[scope];
+  return typeof generation === "number" && Number.isFinite(generation) ? generation : 0;
+}
+
 function catalogStateKey(catalog: WorkspaceCatalogState | GlobalCatalogState): string {
   return JSON.stringify(catalog);
 }
@@ -1350,7 +1356,11 @@ function cloneTask(task: Readonly<WorkspaceTask>): WorkspaceTask {
 }
 
 function emptyPanelState(): WorkspaceTasksPanelState {
-  return { workspace: { kind: "loading" }, global: { kind: "loading" } };
+  return {
+    workspace: { kind: "loading" },
+    global: { kind: "loading" },
+    sourceGenerations: { workspace: 0, global: 0 },
+  };
 }
 
 function noOpActions(): WorkspaceTasksPanelActions {
