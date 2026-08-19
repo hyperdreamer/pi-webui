@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.2
+
+### Patch Changes
+
+- e8658b2: Upgrade the supported Pi Coding Agent package set to the 0.84.2 patch release.
+
 ## 1.15.1
 
 ### Patch Changes
