@@ -935,6 +935,36 @@ describe("WorkspaceTasksController", () => {
     expect(readSourceGeneration(harness.controller.state, "global")).toBe(initialGlobalGeneration + 1);
   });
 
+  it.each([
+    ["validation", { kind: "validation", message: "First validation error" }, { kind: "validation", message: "Second validation error" }],
+    ["unavailable", { kind: "unavailable", message: "First unavailable error", retryable: true }, { kind: "unavailable", message: "Second unavailable error", retryable: true }],
+  ] as const)("keeps the newer known move %s error accepted during one refresh", async (kind, firstResult, secondResult) => {
+    const refreshedWorkspace = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const refreshedGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask])), refreshedWorkspace.promise],
+      globalReads: [success(globalLoaded("global-1", [])), refreshedGlobal.promise],
+      moves: [firstResult, secondResult],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const refreshing = harness.controller.actions.refresh();
+    await settle();
+
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({ kind, message: firstResult.message });
+
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({ kind, message: secondResult.message });
+
+    refreshedWorkspace.resolve(success(workspaceLoaded("workspace-2", [buildTask, extraTask])));
+    refreshedGlobal.resolve(success(globalLoaded("global-2", [])));
+    await refreshing;
+
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({ kind, message: secondResult.message });
+  });
+
   it("keeps a known move error accepted after an authoritative refresh completes", async () => {
     const harness = createHarness({
       workspaceReads: [

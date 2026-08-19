@@ -136,6 +136,7 @@ interface RefreshContext {
   readonly selectionKey: string;
   readonly generation: number;
   readonly operationId: number;
+  observedMoveErrorGeneration: number | undefined;
   readonly mode: RefreshMode;
 }
 
@@ -214,6 +215,7 @@ export class WorkspaceTasksController {
   private moveState: WorkspaceTasksWorkspaceState["move"] | undefined;
   private moveStateSelectionKey: string | undefined;
   private moveError: WorkspaceTasksWorkspaceState["moveError"] | undefined;
+  private moveErrorGeneration = 0;
   private moveErrorRefreshOperationId: number | undefined;
   private readonly workspaceMutationGates = new Map<string, SourceMutationGate>();
   private readonly globalMutationGates = new Map<string, SourceMutationGate>();
@@ -279,6 +281,7 @@ export class WorkspaceTasksController {
       selectionKey: selection.selectionKey,
       generation: this.selectionGeneration,
       operationId: ++this.nextRefreshOperationId,
+      observedMoveErrorGeneration: undefined,
       mode,
     };
     const promise = this.refreshSelection(context);
@@ -329,6 +332,7 @@ export class WorkspaceTasksController {
       workspace === "success"
       && global === "success"
       && this.moveErrorRefreshOperationId === context.operationId
+      && this.moveErrorGeneration === context.observedMoveErrorGeneration
     ) {
       this.moveError = undefined;
       this.moveErrorRefreshOperationId = undefined;
@@ -612,13 +616,19 @@ export class WorkspaceTasksController {
         this.moveStateSelectionKey = undefined;
         this.clearMoveMutationGate(context);
         this.moveError = { kind: result.kind, message: result.message };
+        this.moveErrorGeneration += 1;
         const refreshContext = this.refreshOperation?.context;
-        this.moveErrorRefreshOperationId = refreshContext !== undefined
+        if (
+          refreshContext !== undefined
           && this.isRefreshContextCurrent(refreshContext)
           && refreshContext.selectionKey === context.selectionKey
           && refreshContext.generation === context.generation
-          ? refreshContext.operationId
-          : undefined;
+        ) {
+          refreshContext.observedMoveErrorGeneration ??= this.moveErrorGeneration;
+          this.moveErrorRefreshOperationId = refreshContext.operationId;
+        } else {
+          this.moveErrorRefreshOperationId = undefined;
+        }
         this.publishCurrent();
         return;
       }
