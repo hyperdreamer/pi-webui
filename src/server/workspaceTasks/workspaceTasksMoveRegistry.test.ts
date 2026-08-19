@@ -510,6 +510,18 @@ describe("MachineGlobalTasksMoveRegistry", () => {
       .toThrow(WorkspaceTasksMoveRecoveryPendingError);
   });
 
+  it("clears an unknown destination claim when its authoritative non-destination observation is consumed", async () => {
+    const registry = new MachineGlobalTasksMoveRegistry(new ObservationPort());
+    const plan = promotionPlan();
+    const permit = await startAndMarkDestination(registry, plan, true);
+
+    registry.releaseAfterAuthoritativeObservation(permit);
+
+    expect(() => { registry.assertGlobalMutationAllowed(); }).not.toThrow();
+    expect(() => { registry.assertGlobalMutationAllowed(globalIntent(plan.destinationWrite), permit); })
+      .toThrow(WorkspaceTasksMoveAuthorizationError);
+  });
+
   it("loses claims on process restart and refuses retry of an unowned intermediate pair", async () => {
     const oldRegistry = new MachineGlobalTasksMoveRegistry(new ObservationPort());
     const plan = promotionPlan();

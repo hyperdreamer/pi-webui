@@ -228,7 +228,7 @@ export function createWorkspaceTasksCatalogService(
   function reconcileDestinationObservation(permit: WorkspaceTasksMovePermit): MoveWorkspaceTaskResult {
     // The post-destination pair was already observed and classified by this move.
     // Releasing here avoids replacing that authoritative observation with a racy reread.
-    registry.release(permit);
+    registry.releaseAfterAuthoritativeObservation(permit);
     return conflictResult("unrecognized-state", "The move state no longer matches its live claim.");
   }
   async function removeSource(

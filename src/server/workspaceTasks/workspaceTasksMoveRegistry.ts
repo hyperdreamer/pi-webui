@@ -205,6 +205,21 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
     this.clearClaim(claim);
   }
 
+  /**
+   * Clear a claim only after its owner has consumed an authoritative
+   * non-destination observation. Ordinary release retains unknown outcomes
+   * because it has no evidence that the destination write did not apply.
+   */
+  releaseAfterAuthoritativeObservation(permit: WorkspaceTasksMovePermit): void {
+    const record = this.requirePermit(permit);
+    const claim = record.claim;
+    if (this.claim !== claim) {
+      this.invalidatePermit(record);
+      return;
+    }
+    this.clearClaim(claim);
+  }
+
   async reconcileGlobalMoveClaim(
     subject: WorkspaceTasksMutationSubject,
     permit?: WorkspaceTasksMovePermit,
