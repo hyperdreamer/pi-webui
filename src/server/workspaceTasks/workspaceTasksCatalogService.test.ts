@@ -170,6 +170,42 @@ describe("WorkspaceTasksCatalogService", () => {
     expect(fixture.global.writeOptions[0]?.onWriteAcknowledged).toBeUndefined();
   });
 
+  it("keeps a completed move authoritative when a direct no-op writer races settlement", async () => {
+    const fixture = createFixture();
+    const source = catalogWithTasks("build");
+    const destination = emptyCatalog();
+    const request = promotionRequest(source, destination, "release");
+    fixture.workspace.response = loadedWorkspace(source);
+    fixture.global.response = loadedGlobal(destination);
+
+    const releaseDirectWriter = deferred<undefined>();
+    const directWriter = releaseDirectWriter.promise.then(() => fixture.service.replaceGlobal({
+      expectedRevision: loadedGlobal(catalogWithTasks("release")).revision,
+      config: catalogWithTasks("release"),
+    }));
+    let raced = false;
+    const originalReconcile = fixture.composition.registry.reconcileGlobalMoveClaim.bind(fixture.composition.registry);
+    vi.spyOn(fixture.composition.registry, "reconcileGlobalMoveClaim").mockImplementation(async (subject, permit) => {
+      if (!raced && permit !== undefined && fixture.workspace.writes === 1) {
+        raced = true;
+        releaseDirectWriter.resolve(undefined);
+        await directWriter.catch(() => undefined);
+      }
+      return originalReconcile(subject, permit);
+    });
+
+    const result = await fixture.service.move({ ...TEST_ADDRESS, ...request });
+
+    expect(raced).toBe(true);
+    await expect(directWriter).rejects.toBeInstanceOf(WorkspaceTasksMoveRecoveryPendingError);
+    expect(result).toMatchObject({ kind: "completed", operationId: request.operationId });
+    await expect(fixture.service.replaceGlobal({
+      expectedRevision: loadedGlobal(catalogWithTasks("release")).revision,
+      config: catalogWithTasks("release"),
+    })).resolves.toMatchObject({ kind: "loaded" });
+  });
+
+
   it("keeps a destination-written claim after a known source failure and reconciles it before direct writes", async () => {
     const fixture = createFixture();
     const source = catalogWithTasks("build");
@@ -572,6 +608,20 @@ function demotionRequest(
         ? missingWorkspace("workspace-missing")
         : loadedWorkspace(destination),
       task: task(destinationId),
+    },
+  };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolveValue: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolveValue = resolve;
+  });
+  return {
+    promise,
+    resolve: (value) => {
+      if (resolveValue === undefined) throw new Error("Deferred promise resolver is unavailable");
+      resolveValue(value);
     },
   };
 }

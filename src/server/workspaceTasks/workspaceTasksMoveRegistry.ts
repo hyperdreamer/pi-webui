@@ -65,6 +65,7 @@ export class WorkspaceTasksMoveConflictError extends Error {
 
 interface MoveClaim {
   operationId: string;
+  ownerLockToken: object;
   address: WorkspaceCatalogAddress;
   plan: WorkspaceTasksMovePlan;
   phase: "destination-pending" | "destination-written";
@@ -150,8 +151,13 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
     }
 
     const claimPlan = structuredClone(plan);
+    const ownerLockToken = this.activeMoveLockToken;
+    if (ownerLockToken === undefined) {
+      throw new WorkspaceTasksMoveAuthorizationError("Move permits can only be created inside their operation lock.");
+    }
     const claim: MoveClaim = {
       operationId: claimPlan.operationId,
+      ownerLockToken,
       address: { ...claimPlan.address },
       plan: claimPlan,
       phase: "destination-pending",
@@ -172,6 +178,11 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
       throw new WorkspaceTasksMoveConflictError("unowned-intermediate-state", "The retry does not match the live move claim.");
     }
     if (claim.phase === "destination-pending") throw new WorkspaceTasksMoveInProgressError();
+    const ownerLockToken = this.activeMoveLockToken;
+    if (ownerLockToken === undefined) {
+      throw new WorkspaceTasksMoveAuthorizationError("Move permits can only be created inside their operation lock.");
+    }
+    claim.ownerLockToken = ownerLockToken;
     return this.createPermit(claim, "retry");
   }
 
@@ -251,6 +262,9 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
       throw new WorkspaceTasksMoveRecoveryPendingError();
     }
     if (!isAuthoritativePair(observed)) throw new WorkspaceTasksMoveRecoveryPendingError();
+    if (permitRecord === undefined && this.isActiveClaimLock(claim)) {
+      throw new WorkspaceTasksMoveRecoveryPendingError();
+    }
 
     const state = classifyWorkspaceTasksMovePair(claim.plan, observed);
     if (state === "complete") {
@@ -347,6 +361,12 @@ export class MachineGlobalTasksMoveRegistry implements WorkspaceTasksWorkspaceMu
     if (plan.intent !== expectedIntent) {
       throw new WorkspaceTasksMoveAuthorizationError(`Expected a ${expectedIntent} move request.`);
     }
+  }
+
+  private isActiveClaimLock(claim: MoveClaim): boolean {
+    return this.activeMoveOperationId === claim.operationId
+      && this.activeMoveLockToken !== undefined
+      && claim.ownerLockToken === this.activeMoveLockToken;
   }
 
   private clearPendingClaim(operationId: string): void {

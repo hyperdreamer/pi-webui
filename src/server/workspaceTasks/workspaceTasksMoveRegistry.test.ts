@@ -396,6 +396,71 @@ describe("MachineGlobalTasksMoveRegistry", () => {
     expect(observation.calls).toHaveLength(callsBeforeUnrelated);
   });
 
+  it("keeps an active owner's permit through a non-owner complete reconciliation", async () => {
+    const observation = new ObservationPort();
+    const registry = new MachineGlobalTasksMoveRegistry(observation);
+    const plan = promotionPlan();
+    const ownerEntered = deferred<WorkspaceTasksMovePermit>();
+    const settleOwner = deferred<undefined>();
+
+    const ownerLock = registry.withMoveLock(plan.operationId, async () => {
+      const permit = registry.beginStart(plan);
+      registry.markDestinationWritten(permit);
+      ownerEntered.resolve(permit);
+      await settleOwner.promise;
+      await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);
+    });
+    const ownerPermit = await ownerEntered.promise;
+    observation.result = responsePair(plan, "complete");
+
+    await expect(registry.reconcileGlobalMoveClaim({ scope: "global" }))
+      .rejects.toBeInstanceOf(WorkspaceTasksMoveRecoveryPendingError);
+    expect(() => {
+      registry.assertWorkspaceMutationAllowed(plan.address, workspaceIntent(plan.sourceRemoval), ownerPermit);
+    }).not.toThrow();
+
+    settleOwner.resolve(undefined);
+    await expect(ownerLock).resolves.toBeUndefined();
+    expect(() => { registry.assertGlobalMutationAllowed(); }).not.toThrow();
+  });
+
+  it("keeps an active owner's permit for unrecognized settlement until manual resolution", async () => {
+    const observation = new ObservationPort();
+    const registry = new MachineGlobalTasksMoveRegistry(observation);
+    const plan = promotionPlan();
+    const ownerEntered = deferred<WorkspaceTasksMovePermit>();
+    const settleOwner = deferred<undefined>();
+    let ownerError: unknown;
+
+    const ownerLock = registry.withMoveLock(plan.operationId, async () => {
+      const permit = registry.beginStart(plan);
+      registry.markDestinationWritten(permit);
+      ownerEntered.resolve(permit);
+      await settleOwner.promise;
+      try {
+        await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);
+      } catch (error) {
+        ownerError = error;
+      }
+    });
+    const ownerPermit = await ownerEntered.promise;
+    observation.result = responsePair(plan, "unrecognized");
+
+    await expect(registry.reconcileGlobalMoveClaim({ scope: "global" }))
+      .rejects.toBeInstanceOf(WorkspaceTasksMoveRecoveryPendingError);
+    expect(() => {
+      registry.assertWorkspaceMutationAllowed(plan.address, workspaceIntent(plan.sourceRemoval), ownerPermit);
+    }).not.toThrow();
+
+    settleOwner.resolve(undefined);
+    await ownerLock;
+    expect(ownerError).toMatchObject({
+      code: "WORKSPACE_TASKS_MOVE_CONFLICT",
+      reason: "unrecognized-state",
+    });
+    await expect(registry.reconcileGlobalMoveClaim({ scope: "global" })).resolves.toBeUndefined();
+    expect(() => { registry.assertGlobalMutationAllowed(); }).not.toThrow();
+  });
   it("clears an unrecognized claim only while returning a manual-resolution conflict", async () => {
     const observation = new ObservationPort();
     const registry = new MachineGlobalTasksMoveRegistry(observation);
@@ -404,6 +469,50 @@ describe("MachineGlobalTasksMoveRegistry", () => {
     observation.result = responsePair(plan, "unrecognized");
 
     await expect(registry.reconcileGlobalMoveClaim({ scope: "global" }, permit)).rejects.toMatchObject({
+      code: "WORKSPACE_TASKS_MOVE_CONFLICT",
+      reason: "unrecognized-state",
+    });
+    expect(() => { registry.assertGlobalMutationAllowed(); }).not.toThrow();
+  });
+
+  it("keeps a retry owner's permit through a non-owner complete reconciliation", async () => {
+    const observation = new ObservationPort();
+    const registry = new MachineGlobalTasksMoveRegistry(observation);
+    const plan = promotionPlan();
+    await startAndMarkDestination(registry, plan);
+    const retryEntered = deferred<WorkspaceTasksMovePermit>();
+    const settleRetry = deferred<undefined>();
+
+    const retryLock = registry.withMoveLock(plan.operationId, async () => {
+      const permit = registry.beginRetry(withIntent(plan, "retry"));
+      retryEntered.resolve(permit);
+      await settleRetry.promise;
+      await registry.reconcileGlobalMoveClaim({ scope: "global" }, permit);
+    });
+    const retryPermit = await retryEntered.promise;
+    observation.result = responsePair(plan, "complete");
+
+    await expect(registry.reconcileGlobalMoveClaim({ scope: "global" }))
+      .rejects.toBeInstanceOf(WorkspaceTasksMoveRecoveryPendingError);
+    expect(() => {
+      registry.assertWorkspaceMutationAllowed(plan.address, workspaceIntent(plan.sourceRemoval), retryPermit);
+    }).not.toThrow();
+
+    settleRetry.resolve(undefined);
+    await expect(retryLock).resolves.toBeUndefined();
+    expect(() => { registry.assertGlobalMutationAllowed(); }).not.toThrow();
+  });
+
+  it("reconciles a stale claim inside a later lock that reuses its operation ID", async () => {
+    const observation = new ObservationPort();
+    const registry = new MachineGlobalTasksMoveRegistry(observation);
+    const plan = promotionPlan();
+    await startAndMarkDestination(registry, plan);
+    observation.result = responsePair(plan, "unrecognized");
+
+    await expect(registry.withMoveLock(plan.operationId, () =>
+      registry.reconcileGlobalMoveClaim({ scope: "global" }),
+    )).rejects.toMatchObject({
       code: "WORKSPACE_TASKS_MOVE_CONFLICT",
       reason: "unrecognized-state",
     });
