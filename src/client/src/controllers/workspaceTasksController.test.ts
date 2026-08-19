@@ -900,6 +900,94 @@ describe("WorkspaceTasksController", () => {
     expect(Reflect.get(harness.controller.state, "moveError")).toBeUndefined();
   });
 
+  it.each([
+    ["validation", { kind: "validation", message: "Task is invalid" }],
+    ["unavailable", { kind: "unavailable", message: "Task service is unavailable", retryable: true }],
+  ] as const)("clears a known move %s error after its authoritative refresh completes", async (kind, result) => {
+    const refreshedWorkspace = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const refreshedGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask])), refreshedWorkspace.promise],
+      globalReads: [success(globalLoaded("global-1", [])), refreshedGlobal.promise],
+      moves: [result],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const initialWorkspaceGeneration = readSourceGeneration(harness.controller.state, "workspace");
+    const initialGlobalGeneration = readSourceGeneration(harness.controller.state, "global");
+    const refreshing = harness.controller.actions.refresh();
+    await settle();
+
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({ kind, message: result.message });
+    expect(harness.controller.state.move).toBeUndefined();
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+
+    refreshedWorkspace.resolve(success(workspaceLoaded("workspace-2", [buildTask, extraTask])));
+    refreshedGlobal.resolve(success(globalLoaded("global-2", [])));
+    await refreshing;
+
+    expect(Reflect.get(harness.controller.state, "moveError")).toBeUndefined();
+    expect(harness.controller.state.move).toBeUndefined();
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+    expect(readSourceGeneration(harness.controller.state, "workspace")).toBe(initialWorkspaceGeneration + 1);
+    expect(readSourceGeneration(harness.controller.state, "global")).toBe(initialGlobalGeneration + 1);
+  });
+
+  it("keeps a known move error accepted after an authoritative refresh completes", async () => {
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-1", [buildTask])),
+        success(workspaceLoaded("workspace-2", [extraTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [])),
+        success(globalLoaded("global-2", [])),
+      ],
+      moves: [{ kind: "validation", message: "Task is invalid" }],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    await harness.controller.actions.refresh();
+    await harness.controller.actions.move({ scope: "workspace", id: "lint" }, deployTask);
+
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({
+      kind: "validation",
+      message: "Task is invalid",
+    });
+  });
+
+  it("keeps a known move error when refresh cannot authoritatively load both sources", async () => {
+    const refreshedWorkspace = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const refreshedGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask])), refreshedWorkspace.promise],
+      globalReads: [success(globalLoaded("global-1", [])), refreshedGlobal.promise],
+      moves: [{ kind: "validation", message: "Task is invalid" }],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const refreshing = harness.controller.actions.refresh();
+    await settle();
+    await harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask);
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({
+      kind: "validation",
+      message: "Task is invalid",
+    });
+
+    refreshedWorkspace.resolve(success(workspaceLoaded("workspace-2", [buildTask, extraTask])));
+    refreshedGlobal.resolve(failure({ kind: "unavailable", message: "Global service is unavailable", retryable: true }));
+    await refreshing;
+
+    expect(Reflect.get(harness.controller.state, "moveError")).toEqual({
+      kind: "validation",
+      message: "Task is invalid",
+    });
+  });
+
   it("publishes completed demotion results", async () => {
     const harness = createHarness({
       workspaceReads: [success(workspaceMissing("workspace-missing"))],

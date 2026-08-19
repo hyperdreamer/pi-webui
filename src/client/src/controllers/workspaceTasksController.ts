@@ -135,6 +135,7 @@ interface RefreshContext {
   readonly selection: ActiveSelection;
   readonly selectionKey: string;
   readonly generation: number;
+  readonly operationId: number;
   readonly mode: RefreshMode;
 }
 
@@ -207,11 +208,13 @@ export class WorkspaceTasksController {
   private observing = false;
   private disposed = false;
   private selectionGeneration = 0;
+  private nextRefreshOperationId = 0;
   private refreshOperation: RefreshOperation | undefined;
   private moveContext: MoveContext | undefined;
   private moveState: WorkspaceTasksWorkspaceState["move"] | undefined;
   private moveStateSelectionKey: string | undefined;
   private moveError: WorkspaceTasksWorkspaceState["moveError"] | undefined;
+  private moveErrorRefreshOperationId: number | undefined;
   private readonly workspaceMutationGates = new Map<string, SourceMutationGate>();
   private readonly globalMutationGates = new Map<string, SourceMutationGate>();
   private moveMutationGate: MoveMutationGate | undefined;
@@ -275,6 +278,7 @@ export class WorkspaceTasksController {
       selection,
       selectionKey: selection.selectionKey,
       generation: this.selectionGeneration,
+      operationId: ++this.nextRefreshOperationId,
       mode,
     };
     const promise = this.refreshSelection(context);
@@ -321,6 +325,14 @@ export class WorkspaceTasksController {
 
     this.clearDirectGatesAfterRefresh(selection, workspace, global);
     this.reconcileMoveAfterRefresh(selection, workspace, global);
+    if (
+      workspace === "success"
+      && global === "success"
+      && this.moveErrorRefreshOperationId === context.operationId
+    ) {
+      this.moveError = undefined;
+      this.moveErrorRefreshOperationId = undefined;
+    }
     this.publishCurrent();
   }
 
@@ -594,14 +606,22 @@ export class WorkspaceTasksController {
         this.publishCurrent();
         return;
       case "validation":
-      case "unavailable":
+      case "unavailable": {
         this.moveContext = undefined;
         this.moveState = undefined;
         this.moveStateSelectionKey = undefined;
         this.clearMoveMutationGate(context);
         this.moveError = { kind: result.kind, message: result.message };
+        const refreshContext = this.refreshOperation?.context;
+        this.moveErrorRefreshOperationId = refreshContext !== undefined
+          && this.isRefreshContextCurrent(refreshContext)
+          && refreshContext.selectionKey === context.selectionKey
+          && refreshContext.generation === context.generation
+          ? refreshContext.operationId
+          : undefined;
         this.publishCurrent();
         return;
+      }
     }
   }
 
@@ -884,6 +904,7 @@ export class WorkspaceTasksController {
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
     this.moveError = undefined;
+    this.moveErrorRefreshOperationId = undefined;
     this.moveMutationGate = undefined;
     if (previous !== undefined) {
       if (previous.workspaceKey !== next.workspaceKey) this.cancelWorkspaceLoad(previous.workspaceKey);
@@ -903,6 +924,7 @@ export class WorkspaceTasksController {
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
     this.moveError = undefined;
+    this.moveErrorRefreshOperationId = undefined;
     this.moveMutationGate = undefined;
     for (const cache of this.workspaceCaches.values()) {
       this.cancelLoad(cache);
@@ -1300,8 +1322,10 @@ export class WorkspaceTasksController {
   }
 
   private clearMoveError(): void {
-    if (this.moveError === undefined) return;
+    const hadMoveError = this.moveError !== undefined;
     this.moveError = undefined;
+    this.moveErrorRefreshOperationId = undefined;
+    if (!hadMoveError) return;
     this.publishCurrent();
   }
 
