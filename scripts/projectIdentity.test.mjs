@@ -29,9 +29,9 @@ describe("project identity", () => {
 
   it("keeps the embedded Pi SDK dependencies aligned with its supported peer series", () => {
     expect(packageManifest.devDependencies).toMatchObject({
-      "@earendil-works/pi-agent-core": "^0.84.0",
-      "@earendil-works/pi-ai": "^0.84.0",
-      "@earendil-works/pi-coding-agent": "^0.84.0",
+      "@earendil-works/pi-agent-core": "^0.84.2",
+      "@earendil-works/pi-ai": "^0.84.2",
+      "@earendil-works/pi-coding-agent": "^0.84.2",
     });
     expect(packageManifest.peerDependencies).toMatchObject({
       "@earendil-works/pi-agent-core": ">=0.84.0 <0.85",
