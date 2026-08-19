@@ -324,11 +324,11 @@ The editor uses the **Available in all projects on this machine** checkbox. It i
 - **Add** creates a task and appends it to the selected catalog.
 - **Edit** preserves its position in that catalog.
 - **Delete** removes the selected task without reordering the remaining tasks.
-- **Reset** is offered only for a complete, readable Project task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-one configuration `{"version":1,"tasks":[]}`.
+- **Repair invalid Project files manually.** The panel does not offer a reset action because guarded writes require a valid source snapshot. Open `.pi-webui/tasks.json` in the file explorer, correct the invalid text, then click **Refresh**. Binary, truncated, or otherwise unavailable files must be repaired at the workspace or machine configuration source.
 
 Browser writes canonicalize whitespace and key order, preserve supported task values and array order, and drop unknown fields; original JSON formatting and unsupported fields are not preserved.
 
-The global catalog uses the same version-one task shape as a Project catalog. A missing global catalog is treated as an empty version-one catalog. If the stored global value is malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's Project-file reset does not repair global configuration.
+The global catalog uses the same version-one task shape as a Project catalog. A missing global catalog is treated as an empty version-one catalog. If the stored global value is malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's manual Project-file repair does not repair global configuration.
 
 For a multiline command, encode line feeds as `\n` in JSON:
 

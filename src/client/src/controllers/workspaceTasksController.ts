@@ -97,6 +97,8 @@ interface CatalogCache<TResponse> {
   response: TResponse | undefined;
   failure: CatalogFailure | undefined;
   refreshError: string | undefined;
+  attempted: boolean;
+  recoveryAttempted: boolean;
   requestGeneration: number;
   readGeneration: number;
   dataGeneration: number;
@@ -193,7 +195,7 @@ export class WorkspaceTasksController {
   private readonly onChange: (state: WorkspaceTasksWorkspaceState) => void;
   private readonly workspaceCaches = new Map<string, WorkspaceCatalogCache>();
   private readonly globalCaches = new Map<string, GlobalCatalogCache>();
-  private readonly activeMutationScopes = new Set<WorkspaceTaskScope>();
+  private readonly activeMutationLocks = new Set<string>();
   private currentState = immutableState({ workspace: { kind: "loading" }, global: { kind: "loading" } });
   private activeSelection: ActiveSelection | undefined;
   private observing = false;
@@ -321,7 +323,7 @@ export class WorkspaceTasksController {
     const catalog = this.catalogForCreate(selection, scope);
     if (catalog === undefined) return;
     const context = this.createDirectMutationContext(selection, scope);
-    await this.runMutation([scope], async () => {
+    await this.runMutation([this.mutationLockKey(selection, scope)], async () => {
       if (!this.isSelectionCurrent(selection)) return;
       if (scope === "workspace") {
         const cache = this.workspaceCache(selection);
@@ -363,7 +365,7 @@ export class WorkspaceTasksController {
       return;
     }
 
-    await this.runMutation([ref.scope], async () => {
+    await this.runMutation([this.mutationLockKey(selection, ref.scope)], async () => {
       if (!this.isSelectionCurrent(selection)) return;
       const config = replaceWorkspaceTaskAt(catalog.config, index, cloneTask(task));
       if (ref.scope === "workspace") {
@@ -406,7 +408,7 @@ export class WorkspaceTasksController {
       return;
     }
 
-    await this.runMutation([ref.scope], async () => {
+    await this.runMutation([this.mutationLockKey(selection, ref.scope)], async () => {
       if (!this.isSelectionCurrent(selection)) return;
       const config = removeWorkspaceTaskAt(catalog.config, index);
       if (ref.scope === "workspace") {
@@ -444,7 +446,7 @@ export class WorkspaceTasksController {
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
 
-    await this.runMutation(["workspace", "global"], async () => {
+    await this.runMutation(this.mutationLockKeys(selection, ["workspace", "global"]), async () => {
       if (!this.isSelectionCurrent(selection)) return;
       this.moveContext = context;
       try {
@@ -467,7 +469,7 @@ export class WorkspaceTasksController {
       return;
     }
 
-    await this.runMutation(["workspace", "global"], async () => {
+    await this.runMutation(this.mutationLockKeys(contextSelection(context), ["workspace", "global"]), async () => {
       if (!this.isMoveContextCurrent(context) || this.moveState?.retryAllowed !== true) return;
       if (!this.matchesMovePair(context.destinationApplied, context)) {
         this.markManualMoveResolution(context, MANUAL_RESOLUTION_MESSAGE);
@@ -503,7 +505,10 @@ export class WorkspaceTasksController {
         return;
       case "conflict": {
         const requiresRecovery = result.reason === "invalid-catalog";
-        if (requiresRecovery) cache.dirty = true;
+        if (requiresRecovery) {
+          cache.dirty = true;
+          cache.recoveryAttempted = false;
+        }
         this.cancelLoad(cache);
         this.setDirectMutationGate(context.scope, context.cacheKey, result.message, requiresRecovery);
         this.publishForDirectMutation(context);
@@ -515,6 +520,7 @@ export class WorkspaceTasksController {
       }
       case "unknown-outcome": {
         cache.dirty = true;
+        cache.recoveryAttempted = false;
         this.setDirectMutationGate(context.scope, context.cacheKey, result.message, true);
         this.publishForDirectMutation(context);
         const selection = this.activeSelectionForDirectMutation(context);
@@ -800,14 +806,26 @@ export class WorkspaceTasksController {
       && matchesMoveObservations(pair, workspace, global);
   }
 
-  private async runMutation(scopes: readonly WorkspaceTaskScope[], operation: () => Promise<void>): Promise<void> {
-    if (scopes.some((scope) => this.activeMutationScopes.has(scope))) return;
-    for (const scope of scopes) this.activeMutationScopes.add(scope);
+  private async runMutation(lockKeys: readonly string[], operation: () => Promise<void>): Promise<void> {
+    const uniqueLockKeys = [...new Set(lockKeys)];
+    if (uniqueLockKeys.some((key) => this.activeMutationLocks.has(key))) {
+      throw new Error("A workspace task mutation is already in progress.");
+    }
+    for (const key of uniqueLockKeys) this.activeMutationLocks.add(key);
     try {
       await operation();
     } finally {
-      for (const scope of scopes) this.activeMutationScopes.delete(scope);
+      for (const key of uniqueLockKeys) this.activeMutationLocks.delete(key);
     }
+  }
+
+  private mutationLockKey(selection: ActiveSelection, scope: WorkspaceTaskScope): string {
+    const cacheKey = scope === "workspace" ? selection.workspaceKey : selection.globalKey;
+    return `${scope}:${cacheKey}`;
+  }
+
+  private mutationLockKeys(selection: ActiveSelection, scopes: readonly WorkspaceTaskScope[]): string[] {
+    return scopes.map((scope) => this.mutationLockKey(selection, scope));
   }
 
   private catalogForCreate(
@@ -859,6 +877,8 @@ export class WorkspaceTasksController {
     if (previous !== undefined) {
       if (previous.workspaceKey !== next.workspaceKey) this.cancelWorkspaceLoad(previous.workspaceKey);
       if (previous.globalKey !== next.globalKey) this.cancelGlobalLoad(previous.globalKey);
+      this.resetRetryStateForSelection(this.workspaceCache(next));
+      this.resetRetryStateForSelection(this.globalCache(next));
     }
     this.publishCurrent();
     return next;
@@ -872,8 +892,14 @@ export class WorkspaceTasksController {
     this.moveState = undefined;
     this.moveStateSelectionKey = undefined;
     this.moveMutationGate = undefined;
-    for (const cache of this.workspaceCaches.values()) this.cancelLoad(cache);
-    for (const cache of this.globalCaches.values()) this.cancelLoad(cache);
+    for (const cache of this.workspaceCaches.values()) {
+      this.cancelLoad(cache);
+      this.resetRetryStateForSelection(cache);
+    }
+    for (const cache of this.globalCaches.values()) {
+      this.cancelLoad(cache);
+      this.resetRetryStateForSelection(cache);
+    }
   }
 
   private readSelection(): ActiveSelection | undefined {
@@ -913,6 +939,8 @@ export class WorkspaceTasksController {
         response: undefined,
         failure: undefined,
         refreshError: undefined,
+        attempted: false,
+        recoveryAttempted: false,
         inFlight: undefined,
         requestGeneration: 0,
         readGeneration: 0,
@@ -934,6 +962,8 @@ export class WorkspaceTasksController {
         response: undefined,
         failure: undefined,
         refreshError: undefined,
+        attempted: false,
+        recoveryAttempted: false,
         inFlight: undefined,
         requestGeneration: 0,
         readGeneration: 0,
@@ -982,14 +1012,16 @@ export class WorkspaceTasksController {
   ): Promise<LoadOutcome> {
     if (mode === "replace") {
       cache.dirty = true;
+      cache.recoveryAttempted = true;
       this.cancelLoad(cache);
     }
     if (cache.inFlight !== undefined) return cache.inFlight.promise;
-    if (!force && cache.response !== undefined && !cache.dirty) return Promise.resolve("skipped");
+    if (!force && cache.attempted) return Promise.resolve("skipped");
 
     const requestId = ++cache.requestGeneration;
     const dataGeneration = cache.dataGeneration;
     const signal = cache.loadScope.restart();
+    cache.attempted = true;
     cache.refreshError = undefined;
     cache.failure = undefined;
 
@@ -1014,6 +1046,7 @@ export class WorkspaceTasksController {
         cache.response = cloneResponse(result.value);
         cache.failure = undefined;
         cache.refreshError = undefined;
+        cache.recoveryAttempted = false;
         cache.readGeneration += 1;
         cache.dataGeneration += 1;
         cache.dirty = false;
@@ -1071,8 +1104,21 @@ export class WorkspaceTasksController {
     cache.loadScope.abort();
   }
 
+  private resetRetryStateForSelection<TResponse>(cache: CatalogCache<TResponse>): void {
+    if (cache.dirty) {
+      if (cache.inFlight === undefined) cache.recoveryAttempted = false;
+      return;
+    }
+    if (cache.response === undefined && cache.inFlight === undefined) {
+      cache.attempted = false;
+      cache.recoveryAttempted = false;
+    }
+  }
+
   private setWorkspaceResponse(cache: WorkspaceCatalogCache, response: WorkspaceTasksCatalogResponse): void {
     this.cancelLoad(cache);
+    cache.attempted = true;
+    cache.recoveryAttempted = false;
     cache.response = cloneWorkspaceResponse(response);
     cache.failure = undefined;
     cache.refreshError = undefined;
@@ -1082,6 +1128,8 @@ export class WorkspaceTasksController {
 
   private setGlobalResponse(cache: GlobalCatalogCache, response: GlobalWorkspaceTasksResponse): void {
     this.cancelLoad(cache);
+    cache.attempted = true;
+    cache.recoveryAttempted = false;
     cache.response = cloneGlobalResponse(response);
     cache.failure = undefined;
     cache.refreshError = undefined;
@@ -1169,6 +1217,7 @@ export class WorkspaceTasksController {
   ): boolean {
     return cache.dirty
       && cache.inFlight === undefined
+      && !cache.recoveryAttempted
       && this.gatesForScope(scope).get(cache.key)?.requiresRecovery === true;
   }
 
@@ -1211,6 +1260,7 @@ export class WorkspaceTasksController {
     cache: CatalogCache<TResponse>,
   ): Promise<void> {
     cache.dirty = true;
+    cache.recoveryAttempted = false;
     this.setDirectMutationGate(context.scope, context.cacheKey, DIRECT_RECONCILIATION_MESSAGE, true);
     this.publishForDirectMutation(context);
     const selection = this.activeSelectionForDirectMutation(context);

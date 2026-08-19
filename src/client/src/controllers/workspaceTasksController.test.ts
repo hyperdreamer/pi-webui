@@ -81,6 +81,71 @@ describe("WorkspaceTasksController", () => {
     });
   });
 
+  it("retries a canceled initial load after observation resumes", async () => {
+    const staleWorkspaceRead = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const staleGlobalRead = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [staleWorkspaceRead.promise, success(workspaceLoaded("workspace-2", [buildTask]))],
+      globalReads: [staleGlobalRead.promise, success(globalLoaded("global-2", [deployTask]))],
+    });
+
+    harness.controller.observe(true);
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(1);
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(1);
+
+    harness.controller.observe(false);
+    harness.controller.observe(true);
+    await settle();
+
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(2);
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(2);
+    expect(harness.controller.state).toEqual({
+      workspace: { kind: "loaded", config: config([buildTask]), refreshing: false },
+      global: { kind: "loaded", config: config([deployTask]), refreshing: false },
+    });
+  });
+
+  it("does not repeat a failed observation load until refresh or a selection change", async () => {
+    const harness = createHarness({
+      workspaceReads: [
+        failure({ kind: "unavailable", message: "Workspace offline", retryable: true }),
+        success(workspaceLoaded("workspace-b-1", [deployTask])),
+        failure({ kind: "unavailable", message: "Workspace still offline", retryable: true }),
+        success(workspaceLoaded("workspace-a-2", [extraTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [])),
+        success(globalLoaded("global-2", [])),
+      ],
+    });
+
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(1);
+
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(1);
+
+    harness.setSelection(workspaceB);
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(2);
+
+    harness.setSelection(workspaceA);
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(3);
+
+    await harness.controller.actions.refresh();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(4);
+    expect(harness.controller.state.workspace).toEqual({
+      kind: "loaded",
+      config: config([extraTask]),
+      refreshing: false,
+    });
+  });
+
   it("reuses the machine-global cache while invalidating workspace data for an ID or path change", async () => {
     const harness = createHarness({
       workspaceReads: [
@@ -306,6 +371,107 @@ describe("WorkspaceTasksController", () => {
     ]);
   });
 
+  it("allows workspace mutations for different cache identities to run concurrently", async () => {
+    const firstWrite = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-a-1", [buildTask])),
+        success(workspaceLoaded("workspace-b-1", [])),
+      ],
+      globalReads: [success(globalLoaded("global-1", []))],
+      workspaceReplacements: [
+        firstWrite.promise,
+        success(workspaceLoaded("workspace-b-2", [deployTask])),
+      ],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const savingA = harness.controller.actions.create("workspace", extraTask);
+    await settle();
+    expect(harness.client.replaceWorkspace).toHaveBeenCalledTimes(1);
+
+    harness.setSelection(workspaceB);
+    harness.controller.observe(true);
+    await settle();
+    const savingB = harness.controller.actions.create("workspace", deployTask);
+    await settle();
+
+    expect(harness.client.replaceWorkspace).toHaveBeenCalledTimes(2);
+    expect(harness.client.replaceWorkspace.mock.calls[1]?.[0]).toMatchObject({
+      workspaceId: "workspace-b",
+      expectedRevision: "workspace-b-1",
+    });
+
+    firstWrite.resolve(success(workspaceLoaded("workspace-a-2", [buildTask, extraTask])));
+    await Promise.all([savingA, savingB]);
+  });
+
+  it("serializes global mutations for a machine across workspace selection changes", async () => {
+    const firstWrite = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-a-1", [buildTask])),
+        success(workspaceLoaded("workspace-b-1", [buildTask])),
+      ],
+      globalReads: [success(globalLoaded("global-1", []))],
+      globalReplacements: [firstWrite.promise],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const savingA = harness.controller.actions.create("global", extraTask);
+    await settle();
+    expect(harness.client.replaceGlobal).toHaveBeenCalledTimes(1);
+
+    harness.setSelection(workspaceB);
+    harness.controller.observe(true);
+    await settle();
+    await expect(harness.controller.actions.create("global", deployTask)).rejects.toThrow("already in progress");
+    expect(harness.client.replaceGlobal).toHaveBeenCalledTimes(1);
+
+    firstWrite.resolve(success(globalLoaded("global-2", [extraTask])));
+    await savingA;
+  });
+
+  it("serializes a move against an in-flight global mutation", async () => {
+    const globalWrite = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask]))],
+      globalReads: [success(globalLoaded("global-1", []))],
+      globalReplacements: [globalWrite.promise],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const saving = harness.controller.actions.create("global", extraTask);
+    await settle();
+    await expect(harness.controller.actions.move({ scope: "workspace", id: "build" }, deployTask)).rejects.toThrow("already in progress");
+    expect(harness.client.move).not.toHaveBeenCalled();
+
+    globalWrite.resolve(success(globalLoaded("global-2", [extraTask])));
+    await saving;
+  });
+
+  it("rejects a second mutation for the same cache instead of silently dropping it", async () => {
+    const firstWrite = deferred<WorkspaceTasksRequestResult<WorkspaceTasksCatalogResponse>>();
+    const harness = createHarness({
+      workspaceReads: [success(workspaceLoaded("workspace-1", [buildTask]))],
+      globalReads: [success(globalLoaded("global-1", []))],
+      workspaceReplacements: [firstWrite.promise],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const first = harness.controller.actions.create("workspace", extraTask);
+    const second = harness.controller.actions.create("workspace", deployTask);
+    await expect(second).rejects.toThrow("already in progress");
+    expect(harness.client.replaceWorkspace).toHaveBeenCalledTimes(1);
+
+    firstWrite.resolve(success(workspaceLoaded("workspace-2", [buildTask, extraTask])));
+    await first;
+  });
+
   it("gates direct revision conflicts until an explicit successful refresh", async () => {
     const harness = createHarness({
       workspaceReads: [
@@ -346,6 +512,65 @@ describe("WorkspaceTasksController", () => {
     expect(harness.controller.state.mutationGate).toBeUndefined();
     await harness.controller.actions.create("workspace", deployTask);
     expect(harness.client.replaceWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repeat a failed recovery refresh on repeated observation", async () => {
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-1", [buildTask])),
+        failure({ kind: "unavailable", message: "Recovery unavailable", retryable: true }),
+        success(workspaceLoaded("workspace-2", [buildTask, deployTask])),
+      ],
+      globalReads: [
+        success(globalLoaded("global-1", [])),
+        success(globalLoaded("global-2", [])),
+        success(globalLoaded("global-3", [])),
+        success(globalLoaded("global-4", [])),
+      ],
+      workspaceReplacements: [{ kind: "unknown-outcome", message: "Workspace write response lost" }],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    await harness.controller.actions.create("workspace", deployTask);
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(2);
+
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(2);
+
+    await harness.controller.actions.refresh();
+    expect(harness.client.readWorkspace).toHaveBeenCalledTimes(3);
+    expect(harness.controller.state.mutationGate).toBeUndefined();
+  });
+
+  it("does not retry a failed in-flight global recovery after a workspace switch", async () => {
+    const recoveryGlobal = deferred<WorkspaceTasksRequestResult<GlobalWorkspaceTasksResponse>>();
+    const harness = createHarness({
+      workspaceReads: [
+        success(workspaceLoaded("workspace-a-1", [buildTask])),
+        success(workspaceLoaded("workspace-a-2", [buildTask])),
+        success(workspaceLoaded("workspace-b-1", [buildTask])),
+      ],
+      globalReads: [success(globalLoaded("global-1", [])), recoveryGlobal.promise],
+      globalReplacements: [{ kind: "unknown-outcome", message: "Global write response lost" }],
+    });
+    harness.controller.observe(true);
+    await settle();
+
+    const saving = harness.controller.actions.create("global", extraTask);
+    await settle();
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(2);
+
+    harness.setSelection(workspaceB);
+    harness.controller.observe(true);
+    await settle();
+    recoveryGlobal.resolve(failure({ kind: "unavailable", message: "Global recovery unavailable", retryable: true }));
+    await saving;
+
+    harness.controller.observe(true);
+    await settle();
+    expect(harness.client.readGlobal).toHaveBeenCalledTimes(2);
   });
 
   it("does not let an older refresh satisfy unknown move recovery", async () => {

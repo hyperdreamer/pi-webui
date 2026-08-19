@@ -455,7 +455,7 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
                 <li><strong>Add</strong> creates a task and appends it to the selected catalog.</li>
                 <li><strong>Edit</strong> preserves its position in that catalog.</li>
                 <li><strong>Delete</strong> removes the selected task without reordering the remaining tasks.</li>
-                <li><strong>Reset</strong> is offered only for a complete, readable Project task-file snapshot whose text is invalid, including parse- or schema-invalid text. It is unavailable for binary, truncated, or otherwise unavailable files. After confirmation, it replaces the file with the canonical empty version-one configuration <code>{"version":1,"tasks":[]}</code>.</li>
+                <li><strong>Repair invalid Project files manually.</strong> The panel does not offer a reset action because guarded writes require a valid source snapshot. Open <code>.pi-webui/tasks.json</code> in the file explorer, correct the invalid text, then click <strong>Refresh</strong>. Binary, truncated, or otherwise unavailable files must be repaired at the workspace or machine configuration source.</li>
               </ul>
               <p>
                 Browser writes canonicalize whitespace and key order, preserve supported task values and array order, and drop unknown fields;
@@ -482,8 +482,8 @@ After editing, check the manifest endpoint and browser-console failure cases.</c
               <p>
                 The global catalog uses the same version-one task shape as a Project catalog. A missing global catalog is treated as an empty
                 version-one catalog. If the stored global value is malformed, the Tasks panel reports it as invalid and does not replace it with
-                an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's
-                Project-file reset does not repair global configuration.
+                an empty catalog. Repair malformed global configuration through normal PI WEBUI configuration administration; the panel's manual
+                Project-file repair does not repair global configuration.
               </p>
               <p>
                 For a multiline command, encode line feeds as <code>\n</code> in JSON. Click <strong>Run</strong> next to a task to send one

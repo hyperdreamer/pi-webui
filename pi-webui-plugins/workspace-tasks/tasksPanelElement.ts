@@ -344,6 +344,9 @@ class PiWebUiTasksPanel extends BaseElement {
 
   private renderCatalog(scope: WorkspaceTaskScope, heading: string, catalog: WorkspaceCatalogState | GlobalCatalogState): string {
     const label = scopeLabel(scope);
+    const warning = catalog.kind === "loaded" || catalog.kind === "missing"
+      ? catalog.refreshError === undefined ? "" : `<p class="status warning" data-refresh-error>${escapeHtml(catalog.refreshError)}</p>`
+      : "";
     let body: string;
     if (catalog.kind === "loading") {
       body = `<p class="muted" data-catalog-loading>Loading ${escapeHtml(label)} tasks...</p>`;
@@ -354,11 +357,10 @@ class PiWebUiTasksPanel extends BaseElement {
         : "";
       body = `<div class="status error" data-catalog-error><strong>${escapeHtml(catalog.message)}</strong>${hint}${detail}</div>`;
     } else if (catalog.kind === "missing") {
-      body = `<p class="empty-state"><strong>No Project task catalog is configured.</strong><span>Create ${escapeHtml(TASKS_CONFIG_PATH)} in this workspace or add a task here.</span></p>`;
+      body = `${warning}<p class="empty-state"><strong>No Project task catalog is configured.</strong><span>Create ${escapeHtml(TASKS_CONFIG_PATH)} in this workspace or add a task here.</span></p>`;
     } else if (catalog.config.tasks.length === 0) {
-      body = `<p class="empty-state">No ${escapeHtml(label.toLowerCase())} tasks are defined.</p>`;
+      body = `${warning}<p class="empty-state">No ${escapeHtml(label.toLowerCase())} tasks are defined.</p>`;
     } else {
-      const warning = catalog.refreshError === undefined ? "" : `<p class="status warning" data-refresh-error>${escapeHtml(catalog.refreshError)}</p>`;
       body = `${warning}${renderTaskGroups(scope, catalog.config.tasks, this.runningTaskKey, this.isScopeDisabled(scope), this.expandedGroupKeys)}`;
     }
     return `<section class="scope-catalog" data-catalog-scope="${scope}">

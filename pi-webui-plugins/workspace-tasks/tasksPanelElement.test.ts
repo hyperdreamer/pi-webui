@@ -128,6 +128,22 @@ describe("workspace tasks panel", () => {
     expect((panel.shadowRoot?.querySelector("details[data-group-scope='global']") as HTMLDetailsElement | null)?.open).toBe(true);
   });
 
+  it("shows refresh errors for empty loaded catalogs", () => {
+    const panel = mount({
+      workspace: { kind: "loaded", config: { version: 1, tasks: [] }, refreshing: false, refreshError: "Project refresh failed" },
+      global: { kind: "loaded", config: { version: 1, tasks: [] }, refreshing: false, refreshError: "Global refresh failed" },
+    });
+
+    expect(panel.shadowRoot?.querySelector("[data-catalog-scope='workspace'] [data-refresh-error]")?.textContent).toContain("Project refresh failed");
+    expect(panel.shadowRoot?.querySelector("[data-catalog-scope='global'] [data-refresh-error]")?.textContent).toContain("Global refresh failed");
+
+    const missingPanel = mount({
+      workspace: { kind: "missing", message: "No Project catalog", hint: "Create it.", refreshing: false, refreshError: "Project missing refresh failed" },
+      global: { kind: "loaded", config: { version: 1, tasks: [] }, refreshing: false },
+    });
+    expect(missingPanel.shadowRoot?.querySelector("[data-catalog-scope='workspace'] [data-refresh-error]")?.textContent).toContain("Project missing refresh failed");
+  });
+
   it("shows a scoped failure without hiding the usable source", () => {
     const panel = mount({
       workspace: { kind: "loaded", config: { version: 1, tasks: [workspaceTask({ title: "Project Build" })] }, refreshing: false },
