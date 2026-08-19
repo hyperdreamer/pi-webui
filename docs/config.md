@@ -442,7 +442,7 @@ The built-in Workspace Tasks plugin stores its machine-global catalog at the exa
 }
 ```
 
-If `globalTasks` is absent, Workspace Tasks treats it as the canonical empty version-one catalog. If it is present but malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty value. Repair malformed global data through normal PI WEBUI configuration administration, such as a reviewed configuration update or a carefully reviewed config-file change while the relevant service is stopped; do not use the Tasks panel's Project-file reset for global data.
+If `globalTasks` is absent, Workspace Tasks treats it as the canonical empty version-one catalog. If it is present but malformed, the Tasks panel reports the global catalog as invalid and does not replace it with an empty value. Repair malformed global data through normal PI WEBUI configuration administration, such as a reviewed configuration update or a carefully reviewed config-file change while the relevant service is stopped; then use **Refresh** in the Tasks panel to load the repaired catalog.
 
 Global reads and writes use an opaque semantic revision for compare-and-swap (CAS). The revision represents the canonical supported task projection: unchanged task content keeps the same revision, a semantic change produces a new one, and replacing a catalog with the same content is a no-op. A stale conditional write is rejected without changing either the catalog or unrelated configuration, so the browser must **Refresh** before trying again. Browser writes canonicalize supported fields and drop unknown fields.
 
