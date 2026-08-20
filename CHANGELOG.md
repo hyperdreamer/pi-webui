@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.16.0
+
+### Minor Changes
+
+- 79ba601: Add machine-global Workspace Tasks with scope-aware browsing and editing, workspace-rooted Project catalogs for independent Git worktrees, and guarded promotion/demotion recovery without claiming atomic protection from arbitrary external writers.
+
 ## 1.15.2
 
 ### Patch Changes
