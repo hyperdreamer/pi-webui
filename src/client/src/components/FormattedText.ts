@@ -1,8 +1,9 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, css, html, unsafeCSS } from "lit";
+import katexCss from "katex/dist/katex.min.css?inline";
 import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { writeClipboardText } from "../clipboard";
-import { toSafeMarkdownHtml } from "../formatting/markdown";
+import { hasPotentialLatexMath, toSafeMarkdownHtml } from "../formatting/markdown";
 import { formattedTextStyles } from "./shared";
 
 /**
@@ -23,7 +24,7 @@ export const LIVE_PLAIN_TEXT_MIN_CHARS = 24_000;
  * settled text is parsed once and cached, so its size is not a per-update cost.
  */
 export function shouldRenderLivePlainText({ text, live }: { text: string; live: boolean }): boolean {
-  return live && text.length >= LIVE_PLAIN_TEXT_MIN_CHARS;
+  return live && (text.length >= LIVE_PLAIN_TEXT_MIN_CHARS || hasPotentialLatexMath(text));
 }
 
 @customElement("formatted-text")
@@ -97,8 +98,12 @@ export class FormattedText extends LitElement {
 
   static override styles = [
     formattedTextStyles,
+    unsafeCSS(katexCss),
     css`
       .formatted.plain { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+      .math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; }
+      .math-display { display: block; max-width: 100%; overflow-x: auto; margin: 10px 0; }
+      .math-display > .katex-display { margin: 0; }
     `,
   ];
 }
