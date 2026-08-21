@@ -62,6 +62,38 @@ describe("renderLatexMarkdown", () => {
     expect(adapter.calls.map(({ tex }) => tex)).toEqual(["x^2", "x + y"]);
   });
 
+  it("does not discover an embedded or escaped display delimiter from a sliced start hook", () => {
+    const adapter = recordingAdapter();
+    const escapedDisplay = String.raw`\\[x\\]`;
+
+    const embeddedHtml = renderLatexMarkdown("a $$x$$", adapter.render);
+    const escapedHtml = renderLatexMarkdown(escapedDisplay, adapter.render);
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(embeddedHtml).toContain("a $$x$$");
+    expect(escapedHtml).toContain("\\[x\\]");
+  });
+
+  it("continues single-line display discovery after a non-closing delimiter", () => {
+    const adapter = recordingAdapter();
+
+    renderLatexMarkdown("$$x$$+y$$", adapter.render);
+
+    expect(adapter.calls.map(({ tex }) => tex)).toEqual(["x$$+y"]);
+    expect(adapter.calls[0]?.options.displayMode).toBe(true);
+  });
+
+  it("leaves a raw over-limit single-line display in core Markdown", () => {
+    const adapter = recordingAdapter();
+    const body = `${"x".repeat(2_039)} **bold** `;
+    const source = `$$${body}$$`;
+
+    const html = renderLatexMarkdown(source, adapter.render);
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(html).toContain("<strong>bold</strong>");
+  });
+
   it("keeps embedded display delimiters and table-cell delimiters literal", () => {
     const adapter = recordingAdapter();
     const source = [
@@ -215,8 +247,8 @@ describe("renderLatexMarkdown", () => {
 
     for (const source of sources) renderLatexMarkdown(source, adapter.render);
 
-    expect(adapter.calls).toHaveLength(6);
-    expect(adapter.calls.map(({ tex }) => tex.slice(0, 1))).toEqual(["x", "x", "x", "x", "x", "x"]);
+    expect(adapter.calls).toHaveLength(5);
+    expect(adapter.calls.map(({ tex }) => tex.slice(0, 1))).toEqual(["x", "x", "x", "x", "x"]);
   });
 
   it("stops dollar discovery after the body discovery window expires", () => {

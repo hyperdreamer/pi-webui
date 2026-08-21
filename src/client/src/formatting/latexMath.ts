@@ -143,8 +143,10 @@ function createRendererExtension(
 function displayStart(this: TokenizerThis, source: string): number | undefined {
   void this;
   let fence: { character: "`" | "~"; length: number } | undefined;
-  for (let offset = 0; offset < source.length; offset += 1) {
-    if (offset !== 0 && source[offset - 1] !== "\n") continue;
+  // Marked calls block start hooks with src.slice(1), then adds one to the
+  // returned offset. Suffix offset zero is therefore never known to be a line start.
+  for (let offset = 1; offset < source.length; offset += 1) {
+    if (source[offset - 1] !== "\n") continue;
     const lineEnd = source.indexOf("\n", offset);
     const line = source.slice(offset, lineEnd < 0 ? source.length : lineEnd);
     const fenceMarker = /^ {0,3}(`{3,}|~{3,})/u.exec(line)?.[1];
@@ -186,8 +188,10 @@ function parseDisplayBlock(source: string): DisplayBlock | undefined {
   if (remainder !== "") {
     const closeIndex = findDisplayCloser(remainder, opener.delimiter);
     if (closeIndex < 0) return undefined;
-    const body = remainder.slice(0, closeIndex).replace(/[ \t]+$/u, "");
-    if (body.trim() === "" || body.length > MAX_DISCOVERY_BODY_UNITS) return undefined;
+    const rawBody = remainder.slice(0, closeIndex);
+    if (rawBody.length === 0 || rawBody.length > MAX_DISCOVERY_BODY_UNITS) return undefined;
+    const body = rawBody.replace(/[ \t]+$/u, "");
+    if (body.trim() === "") return undefined;
     if (/^[ \t]*$/u.exec(remainder.slice(closeIndex + opener.delimiter.length)) === null) return undefined;
     const rawEnd = firstNewline < 0 ? firstLine.length : firstNewline + 1;
     return {
@@ -251,7 +255,15 @@ function parseClosingDisplayLine(line: string, delimiter: "$$" | "\\["): boolean
 
 function findDisplayCloser(source: string, delimiter: "$$" | "\\["): number {
   const closer = delimiter === "$$" ? "$$" : "\\]";
-  return source.indexOf(closer);
+  const searchWindow = source.slice(0, MAX_DISCOVERY_BODY_UNITS + closer.length);
+  let searchStart = 0;
+  while (searchStart < searchWindow.length) {
+    const closeIndex = searchWindow.indexOf(closer, searchStart);
+    if (closeIndex < 0 || closeIndex > MAX_DISCOVERY_BODY_UNITS) return -1;
+    if (/^[ \t]*$/u.test(source.slice(closeIndex + closer.length))) return closeIndex;
+    searchStart = closeIndex + closer.length;
+  }
+  return -1;
 }
 
 function isFenceLine(line: string): boolean {
@@ -343,16 +355,28 @@ function isLeafInlineToken(token: Token): token is Tokens.Text | Tokens.Escape {
   return isCoreToken(token, "escape") || (isCoreToken(token, "text") && token.tokens === undefined);
 }
 
+interface LeafTokenRange {
+  token: Tokens.Text | Tokens.Escape;
+  start: number;
+  end: number;
+}
+
+interface LeafRangeCursor {
+  index: number;
+}
+
 function rewriteLeafRun(tokens: (Tokens.Text | Tokens.Escape)[]): Token[] {
   const raw = tokens.map((token) => token.raw).join("");
   if (!hasPotentialLatexMath(raw) && !raw.includes("\\)") && !raw.includes("\\]")) return tokens;
   const replacements = discoverReplacements(raw);
   if (replacements.length === 0) return tokens;
 
+  const ranges = createLeafTokenRanges(tokens);
+  const rangeCursor: LeafRangeCursor = { index: 0 };
   const result: Token[] = [];
   let cursor = 0;
   for (const replacement of replacements) {
-    appendOriginalRange(result, tokens, cursor, replacement.start);
+    appendOriginalRange(result, ranges, rangeCursor, cursor, replacement.start);
     const replacementRaw = raw.slice(replacement.start, replacement.end);
     if (replacement.kind === "math") {
       result.push({
@@ -369,41 +393,52 @@ function rewriteLeafRun(tokens: (Tokens.Text | Tokens.Escape)[]): Token[] {
     }
     cursor = replacement.end;
   }
-  appendOriginalRange(result, tokens, cursor, raw.length);
+  appendOriginalRange(result, ranges, rangeCursor, cursor, raw.length);
   return result;
+}
+
+function createLeafTokenRanges(tokens: (Tokens.Text | Tokens.Escape)[]): LeafTokenRange[] {
+  const ranges: LeafTokenRange[] = [];
+  let offset = 0;
+  for (const token of tokens) {
+    const end = offset + token.raw.length;
+    ranges.push({ token, start: offset, end });
+    offset = end;
+  }
+  return ranges;
 }
 
 function appendOriginalRange(
   output: Token[],
-  tokens: (Tokens.Text | Tokens.Escape)[],
+  ranges: LeafTokenRange[],
+  cursor: LeafRangeCursor,
   start: number,
   end: number,
 ): void {
   if (start >= end) return;
-  let offset = 0;
-  for (const token of tokens) {
-    const tokenStart = offset;
-    const tokenEnd = offset + token.raw.length;
-    offset = tokenEnd;
-    if (tokenEnd <= start || tokenStart >= end) continue;
-    const localStart = Math.max(start, tokenStart) - tokenStart;
-    const localEnd = Math.min(end, tokenEnd) - tokenStart;
-    if (localStart === 0 && localEnd === token.raw.length) {
-      output.push(token);
-      continue;
-    }
-    const raw = token.raw.slice(localStart, localEnd);
-    const text = token.text.slice(localStart, localEnd);
-    if (token.type === "escape" && localStart === 0 && localEnd === token.raw.length) {
-      output.push(token);
+  while (cursor.index < ranges.length) {
+    const range = ranges[cursor.index];
+    if (range === undefined || range.end > start) break;
+    cursor.index += 1;
+  }
+  for (; cursor.index < ranges.length; cursor.index += 1) {
+    const range = ranges[cursor.index];
+    if (range === undefined || range.start >= end) break;
+    const localStart = Math.max(start, range.start) - range.start;
+    const localEnd = Math.min(end, range.end) - range.start;
+    if (localStart === 0 && localEnd === range.token.raw.length) {
+      output.push(range.token);
     } else {
+      const raw = range.token.raw.slice(localStart, localEnd);
+      const text = range.token.text.slice(localStart, localEnd);
       output.push({
         type: "text",
         raw,
         text: text.length === raw.length ? text : raw,
-        escaped: token.type === "text" ? token.escaped : false,
+        escaped: range.token.type === "text" ? range.token.escaped : false,
       });
     }
+    if (range.end > end) break;
   }
 }
 
@@ -454,25 +489,58 @@ function discoverReplacements(raw: string): Replacement[] {
     ...pairBackslashMarkers(raw, markers, "open-bracket", "close-bracket", true),
     ...dollarPairing.replacements,
   ].filter((replacement) => dollarPairing.discoveryStop === undefined || replacement.end <= dollarPairing.discoveryStop);
-  candidates.sort((left, right) => left.start - right.start || right.end - left.end);
+  candidates.sort(compareReplacements);
 
-  const accepted: Replacement[] = [];
-  let cursor = 0;
+  const acceptedCandidates: Replacement[] = [];
+  let coveredEnd = 0;
   for (const candidate of candidates) {
-    if (candidate.start < cursor) continue;
-    accepted.push(candidate);
-    cursor = candidate.end;
+    if (candidate.start < coveredEnd) continue;
+    acceptedCandidates.push(candidate);
+    coveredEnd = candidate.end;
   }
 
+  const markerLiterals: Replacement[] = [];
+  let candidateIndex = 0;
   for (const marker of markers) {
     const start = marker.index;
     const end = start + 2;
-    if (accepted.some((replacement) => start >= replacement.start && end <= replacement.end)) continue;
-    accepted.push({ start, end, kind: "literal" });
+    while (candidateIndex < acceptedCandidates.length) {
+      const candidate = acceptedCandidates[candidateIndex];
+      if (candidate === undefined || candidate.end > start) break;
+      candidateIndex += 1;
+    }
+    const containingCandidate = acceptedCandidates[candidateIndex];
+    if (containingCandidate !== undefined && start >= containingCandidate.start && end <= containingCandidate.end) continue;
+    markerLiterals.push({ start, end, kind: "literal" });
   }
 
-  accepted.sort((left, right) => left.start - right.start || right.end - left.end);
-  return mergeAdjacentLiteralReplacements(accepted);
+  return mergeReplacementStreams(acceptedCandidates, markerLiterals);
+}
+
+function compareReplacements(left: Replacement, right: Replacement): number {
+  return left.start - right.start || right.end - left.end;
+}
+
+function mergeReplacementStreams(candidates: Replacement[], markerLiterals: Replacement[]): Replacement[] {
+  const merged: Replacement[] = [];
+  let candidateIndex = 0;
+  let markerIndex = 0;
+  while (candidateIndex < candidates.length || markerIndex < markerLiterals.length) {
+    const candidate = candidates[candidateIndex];
+    const markerLiteral = markerLiterals[markerIndex];
+    if (candidate === undefined) {
+      if (markerLiteral === undefined) break;
+      merged.push(markerLiteral);
+      markerIndex += 1;
+    } else if (markerLiteral === undefined || compareReplacements(candidate, markerLiteral) <= 0) {
+      merged.push(candidate);
+      candidateIndex += 1;
+    } else {
+      merged.push(markerLiteral);
+      markerIndex += 1;
+    }
+  }
+  return mergeAdjacentLiteralReplacements(merged);
 }
 
 function backslashRuns(raw: string): number[] {
