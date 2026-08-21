@@ -1,4 +1,11 @@
+import { renderToString } from "katex";
 import { marked } from "marked";
+import {
+  escapeHtml,
+  hasPotentialLatexMath,
+  renderLatexMarkdown,
+  type LatexRenderToString,
+} from "./latexMath";
 
 const renderer = new marked.Renderer();
 renderer.html = ({ text }) => escapeHtml(text);
@@ -39,10 +46,12 @@ export interface MarkdownRenderOptions {
    * the tab under fast provider output.
    */
   cache?: boolean;
+  renderMath?: LatexRenderToString;
 }
 
 export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions = {}): string {
-  const useCache = options.cache !== false;
+  const useCache = options.cache !== false && options.renderMath === undefined;
+
   if (useCache) {
     const cached = markdownHtmlCache.get(text);
     if (cached !== undefined) {
@@ -53,7 +62,10 @@ export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions 
       return cached.html;
     }
   }
-  const html = marked.parse(text, { async: false, breaks: true, gfm: true, renderer });
+  const html = options.renderMath !== undefined || hasPotentialLatexMath(text)
+    ? renderLatexMarkdown(text, options.renderMath ?? renderToString)
+    : marked.parse(text, { async: false, breaks: true, gfm: true, renderer });
+
   const safeHtml = sanitizeHtml(html);
   if (!useCache) return safeHtml;
   storeMarkdownHtml(text, safeHtml);
@@ -87,6 +99,8 @@ function evictUntilWithinBudget(): void {
   }
 }
 
+export { hasPotentialLatexMath };
+
 /** Current cached-entry count. Exposed so tests can assert cache growth. */
 export function markdownHtmlCacheSize(): number {
   return markdownHtmlCache.size;
@@ -101,13 +115,6 @@ export function markdownHtmlCacheChars(): number {
 export function clearMarkdownHtmlCache(): void {
   markdownHtmlCache.clear();
   retainedChars = 0;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 function sanitizeHtml(html: string): string {

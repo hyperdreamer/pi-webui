@@ -1,5 +1,9 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it } from "vitest";
 import { HOST_SPEECH_MAX_TEXT_CHARS } from "../../shared/hostSpeech";
+import { toSafeMarkdownHtml } from "./formatting/markdown";
+
 import type { ChatLine } from "./components/shared";
 import { assistantSpeechMessageKey, assistantSpeechText, resolveAssistantSpeechSource } from "./hostSpeechText";
 
@@ -8,6 +12,12 @@ function assistant(text: string): ChatLine {
 }
 
 describe("assistantSpeechText", () => {
+  it("keeps visual math registration isolated from host speech", () => {
+    toSafeMarkdownHtml("before $x^2$ after", { cache: false });
+
+    expect(assistantSpeechText(assistant("before $x^2$ after"))).toBe("before $x^2$ after");
+  });
+
   it("keeps headings, paragraphs, list content, and link labels", () => {
     expect(assistantSpeechText(assistant([
       "# Result",
