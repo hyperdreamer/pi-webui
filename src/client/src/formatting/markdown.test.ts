@@ -44,6 +44,13 @@ describe("toSafeMarkdownHtml", () => {
     expect(html).not.toMatch(/onerror/i);
   });
 
+  it("preserves unmatched closing markers through the Markdown facade", () => {
+    const html = toSafeMarkdownHtml(String.raw`before \) and \] after`, { cache: false });
+
+    expect(html).toContain(String.raw`\)`);
+    expect(html).toContain(String.raw`\]`);
+  });
+
   it("renders markdown to sanitized html", () => {
     const html = toSafeMarkdownHtml("**bold**", { cache: false });
 

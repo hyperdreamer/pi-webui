@@ -2,6 +2,7 @@ import { renderToString } from "katex";
 import { marked } from "marked";
 import {
   escapeHtml,
+  hasLatexDelimiterMarker,
   hasPotentialLatexMath,
   renderLatexMarkdown,
   type LatexRenderToString,
@@ -62,7 +63,7 @@ export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions 
       return cached.html;
     }
   }
-  const html = options.renderMath !== undefined || hasPotentialLatexMath(text)
+  const html = options.renderMath !== undefined || hasLatexDelimiterMarker(text)
     ? renderLatexMarkdown(text, options.renderMath ?? renderToString)
     : marked.parse(text, { async: false, breaks: true, gfm: true, renderer });
 

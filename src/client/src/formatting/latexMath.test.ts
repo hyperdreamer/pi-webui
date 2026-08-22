@@ -175,6 +175,14 @@ describe("renderLatexMarkdown", () => {
     expect(adapter.calls.map(({ tex }) => tex)).toEqual(["x", "y"]);
   });
 
+  it("accepts supplementary Unicode symbols around inline formulas", () => {
+    const adapter = recordingAdapter();
+
+    renderLatexMarkdown("🙂$x$🙂 🙂\\(y\\)🙂", adapter.render);
+
+    expect(adapter.calls.map(({ tex }) => tex)).toEqual(["x", "y"]);
+  });
+
   it("rejects whitespace-padded parenthesized formulas", () => {
     const adapter = recordingAdapter();
 

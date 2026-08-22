@@ -46,14 +46,15 @@ interface Replacement {
   displayMode?: boolean;
 }
 
-interface DelimiterEvent {
-  index: number;
-  kind: "open-paren" | "close-paren" | "open-bracket" | "close-bracket";
+interface ReplacementEvent extends Replacement {
+  linked: boolean;
+  previous: ReplacementEvent | undefined;
+  next: ReplacementEvent | undefined;
 }
 
-interface DollarPairing {
-  replacements: Replacement[];
-  discoveryStop?: number;
+interface PendingDelimiter {
+  start: number;
+  placeholder: ReplacementEvent;
 }
 
 interface DisplayBlock {
@@ -72,6 +73,11 @@ export function escapeHtml(text: string): string {
 /** A cheap pre-check used by callers to avoid loading the math path for plain text. */
 export function hasPotentialLatexMath(source: string): boolean {
   return source.includes("$") || source.includes("\\(") || source.includes("\\[");
+}
+
+/** Whether source has any delimiter that needs literal-source fallback handling. */
+export function hasLatexDelimiterMarker(source: string): boolean {
+  return hasPotentialLatexMath(source) || source.includes("\\)") || source.includes("\\]");
 }
 
 /**
@@ -367,7 +373,7 @@ interface LeafRangeCursor {
 
 function rewriteLeafRun(tokens: (Tokens.Text | Tokens.Escape)[]): Token[] {
   const raw = tokens.map((token) => token.raw).join("");
-  if (!hasPotentialLatexMath(raw) && !raw.includes("\\)") && !raw.includes("\\]")) return tokens;
+  if (!hasLatexDelimiterMarker(raw)) return tokens;
   const replacements = discoverReplacements(raw);
   if (replacements.length === 0) return tokens;
 
@@ -442,195 +448,236 @@ function appendOriginalRange(
   }
 }
 
+/**
+ * Delimiter events are allocated at their opening source offset, so the linked
+ * list stays ordered while a closer mutates its opener and removes covered
+ * nested events. This avoids rescanning or sorting the raw run.
+ */
 function discoverReplacements(raw: string): Replacement[] {
-  const slashRuns = backslashRuns(raw);
-  const markers: DelimiterEvent[] = [];
-  const dollars: number[] = [];
-  const displayDollarPairs: Replacement[] = [];
+  const events: ReplacementList = { head: undefined, tail: undefined };
+  let backslashRun = 0;
+  let pendingDollar: PendingDelimiter | undefined;
+  let pendingDisplay: PendingDelimiter | undefined;
+  let pendingParen: PendingDelimiter | undefined;
+  let pendingBracket: PendingDelimiter | undefined;
+  let dollarDiscoveryClosed = false;
+  let displayDiscoveryClosed = false;
 
   for (let index = 0; index < raw.length; index += 1) {
+    pendingDollar = clearRemovedPending(pendingDollar);
+    pendingDisplay = clearRemovedPending(pendingDisplay);
+    pendingParen = clearRemovedPending(pendingParen);
+    pendingBracket = clearRemovedPending(pendingBracket);
+
+    if (pendingDollar !== undefined && index - pendingDollar.start - 1 > MAX_DISCOVERY_BODY_UNITS) {
+      removeReplacementEvent(events, pendingDollar.placeholder);
+      pendingDollar = undefined;
+      dollarDiscoveryClosed = true;
+    }
+    if (pendingDisplay !== undefined && index - pendingDisplay.start - 2 > MAX_DISCOVERY_BODY_UNITS) {
+      removeReplacementEvent(events, pendingDisplay.placeholder);
+      pendingDisplay = undefined;
+      displayDiscoveryClosed = true;
+    }
+    if (pendingParen !== undefined && index - pendingParen.start - 2 > MAX_DISCOVERY_BODY_UNITS) {
+      pendingParen = undefined;
+    }
+    if (pendingBracket !== undefined && index - pendingBracket.start - 2 > MAX_DISCOVERY_BODY_UNITS) {
+      pendingBracket = undefined;
+    }
+
     const character = raw[index];
-    if (character === "\\" && (slashRuns[index] ?? 0) % 2 === 1) {
-      const next = raw[index + 1];
-      if (next === "(") markers.push({ index, kind: "open-paren" });
-      else if (next === ")") markers.push({ index, kind: "close-paren" });
-      else if (next === "[") markers.push({ index, kind: "open-bracket" });
-      else if (next === "]") markers.push({ index, kind: "close-bracket" });
+    if (character === "\\") {
+      backslashRun += 1;
+      if (backslashRun % 2 === 1) {
+        const next = raw[index + 1];
+        if (next === "(" || next === ")" || next === "[" || next === "]") {
+          const marker = appendReplacementEvent(events, index, index + 2, "literal");
+          if (next === "(") {
+            pendingParen ??= { start: index, placeholder: marker };
+          } else if (next === ")" && pendingParen !== undefined) {
+            const body = raw.slice(pendingParen.start + 2, index);
+            if (body.length <= MAX_DISCOVERY_BODY_UNITS && body.length > 0 && body.trim() !== ""
+              && !/\s/u.test(body[0] ?? "")
+              && !/\s/u.test(body.at(-1) ?? "")
+              && isInlineBoundaryBefore(raw, pendingParen.start)
+              && isInlineBoundaryAt(raw, index + 2)) {
+              acceptReplacementEvent(events, pendingParen.placeholder, index + 2, "math", body, false);
+            }
+            pendingParen = undefined;
+          } else if (next === "[") {
+            pendingBracket ??= { start: index, placeholder: marker };
+          } else if (next === "]" && pendingBracket !== undefined) {
+            const body = raw.slice(pendingBracket.start + 2, index);
+            if (body.length <= MAX_DISCOVERY_BODY_UNITS && body.length > 0 && body.trim() !== "") {
+              acceptReplacementEvent(events, pendingBracket.placeholder, index + 2, "literal");
+            }
+            pendingBracket = undefined;
+          }
+        }
+      }
       continue;
     }
-    if (character === "$" && (slashRuns[index - 1] ?? 0) % 2 === 0 && raw[index - 1] !== "$" && raw[index + 1] !== "$") {
-      dollars.push(index);
-    }
-  }
 
-  let pendingDisplay: number | undefined;
-  for (let index = 0; index < raw.length - 1; index += 1) {
-    if (raw[index] !== "$" || raw[index + 1] !== "$") continue;
-    if ((slashRuns[index - 1] ?? 0) % 2 === 1) {
-      index += 1;
+    if (character === "$") {
+      const escaped = backslashRun % 2 === 1;
+      if (raw[index + 1] === "$") {
+        if (!escaped) {
+          if (pendingDisplay === undefined && !displayDiscoveryClosed) {
+            pendingDisplay = { start: index, placeholder: appendReplacementEvent(events, index, index + 2, "literal") };
+          } else if (pendingDisplay !== undefined) {
+            const body = raw.slice(pendingDisplay.start + 2, index);
+            if (body.length <= MAX_DISCOVERY_BODY_UNITS && body.trim() !== "") {
+              acceptReplacementEvent(events, pendingDisplay.placeholder, index + 2, "literal");
+            } else {
+              removeReplacementEvent(events, pendingDisplay.placeholder);
+              if (body.length > MAX_DISCOVERY_BODY_UNITS) displayDiscoveryClosed = true;
+            }
+            pendingDisplay = undefined;
+          }
+        }
+        index += 1;
+        backslashRun = 0;
+        continue;
+      }
+
+      if (!escaped && !dollarDiscoveryClosed) {
+        if (pendingDollar === undefined) {
+          if (isDollarOpener(raw, index)) {
+            pendingDollar = { start: index, placeholder: appendReplacementEvent(events, index, index + 1, "literal") };
+          }
+        } else {
+          const body = raw.slice(pendingDollar.start + 1, index);
+          if (isDollarCloser(raw, pendingDollar.start, index, body)) {
+            acceptReplacementEvent(events, pendingDollar.placeholder, index + 1, "math", body, false);
+            pendingDollar = undefined;
+          } else {
+            removeReplacementEvent(events, pendingDollar.placeholder);
+            pendingDollar = undefined;
+            if (isDollarOpener(raw, index)) {
+              pendingDollar = { start: index, placeholder: appendReplacementEvent(events, index, index + 1, "literal") };
+            }
+          }
+        }
+      }
+      backslashRun = 0;
       continue;
     }
-    if (pendingDisplay === undefined) {
-      pendingDisplay = index;
-      index += 1;
-      continue;
-    }
-    const body = raw.slice(pendingDisplay + 2, index);
-    if (body.length > MAX_DISCOVERY_BODY_UNITS) break;
-    if (body.trim() !== "") displayDollarPairs.push({ start: pendingDisplay, end: index + 2, kind: "literal" });
-    pendingDisplay = undefined;
-    index += 1;
+
+    backslashRun = 0;
   }
 
-  const dollarPairing = pairDollars(raw, dollars);
-  const candidates: Replacement[] = [
-    ...displayDollarPairs,
-    ...pairBackslashMarkers(raw, markers, "open-paren", "close-paren", false),
-    ...pairBackslashMarkers(raw, markers, "open-bracket", "close-bracket", true),
-    ...dollarPairing.replacements,
-  ].filter((replacement) => dollarPairing.discoveryStop === undefined || replacement.end <= dollarPairing.discoveryStop);
-  candidates.sort(compareReplacements);
-
-  const acceptedCandidates: Replacement[] = [];
-  let coveredEnd = 0;
-  for (const candidate of candidates) {
-    if (candidate.start < coveredEnd) continue;
-    acceptedCandidates.push(candidate);
-    coveredEnd = candidate.end;
-  }
-
-  const markerLiterals: Replacement[] = [];
-  let candidateIndex = 0;
-  for (const marker of markers) {
-    const start = marker.index;
-    const end = start + 2;
-    while (candidateIndex < acceptedCandidates.length) {
-      const candidate = acceptedCandidates[candidateIndex];
-      if (candidate === undefined || candidate.end > start) break;
-      candidateIndex += 1;
-    }
-    const containingCandidate = acceptedCandidates[candidateIndex];
-    if (containingCandidate !== undefined && start >= containingCandidate.start && end <= containingCandidate.end) continue;
-    markerLiterals.push({ start, end, kind: "literal" });
-  }
-
-  return mergeReplacementStreams(acceptedCandidates, markerLiterals);
+  if (pendingDollar !== undefined) removeReplacementEvent(events, pendingDollar.placeholder);
+  if (pendingDisplay !== undefined) removeReplacementEvent(events, pendingDisplay.placeholder);
+  return mergeAdjacentLiteralReplacements(readReplacementEvents(events));
 }
 
-function compareReplacements(left: Replacement, right: Replacement): number {
-  return left.start - right.start || right.end - left.end;
+interface ReplacementList {
+  head: ReplacementEvent | undefined;
+  tail: ReplacementEvent | undefined;
 }
 
-function mergeReplacementStreams(candidates: Replacement[], markerLiterals: Replacement[]): Replacement[] {
-  const merged: Replacement[] = [];
-  let candidateIndex = 0;
-  let markerIndex = 0;
-  while (candidateIndex < candidates.length || markerIndex < markerLiterals.length) {
-    const candidate = candidates[candidateIndex];
-    const markerLiteral = markerLiterals[markerIndex];
-    if (candidate === undefined) {
-      if (markerLiteral === undefined) break;
-      merged.push(markerLiteral);
-      markerIndex += 1;
-    } else if (markerLiteral === undefined || compareReplacements(candidate, markerLiteral) <= 0) {
-      merged.push(candidate);
-      candidateIndex += 1;
-    } else {
-      merged.push(markerLiteral);
-      markerIndex += 1;
-    }
+function appendReplacementEvent(
+  list: ReplacementList,
+  start: number,
+  end: number,
+  kind: Replacement["kind"],
+): ReplacementEvent {
+  const event: ReplacementEvent = {
+    start,
+    end,
+    kind,
+    linked: true,
+    previous: list.tail,
+    next: undefined,
+  };
+  if (list.tail !== undefined) list.tail.next = event;
+  else list.head = event;
+  list.tail = event;
+  return event;
+}
+
+function removeReplacementEvent(list: ReplacementList, event: ReplacementEvent): void {
+  if (!event.linked) return;
+  if (event.previous !== undefined) event.previous.next = event.next;
+  else list.head = event.next;
+  if (event.next !== undefined) event.next.previous = event.previous;
+  else list.tail = event.previous;
+  event.previous = undefined;
+  event.next = undefined;
+  event.linked = false;
+}
+
+function acceptReplacementEvent(
+  list: ReplacementList,
+  event: ReplacementEvent,
+  end: number,
+  kind: Replacement["kind"],
+  tex?: string,
+  displayMode?: boolean,
+): void {
+  let covered = event.next;
+  while (covered !== undefined && covered.start < end) {
+    const next = covered.next;
+    removeReplacementEvent(list, covered);
+    covered = next;
   }
-  return mergeAdjacentLiteralReplacements(merged);
+  event.end = end;
+  event.kind = kind;
+  if (tex === undefined) delete event.tex;
+  else event.tex = tex;
+  if (displayMode === undefined) delete event.displayMode;
+  else event.displayMode = displayMode;
 }
 
-function backslashRuns(raw: string): number[] {
-  const runs = new Array<number>(raw.length).fill(0);
-  let run = 0;
-  for (let index = 0; index < raw.length; index += 1) {
-    if (raw[index] === "\\") run += 1;
-    else run = 0;
-    runs[index] = run;
-  }
-  return runs;
+function clearRemovedPending(pending: PendingDelimiter | undefined): PendingDelimiter | undefined {
+  return pending?.placeholder.linked === true ? pending : undefined;
 }
 
-function pairBackslashMarkers(
-  raw: string,
-  markers: DelimiterEvent[],
-  opener: DelimiterEvent["kind"],
-  closer: DelimiterEvent["kind"],
-  literal: boolean,
-): Replacement[] {
-  const result: Replacement[] = [];
-  let pending: DelimiterEvent | undefined;
-  for (const marker of markers) {
-    if (marker.kind === opener) {
-      pending ??= marker;
-      continue;
-    }
-    if (marker.kind !== closer || pending === undefined) continue;
-    const bodyStart = pending.index + 2;
-    const bodyLength = marker.index - bodyStart;
-    if (bodyLength > MAX_DISCOVERY_BODY_UNITS) {
-      pending = undefined;
-      continue;
-    }
-    const body = raw.slice(bodyStart, marker.index);
-    if (body.length > 0 && body.length <= MAX_DISCOVERY_BODY_UNITS && body.trim() !== ""
-      && (literal || (
-        !/\s/u.test(body[0] ?? "")
-        && !/\s/u.test(body.at(-1) ?? "")
-        && isInlineBoundary(raw[pending.index - 1])
-        && isInlineBoundary(raw[marker.index + 2])
-      ))) {
-      const replacement: Replacement = { start: pending.index, end: marker.index + 2, kind: literal ? "literal" : "math", displayMode: false };
-      if (!literal) replacement.tex = body;
-      result.push(replacement);
-      pending = undefined;
-    } else if (body.length > MAX_DISCOVERY_BODY_UNITS) {
-      pending = undefined;
-    } else {
-      pending = undefined;
-    }
-  }
-  return result;
-}
-
-function pairDollars(raw: string, dollars: number[]): DollarPairing {
+function readReplacementEvents(list: ReplacementList): Replacement[] {
   const replacements: Replacement[] = [];
-  let pending: number | undefined;
-  for (const index of dollars) {
-    if (pending === undefined) {
-      if (isDollarOpener(raw, index)) pending = index;
-      continue;
-    }
-
-    const body = raw.slice(pending + 1, index);
-    if (body.length > MAX_DISCOVERY_BODY_UNITS) return { replacements, discoveryStop: index };
-    if (isDollarCloser(raw, pending, index, body)) {
-      replacements.push({ start: pending, end: index + 1, kind: "math", tex: body, displayMode: false });
-      pending = undefined;
-    } else {
-      pending = isDollarOpener(raw, index) ? index : undefined;
-    }
+  for (let event = list.head; event !== undefined; event = event.next) {
+    const replacement: Replacement = {
+      start: event.start,
+      end: event.end,
+      kind: event.kind,
+    };
+    if (event.tex !== undefined) replacement.tex = event.tex;
+    if (event.displayMode !== undefined) replacement.displayMode = event.displayMode;
+    replacements.push(replacement);
   }
-  return { replacements };
+  return replacements;
 }
 
 function isDollarOpener(raw: string, index: number): boolean {
   const next = raw[index + 1];
-  if (!isInlineBoundary(raw[index - 1]) || next === undefined || /\s/u.test(next)) return false;
-  return true;
+  return isInlineBoundaryBefore(raw, index) && next !== undefined && !/\s/u.test(next);
 }
 
 function isDollarCloser(raw: string, opener: number, index: number, body: string): boolean {
-  if (body.length === 0 || /\s/u.test(body.at(-1) ?? "")) return false;
-  if (!isInlineBoundary(raw[index + 1])) return false;
-  return index > opener + 1;
+  return index > opener + 1
+    && body.length > 0
+    && !/\s/u.test(body.at(-1) ?? "")
+    && isInlineBoundaryAt(raw, index + 1);
 }
 
-function isInlineBoundary(character: string | undefined): boolean {
-  return character === undefined || /[\s\p{P}\p{S}]/u.test(character);
+function isInlineBoundaryBefore(source: string, index: number): boolean {
+  if (index <= 0) return true;
+  const previous = index - 1;
+  const codePointStart = isLowSurrogate(source.charCodeAt(previous)) ? previous - 1 : previous;
+  return isInlineBoundaryCodePoint(source.codePointAt(codePointStart));
+}
+
+function isInlineBoundaryAt(source: string, index: number): boolean {
+  return isInlineBoundaryCodePoint(source.codePointAt(index));
+}
+
+function isInlineBoundaryCodePoint(codePoint: number | undefined): boolean {
+  return codePoint === undefined || /[\s\p{P}\p{S}]/u.test(String.fromCodePoint(codePoint));
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 }
 
 function mergeAdjacentLiteralReplacements(replacements: Replacement[]): Replacement[] {
