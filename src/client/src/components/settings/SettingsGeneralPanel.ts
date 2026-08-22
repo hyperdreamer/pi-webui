@@ -26,6 +26,11 @@ function generalDescription(targetLabel: string): TemplateResult {
   return html`Gateway server fields edit this local gateway. File access and upload defaults edit ${targetLabel}.`;
 }
 
+export type SpeechInputSettingsReadiness =
+  | { state: "loading"; generation: number }
+  | { state: "unavailable"; generation: number }
+  | { state: "ready"; generation: number; revision: string };
+
 @customElement("settings-general-panel")
 export class SettingsGeneralPanel extends LitElement {
   @property({ attribute: false }) configResponse: PiWebUiConfigResponse | undefined;
@@ -41,6 +46,7 @@ export class SettingsGeneralPanel extends LitElement {
   @property({ attribute: false }) hostSpeechStatus?: HostSpeechStatus;
   @property({ type: Boolean }) hostSpeechStatusLoading = false;
   @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
+  @property({ attribute: false }) speechInputSettingsReadiness: SpeechInputSettingsReadiness = { state: "unavailable", generation: 0 };
   /** Test-only override; production reads the browser's secure-context value. */
   @property({ attribute: false }) speechInputSecureContext?: boolean;
   @property({ type: Number }) speechInputAdoptionGeneration = 0;
@@ -172,7 +178,7 @@ export class SettingsGeneralPanel extends LitElement {
 
   private renderSpeechInputSettings(): TemplateResult {
     const response = this.speechInputSavedResponse ?? this.speechInputSettings;
-    const disabled = this.saving || this.speechInputStale || response === undefined;
+    const disabled = !this.speechInputMutationReady(response);
     const clearDisabled = disabled || !speechInputCredentialConfigured(response);
     return html`
       <section class="settings-card speech-input-card" aria-label="Speech input settings">
@@ -180,6 +186,8 @@ export class SettingsGeneralPanel extends LitElement {
           <h3>Speech input</h3>
           <p>Dictation settings are stored on this gateway and apply regardless of the selected coding machine.</p>
           <p class="speech-input-boundary">Browser recognition may be processed by the browser vendor's speech service. Cloud sends audio to the configured HTTPS endpoint through the gateway. Cloud audio and the resolved credential go only to that endpoint, with redirects disabled. Gateway access is administrative because PI WEBUI adds no authentication.</p>
+          <p class="speech-input-boundary">Transcript polishing is a gateway operation on the local WebUI/session-daemon machine, independently of the selected coding machine. It never creates a Pi session, persists transcript or prompt text, or automatically submits, queues, steers, or starts work.</p>
+          <p class="speech-input-boundary">Sensitive audio, transcript text, and credential material are excluded from logs and error messages. Installing or updating this feature requires a manual pi-webui-sessiond.service restart.</p>
         </div>
         ${!this.isSpeechInputSecureContext() ? html`<div class="speech-input-insecure-context" role="status">Speech input settings require HTTPS outside localhost or loopback.</div>` : response === undefined ? html`<div class="loading-card">${this.loading ? "Loading speech input settings…" : "Speech input settings are unavailable. Reload before saving."}</div>` : html`
           <div class="speech-input-status" role="status">${speechInputCredentialStatusText(response.credential)}</div>
@@ -406,7 +414,7 @@ export class SettingsGeneralPanel extends LitElement {
     event.preventDefault();
     if (!this.isSpeechInputSecureContext()) return;
     const saved = this.speechInputSavedResponse;
-    if (saved === undefined || this.speechInputStale || this.saving) return;
+    if (!this.speechInputMutationReady(saved)) return;
     this.speechInputLocalError = "";
     const credentialValue = this.speechInputApiKeyInput?.value ?? "";
     const credential = credentialValue === "" ? { action: "preserve" } as const : { action: "replace", value: credentialValue } as const;
@@ -421,7 +429,7 @@ export class SettingsGeneralPanel extends LitElement {
   private async clearSpeechInputCredential(): Promise<void> {
     if (!this.isSpeechInputSecureContext()) return;
     const saved = this.speechInputSavedResponse;
-    if (saved === undefined || this.speechInputStale || this.saving) return;
+    if (!this.speechInputMutationReady(saved)) return;
     if (typeof globalThis.confirm !== "function" || !globalThis.confirm("Clear the saved speech input credential?")) return;
     this.speechInputLocalError = "";
     try {
@@ -434,6 +442,13 @@ export class SettingsGeneralPanel extends LitElement {
     } catch (error) {
       this.handleSpeechInputSaveError(error);
     }
+  }
+
+  private speechInputMutationReady(response: SpeechInputSettingsResponse | undefined): response is SpeechInputSettingsResponse {
+    return !this.loading
+      && !this.saving
+      && !this.speechInputStale
+      && speechInputResponseMatchesReadiness(this.speechInputSettingsReadiness, response);
   }
 
   private handleSpeechInputSaveError(error: unknown): void {
@@ -689,6 +704,13 @@ function checkboxChecked(event: Event): boolean {
   const target = event.target;
   if (typeof target !== "object" || target === null || !("checked" in target)) return false;
   return typeof target.checked === "boolean" ? target.checked : false;
+}
+
+function speechInputResponseMatchesReadiness(
+  readiness: SpeechInputSettingsReadiness,
+  response: SpeechInputSettingsResponse | undefined,
+): response is SpeechInputSettingsResponse {
+  return response !== undefined && readiness.state === "ready" && readiness.revision === response.revision;
 }
 
 function inputValue(event: Event): string {

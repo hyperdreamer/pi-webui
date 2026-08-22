@@ -218,6 +218,83 @@ describe("settings-dialog general settings machine targeting", () => {
     expect(templateValueAfterMarker(general, ".showHostSpeechSettings=")).toBe(false);
   });
 
+  it("keeps a retained speech response blocked while a gateway reload is pending", async () => {
+    const initial = speechInputSettingsResponse();
+    const config = deferred<PiWebUiConfigResponse>();
+    const plugins = deferred<ReturnType<typeof pluginsResponse>>();
+    const speech = deferred<SpeechInputSettingsResponse>();
+    vi.spyOn(configApi, "config").mockReturnValue(config.promise);
+    vi.spyOn(pluginsApi, "plugins").mockReturnValue(plugins.promise);
+    vi.spyOn(speechInputApi, "settings").mockReturnValue(speech.promise);
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = initial;
+
+    const reload = callDialogPromise(dialog, "loadConfig");
+
+    expect(getDialogProperty(dialog, "loading")).toBe(true);
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "loading" });
+    expect(templateValueAfterMarker(renderActiveSection(dialog), ".speechInputSettingsReadiness=")).toMatchObject({ state: "loading" });
+
+    config.resolve(configResponse({ host: "127.0.0.1" }));
+    plugins.resolve(pluginsResponse([]));
+    speech.resolve(initial);
+    await reload;
+
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "ready", revision: initial.revision });
+  });
+
+  it("marks a retained response unavailable after a failed speech reload and recovers on the next accepted response", async () => {
+    const initial = speechInputSettingsResponse();
+    const recovered = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000008" });
+    vi.spyOn(configApi, "config").mockResolvedValue(configResponse({ host: "127.0.0.1" }));
+    vi.spyOn(pluginsApi, "plugins").mockResolvedValue(pluginsResponse([]));
+    vi.spyOn(speechInputApi, "settings")
+      .mockRejectedValueOnce(new Error("speech settings unavailable"))
+      .mockResolvedValueOnce(recovered);
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = initial;
+
+    await callDialogPromise(dialog, "loadConfig");
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(initial);
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "unavailable" });
+    expect(templateValueAfterMarker(renderActiveSection(dialog), ".speechInputSettingsReadiness=")).toMatchObject({ state: "unavailable" });
+
+    const recovery = callDialogPromise(dialog, "loadConfig");
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "loading" });
+    await recovery;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(recovered);
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "ready", revision: recovered.revision });
+    dialog.machine = remoteMachine;
+    callDialogUpdated(dialog, new Map([["machine", undefined]]));
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "ready", revision: recovered.revision });
+  });
+
+  it("does not let a failed older reload replace a newer app-owned speech response", async () => {
+    const initial = speechInputSettingsResponse();
+    const newer = speechInputSettingsResponse({ revision: "00000000-0000-4000-8000-000000000009" });
+    const config = deferred<PiWebUiConfigResponse>();
+    const plugins = deferred<ReturnType<typeof pluginsResponse>>();
+    const speech = deferred<SpeechInputSettingsResponse>();
+    vi.spyOn(configApi, "config").mockReturnValue(config.promise);
+    vi.spyOn(pluginsApi, "plugins").mockReturnValue(plugins.promise);
+    vi.spyOn(speechInputApi, "settings").mockReturnValue(speech.promise);
+    const dialog = new SettingsDialog();
+    dialog.speechInputSettings = initial;
+
+    const reload = callDialogPromise(dialog, "loadConfig");
+    dialog.speechInputSettings = newer;
+    callDialogUpdated(dialog, new Map([["speechInputSettings", initial]]));
+    config.resolve(configResponse({ host: "127.0.0.1" }));
+    plugins.resolve(pluginsResponse([]));
+    speech.reject(new Error("stale reload failed"));
+    await reload;
+
+    expect(getDialogProperty(dialog, "speechInputSettings")).toBe(newer);
+    expect(getDialogProperty(dialog, "speechInputSettingsReadiness")).toMatchObject({ state: "ready", revision: newer.revision });
+  });
+
   it("loads speech input settings with the gateway reload and notifies the app only for the accepted response", async () => {
     const config = configResponse({ host: "127.0.0.1" });
     const snapshot = speechInputSettingsResponse();

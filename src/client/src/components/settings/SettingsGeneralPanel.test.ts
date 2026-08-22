@@ -365,6 +365,22 @@ describe("settings-general-panel speech input settings", () => {
     expect(templateValuesAfterMarker(card, ".checked=")).toEqual([true]);
   });
 
+  it("discloses transcript-polishing scope, work, logging, and restart boundaries in Settings", () => {
+    const panel = new SettingsGeneralPanel();
+    panel.speechInputSettings = speechInputSettingsResponse();
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+
+    expect(text).toContain("Transcript polishing is a gateway operation on the local WebUI/session-daemon machine, independently of the selected coding machine.");
+    expect(text).toContain("It never creates a Pi session, persists transcript or prompt text, or automatically submits, queues, steers, or starts work.");
+    expect(text).toContain("Sensitive audio, transcript text, and credential material are excluded from logs and error messages.");
+    expect(text).toContain("Installing or updating this feature requires a manual pi-webui-sessiond.service restart.");
+  });
+
   // The Node test environment has no DOM harness; use the stable accessible checkbox marker to exercise Lit's change wiring.
   it("reflects an explicit polishing opt-out and updates the draft with a boolean", () => {
     const panel = new SettingsGeneralPanel();
@@ -398,7 +414,7 @@ describe("settings-general-panel speech input settings", () => {
     const panel = new SettingsGeneralPanel();
     const initial = speechInputSettingsResponse();
     const onSaveSpeechInput = vi.fn();
-    panel.speechInputSettings = initial;
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = onSaveSpeechInput;
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
 
@@ -420,6 +436,102 @@ describe("settings-general-panel speech input settings", () => {
       },
       credential: { action: "preserve" },
     });
+  });
+
+  it("blocks every speech control and direct mutation while a retained response is reloading", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse({
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    const onSaveSpeechInput = vi.fn();
+    const confirm = vi.fn(() => true);
+    let credentialReads = 0;
+    const input = passwordInput(() => "literal-secret", vi.fn(), () => { credentialReads += 1; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    setPanelProperty(panel, "speechInputSettingsReadiness", { state: "ready", generation: 1, revision: initial.revision });
+    panel.onSaveSpeechInput = onSaveSpeechInput;
+    panel.loading = true;
+    vi.stubGlobal("confirm", confirm);
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const disabled = templateValuesAfterMarker(card, "?disabled=");
+    expect(disabled).toHaveLength(8);
+    expect(disabled.every((value) => value === true)).toBe(true);
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(onSaveSpeechInput).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(credentialReads).toBe(0);
+  });
+
+  it("blocks every speech control and direct mutation when the retained response is unavailable", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse({
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    const onSaveSpeechInput = vi.fn();
+    const confirm = vi.fn(() => true);
+    let credentialReads = 0;
+    const input = passwordInput(() => "literal-secret", vi.fn(), () => { credentialReads += 1; });
+    Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
+    panel.speechInputSettings = initial;
+    setPanelProperty(panel, "speechInputSettingsReadiness", { state: "unavailable", generation: 2 });
+    panel.onSaveSpeechInput = onSaveSpeechInput;
+    vi.stubGlobal("confirm", confirm);
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const disabled = templateValuesAfterMarker(card, "?disabled=");
+    expect(disabled).toHaveLength(8);
+    expect(disabled.every((value) => value === true)).toBe(true);
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(onSaveSpeechInput).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(credentialReads).toBe(0);
+  });
+
+  it("restores normal save and clear behavior after a usable current response is accepted", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse({
+      credential: { configured: true, source: "literal", resolution: "resolved" },
+    });
+    const onSaveSpeechInput = vi.fn();
+    const confirm = vi.fn(() => true);
+    panel.speechInputSettings = initial;
+    setPanelProperty(panel, "speechInputSettingsReadiness", { state: "unavailable", generation: 3 });
+    panel.onSaveSpeechInput = onSaveSpeechInput;
+    vi.stubGlobal("confirm", confirm);
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+    expect(onSaveSpeechInput).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+
+    setPanelProperty(panel, "speechInputSettingsReadiness", { state: "ready", generation: 4, revision: initial.revision });
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+    await callPanelPromise(panel, "clearSpeechInputCredential");
+
+    expect(onSaveSpeechInput.mock.calls).toEqual([
+      [{
+        expectedRevision: initial.revision,
+        settings: { ...initial.settings, polishVoiceInput: true },
+        credential: { action: "preserve" },
+      }],
+      [{ expectedRevision: initial.revision, settings: initial.settings, credential: { action: "clear" } }],
+    ]);
+    expect(confirm).toHaveBeenCalledOnce();
   });
 
   it("hides credential controls and blocks direct credential mutations outside a secure context", async () => {
@@ -496,7 +608,7 @@ describe("settings-general-panel speech input settings", () => {
       () => { reads += 1; },
     );
     Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
-    panel.speechInputSettings = initial;
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = vi.fn(() => Promise.resolve(saved));
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
     callPanelMethod(panel, "updateSpeechInputDraft", {
@@ -531,7 +643,8 @@ describe("settings-general-panel speech input settings", () => {
     let password = "$SPEECH_KEY";
     const input = passwordInput(() => password, (next) => { password = next; });
     Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
-    panel.speechInputSettings = speechInputSettingsResponse();
+    const initial = speechInputSettingsResponse();
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = vi.fn(() => Promise.reject(new HttpRequestError("conflict", 409)));
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
     callPanelMethod(panel, "updateSpeechInputDraft", { model: "new-model" });
@@ -565,7 +678,7 @@ describe("settings-general-panel speech input settings", () => {
     let password = "$SPEECH_KEY";
     const input = passwordInput(() => password, (next) => { password = next; });
     Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
-    panel.speechInputSettings = initial;
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = vi.fn(() => Promise.resolve(cleared));
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
     callPanelMethod(panel, "updateSpeechInputDraft", { model: "unsaved-model" });
@@ -633,7 +746,7 @@ describe("settings-general-panel speech input settings", () => {
     let password = "";
     const input = passwordInput(() => password, (next) => { password = next; });
     Object.defineProperty(panel, "speechInputApiKeyInput", { configurable: true, get: () => input });
-    panel.speechInputSettings = initial;
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = vi.fn(() => Promise.reject(new HttpRequestError("Re-enter the API key source when changing the cloud base URL.", 400)));
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
     callPanelMethod(panel, "updateSpeechInputDraft", { baseUrl: "https://gateway.example.test/v1" });
@@ -659,9 +772,10 @@ describe("settings-general-panel speech input settings", () => {
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);
     const panel = new SettingsGeneralPanel();
-    panel.speechInputSettings = speechInputSettingsResponse({
+    const initial = speechInputSettingsResponse({
       credential: { configured: true, source: "literal", resolution: "resolved" },
     });
+    setReadySpeechInputSettings(panel, initial);
     panel.onSaveSpeechInput = vi.fn();
     callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
 
@@ -736,6 +850,11 @@ function isStringArray(value: unknown): value is string[] {
 
 function setPanelProperty(panel: SettingsGeneralPanel, property: string, value: unknown): void {
   if (!Reflect.set(panel, property, value)) throw new Error(`Failed to set SettingsGeneralPanel property ${property}`);
+}
+
+function setReadySpeechInputSettings(panel: SettingsGeneralPanel, response: SpeechInputSettingsResponse): void {
+  panel.speechInputSettings = response;
+  setPanelProperty(panel, "speechInputSettingsReadiness", { state: "ready", generation: 1, revision: response.revision });
 }
 
 function getPanelProperty(panel: SettingsGeneralPanel, property: string): unknown {

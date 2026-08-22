@@ -4,6 +4,7 @@ import type { AppAction } from "../actions";
 import { configApi, modelTiersApi, piPackagesApi, pluginsApi, speechInputApi, utilityModelsApi, type HostSpeechStatus, type Machine, type MachineRuntime, type ModelTierLadder, type ModelTierSettingsResponse, type PiPackageMutationResponse, type PiPackageScope, type PiPackagesResponse, type PiWebUiConfigResponse, type PiWebUiConfigValues, type PiWebUiPluginsResponse, type SpeechInputSettingsResponse, type SpeechInputSettingsUpdate, type UtilityModelSettingsResponse, type UtilityModelSettingsUpdate } from "../api";
 import type { SettingsSection } from "../settingsRoute";
 import "./settings/SettingsGeneralPanel";
+import type { SpeechInputSettingsReadiness } from "./settings/SettingsGeneralPanel";
 import "./settings/SettingsSessiondPanel";
 import "./settings/SettingsPackagesPanel";
 import "./settings/SettingsPluginsPanel";
@@ -64,6 +65,7 @@ export class SettingsDialog extends LitElement {
   @state() private utilityModelsError = "";
   @state() private speechInputAdoptionGeneration = 0;
   @state() private speechInputCredentialClearGeneration = 0;
+  @state() private speechInputSettingsReadiness: SpeechInputSettingsReadiness = { state: "loading", generation: 0 };
   @state() private savedMessage = "";
   @state() private packageMessage = "";
   private savedMessageTimer: number | undefined;
@@ -75,6 +77,11 @@ export class SettingsDialog extends LitElement {
   private packageMutationSeq = 0;
   private modelTiersLoadRequestSeq = 0;
   private utilityModelsLoadRequestSeq = 0;
+  private speechInputSettingsReadinessGeneration = 0;
+  private speechInputSettingsObservedResponse: SpeechInputSettingsResponse | undefined;
+  private activeSpeechInputSettingsLoad:
+    | { requestSeq: number; startingSnapshot: SpeechInputSettingsResponse | undefined }
+    | undefined;
   private pendingSpeechInputForceAdoption:
     | { loadRequestSeq: number; startingSnapshot: SpeechInputSettingsResponse | undefined }
     | undefined;
@@ -97,7 +104,18 @@ export class SettingsDialog extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("speechInputSettings")) this.adoptPendingSpeechInputForceAdoption();
+    if (changed.has("speechInputSettings")) {
+      const response = this.speechInputSettings;
+      if (response !== this.speechInputSettingsObservedResponse) {
+        this.speechInputSettingsObservedResponse = response;
+        const activeLoad = this.activeSpeechInputSettingsLoad;
+        if (activeLoad === undefined || response !== activeLoad.startingSnapshot) {
+          if (response !== undefined) this.markSpeechInputSettingsReady(response);
+          else if (!this.loading) this.markSpeechInputSettingsUnavailable();
+        }
+      }
+      this.adoptPendingSpeechInputForceAdoption();
+    }
     const currentTarget = this.settingsTarget();
     if (changed.has("machine")) {
       const previousTarget = settingsMachineTarget(changed.get("machine"));
@@ -280,6 +298,7 @@ export class SettingsDialog extends LitElement {
         .hostSpeechStatus=${showHostSpeechSettings ? this.hostSpeechStatus : undefined}
         .hostSpeechStatusLoading=${showHostSpeechSettings && this.hostSpeechStatusLoading}
         .speechInputSettings=${this.speechInputSettings}
+        .speechInputSettingsReadiness=${this.speechInputSettingsReadiness}
         .speechInputAdoptionGeneration=${this.speechInputAdoptionGeneration}
         .speechInputCredentialClearGeneration=${this.speechInputCredentialClearGeneration}
         .onReload=${() => this.loadConfig(true)}
@@ -312,6 +331,8 @@ export class SettingsDialog extends LitElement {
     const speechInputSettingsAtStart = this.speechInputSettings;
     const speechInputSettingsRequestSeqAtStart = this.speechInputSettingsRequestSeq;
     this.loading = true;
+    this.markSpeechInputSettingsLoading();
+    this.activeSpeechInputSettingsLoad = { requestSeq, startingSnapshot: speechInputSettingsAtStart };
     this.error = "";
     try {
       const result = await loadGatewaySettingsData({
@@ -327,19 +348,34 @@ export class SettingsDialog extends LitElement {
       const acceptsSpeechInputSettings = speechInputSettings !== undefined
         && this.speechInputSettings === speechInputSettingsAtStart
         && (this.isSpeechInputSettingsRequestCurrent?.(speechInputSettingsRequestSeqAtStart) ?? true);
+      const speechInputSettingsChangedDuringLoad = this.speechInputSettings !== speechInputSettingsAtStart;
+      this.activeSpeechInputSettingsLoad = undefined;
       if (acceptsSpeechInputSettings) {
         this.speechInputSettings = speechInputSettings;
+        this.speechInputSettingsObservedResponse = speechInputSettings;
+        this.markSpeechInputSettingsReady(speechInputSettings);
         if (forceSpeechInputAdoption) {
           this.pendingSpeechInputForceAdoption = undefined;
           this.speechInputAdoptionGeneration += 1;
         }
         this.onSpeechInputSettingsLoaded?.(speechInputSettings);
-      } else if (forceSpeechInputAdoption && speechInputSettings !== undefined) {
-        this.requestSpeechInputForceAdoption(requestSeq, speechInputSettingsAtStart);
+      } else {
+        this.speechInputSettingsObservedResponse = this.speechInputSettings;
+        if (forceSpeechInputAdoption && speechInputSettings !== undefined) {
+          this.requestSpeechInputForceAdoption(requestSeq, speechInputSettingsAtStart);
+        }
+        if (speechInputSettingsChangedDuringLoad && this.speechInputSettings !== undefined) {
+          this.markSpeechInputSettingsReady(this.speechInputSettings);
+        } else {
+          this.markSpeechInputSettingsUnavailable();
+        }
       }
       this.error = result.error;
     } finally {
-      if (this.isCurrentLoad(requestSeq)) this.loading = false;
+      if (this.isCurrentLoad(requestSeq)) {
+        this.activeSpeechInputSettingsLoad = undefined;
+        this.loading = false;
+      }
     }
   }
 
@@ -552,6 +588,8 @@ export class SettingsDialog extends LitElement {
     try {
       const response = await speechInputApi.saveSettings(update);
       this.speechInputSettings = response;
+      this.speechInputSettingsObservedResponse = response;
+      this.markSpeechInputSettingsReady(response);
       if (update.credential.action === "clear") this.speechInputCredentialClearGeneration += 1;
       else this.speechInputAdoptionGeneration += 1;
       this.onSpeechInputSettingsSaved?.(response);
@@ -828,6 +866,24 @@ export class SettingsDialog extends LitElement {
 
   private isCurrentLoad(requestSeq: number): boolean {
     return requestSeq === this.loadRequestSeq;
+  }
+
+  private markSpeechInputSettingsLoading(): void {
+    this.speechInputSettingsReadiness = { state: "loading", generation: ++this.speechInputSettingsReadinessGeneration };
+  }
+
+  private markSpeechInputSettingsUnavailable(): void {
+    this.speechInputSettingsReadiness = { state: "unavailable", generation: ++this.speechInputSettingsReadinessGeneration };
+  }
+
+  private markSpeechInputSettingsReady(response: SpeechInputSettingsResponse): void {
+    const current = this.speechInputSettingsReadiness;
+    if (current.state === "ready" && current.revision === response.revision) return;
+    this.speechInputSettingsReadiness = {
+      state: "ready",
+      generation: ++this.speechInputSettingsReadinessGeneration,
+      revision: response.revision,
+    };
   }
 
   private requestSpeechInputForceAdoption(
