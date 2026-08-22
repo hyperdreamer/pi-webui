@@ -51,6 +51,15 @@ describe("project identity", () => {
     });
   });
 
+  it("ships KaTeX and its attribution notice", () => {
+    expect(packageManifest.dependencies).toMatchObject({ katex: "^0.18.4" });
+    expect(packageManifest.files).toContain("THIRD_PARTY_NOTICES.md");
+    const notice = readFileSync(join(repositoryRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+    expect(notice).toContain("KaTeX 0.18.4");
+    expect(notice).toContain("The MIT License (MIT)");
+    expect(notice).toContain("Copyright (c) 2013-2020 Khan Academy and other contributors");
+  });
+
   it("uses PI WEBUI plugin and extension paths", () => {
     expect(existsSync(join(repositoryRoot, "pi-webui-plugins"))).toBe(true);
     const legacyPluginDirectory = ["pi", "web-plugins"].join("-");

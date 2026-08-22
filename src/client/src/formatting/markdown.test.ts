@@ -5,6 +5,52 @@ import { describe, expect, it, vi } from "vitest";
 import { clearMarkdownHtmlCache, markdownHtmlCacheChars, markdownHtmlCacheSize, toSafeMarkdownHtml } from "./markdown";
 
 describe("toSafeMarkdownHtml", () => {
+  it("renders representative math with KaTeX HTML and MathML", () => {
+    const html = toSafeMarkdownHtml("Area: $x^2$", { cache: false });
+
+    expect(html).toContain('class="math-inline"');
+    expect(html).toContain("katex");
+    expect(html).toContain("MathML");
+  });
+
+  it("caches production math renders but bypasses the cache for an injected adapter", () => {
+    clearMarkdownHtmlCache();
+    const source = `$x$ ${String(Date.now())} ${Math.random().toString(36)}`;
+    const before = markdownHtmlCacheSize();
+
+    const first = toSafeMarkdownHtml(source);
+    const second = toSafeMarkdownHtml(source);
+
+    expect(second).toBe(first);
+    expect(markdownHtmlCacheSize()).toBe(before + 1);
+
+    const adapter = vi.fn(() => "<i>test-math</i>");
+    const injectedFirst = toSafeMarkdownHtml("$y$", { renderMath: adapter });
+    const injectedSecond = toSafeMarkdownHtml("$y$", { renderMath: adapter });
+
+    expect(injectedSecond).toBe(injectedFirst);
+    expect(adapter).toHaveBeenCalledTimes(2);
+    expect(markdownHtmlCacheSize()).toBe(before + 1);
+  });
+
+  it("sanitizes unsafe output returned by an injected math adapter", () => {
+    const adapter = vi.fn(() => "<img src=\"javascript:alert(1)\" onerror=\"alert(1)\">");
+
+    const html = toSafeMarkdownHtml("before $x$ after", { renderMath: adapter });
+
+    expect(html).toContain("before");
+    expect(html).toContain("after");
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html).not.toMatch(/onerror/i);
+  });
+
+  it("preserves unmatched closing markers through the Markdown facade", () => {
+    const html = toSafeMarkdownHtml(String.raw`before \) and \] after`, { cache: false });
+
+    expect(html).toContain(String.raw`\)`);
+    expect(html).toContain(String.raw`\]`);
+  });
+
   it("renders markdown to sanitized html", () => {
     const html = toSafeMarkdownHtml("**bold**", { cache: false });
 
