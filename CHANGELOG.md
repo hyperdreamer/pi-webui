@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.17.0
+
+### Minor Changes
+
+- 4880746: Render plain-text LaTeX equations in formatted conversation messages.
+
+### Patch Changes
+
+- 75e3656: Render all LaTeX formulas in a formatted message that fit the existing safety budgets, instead of stopping after eight formulas.
+
 ## 1.16.0
 
 ### Minor Changes
