@@ -436,7 +436,7 @@ describe("settings-general-panel speech input settings", () => {
     expect(reads).toBe(1);
     expect(panel.onSaveSpeechInput).toHaveBeenCalledExactlyOnceWith({
       expectedRevision: initial.revision,
-      settings: { provider: "cloud", language: "pt-BR", cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
+      settings: { provider: "cloud", language: "pt-BR", polishVoiceInput: true, cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" } },
       credential: { action: "replace", value: "!short-lived-credential-command" },
     });
     expect(value).toBe("");
@@ -541,6 +541,7 @@ describe("settings-general-panel speech input settings", () => {
     expect(getPanelProperty(panel, "speechInputDraft")).toEqual({
       provider: "browser",
       language: "fr-FR",
+      polishVoiceInput: true,
       baseUrl: "https://gateway.example.test/v1",
       model: "whisper-1",
     });
@@ -568,6 +569,7 @@ describe("settings-general-panel speech input settings", () => {
       expectedRevision: initial.revision,
       settings: {
         provider: "auto",
+        polishVoiceInput: true,
         cloud: { baseUrl: "https://gateway.example.test/v1", model: "gpt-4o-mini-transcribe" },
       },
       credential: { action: "preserve" },
