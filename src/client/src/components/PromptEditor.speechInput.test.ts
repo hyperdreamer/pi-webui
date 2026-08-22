@@ -45,6 +45,7 @@ const BROWSER_SPEECH_SETTINGS: SpeechInputSettingsResponse = {
   revision: "00000000-0000-4000-8000-000000000001",
   settings: {
     provider: "browser",
+    polishVoiceInput: false,
     cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
   },
   credential: { configured: false, resolution: "missing" },
@@ -184,6 +185,16 @@ describe("PromptEditor speech input target boundary", () => {
     expect(applyFinal(editor, target, "dictated words")).toBe("changed");
     expect(requiredView(editor).state.doc.toString()).toBe("newer draft");
     expect(loadDraft(machineSessionKey("machine-a", "session-a"))).toBe("newer draft");
+  });
+
+  it("cancels polishing before a programmatic composer replacement", async () => {
+    const editor = await mountedEditor({ sessionId: "session-a" });
+    const controller = installController(editor);
+    setSpeechState(editor, { kind: "polishing", runId: "run-1", provider: "browser" });
+
+    editor.replaceText("replacement draft");
+
+    expect(controller.cancel).toHaveBeenCalledOnce();
   });
 
   it("uses field equality rather than a serialized identity when rejecting late finals", async () => {
@@ -329,14 +340,21 @@ describe("PromptEditor speech input controls", () => {
     expect(microphone.title).toBe("Cancel transcription · Cloud");
     expect(host.textContent).toContain("Transcribing · Cloud");
 
-    setSpeechState(editor, { kind: "idle", unavailableReason: "Microphone permission is unavailable", error: "Speech recognition failed" });
+    setSpeechState(editor, { kind: "polishing", runId: "run-1", provider: "browser" });
+    host = renderPromptEditor(editor);
+    microphone = requiredButton(host, ".speech-input-button");
+    expect(microphone.title).toBe("Cancel polishing · Browser");
+    expect(microphone.getAttribute("aria-label")).toBe("Cancel polishing · Browser");
+    expect(host.textContent).toContain("Polishing · Browser");
+
+    setSpeechState(editor, { kind: "idle", unavailableReason: "Microphone permission is unavailable", error: "Voice input polishing failed; inserted the raw transcript." });
     host = renderPromptEditor(editor);
     microphone = requiredButton(host, ".speech-input-button");
     expect(microphone.disabled).toBe(true);
     expect(microphone.title).toBe("Microphone permission is unavailable");
     const error = host.querySelector(".speech-input-error");
     expect(error?.getAttribute("aria-live")).toBe("polite");
-    expect(error?.textContent).toBe("Speech recognition failed");
+    expect(error?.textContent).toBe("Voice input polishing failed; inserted the raw transcript.");
   });
 
   it("uses phase-specific microphone actions without starting a provider when the target is unavailable", async () => {
@@ -351,7 +369,7 @@ describe("PromptEditor speech input controls", () => {
     invokeVoid(editor, "handleSpeechInputControl");
     setSpeechState(editor, { kind: "listening", runId: "run-1", provider: "browser", elapsedMs: 0 });
     invokeVoid(editor, "handleSpeechInputControl");
-    setSpeechState(editor, { kind: "transcribing", runId: "run-1", provider: "cloud", elapsedMs: 0 });
+    setSpeechState(editor, { kind: "polishing", runId: "run-1", provider: "browser" });
     invokeVoid(editor, "handleSpeechInputControl");
 
     expect(controller.cancel).toHaveBeenCalledTimes(2);
@@ -458,6 +476,11 @@ describe("PromptEditor speech input controls", () => {
     expect(onModel).not.toHaveBeenCalled();
     expect(onThinking).not.toHaveBeenCalled();
     expect(pendingAttachments(editor)).toHaveLength(1);
+
+    setSpeechState(editor, { kind: "polishing", runId: "run-1", provider: "browser" });
+    const polishingHost = renderPromptEditor(editor);
+    expect(requiredButton(polishingHost, ".editor-attach").disabled).toBe(true);
+    expect(requiredButton(polishingHost, ".send-button").disabled).toBe(true);
   });
 
   it("adds and removes aria-readonly for dictation while preserving external disabled state", async () => {

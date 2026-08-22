@@ -5,6 +5,7 @@ import type { SessionReorderRequest } from "../../../shared/apiTypes";
 import type { SessionModelPolicyUpdate, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type { SpeechInputSettingsResponse, SpeechInputSettingsUpdate, SpeechInputTranscribeResponse } from "../../../shared/apiTypes";
 import type { SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
+import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../../shared/speechInputAudio";
 import type { ModelTierLadder } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import type { UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "../../../shared/apiTypes";
@@ -194,8 +195,29 @@ export const speechInputApi = {
     parseSpeechInputTranscribeResponse,
     { method: "POST", body: audio, headers: { "content-type": mimeType }, ...(signal === undefined ? {} : { signal }) },
   ),
+  polish: async (text: string, signal?: AbortSignal): Promise<string> => {
+    try {
+      return await request("api/speech-input/polish", parseSpeechInputPolishResponse, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+        ...(signal === undefined ? {} : { signal }),
+      });
+    } catch {
+      throw new Error("Speech input polishing failed.");
+    }
+  },
 };
 
+function parseSpeechInputPolishResponse(value: unknown): string {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid speech input polishing response");
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "text") throw new Error("Invalid speech input polishing response");
+  const text = value["text"];
+  if (typeof text !== "string" || text.trim() === "" || new TextEncoder().encode(text).byteLength > SPEECH_INPUT_MAX_TRANSCRIPT_BYTES) {
+    throw new Error("Invalid speech input polishing response");
+  }
+  return text;
+}
 export const machinesApi = {
   machines: () => request("api/machines", parseMachinesResponse),
   addMachine: (input: { name: string; baseUrl: string; token?: string }) => request("api/machines", parseMachine, { method: "POST", body: JSON.stringify(input) }),

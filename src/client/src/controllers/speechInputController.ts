@@ -1,4 +1,5 @@
 import type { SpeechInputSettingsResponse } from "../../../shared/apiTypes";
+import { speechInputApi } from "../api";
 import { MediaRecorderAdapter } from "../speechInput/mediaRecorderAdapter";
 import {
   resolveSpeechInputProvider,
@@ -26,6 +27,8 @@ const EMPTY_TRANSCRIPT_ERROR = "No speech detected";
 const CHANGED_DRAFT_ERROR = "Dictation was canceled because the draft changed.";
 const TOO_LARGE_TRANSCRIPT_ERROR = "Dictated speech is too large.";
 const TRANSCRIPTION_TIMEOUT_ERROR = "Speech transcription timed out.";
+const POLISHING_FALLBACK_ERROR = "Voice input polishing failed; inserted the raw transcript.";
+const POLISHING_LIMIT_MS = 30_000;
 const CONTROLLER_FAILURE_ERROR = "Speech input failed.";
 const ADAPTER_UNAVAILABLE_REASON = "Speech input is unavailable.";
 
@@ -33,7 +36,12 @@ export type SpeechInputControllerState =
   | { kind: "idle"; provider?: SpeechInputProviderId; unavailableReason?: string; error?: string }
   | { kind: "requesting-permission"; runId: string; provider: SpeechInputProviderId }
   | { kind: "listening"; runId: string; provider: SpeechInputProviderId; elapsedMs: number; interimText?: string }
-  | { kind: "transcribing"; runId: string; provider: "cloud"; elapsedMs: number };
+  | { kind: "transcribing"; runId: string; provider: "cloud"; elapsedMs: number }
+  | { kind: "polishing"; runId: string; provider: SpeechInputProviderId };
+
+export interface SpeechInputPolisher {
+  polish(text: string, signal: AbortSignal): Promise<string>;
+}
 
 export interface SpeechInputControllerCallbacks {
   onStateChange(state: SpeechInputControllerState): void;
@@ -46,6 +54,7 @@ export interface SpeechInputControllerOptions {
   browser: SpeechInputProviderAdapter;
   cloud: SpeechInputProviderAdapter;
   callbacks: SpeechInputControllerCallbacks;
+  polisher?: SpeechInputPolisher;
   createRunId?: () => string;
   now?: () => number;
   scheduleInterval?: (callback: () => void, delayMs: number) => () => void;
@@ -64,15 +73,21 @@ interface ActiveSpeechInputRun {
   captureDeadlineCancel: (() => void) | undefined;
   elapsedIntervalCancel: (() => void) | undefined;
   transcriptionDeadlineCancel: (() => void) | undefined;
+  polishingDeadlineCancel: (() => void) | undefined;
+  polishController: AbortController | undefined;
+  rawTranscript: string | undefined;
+  polishVoiceInput: boolean;
   stopRequested: boolean;
   transcribing: boolean;
   interimText: string | undefined;
+  interimCleared: boolean;
 }
 
 interface TerminalOptions {
   error?: string;
   finalText?: string;
   cancelAdapter?: boolean;
+  polishFailure?: boolean;
   publish?: boolean;
 }
 
@@ -81,6 +96,7 @@ export class SpeechInputController {
   private readonly browser: SpeechInputProviderAdapter;
   private readonly cloud: SpeechInputProviderAdapter;
   private readonly callbacks: SpeechInputControllerCallbacks;
+  private readonly polisher: SpeechInputPolisher;
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly scheduleInterval: (callback: () => void, delayMs: number) => () => void;
@@ -97,6 +113,7 @@ export class SpeechInputController {
     this.browser = options.browser;
     this.cloud = options.cloud;
     this.callbacks = options.callbacks;
+    this.polisher = options.polisher ?? speechInputApi;
     this.createRunId = options.createRunId ?? defaultRunId;
     this.now = options.now ?? defaultNow;
     this.scheduleInterval = options.scheduleInterval ?? defaultScheduleInterval;
@@ -145,9 +162,14 @@ export class SpeechInputController {
       captureDeadlineCancel: undefined,
       elapsedIntervalCancel: undefined,
       transcriptionDeadlineCancel: undefined,
+      polishingDeadlineCancel: undefined,
+      polishController: undefined,
+      rawTranscript: undefined,
+      polishVoiceInput: settings.settings.polishVoiceInput !== false,
       stopRequested: false,
       transcribing: false,
       interimText: undefined,
+      interimCleared: false,
     };
     this.active = active;
     this.publish({ kind: "requesting-permission", runId: active.runId, provider });
@@ -285,14 +307,88 @@ export class SpeechInputController {
 
   private handleComplete(generation: number, text: string): void {
     const active = this.currentForGeneration(generation);
-    if (active === undefined) return;
-    this.settleTerminal(active, { finalText: text });
+    if (active === undefined || active.polishController !== undefined) return;
+    this.finalizeTranscript(active, text);
   }
 
   private handleError(generation: number, error: SpeechInputProviderError): void {
     const active = this.currentForGeneration(generation);
-    if (active === undefined) return;
+    if (active === undefined || active.polishController !== undefined) return;
     this.settleTerminal(active, { error: normalizedProviderError(error) });
+  }
+
+  private finalizeTranscript(active: ActiveSpeechInputRun, text: string): void {
+    if (!this.isCurrent(active)) return;
+    if (!active.polishVoiceInput || text.trim() === "") {
+      this.settleTerminal(active, { finalText: text });
+      return;
+    }
+
+    active.rawTranscript = text;
+    const polishController = new AbortController();
+    active.polishController = polishController;
+    this.clearAllTimers(active);
+    this.clearInterim();
+    active.interimCleared = true;
+    if (!this.isCurrent(active)) return;
+
+    this.publish({ kind: "polishing", runId: active.runId, provider: active.provider });
+    if (!this.isCurrent(active)) return;
+    if (!this.armPolishingDeadline(active)) return;
+    if (!this.isCurrent(active)) return;
+
+    let request: Promise<string>;
+    try {
+      request = this.polisher.polish(text, polishController.signal);
+    } catch {
+      this.handlePolishingFailure(active);
+      return;
+    }
+    void Promise.resolve(request).then(
+      (polishedText) => { this.handlePolishingSuccess(active, polishedText); },
+      () => { this.handlePolishingFailure(active); },
+    );
+  }
+
+  private handlePolishingSuccess(active: ActiveSpeechInputRun, text: string): void {
+    if (!this.isCurrent(active) || active.polishController === undefined) return;
+    this.settleTerminal(active, { finalText: text });
+  }
+
+  private handlePolishingFailure(active: ActiveSpeechInputRun): void {
+    if (!this.isCurrent(active) || active.polishController === undefined || active.rawTranscript === undefined) return;
+    this.settleTerminal(active, {
+      finalText: active.rawTranscript,
+      polishFailure: true,
+      cancelAdapter: true,
+    });
+  }
+
+  private armPolishingDeadline(active: ActiveSpeechInputRun): boolean {
+    let cancel: (() => void) | undefined;
+    try {
+      cancel = this.scheduleDeadline(() => {
+        if (!this.isCurrent(active) || active.polishController === undefined || active.rawTranscript === undefined) return;
+        this.settleTerminal(active, {
+          finalText: active.rawTranscript,
+          polishFailure: true,
+          cancelAdapter: true,
+        });
+      }, POLISHING_LIMIT_MS);
+    } catch {
+      if (this.isCurrent(active)) this.handlePolishingFailure(active);
+      return false;
+    }
+    if (!this.isCurrent(active) || active.polishController === undefined) {
+      try {
+        cancel();
+      } catch {
+        // The run was already invalidated; its generation guard remains authoritative.
+      }
+      return false;
+    }
+    active.polishingDeadlineCancel = cancel;
+    return true;
   }
 
   private armElapsedInterval(active: ActiveSpeechInputRun): void {
@@ -377,18 +473,34 @@ export class SpeechInputController {
     }
   }
 
-  /** Invalidates first, then clears UI/timers, publishes, and only then aborts if requested. */
+  /** Invalidates first, clears UI/timers, then completes insertion and best-effort cancellation. */
   private settleTerminal(active: ActiveSpeechInputRun, options: TerminalOptions): void {
     if (this.active !== active) return;
 
     this.active = undefined;
+    const polishController = active.polishController;
+    active.polishController = undefined;
     this.clearAllTimers(active);
-    this.clearInterim();
+    if (!active.interimCleared) {
+      this.clearInterim();
+      active.interimCleared = true;
+    }
+
+    if (options.polishFailure === true) {
+      try {
+        polishController?.abort();
+      } catch {
+        // The polishing request is already terminal; fallback still owns insertion.
+      }
+    }
 
     let error = options.error;
     if (options.finalText !== undefined) {
       try {
-        error = finalOutcomeError(this.callbacks.onFinal(cloneTarget(active.target), options.finalText));
+        const outcome = this.callbacks.onFinal(cloneTarget(active.target), options.finalText);
+        error = options.polishFailure === true && outcome === "inserted"
+          ? POLISHING_FALLBACK_ERROR
+          : finalOutcomeError(outcome);
       } catch {
         error = CONTROLLER_FAILURE_ERROR;
       }
@@ -400,14 +512,24 @@ export class SpeechInputController {
       this.stateValue = this.idleState(error);
     }
 
-    if (options.cancelAdapter === true) this.cancelRun(active.run);
+    if (options.cancelAdapter === true) {
+      this.cancelRun(active.run);
+      try {
+        if (options.polishFailure !== true) polishController?.abort();
+      } catch {
+        // Aborting is best effort after this run's generation is invalidated.
+      }
+    }
   }
 
   private clearAllTimers(active: ActiveSpeechInputRun): void {
     this.clearCaptureTimers(active);
-    const cancel = active.transcriptionDeadlineCancel;
+    const transcriptionCancel = active.transcriptionDeadlineCancel;
     active.transcriptionDeadlineCancel = undefined;
-    cancel?.();
+    transcriptionCancel?.();
+    const polishingCancel = active.polishingDeadlineCancel;
+    active.polishingDeadlineCancel = undefined;
+    polishingCancel?.();
   }
 
   private clearCaptureTimers(active: ActiveSpeechInputRun): void {
@@ -588,6 +710,7 @@ function cloneSettings(settings: SpeechInputSettingsResponse): SpeechInputSettin
     settings: {
       provider: settings.settings.provider,
       ...(settings.settings.language === undefined ? {} : { language: settings.settings.language }),
+      polishVoiceInput: settings.settings.polishVoiceInput ?? true,
       cloud: { ...settings.settings.cloud },
     },
     credential: { ...settings.credential },

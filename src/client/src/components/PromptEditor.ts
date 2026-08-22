@@ -223,6 +223,7 @@ export class PromptEditor extends LitElement {
   }
 
   replaceText(text: string): void {
+    if (this.speechInputActive()) this.cancelSpeechInput();
     this.draft = text;
     const key = draftStorageKey(this.machineId, this.sessionId);
     if (key !== undefined) saveDraft(key, text);
@@ -279,6 +280,7 @@ export class PromptEditor extends LitElement {
         return;
       case "requesting-permission":
       case "transcribing":
+      case "polishing":
         this.cancelSpeechInput();
         return;
     }
@@ -385,8 +387,12 @@ export class PromptEditor extends LitElement {
       const label = `Stop dictation · ${speechInputProviderLabel(state.provider)}`;
       return html`<button class="icon-button speech-input-button speech-input-listening" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderStopIcon()}</button>`;
     }
-    const label = "Cancel transcription · Cloud";
-    return html`<button class="icon-button speech-input-button speech-input-transcribing" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderWaveformIcon()}</button>`;
+    if (state.kind === "transcribing") {
+      const label = "Cancel transcription · Cloud";
+      return html`<button class="icon-button speech-input-button speech-input-transcribing" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderWaveformIcon()}</button>`;
+    }
+    const label = `Cancel polishing · ${speechInputProviderLabel(state.provider)}`;
+    return html`<button class="icon-button speech-input-button speech-input-polishing" title=${label} aria-label=${label} @click=${() => { this.handleSpeechInputControl(); }}>${renderWaveformIcon()}</button>`;
   }
 
   private renderSpeechInputStatus() {
@@ -399,7 +405,8 @@ export class PromptEditor extends LitElement {
       const elapsed = state.provider === "cloud" ? ` · ${speechInputElapsedLabel(state.elapsedMs)}` : "";
       return html`<div class="speech-input-status">Listening · ${speechInputProviderLabel(state.provider)}${elapsed}</div>`;
     }
-    return html`<div class="speech-input-status">Transcribing · Cloud</div>`;
+    if (state.kind === "transcribing") return html`<div class="speech-input-status">Transcribing · Cloud</div>`;
+    return html`<div class="speech-input-status" aria-live="polite">Polishing · ${speechInputProviderLabel(state.provider)}</div>`;
   }
 
   private renderSpeechInputError() {

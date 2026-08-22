@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, SpeechInputSettingsUpdate, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
-import type { SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
+import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES, type SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
 import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, speechInputApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
 
 const workspace: Workspace = {
@@ -129,6 +129,57 @@ describe("speech input transcription API", () => {
     expect(init).toMatchObject({ method: "POST", body: audio, signal });
     expect(new Headers(init?.headers).get("content-type")).toBe(mimeType);
     expect(fetchMock.mock.calls.some(([requestUrl]) => toUrl(requestUrl).pathname.includes("/machines/"))).toBe(false);
+  });
+});
+
+describe("speech input polishing API", () => {
+  it("posts exactly the raw text through the nested gateway path and forwards cancellation", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const fetchMock = stubJsonFetch({ text: "polished transcript" });
+    const signal = new AbortController().signal;
+
+    await expect(speechInputApi.polish("raw transcript", signal)).resolves.toBe("polished transcript");
+
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/nested/pi-webui/api/speech-input/polish");
+    expect(init).toMatchObject({ method: "POST", signal });
+    expect(JSON.parse(requestBody(init))).toEqual({ text: "raw transcript" });
+    expect(fetchMock.mock.calls.some(([requestUrl]) => toUrl(requestUrl).pathname.includes("/machines/"))).toBe(false);
+  });
+
+  const malformedResponses: readonly [string, unknown][] = [
+    ["unknown fields", { text: "polished", extra: "private transcript" }],
+    ["empty text", { text: "" }],
+    ["oversized text", { text: "x".repeat(SPEECH_INPUT_MAX_TRANSCRIPT_BYTES + 1) }],
+    ["non-object", ["polished"]],
+  ];
+
+  it.each(malformedResponses)("rejects %s responses with one safe generic error", async (_label, responseBody) => {
+    const fetchMock = stubJsonFetch(responseBody);
+
+    const error = await speechInputApi.polish("captured private transcript").catch((value: unknown) => value);
+    const rejection = requiredError(error);
+
+    expect(rejection.message).toBe("Speech input polishing failed.");
+    expect(rejection.message).not.toContain("captured private transcript");
+    expect(rejection.message).not.toContain("private transcript");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("maps unavailable HTTP responses without exposing the response body", async () => {
+    const secret = "provider body with captured transcript";
+    const fetchMock = stubResponseFetch(new Response(JSON.stringify({ error: secret }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const error = await speechInputApi.polish("raw transcript").catch((value: unknown) => value);
+    const rejection = requiredError(error);
+
+    expect(rejection.message).toBe("Speech input polishing failed.");
+    expect(rejection.message).not.toContain(secret);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
@@ -1204,7 +1255,13 @@ describe("workspace file write API", () => {
   });
 });
 
+function requiredError(value: unknown): Error {
+  if (!(value instanceof Error)) throw new Error("Expected an Error rejection");
+  return value;
+}
+
 type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 type FetchMock = ReturnType<typeof vi.fn<FetchLike>>;
 
 function sessionModelPolicyResponse() {

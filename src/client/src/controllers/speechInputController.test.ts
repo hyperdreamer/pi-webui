@@ -15,6 +15,7 @@ import {
   createDefaultSpeechInputController,
   SpeechInputController,
   type SpeechInputControllerState,
+  type SpeechInputPolisher,
 } from "./speechInputController";
 
 const TARGET: SpeechInputTargetSnapshot = {
@@ -29,6 +30,7 @@ const DRAFT_CHANGED_ERROR = "Dictation was canceled because the draft changed.";
 const TRANSCRIPT_TOO_LARGE_ERROR = "Dictated speech is too large.";
 const CONTROLLER_FAILURE_ERROR = "Speech input failed.";
 const TRANSCRIPTION_TIMEOUT_ERROR = "Speech transcription timed out.";
+const POLISHING_FALLBACK_ERROR = "Voice input polishing failed; inserted the raw transcript.";
 
 class FakeRun implements SpeechInputProviderRun {
   stopCalls = 0;
@@ -83,6 +85,20 @@ class FakeAdapter implements SpeechInputProviderAdapter {
   }
 }
 
+class FakePolisher implements SpeechInputPolisher {
+  readonly calls: { text: string; signal: AbortSignal; resolve: (text: string) => void; reject: (error: unknown) => void }[] = [];
+
+  polish(text: string, signal: AbortSignal): Promise<string> {
+    let resolvePromise: (value: string) => void = () => undefined;
+    let rejectPromise: (error: unknown) => void = () => undefined;
+    const promise = new Promise<string>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    this.calls.push({ text, signal, resolve: resolvePromise, reject: rejectPromise });
+    return promise;
+  }
+}
 interface ScheduledCallback {
   callback: () => void;
   delayMs: number;
@@ -135,6 +151,7 @@ interface Harness {
   controller: SpeechInputController;
   browser: FakeAdapter;
   cloud: FakeAdapter;
+  polisher: FakePolisher;
   timers: FakeTimers;
   states: SpeechInputControllerState[];
   interims: { target: SpeechInputTargetSnapshot; text: string }[];
@@ -147,6 +164,7 @@ interface Harness {
 function createHarness(): Harness {
   const browser = new FakeAdapter("browser");
   const cloud = new FakeAdapter("cloud");
+  const polisher = new FakePolisher();
   const timers = new FakeTimers();
   const states: SpeechInputControllerState[] = [];
   const interims: { target: SpeechInputTargetSnapshot; text: string }[] = [];
@@ -158,6 +176,7 @@ function createHarness(): Harness {
   const controller = new SpeechInputController({
     browser,
     cloud,
+    polisher,
     createRunId: () => runIds.shift() ?? "run-extra",
     now: () => now,
     scheduleInterval: timers.scheduleInterval,
@@ -187,6 +206,7 @@ function createHarness(): Harness {
     states,
     interims,
     finals,
+    polisher,
     get clears() {
       return clears;
     },
@@ -202,6 +222,8 @@ function createHarness(): Harness {
 function settings(options: {
   provider?: "auto" | SpeechInputProviderId;
   language?: string;
+  polishVoiceInput?: boolean;
+  omitPolishVoiceInput?: boolean;
   credential?: SpeechInputSettingsResponse["credential"];
 } = {}): SpeechInputSettingsResponse {
   const provider = options.provider ?? "auto";
@@ -212,10 +234,16 @@ function settings(options: {
     settings: {
       provider,
       ...(language === undefined ? {} : { language }),
+      ...(options.omitPolishVoiceInput === true ? {} : { polishVoiceInput: options.polishVoiceInput ?? false }),
       cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
     },
     credential: options.credential ?? { configured: true, source: "literal", resolution: "resolved" },
   };
+}
+
+async function flushAsync(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function emitListening(adapter: FakeAdapter): void {
@@ -437,6 +465,152 @@ describe("SpeechInputController", () => {
     emitComplete(harness.browser, "final words");
 
     expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error });
+  });
+
+  it.each(["browser", "cloud"] as const)("keeps the %s run alive while polishing and inserts the polished result", async (provider) => {
+    const harness = createHarness();
+    if (provider === "cloud") harness.browser.availabilityValue = { available: false, reason: "Browser speech is unavailable" };
+    harness.controller.configure(settings({ provider, polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    const adapter = provider === "browser" ? harness.browser : harness.cloud;
+    emitListening(adapter);
+    if (provider === "cloud") emitTranscribing(adapter);
+
+    emitComplete(adapter, "raw transcript");
+
+    expect(harness.controller.state).toEqual({ kind: "polishing", runId: "run-1", provider });
+    expect(harness.finals).toEqual([]);
+    expect(harness.polisher.calls).toHaveLength(1);
+    expect(harness.polisher.calls[0]?.text).toBe("raw transcript");
+    expect(harness.polisher.calls[0]?.signal.aborted).toBe(false);
+
+    harness.polisher.calls[0]?.resolve("polished transcript");
+    await flushAsync();
+
+    expect(harness.finals).toEqual([{ target: TARGET, text: "polished transcript" }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider });
+  });
+
+  it("defaults omitted polishing to enabled and snapshots it before later settings changes", async () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", omitPolishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "raw transcript");
+    expect(harness.polisher.calls).toHaveLength(1);
+
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: false }));
+    harness.polisher.calls[0]?.resolve("polished transcript");
+    await flushAsync();
+
+    expect(harness.finals).toEqual([{ target: TARGET, text: "polished transcript" }]);
+  });
+
+  it("inserts the raw transcript directly when polishing is disabled", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: false }));
+    harness.controller.start(TARGET);
+
+    emitComplete(harness.browser, "raw transcript");
+
+    expect(harness.polisher.calls).toHaveLength(0);
+    expect(harness.finals).toEqual([{ target: TARGET, text: "raw transcript" }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser" });
+  });
+
+  it("arms a 30-second polishing deadline and falls back once when it fires", () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "raw transcript");
+    const polishTimer = harness.timers.deadlines.find((timer) => timer.delayMs === 30_000);
+    if (polishTimer === undefined) throw new Error("Expected polishing deadline");
+
+    polishTimer.callback();
+
+    expect(harness.polisher.calls[0]?.signal.aborted).toBe(true);
+    expect(harness.finals).toEqual([{ target: TARGET, text: "raw transcript" }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error: POLISHING_FALLBACK_ERROR });
+
+    harness.polisher.calls[0]?.resolve("late polished transcript");
+    expect(harness.finals).toHaveLength(1);
+  });
+
+  it("falls back to raw text on an unavailable polishing service", async () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "raw transcript");
+    harness.polisher.calls[0]?.reject(new Error("private provider response"));
+    await flushAsync();
+
+    expect(harness.finals).toEqual([{ target: TARGET, text: "raw transcript" }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error: POLISHING_FALLBACK_ERROR });
+  });
+
+  it.each([
+    ["empty", "No speech detected"],
+    ["changed", DRAFT_CHANGED_ERROR],
+    ["too-large", TRANSCRIPT_TOO_LARGE_ERROR],
+  ] as const)("preserves the raw insertion outcome without a polishing fallback for %s", async (outcome, error) => {
+    const harness = createHarness();
+    harness.setFinalOutcome(outcome);
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "raw transcript");
+    harness.polisher.calls[0]?.reject(new Error("service unavailable"));
+    await flushAsync();
+
+    expect(harness.finals).toEqual([{ target: TARGET, text: "raw transcript" }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error });
+  });
+
+  it("does not request polishing for an empty raw transcript", () => {
+    const harness = createHarness();
+    harness.setFinalOutcome("empty");
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+
+    emitComplete(harness.browser, "   ");
+
+    expect(harness.polisher.calls).toHaveLength(0);
+    expect(harness.finals).toEqual([{ target: TARGET, text: "   " }]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser", error: "No speech detected" });
+  });
+
+  it("invalidates polishing before explicit cancellation and suppresses its late result", async () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "raw transcript");
+    const signal = harness.polisher.calls[0]?.signal;
+
+    expect(harness.controller.cancel()).toBe(true);
+    expect(signal?.aborted).toBe(true);
+    harness.polisher.calls[0]?.resolve("late polished transcript");
+    await flushAsync();
+
+    expect(harness.finals).toEqual([]);
+    expect(harness.controller.state).toEqual({ kind: "idle", provider: "browser" });
+  });
+
+  it("suppresses an older polishing generation when a newer run starts", async () => {
+    const harness = createHarness();
+    harness.controller.configure(settings({ provider: "browser", polishVoiceInput: true }));
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "first raw");
+    const first = harness.polisher.calls[0];
+    harness.controller.cancel();
+    harness.controller.start(TARGET);
+    emitComplete(harness.browser, "second raw");
+    const second = harness.polisher.calls[1];
+
+    first?.resolve("stale polished");
+    await flushAsync();
+    expect(harness.finals).toEqual([]);
+
+    second?.resolve("current polished");
+    await flushAsync();
+    expect(harness.finals).toEqual([{ target: TARGET, text: "current polished" }]);
   });
 
   it("uses adapter no-speech errors without fallback or automatic retry", () => {
