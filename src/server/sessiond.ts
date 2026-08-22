@@ -43,6 +43,7 @@ import { runSessionDaemonStartup } from "./sessiond/sessionDaemonStartup.js";
 import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
 import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
+import { createSpeechInputPolishingService } from "./speechInput/speechInputPolishingService.js";
 import { ProjectUsageService } from "./usage/projectUsageService.js";
 import { ProjectUsageSessionHeaderSource } from "./usage/projectUsageSessionHeaders.js";
 import { SessionUsageCacheStore } from "./usage/sessionUsageCacheStore.js";
@@ -96,6 +97,10 @@ await runSessionDaemonStartup({
       modelRuntime: auth.runtime,
       thinkingLevelsForModel: runtimeThinkingLevels,
       logger: app.log,
+    });
+    const speechInputPolishing = createSpeechInputPolishingService({
+      modelRuntime: auth.runtime,
+      utilityModelResolver,
     });
     const spawnTargets = config.spawnSessions
       ? new ProjectScopedSpawnTargetResolver({ projects: new ProjectService(new ProjectStore()), workspaces: new WorkspaceService() })
@@ -164,7 +169,7 @@ await runSessionDaemonStartup({
       ...getPiWebUiRuntimeComponent("sessiond", SESSIOND_RUNTIME_CAPABILITIES),
       activeAgentProfile,
     });
-    return { eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent };
+    return { eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, speechInputPolishing };
   },
   registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
