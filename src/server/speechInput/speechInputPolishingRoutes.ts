@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../shared/speechInputAudio.js";
+import { SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS } from "../../shared/speechInputPolishing.js";
 import {
   SpeechInputPolishingAbortedError,
   SpeechInputPolishingUnavailableError,
 } from "./speechInputPolishingService.js";
 
-export const SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS = 30_000;
+export { SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS };
 
 // JSON escaping can expand a valid UTF-8 transcript by up to six bytes per
 // source byte. This route-local limit leaves room for the JSON envelope without

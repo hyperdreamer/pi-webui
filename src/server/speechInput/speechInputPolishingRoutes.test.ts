@@ -2,6 +2,7 @@ import net from "node:net";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../shared/speechInputAudio.js";
+import { SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS as SHARED_SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS } from "../../shared/speechInputPolishing.js";
 import {
   SpeechInputPolishingAbortedError,
   SpeechInputPolishingUnavailableError,
@@ -93,6 +94,10 @@ describe("session-daemon speech input polishing route", () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  it("keeps the route timeout tied to the shared speech-polishing budget", () => {
+    expect(SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS).toBe(SHARED_SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS);
   });
 
   it("invokes the composed service with the exact raw transcript and a request signal", async () => {

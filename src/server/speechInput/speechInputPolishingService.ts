@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../shared/speechInputAudio.js";
+import { SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS } from "../../shared/speechInputPolishing.js";
 import type {
   ResolvedUtilityModel,
   UtilityModelResolver,
@@ -95,6 +96,7 @@ export class SpeechInputPolishingService {
           maxTokens: SPEECH_INPUT_POLISHING_MAX_TOKENS,
           maxRetries: 0,
           cacheRetention: "none",
+          timeoutMs: SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS,
           ...(signal === undefined ? {} : { signal }),
         };
         const completion = this.dependencies.modelRuntime.completeSimple(

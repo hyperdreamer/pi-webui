@@ -7,6 +7,10 @@ import type {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { ThinkingLevel } from "../../shared/thinkingLevels.js";
+import {
+  SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS,
+  SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS,
+} from "../../shared/speechInputPolishing.js";
 import type {
   ResolvedUtilityModel,
   UtilityModelResolver,
@@ -79,7 +83,9 @@ describe("SpeechInputPolishingService", () => {
       maxRetries: 0,
       cacheRetention: "none",
       signal: controller.signal,
+      timeoutMs: SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS,
     }));
+    expect(SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS).toBeLessThan(SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS);
     expect(received?.options?.maxTokens).toEqual(expect.any(Number));
     expect(received?.options?.maxTokens).toBeGreaterThan(0);
   });
