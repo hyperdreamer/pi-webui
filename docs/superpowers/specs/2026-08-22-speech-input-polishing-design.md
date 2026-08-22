@@ -36,7 +36,7 @@ interface PiWebUiSpeechInputConfig {
 
 `effectiveSpeechInputSettings` returns a required boolean with `true` as the default. Existing config files are not migrated merely to materialize the default. A successful settings save may persist the explicit value.
 
-The redacted settings response and update settings object include the effective boolean:
+The redacted settings response uses contract version 2 and includes the effective boolean. The browser parser continues to accept a version-1 response and supplies `true` when the legacy field is absent. The update body keeps the field optional for older clients; when it is omitted, the revision-checked server mutation preserves the current effective value rather than assuming `true`. New clients always submit the field explicitly. A version-1 server response remains readable by a new client, while a version-2 response is intentionally not claimed to be readable by an un-upgraded strict client.
 
 ```typescript
 interface SpeechInputSettings {
@@ -45,11 +45,16 @@ interface SpeechInputSettings {
   polishVoiceInput: boolean;
   cloud: { baseUrl: string; model: string };
 }
+
+interface SpeechInputSettingsResponse {
+  contractVersion: 2;
+  revision: string;
+  settings: SpeechInputSettings;
+  credential: SpeechInputCredentialStatus;
+}
 ```
 
-The server update parser accepts an omitted `polishVoiceInput` field as `true` for older browser clients, rejects a present non-boolean value, and continues rejecting unknown fields. The browser response parser likewise accepts legacy omission and projects `true`. The contract version remains `1` because this is an additive optional field with a defined legacy default.
-
-The Settings General panel renders a checkbox under **Speech input**. It is checked when the effective value is true and participates in the existing draft, optimistic revision, stale-form, credential, and save behavior. The disclosure states that enabling the option sends the captured transcript to the configured lightweight utility model on the local gateway for conservative cleanup.
+The server update parser accepts an omitted `polishVoiceInput` field as an optional legacy value, rejects a present non-boolean value, and continues rejecting unknown fields. The browser response parser accepts contract version 1 with default `true` and version 2 with a required boolean. The Settings General panel renders a checkbox under **Speech input**. It is checked when the effective value is true and participates in the existing draft, optimistic revision, stale-form, credential, and save behavior. The disclosure states that enabling the option sends the captured transcript to the configured lightweight utility model for conservative cleanup; that model may be hosted by the configured provider rather than running locally on the gateway.
 
 ## Polishing HTTP Contract
 
@@ -64,15 +69,9 @@ Content-Type: application/json
 
 The gateway proxies the request to the local session daemon as `/speech-input/polish`. There is no selected-machine or federated equivalent.
 
-The request text must be a nonempty string no larger than `SPEECH_INPUT_MAX_TRANSCRIPT_BYTES` in UTF-8 bytes. The route applies a bounded JSON body limit and strict object parsing. The successful response is:
+The successful response intentionally returns the polished text to the requesting browser so it can insert the result. Privacy restrictions apply to errors, unrelated API responses, persistence, telemetry, and logs: none may echo the raw transcript, polished transcript, model prompt, provider response body, credential source, or resolved credential. The UI disclosure must accurately state that the gateway sends transcript text to the configured lightweight-model provider when polishing is enabled.
 
-```json
-{ "text": "polished plain text" }
-```
-
-The response text must be nonempty and no larger than the same transcript limit. Model unavailable, model resolution failure, authentication/provider failure, aborted request, empty output, invalid output, and oversized output are failures. The route maps failures to safe status messages without forwarding provider bodies or model details.
-
-The browser API method uses `request()` with an `AbortSignal` and parses the response at the transport boundary. It returns only the validated text.
+The endpoint is gateway-only and remains an administrative surface under PI WEBUI's existing access model. It has a bounded admission limit of two requests before body parsing, a JSON body limit slightly above `SPEECH_INPUT_MAX_TRANSCRIPT_BYTES` for framing, `Cache-Control: no-store`, and a 30-second monotonic server deadline. The gateway binds browser request close/abort to the proxy signal; the session-daemon client forwards that signal over HTTP or its Unix socket; and the daemon route binds disconnect, shutdown, and its own deadline to the model call. The model request uses `timeoutMs` below the route deadline and `maxRetries: 0`.
 
 ## Model Prompt Contract
 
@@ -84,7 +83,7 @@ The one-shot system prompt requires the utility model to:
 - avoid adding, deleting, or inferring requirements;
 - avoid explanations, markdown, quotation wrappers, labels, and commentary.
 
-The raw transcript is passed as one user message. The service treats an assistant error stop reason, an empty text result, any non-text content result, or a size violation as a failure.
+The raw transcript is passed as one user message. The service uses the resolver's configured `lightweight` candidates in order, with the candidate thinking level, `maxTokens` set to a bounded response budget, `maxRetries: 0`, `cacheRetention: "none"`, and the request signal/deadline. It accepts only an assistant result with `stopReason === "stop"` and at least one text content block. Thinking blocks are ignored for extraction; tool calls, missing text, `length`, `toolUse`, `deferred`, `aborted`, and `error` stop reasons are failures. Empty or oversized text is a failure. If no lightweight candidate is configured or available, the service reports the same typed unavailable failure as other polish failures; the controller inserts raw text and shows the fallback error.
 
 ## Controller Flow
 
@@ -101,29 +100,28 @@ At `start()`, the controller snapshots `settings.settings.polishVoiceInput` into
 3. If polishing is disabled or the raw transcript is empty, apply the raw transcript through `onFinal`.
 4. If polishing is enabled and the raw transcript is nonempty, retain the active run, publish `polishing`, and invoke the injected polisher with a per-run abort signal.
 5. On a current successful result, apply the polished text through `onFinal` and publish terminal idle state.
-6. On a current non-cancellation failure, apply the original raw transcript through `onFinal` and publish the exact visible error `Voice input polishing failed; inserted the raw transcript.`
+6. On a current non-cancellation failure, attempt raw insertion. Show `Voice input polishing failed; inserted the raw transcript.` only when raw insertion returns `inserted`; otherwise preserve the existing `changed`, `empty`, or `too-large` outcome error.
 
 The active run owns the polish `AbortController`. `cancel()`, `dispose()`, a newer run, composer replacement, and navigation invalidate the generation before aborting. An explicit cancellation during polishing inserts nothing and does not show the fallback error. A late response cannot invoke `onFinal`.
 
-Polishing has a hard client deadline. Deadline expiry follows the non-cancellation failure path: raw text is inserted and the exact fallback error is displayed. Settings changes do not affect an active run.
+Polishing has a hard 30-second client deadline. Deadline expiry is a distinct non-cancellation terminal cause: invalidate the run, abort the request, attempt raw insertion, and report the same fallback message only when insertion succeeds. Settings changes do not affect an active run.
 
-The PromptEditor renders the `polishing` state as bounded status feedback, keeps editor-mutating actions disabled as it does for other active dictation phases, and displays the fallback message through its existing speech error/`aria-live` path.
+The PromptEditor renders the `polishing` state as bounded status feedback, keeps editor-mutating actions disabled as it does for other active dictation phases, and displays the fallback error through its existing speech error/`aria-live` path.
 
 ## Failure And Privacy Rules
 
-Raw fallback is used only after a real polish failure, including timeout. Empty raw text follows the existing **No speech detected** path and does not issue a model request. A changed or stale draft follows the existing insertion outcome and never writes model output into a different document.
+Raw fallback is used only after a real polish failure, including timeout or no configured lightweight candidate. Empty raw text follows the existing **No speech detected** path and does not issue a model request. A changed or stale draft follows the existing insertion outcome and never writes model output into a different document.
 
-Server logs may record a generic operation failure and model slot, but must not include the transcript, prompt, response text, credential source, resolved credential, or provider response body. Client-visible errors are stable and concise.
+Server logs may record a generic operation failure and model slot, but must not include the transcript, prompt, response text, credential source, resolved credential, or provider response body. Client-visible errors are stable and concise. The polish response and all related responses use `Cache-Control: no-store`; no transcript is persisted or sent to telemetry.
 
 ## Testing
 
 Add focused tests at the smallest meaningful boundaries:
 
-- shared/config and speech-settings service tests for default `true`, explicit `false`, persistence, clear-credential preservation, and legacy omitted updates;
-- browser parser and client tests for legacy omission, strict boolean validation, exact polish request body, nested deployment URL resolution, abort signal propagation, and response validation;
-- session-daemon polishing service tests for lightweight-slot selection, prompt shape, plain-text extraction, empty/error/oversized output rejection, and no session-manager calls;
-- polishing route/proxy tests for request limits, strict body parsing, safe error mapping, and gateway-to-daemon path forwarding;
-- controller tests for successful polishing, disabled polishing, Browser and Cloud convergence, visible raw fallback, timeout fallback, explicit cancellation, stale late responses, and settings snapshot behavior;
-- Settings General panel and PromptEditor tests for checkbox rendering, draft/save conversion, disclosure text, polishing status, and fallback error visibility.
-
-Run focused Vitest files first, then `npm run typecheck`, targeted ESLint, `npm run verify:fast`, and finally the serial `npm run verify`. Because the session daemon gains a new route and service dependency, a manually running `pi-webui-sessiond.service` must be restarted after installation or source deployment.
+- shared/config and speech-settings service tests for default `true`, explicit `false`, persistence, clear-credential preservation, and omitted updates preserving an existing explicit `false`;
+- browser parser and client tests for version-1 compatibility, version-2 strict boolean validation, exact polish request body, nested deployment URL resolution, abort signal propagation, and response validation;
+- session-daemon polishing service tests for lightweight-slot selection, prompt/options shape, thinking/text extraction, every non-stop reason, no-candidate fallback, and no session-manager calls;
+- polishing route/proxy tests for pre-parse admission, request limits, strict body parsing, safe error mapping, no-store headers, browser disconnect propagation, server deadlines, admission recovery, and the absence of a selected-machine polishing route;
+- controller tests for successful polishing, disabled polishing, Browser and Cloud convergence, visible raw fallback, timeout fallback, explicit cancellation, stale late responses, changed/too-large raw insertion outcomes, and settings snapshot behavior;
+- Settings General panel and PromptEditor tests for checkbox rendering, draft/save conversion, disclosure text, polishing status, and fallback error visibility;
+- synchronized configuration documentation under `docs/config.md` and `docs/config.html`, plus a minor Changeset for the user-visible feature.
