@@ -12,6 +12,39 @@ import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
 registerAppTestHooks();
 
 describe("buildApp gateway speech input settings routes", () => {
+  it("registers gateway polishing only on the gateway path and forwards to local sessiond", async () => {
+    const requests: { method: string; path: string; body: unknown; signal: AbortSignal | undefined }[] = [];
+    const app = await buildApp({
+      clientDist: false,
+      logger: false,
+      sessionDaemon: {
+        request: (method, path, body, signal) => {
+          requests.push({ method, path, body, signal });
+          return Promise.resolve({
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: "polished" }),
+          });
+        },
+        connectWebSocket: () => { throw new Error("WebSocket not configured for test"); },
+      },
+    });
+
+    try {
+      const gateway = await app.inject({ method: "POST", url: "/api/speech-input/polish", payload: { text: "raw" } });
+      const selectedMachine = await app.inject({ method: "POST", url: "/api/machines/local/speech-input/polish", payload: { text: "raw" } });
+
+      expect(gateway.statusCode).toBe(200);
+      expect(gateway.json()).toEqual({ text: "polished" });
+      expect(selectedMachine.statusCode).toBe(404);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ method: "POST", path: "/speech-input/polish", body: { text: "raw" } });
+      expect(requests[0]?.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("registers only the gateway transcription route", async () => {
     const gateway = await appTestContext.app.inject({
       method: "POST",

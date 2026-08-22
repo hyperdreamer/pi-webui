@@ -11,17 +11,17 @@ export type SessionDaemonAgentProfileResult =
   | { status: "invalid"; error: string };
 
 export interface SessionDaemonRequestClient {
-  request(method: string, path: string, body?: unknown): Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
+  request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
 }
 
 export class SessionDaemonClient {
   private readonly baseUrl = sessiondHttpUrl();
   private readonly socketPath = sessiondSocketPath();
 
-  async request(method: string, path: string, body?: unknown): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    if (this.baseUrl !== undefined && this.baseUrl !== "") return this.requestUrl(method, path, payload);
-    return this.requestSocket(method, path, payload);
+    if (this.baseUrl !== undefined && this.baseUrl !== "") return this.requestUrl(method, path, payload, signal);
+    return this.requestSocket(method, path, payload, signal);
   }
 
   getActiveAgentProfile(): Promise<SessionDaemonAgentProfileResult> {
@@ -37,8 +37,8 @@ export class SessionDaemonClient {
     return new WebSocket(`ws+unix:${this.socketPath}:${path}`);
   }
 
-  private async requestUrl(method: string, path: string, payload?: string) {
-    const init: RequestInit = { method };
+  private async requestUrl(method: string, path: string, payload?: string, signal?: AbortSignal) {
+    const init: RequestInit = { method, ...(signal === undefined ? {} : { signal }) };
     if (payload !== undefined && payload !== "") {
       init.headers = { "content-type": "application/json" };
       init.body = payload;
@@ -47,40 +47,128 @@ export class SessionDaemonClient {
     return {
       statusCode: response.status,
       headers: Object.fromEntries(response.headers.entries()),
-      body: await response.text(),
+      body: await raceWithAbort(Promise.resolve().then(() => response.text()), signal),
     };
   }
 
-  private requestSocket(method: string, path: string, payload?: string): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  private requestSocket(method: string, path: string, payload?: string, signal?: AbortSignal): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
     return new Promise((resolve, reject) => {
-      const request = http.request(
-        {
-          socketPath: this.socketPath,
-          path,
-          method,
-          headers: payload !== undefined && payload !== ""
-            ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }
-            : undefined,
-        },
-        (response) => {
-          const chunks: Uint8Array[] = [];
-          response.on("data", (chunk: Buffer | string) => {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      if (signal?.aborted === true) {
+        reject(abortError(signal));
+        return;
+      }
+
+      let settled = false;
+      let request: http.ClientRequest | undefined;
+      let response: http.IncomingMessage | undefined;
+      let responseEnded = false;
+      const chunks: Uint8Array[] = [];
+
+      const cleanup = (): void => {
+        request?.removeListener("error", onRequestError);
+        request?.removeListener("close", onRequestClose);
+        response?.removeListener("data", onData);
+        response?.removeListener("end", onEnd);
+        response?.removeListener("error", onResponseError);
+        response?.removeListener("aborted", onResponseAborted);
+        response?.removeListener("close", onResponseClose);
+      };
+      const settle = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const fail = (error: unknown): void => {
+        settle(() => { reject(asError(error)); });
+      };
+      const onData = (chunk: Buffer | string): void => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      };
+      const onEnd = (): void => {
+        responseEnded = true;
+        settle(() => {
+          resolve({
+            statusCode: response?.statusCode ?? 500,
+            headers: Object.fromEntries(Object.entries(response?.headers ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : value ?? ""])),
+            body: Buffer.concat(chunks).toString("utf8"),
           });
-          response.on("end", () => {
-            resolve({
-              statusCode: response.statusCode ?? 500,
-              headers: Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : value ?? ""])),
-              body: Buffer.concat(chunks).toString("utf8"),
-            });
-          });
-        },
-      );
-      request.on("error", reject);
-      if (payload !== undefined && payload !== "") request.write(payload);
-      request.end();
+        });
+      };
+      const onResponseError = (error: unknown): void => { fail(error); };
+      const onResponseAborted = (): void => { fail(new Error("Session daemon response was aborted.")); };
+      const onResponseClose = (): void => {
+        if (!responseEnded) fail(new Error("Session daemon response closed before completion."));
+      };
+      const onRequestError = (error: unknown): void => { fail(error); };
+      const onRequestClose = (): void => {
+        if (!settled && response === undefined) fail(new Error("Session daemon request closed."));
+      };
+      const onResponse = (nextResponse: http.IncomingMessage): void => {
+        response = nextResponse;
+        response.on("data", onData);
+        response.once("end", onEnd);
+        response.once("error", onResponseError);
+        response.once("aborted", onResponseAborted);
+        response.once("close", onResponseClose);
+      };
+
+      try {
+        request = http.request(
+          {
+            socketPath: this.socketPath,
+            path,
+            method,
+            ...(signal === undefined ? {} : { signal }),
+            headers: payload !== undefined && payload !== ""
+              ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }
+              : undefined,
+          },
+          onResponse,
+        );
+        request.on("error", onRequestError);
+        request.once("close", onRequestClose);
+        if (payload !== undefined && payload !== "") request.write(payload);
+        request.end();
+      } catch (error) {
+        request?.destroy();
+        fail(error);
+      }
     });
   }
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => { signal.removeEventListener("abort", onAbort); };
+    const settle = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = (): void => {
+      settle(() => { reject(abortError(signal)); });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { settle(() => { resolve(value); }); },
+      (error: unknown) => { settle(() => { reject(asError(error)); }); },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("The operation was aborted", "AbortError");
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 export async function getSessionDaemonActiveAgentProfile(client: SessionDaemonRequestClient): Promise<SessionDaemonAgentProfileResult> {

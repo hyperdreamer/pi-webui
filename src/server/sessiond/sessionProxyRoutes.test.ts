@@ -216,6 +216,14 @@ describe("machine-scoped session proxy routes", () => {
     expect(daemon.requests).toEqual([{ method: "POST", path: "/auth/api-key", body: { providerId: "p", key: "k" } }]);
   });
 
+  it("forwards the Fastify lifecycle signal to generic daemon requests", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/machines/local/sessions" });
+
+    expect(response.statusCode).toBe(200);
+    expect(daemon.requests).toEqual([{ method: "GET", path: "/sessions", body: undefined }]);
+    expect(daemon.requestSignals).toEqual([expect.any(AbortSignal)]);
+  });
+
   it("forwards sessiond health and runtime aliases to daemon endpoints", async () => {
     const healthResponse = await app.inject({ method: "GET", url: "/api/machines/local/sessiond/health" });
     const runtimeResponse = await app.inject({ method: "GET", url: "/api/machines/local/sessiond/runtime" });
@@ -295,6 +303,7 @@ interface FakeSessionDaemonResponse {
 
 class FakeSessionDaemon {
   readonly requests: { method: string; path: string; body: unknown }[] = [];
+  readonly requestSignals: (AbortSignal | undefined)[] = [];
   readonly websocketPaths: string[] = [];
   private readonly queuedResponses: (FakeSessionDaemonResponse | Error)[] = [];
   private readonly sockets = new Set<WebSocket>();
@@ -320,8 +329,9 @@ class FakeSessionDaemon {
     this.queuedResponses.push(error);
   }
 
-  request(method: string, path: string, body?: unknown): Promise<FakeSessionDaemonResponse> {
+  request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<FakeSessionDaemonResponse> {
     this.requests.push({ method, path, body });
+    this.requestSignals.push(signal);
     const queuedResponse = this.queuedResponses.shift();
     if (queuedResponse instanceof Error) return Promise.reject(queuedResponse);
     return Promise.resolve(queuedResponse ?? { statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ ok: true }) });

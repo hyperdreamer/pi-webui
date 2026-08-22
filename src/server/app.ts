@@ -27,6 +27,7 @@ import { createSpeechInputSettingsService, type SpeechInputSettingsService } fro
 import { registerSpeechInputSettingsRoutes } from "./speechInput/speechInputSettingsRoutes.js";
 import { createSpeechTranscriptionService, type SpeechInputTranscriptionService } from "./speechInput/speechTranscriptionService.js";
 import { registerSpeechInputTranscriptionRoutes } from "./speechInput/speechInputTranscriptionRoutes.js";
+import { registerSpeechInputPolishingGatewayRoute } from "./speechInput/speechInputPolishingRoutes.js";
 import { PiWebUiPluginService } from "./piWebUiPluginService.js";
 import { createActiveProfilePiPackageService, type PiPackageService } from "./piPackageService.js";
 import { createActiveProfilePiPackagePluginsConfigService, type PiPackagePluginsConfigService } from "./piPackagePluginsConfigService.js";
@@ -389,6 +390,7 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
     coordinator: configMutationCoordinator,
   });
   registerSpeechInputTranscriptionRoutes(app, speechInputTranscriptionService);
+  registerSpeechInputPolishingGatewayRoute(app, sessionDaemon);
 
   registerMemoryRoutes(app, agentProfileProvider, "/api");
   registerMemoryRoutes(app, agentProfileProvider, "/api/machines/local");

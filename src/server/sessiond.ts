@@ -44,6 +44,7 @@ import { resolveSkillsGitHubToken } from "./sessiond/skillsGithubToken.js";
 import { runtimeThinkingLevels } from "./sessions/modelTierRegistry.js";
 import { createUtilityModelResolver } from "./sessions/utilityModelResolver.js";
 import { createSpeechInputPolishingService } from "./speechInput/speechInputPolishingService.js";
+import { registerSpeechInputPolishingRoutes } from "./speechInput/speechInputPolishingRoutes.js";
 import { ProjectUsageService } from "./usage/projectUsageService.js";
 import { ProjectUsageSessionHeaderSource } from "./usage/projectUsageSessionHeaders.js";
 import { SessionUsageCacheStore } from "./usage/sessionUsageCacheStore.js";
@@ -171,7 +172,7 @@ await runSessionDaemonStartup({
     });
     return { eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, speechInputPolishing };
   },
-  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent }) {
+  registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent, speechInputPolishing }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
     registerAuthRoutes(app, auth);
     registerModelsConfigRoutes(app, models);
@@ -182,6 +183,7 @@ await runSessionDaemonStartup({
     registerSessionRoutes(app, sessions, eventHub);
     registerProjectUsageRoutes(app, projectUsage);
     registerTerminalRoutes(app, terminals);
+    registerSpeechInputPolishingRoutes(app, speechInputPolishing);
 
     app.get("/health", () => ({
       ok: true,
