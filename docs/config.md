@@ -45,7 +45,7 @@ Process restarts depend on the key:
 - `modelTiers`: saved settings apply immediately in **Settings → Model tiers**; validates all six ladder rows atomically.
 - `utilityModels`: saved settings apply immediately in **Settings → Utility models**; existing sessions use updated values on their next utility operation.
 - `tts`: saved voice/rate settings apply to the next utterance; no service restart required.
-- `speechInput`: saved provider, language, and cloud settings apply to the next dictation run; no service restart required for saves. Installing or updating this feature requires one manual `pi-webui-sessiond.service` restart because both services adopt the shared config-mutation coordinator.
+- `speechInput`: saved provider, language, transcript-polishing preference, and cloud settings apply to the next dictation run; no service restart required for saves. The already-committed transcript-polishing route and session-daemon service changes require one manual `pi-webui-sessiond.service` restart when this feature is installed or updated because both services adopt the shared config-mutation coordinator.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
 - `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
 - `plugins`: reload the browser tab after changing PI WEBUI plugin enablement.
@@ -95,6 +95,7 @@ Process restarts depend on the key:
   "speechInput": {
     "provider": "auto",
     "language": "en-US",
+    "polishVoiceInput": true,
     "cloud": {
       "baseUrl": "https://api.openai.com/v1",
       "model": "gpt-4o-mini-transcribe",
@@ -335,13 +336,14 @@ Operational notes:
 
 PI WEBUI can turn spoken dictation into editable prompt text in the starter and active-session composers. Dictation only edits the prompt draft at the captured selection: it never sends, queues, steers, or starts anything on its own, and the inserted text is always editable before you act on it. The microphone action sits immediately before Send in both composers, and the agent-work Stop control remains independently available during dictation.
 
-`speechInput` is a gateway-only setting in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. It is not a selected-machine key and never applies to remote machines, and project-local config does not support it. **Settings → General** shows the full-width **Speech input** card regardless of the selected coding machine; dictation and cloud transcription both run on the gateway that serves the browser UI.
+`speechInput` is a gateway-only setting in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. It is not a selected-machine key and never applies to remote machines, and project-local config does not support it. **Settings → General** shows the full-width **Speech input** card regardless of the selected coding machine; dictation and cloud transcription both run on the gateway that serves the browser UI, on the local WebUI/session-daemon machine.
 
 ```json
 {
   "speechInput": {
     "provider": "auto",
     "language": "en-US",
+    "polishVoiceInput": true,
     "cloud": {
       "baseUrl": "https://api.openai.com/v1",
       "model": "gpt-4o-mini-transcribe",
@@ -351,9 +353,11 @@ PI WEBUI can turn spoken dictation into editable prompt text in the starter and 
 }
 ```
 
-The object accepts only `provider` (`auto`, `browser`, or `cloud`; default `auto`), `language` (a BCP 47 tag such as `en-US`; omitted means Auto), `cloud.baseUrl` (HTTPS only; default `https://api.openai.com/v1`), `cloud.model` (default `gpt-4o-mini-transcribe`), and `cloud.apiKey` (a Pi-compatible credential source). Unknown keys are rejected. Stored limits are: language tag 128 characters, base URL 2,048 characters, model 256 characters, and credential source 8 KiB of UTF-8 text. Language validation is syntactic only: it canonicalizes case and structure (`en-us` becomes `en-US`) but stores well-formed tags it cannot verify, so a tag such as `qq-ZZ` is saved and forwarded to the provider, which decides whether it is usable.
+The object accepts only `provider` (`auto`, `browser`, or `cloud`; default `auto`), `language` (a BCP 47 tag such as `en-US`; omitted means Auto), `polishVoiceInput` (a boolean; default `true` when omitted; set it to `false` to disable transcript polishing), `cloud.baseUrl` (HTTPS only; default `https://api.openai.com/v1`), `cloud.model` (default `gpt-4o-mini-transcribe`), and `cloud.apiKey` (a Pi-compatible credential source). Unknown keys are rejected. Stored limits are: language tag 128 characters, base URL 2,048 characters, model 256 characters, and credential source 8 KiB of UTF-8 text. Language validation is syntactic only: it canonicalizes case and structure (`en-us` becomes `en-US`) but stores well-formed tags it cannot verify, so a tag such as `qq-ZZ` is saved and forwarded to the provider, which decides whether it is usable.
 
-The **Speech input** card exposes a Provider select (Auto, Browser, Cloud), a Language input (empty means Auto, which is never sent as a BCP 47 tag), **Cloud base URL**, **Cloud model**, a password-style **API key source** input with literal, `$ENV_VAR`, and `!command` placeholder guidance (never prepopulated; blank means preserve), the redacted credential status, a separate **Clear credential** action that clears only the saved credential, and **Save speech input settings**. Cloud fields stay editable in Auto because Cloud may be the selected fallback candidate.
+The **Speech input** card exposes a Provider select (Auto, Browser, Cloud), a Language input (empty means Auto, which is never sent as a BCP 47 tag), a **Transcript polishing** checkbox (enabled by default; set `polishVoiceInput` to `false` to disable it), **Cloud base URL**, **Cloud model**, a password-style **API key source** input with literal, `$ENV_VAR`, and `!command` placeholder guidance (never prepopulated; blank means preserve), the redacted credential status, a separate **Clear credential** action that clears only the saved credential, and **Save speech input settings**. Cloud fields stay editable in Auto because Cloud may be the selected fallback candidate. When enabled, transcript polishing sends captured transcript text to the configured lightweight utility model for conservative cleanup; the utility model may use its configured provider.
+
+Transcript polishing is a gateway operation on the local WebUI/session-daemon machine, not a selected-machine operation. It runs after the provider returns a transcript and before insertion; it never creates a Pi session and does not persist transcript or prompt text.
 
 **Provider selection.** The Settings card offers **Auto**, **Browser**, and **Cloud**.
 
@@ -389,11 +393,12 @@ The settings card shows only a redacted status — **Credential missing**, **Lit
 
 **Settings concurrency.** Every speech mutation must match the latest opaque revision; a stale tab receives a `409` conflict and performs no write. Saving rotates the revision and tells other tabs (through a nonsecret channel containing only the new revision) to refetch; a burst of notifications requests one trailing refetch so no revision is lost. A dirty form preserves its draft and password, marks itself stale, and requires an explicit reload before retrying. Because a preserved credential cannot be silently redirected to a new endpoint, changing the cloud base URL while a credential is configured requires re-entering a replacement credential source in the same save, or clearing the saved credential first.
 
-**Shared persistence coordination.** Because the autoreloading web/API process and the long-lived session daemon both perform read-modify-write updates on the shared global config file, production config mutations run under a private SQLite transaction mutex. Its database lives at `$PI_WEBUI_DATA_DIR/config-mutations/<config-path-hash>.sqlite` (named by a SHA-256 digest of the resolved global config path), inside a `0700` directory, with the database file tightened to `0600`. It stores only a random opaque speech-input revision and a fingerprint of nonsecret config-file identity metadata — no config, credential, audio, or transcript bytes, and it never hashes file contents. Audio and transcription never touch SQLite. Lock acquisition uses one ten-second monotonic budget; exhaustion surfaces as a typed "config is busy" failure (HTTP `503`) rather than a hang. Selected-machine config patches are forwarded atomically to the target gateway, where that gateway's own coordinator merges them. Manual config-file edits while either service is running are unsupported: stop both services first, then edit, then start them again. Installing this change requires one manual `pi-webui-sessiond.service` restart because the daemon's existing config writes adopt the shared coordinator; ordinary web/UI autoreload does not load that daemon-side change.
+**Shared persistence coordination.** Because the autoreloading web/API process and the long-lived session daemon both perform read-modify-write updates on the shared global config file, production config mutations run under a private SQLite transaction mutex. Its database lives at `$PI_WEBUI_DATA_DIR/config-mutations/<config-path-hash>.sqlite` (named by a SHA-256 digest of the resolved global config path), inside a `0700` directory, with the database file tightened to `0600`. It stores only a random opaque speech-input revision and a fingerprint of nonsecret config-file identity metadata — no config, credential, audio, or transcript bytes, and it never hashes file contents. Audio and transcription never touch SQLite. Lock acquisition uses one ten-second monotonic budget; exhaustion surfaces as a typed "config is busy" failure (HTTP `503`) rather than a hang. Selected-machine config patches are forwarded atomically to the target gateway, where that gateway's own coordinator merges them. Manual config-file edits while either service is running are unsupported: stop both services first, then edit, then start them again. The already-committed transcript-polishing route and session-daemon service changes require one manual `pi-webui-sessiond.service` restart when this feature is installed or updated because the daemon's existing config writes adopt the shared coordinator; ordinary web/UI autoreload does not load those daemon-side changes.
 
 **Privacy and security.**
 
-- PI WEBUI does not persist dictated audio, browser interim text, or cloud request bodies. Audio lives only in bounded process memory and browser buffers for the duration of a run; no object URL, download, attachment, workspace file, IndexedDB record, or session entry is created.
+- PI WEBUI does not persist dictated audio, browser interim text, or cloud request bodies. Audio lives only in bounded process memory and browser buffers for the duration of a run; no object URL, download, attachment, workspace file, IndexedDB record, Pi session, prompt history, transcript record, or session entry is created.
+- When transcript polishing is enabled, captured transcript text is sent to the configured lightweight utility model for conservative cleanup; the utility model may use its configured provider. PI WEBUI does not persist that text.
 - Browser-provider processing may leave the device under the browser vendor's implementation and policy.
 - Cloud audio leaves the gateway only for the explicitly configured endpoint, which must be HTTPS with no credentials, query, or fragment; redirects are rejected so audio and the resolved credential cannot be forwarded to another origin. No automatic provider fallback can change that boundary mid-run.
 - Audio, transcript text, credential sources, and resolved credentials are excluded from logs and error messages; provider error bodies are never forwarded to the browser.

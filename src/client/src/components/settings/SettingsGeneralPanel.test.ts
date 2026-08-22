@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateResult } from "lit";
 import type { HostSpeechStatus, PiWebUiConfigResponse, PiWebUiConfigValues, SpeechInputSettingsResponse } from "../../api";
 import { HttpRequestError } from "../../api";
-import { findTemplateContaining, templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
+import { findTemplateContaining, templateEventHandlerNearMarker, templateText, templateValuesAfterMarker } from "../../templateInspection.testSupport";
 import { SettingsGeneralPanel } from "./SettingsGeneralPanel";
 import type { GatewayServerConfigDraft, MachineAccessConfigDraft } from "./settingsConfigDraft";
 
@@ -344,6 +344,82 @@ describe("settings-general-panel speech input settings", () => {
     expect(strings).toContain('type="password"');
     expect(strings).toContain('placeholder="Literal key, $ENV_VAR, or !command; blank preserves saved source"');
     expect(strings).toContain('aria-label="Speech input settings"');
+  });
+
+  it("renders transcript polishing enabled by default and discloses its utility-model boundary", () => {
+    const panel = new SettingsGeneralPanel();
+    panel.speechInputSettings = speechInputSettingsResponse();
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const text = templateText(card);
+    const strings = collectTemplateStrings(card).join("");
+
+    expect(text).toContain("Transcript polishing");
+    expect(text).toContain("Enabling transcript polishing sends captured transcript text to the configured lightweight utility model for conservative cleanup.");
+    expect(text).toContain("The utility model may use its configured provider.");
+    expect(strings).toContain('type="checkbox"');
+    expect(strings).toContain('aria-label="Transcript polishing"');
+    expect(templateValuesAfterMarker(card, ".checked=")).toEqual([true]);
+  });
+
+  // The Node test environment has no DOM harness; use the stable accessible checkbox marker to exercise Lit's change wiring.
+  it("reflects an explicit polishing opt-out and updates the draft with a boolean", () => {
+    const panel = new SettingsGeneralPanel();
+    panel.speechInputSettings = speechInputSettingsResponse({
+      settings: {
+        provider: "auto",
+        polishVoiceInput: false,
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+      },
+    });
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    expect(templateValuesAfterMarker(card, ".checked=")).toEqual([false]);
+
+    const event = new Event("change");
+    Object.defineProperty(event, "target", { value: { checked: true } });
+    templateEventHandlerNearMarker(card, 'aria-label="Transcript polishing"')(event);
+
+    const draft = getPanelProperty(panel, "speechInputDraft");
+    expect(typeof draft).toBe("object");
+    expect(draft).not.toBeNull();
+    if (typeof draft !== "object" || draft === null || !("polishVoiceInput" in draft)) return;
+    expect(draft.polishVoiceInput).toBe(true);
+    expect(typeof draft.polishVoiceInput).toBe("boolean");
+  });
+
+  it("includes the checkbox value as an explicit boolean in a full save payload", async () => {
+    const panel = new SettingsGeneralPanel();
+    const initial = speechInputSettingsResponse();
+    const onSaveSpeechInput = vi.fn();
+    panel.speechInputSettings = initial;
+    panel.onSaveSpeechInput = onSaveSpeechInput;
+    callPanelMethod(panel, "willUpdate", new Map([["speechInputSettings", undefined]]));
+
+    const card = speechInputCard(panel);
+    expect(card).toBeDefined();
+    if (card === undefined) return;
+    const event = new Event("change");
+    Object.defineProperty(event, "target", { value: { checked: false } });
+    templateEventHandlerNearMarker(card, 'aria-label="Transcript polishing"')(event);
+
+    await callPanelPromise(panel, "saveSpeechInputSettings", new Event("submit", { cancelable: true }));
+
+    expect(onSaveSpeechInput).toHaveBeenCalledExactlyOnceWith({
+      expectedRevision: initial.revision,
+      settings: {
+        provider: "auto",
+        polishVoiceInput: false,
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+      },
+      credential: { action: "preserve" },
+    });
   });
 
   it("hides credential controls and blocks direct credential mutations outside a secure context", async () => {

@@ -219,6 +219,20 @@ export class SettingsGeneralPanel extends LitElement {
               <input class="speech-input-api-key" type="password" ?disabled=${disabled} placeholder="Literal key, $ENV_VAR, or !command; blank preserves saved source" autocomplete="off" spellcheck="false" @input=${() => { this.markSpeechInputCredentialEntryDirty(); }}>
               <small>Enter a literal, environment reference, or trusted short-lived command only when replacing the saved source.</small>
             </label>
+            <div class="field">
+              <span class="field-heading"><span>Transcript polishing</span></span>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  .checked=${this.speechInputDraft.polishVoiceInput ?? true}
+                  ?disabled=${disabled}
+                  aria-label="Transcript polishing"
+                  @change=${(event: Event) => { this.updateSpeechInputDraft({ polishVoiceInput: checkboxChecked(event) }); }}
+                >
+                <span>Polish captured transcript before insertion</span>
+              </label>
+              <small>Enabling transcript polishing sends captured transcript text to the configured lightweight utility model for conservative cleanup. The utility model may use its configured provider.</small>
+            </div>
             <footer class="form-actions speech-input-actions">
               <button type="button" ?disabled=${clearDisabled} @click=${() => { void this.clearSpeechInputCredential(); }}>Clear credential</button>
               <button class="primary" ?disabled=${disabled}>${this.saving ? "Saving…" : "Save speech input settings"}</button>
@@ -589,6 +603,9 @@ export class SettingsGeneralPanel extends LitElement {
     .config-form { display: grid; gap: 14px; }
     .field { display: grid; gap: 7px; }
     .field-heading { display: flex; align-items: center; gap: 8px; }
+    .toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+    .toggle input { width: 16px; height: 16px; margin: 0; }
+    .toggle input:disabled { cursor: not-allowed; }
     input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); color: var(--pi-text); padding: 9px 10px; outline: none; font: var(--pi-control-font-size, 16px) var(--pi-control-font-family, system-ui, sans-serif); }
     input:focus, select:focus, textarea:focus { border-color: var(--pi-accent); box-shadow: 0 0 0 1px var(--pi-accent-border); }
     textarea { resize: vertical; min-height: 94px; font-family: var(--pi-control-monospace-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); }
@@ -611,7 +628,7 @@ export class SettingsGeneralPanel extends LitElement {
 }
 
 function emptySpeechInputSettingsDraft(): SpeechInputSettingsDraft {
-  return { provider: "auto", language: "", baseUrl: "", model: "" };
+  return { provider: "auto", language: "", baseUrl: "", model: "", polishVoiceInput: true };
 }
 
 function speechInputCredentialConfigured(response: SpeechInputSettingsResponse | undefined): boolean {
@@ -666,6 +683,12 @@ function hostSpeechVoiceLabel(voice: NonNullable<HostSpeechStatus["voices"]>[num
 function hostSpeechRangeRate(value: string): number {
   const rate = Number(value.trim());
   return Number.isInteger(rate) && rate >= -100 && rate <= 100 ? rate : 0;
+}
+
+function checkboxChecked(event: Event): boolean {
+  const target = event.target;
+  if (typeof target !== "object" || target === null || !("checked" in target)) return false;
+  return typeof target.checked === "boolean" ? target.checked : false;
 }
 
 function inputValue(event: Event): string {
