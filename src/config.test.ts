@@ -420,6 +420,12 @@ describe("speech input config persistence", () => {
     });
   });
 
+  it("persists an explicit transcript polishing opt-out", () => {
+    savePiWebUiConfig({ speechInput: { polishVoiceInput: false } }, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({ polishVoiceInput: false });
+  });
+
   it("omits absent provider, language, and cloud fields", () => {
     savePiWebUiConfig({ speechInput: {} }, testOptions());
     expect(loadPiWebUiConfig(testOptions()).config.speechInput).toEqual({});
@@ -506,6 +512,7 @@ describe("speech input config persistence", () => {
     ["a provider outside the allowlist", { provider: "local" }, "PI WEBUI config speechInput.provider must be one of auto, browser, or cloud"],
     ["a malformed language", { language: "not a tag" }, "PI WEBUI config speechInput.language must be a canonical BCP 47 language tag"],
     ["a non-string language", { language: 42 }, "PI WEBUI config speechInput.language must be a canonical BCP 47 language tag"],
+    ["a non-boolean polishing preference", { polishVoiceInput: "false" }, "PI WEBUI config speechInput.polishVoiceInput must be a boolean"],
     ["a blank model", { cloud: { model: "   " } }, "PI WEBUI config speechInput.cloud.model must be a non-empty string"],
     ["a blank credential source", { cloud: { apiKey: "   " } }, "PI WEBUI config speechInput.cloud.apiKey must be a non-empty string"],
     ["an HTTP base URL", { cloud: { baseUrl: "http://api.openai.com/v1" } }, "PI WEBUI config speechInput.cloud.baseUrl must use HTTPS"],

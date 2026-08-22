@@ -631,7 +631,7 @@ function parseString(value: unknown, key: string, path: string): string {
   return value;
 }
 
-const SPEECH_INPUT_CONFIG_KEYS = new Set(["provider", "language", "cloud"]);
+const SPEECH_INPUT_CONFIG_KEYS = new Set(["provider", "language", "polishVoiceInput", "cloud"]);
 const SPEECH_INPUT_CLOUD_KEYS = new Set(["baseUrl", "model", "apiKey"]);
 const SPEECH_INPUT_PROVIDERS: readonly SpeechInputProviderPreference[] = ["auto", "browser", "cloud"];
 
@@ -668,6 +668,11 @@ export function parseSpeechInputConfig(value: unknown, path: string): PiWebUiSpe
       throw new Error(`PI WEBUI config speechInput.language must be at most 128 characters: ${path}`);
     }
     parsedLanguage = canonical;
+  }
+
+  const polishVoiceInput = value["polishVoiceInput"];
+  if (polishVoiceInput !== undefined && typeof polishVoiceInput !== "boolean") {
+    throw new Error(`PI WEBUI config speechInput.polishVoiceInput must be a boolean: ${path}`);
   }
 
   const cloud = value["cloud"];
@@ -727,6 +732,7 @@ export function parseSpeechInputConfig(value: unknown, path: string): PiWebUiSpe
   return {
     ...(provider === undefined ? {} : { provider }),
     ...(parsedLanguage === undefined ? {} : { language: parsedLanguage }),
+    ...(polishVoiceInput === undefined ? {} : { polishVoiceInput }),
     ...(parsedCloud === undefined ? {} : { cloud: parsedCloud }),
   };
 }
