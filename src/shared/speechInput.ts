@@ -32,6 +32,7 @@ export function canonicalBcp47LanguageTag(value: string): string | undefined {
 export function effectiveSpeechInputSettings(config: PiWebUiSpeechInputConfig | undefined): SpeechInputSettings {
   return {
     provider: config?.provider ?? "auto",
+    polishVoiceInput: config?.polishVoiceInput ?? true,
     ...(config?.language === undefined ? {} : { language: config.language }),
     cloud: {
       baseUrl: config?.cloud?.baseUrl ?? SPEECH_INPUT_DEFAULT_BASE_URL,

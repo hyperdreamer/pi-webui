@@ -46,9 +46,26 @@ describe("settings config drafts", () => {
       language: "",
       baseUrl: "https://api.openai.com/v1",
       model: "gpt-4o-mini-transcribe",
+      polishVoiceInput: true,
     });
     expect(draft).not.toHaveProperty("credential");
     expect(draft).not.toHaveProperty("apiKey");
+  });
+
+  it("round-trips the polishing preference through the draft and update", () => {
+    const response: SpeechInputSettingsResponse = {
+      ...speechSettingsResponse(),
+      contractVersion: 2,
+      settings: {
+        provider: "auto",
+        polishVoiceInput: false,
+        cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
+      },
+    };
+    const draft = speechInputDraftFromResponse(response);
+
+    expect(draft.polishVoiceInput).toBe(false);
+    expect(speechInputUpdateFromDraft(draft, response.revision, { action: "preserve" }).settings.polishVoiceInput).toBe(false);
   });
 
   it("builds speech settings updates from the adopted revision and separate credential mutation", () => {
@@ -57,6 +74,7 @@ describe("settings config drafts", () => {
       language: "",
       baseUrl: "https://gateway.example.test/v1",
       model: "whisper-1",
+      polishVoiceInput: true,
     };
     const response = speechSettingsResponse({ revision: "00000000-0000-4000-8000-000000000042" });
     const replace: SpeechInputCredentialMutation = { action: "replace", value: "$SPEECH_KEY" };
@@ -65,6 +83,7 @@ describe("settings config drafts", () => {
       expectedRevision: "00000000-0000-4000-8000-000000000042",
       settings: {
         provider: "cloud",
+        polishVoiceInput: true,
         cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
       },
       credential: { action: "preserve" },
@@ -74,6 +93,7 @@ describe("settings config drafts", () => {
       settings: {
         provider: "cloud",
         language: "pt-BR",
+        polishVoiceInput: true,
         cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
       },
       credential: replace,
@@ -86,6 +106,7 @@ describe("settings config drafts", () => {
       language: " PT-br ",
       baseUrl: "https://api.openai.com/v1",
       model: "gpt-4o-mini-transcribe",
+      polishVoiceInput: true,
     }, "00000000-0000-4000-8000-000000000042", { action: "preserve" });
 
     expect(update.settings.language).toBe(" PT-br ");

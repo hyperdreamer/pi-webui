@@ -10,9 +10,16 @@ import {
 } from "./speechInput";
 
 describe("speech input settings projection", () => {
+  it("defaults transcript polishing to enabled for omitted configuration and preserves explicit false", () => {
+    expect(effectiveSpeechInputSettings(undefined).polishVoiceInput).toBe(true);
+    expect(effectiveSpeechInputSettings({}).polishVoiceInput).toBe(true);
+    expect(effectiveSpeechInputSettings({ polishVoiceInput: false }).polishVoiceInput).toBe(false);
+  });
+
   it("resolves omitted config to Auto without a language and the OpenAI defaults", () => {
     const expected = {
       provider: "auto",
+      polishVoiceInput: true,
       cloud: { baseUrl: SPEECH_INPUT_DEFAULT_BASE_URL, model: SPEECH_INPUT_DEFAULT_MODEL },
     };
     expect(effectiveSpeechInputSettings(undefined)).toEqual(expected);
@@ -27,6 +34,7 @@ describe("speech input settings projection", () => {
     })).toEqual({
       provider: "browser",
       language: "pt-BR",
+      polishVoiceInput: true,
       cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
     });
   });

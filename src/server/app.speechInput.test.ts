@@ -36,9 +36,9 @@ describe("buildApp gateway speech input settings routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json<SpeechInputSettingsResponse>()).toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       revision: SPEECH_INPUT_TEST_REVISION,
-      settings: { provider: "auto", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+      settings: { provider: "auto", polishVoiceInput: true, cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
       credential: { configured: false, resolution: "missing" },
     });
   });
@@ -155,8 +155,8 @@ describe("production gateway config composition shares one mutation authority", 
       expect(initial.statusCode).toBe(200);
       const initialBody = initial.json<SpeechInputSettingsResponse>();
       expect(initialBody).toMatchObject({
-        contractVersion: 1,
-        settings: { provider: "auto", cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
+        contractVersion: 2,
+        settings: { provider: "auto", polishVoiceInput: true, cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" } },
         credential: { configured: false, resolution: "missing" },
       });
       expect(tracked.reads).toBeGreaterThanOrEqual(1);
@@ -174,7 +174,7 @@ describe("production gateway config composition shares one mutation authority", 
       expect(replace.statusCode).toBe(200);
       const replaced = replace.json<SpeechInputSettingsResponse>();
       expect(replaced.revision).not.toBe(initialBody.revision);
-      expect(replaced.settings).toEqual({ provider: "cloud", cloud: { baseUrl: "https://api.openai.com/v1", model: "whisper-model" } });
+      expect(replaced.settings).toEqual({ provider: "cloud", polishVoiceInput: true, cloud: { baseUrl: "https://api.openai.com/v1", model: "whisper-model" } });
       expect(replaced.credential).toEqual({ configured: true, source: "literal", resolution: "resolved" });
       expect(tracked.mutations).toBe(1);
 
@@ -191,7 +191,7 @@ describe("production gateway config composition shares one mutation authority", 
       expect(afterGeneric.statusCode).toBe(200);
       const afterGenericBody = afterGeneric.json<SpeechInputSettingsResponse>();
       expect(afterGenericBody.revision).toBe(replaced.revision);
-      expect(afterGenericBody.settings).toEqual({ provider: "cloud", cloud: { baseUrl: "https://api.openai.com/v1", model: "whisper-model" } });
+      expect(afterGenericBody.settings).toEqual({ provider: "cloud", polishVoiceInput: true, cloud: { baseUrl: "https://api.openai.com/v1", model: "whisper-model" } });
       expect(afterGenericBody.credential).toEqual({ configured: true, source: "literal", resolution: "resolved" });
 
       // Speech write 3: preserve with the same endpoint succeeds and keeps

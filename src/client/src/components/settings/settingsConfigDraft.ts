@@ -28,6 +28,8 @@ export interface SpeechInputSettingsDraft {
   language: string;
   baseUrl: string;
   model: string;
+  /** Legacy drafts may omit this; new requests always serialize an explicit value. */
+  polishVoiceInput?: boolean;
 }
 
 export function emptyGatewayServerConfigDraft(): GatewayServerConfigDraft {
@@ -82,6 +84,7 @@ export function speechInputDraftFromResponse(response: SpeechInputSettingsRespon
     language: response.settings.language ?? "",
     baseUrl: response.settings.cloud.baseUrl,
     model: response.settings.cloud.model,
+    polishVoiceInput: response.settings.polishVoiceInput ?? true,
   };
 }
 
@@ -95,6 +98,7 @@ export function speechInputUpdateFromDraft(
     settings: {
       provider: draft.provider,
       ...(draft.language === "" ? {} : { language: draft.language }),
+      polishVoiceInput: draft.polishVoiceInput ?? true,
       cloud: { baseUrl: draft.baseUrl, model: draft.model },
     },
     credential,

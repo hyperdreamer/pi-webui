@@ -1699,11 +1699,47 @@ describe("speech input settings parser", () => {
   it("strictly parses complete speech input settings responses", () => {
     const response = speechInputSettingsResponse();
 
-    expect(parseSpeechInputSettingsResponse(response)).toEqual(response);
+    expect(parseSpeechInputSettingsResponse(response)).toEqual({
+      ...response,
+      settings: { ...response.settings, polishVoiceInput: true },
+    });
+    const disabled = speechInputSettingsResponse({
+      settings: { ...speechInputSettingsResponse().settings, polishVoiceInput: false },
+    });
+    expect(parseSpeechInputSettingsResponse(disabled)).toEqual(disabled);
     expect(parseSpeechInputSettingsResponse(speechInputSettingsResponse({ credential: { configured: false, resolution: "missing" } })))
-      .toEqual(speechInputSettingsResponse({ credential: { configured: false, resolution: "missing" } }));
+      .toEqual({
+        ...speechInputSettingsResponse({ credential: { configured: false, resolution: "missing" } }),
+        settings: { ...speechInputSettingsResponse().settings, polishVoiceInput: true },
+      });
     expect(parseSpeechInputSettingsResponse(speechInputSettingsResponse({ credential: { configured: true, source: "environment", resolution: "unresolved" } })))
-      .toEqual(speechInputSettingsResponse({ credential: { configured: true, source: "environment", resolution: "unresolved" } }));
+      .toEqual({
+        ...speechInputSettingsResponse({ credential: { configured: true, source: "environment", resolution: "unresolved" } }),
+        settings: { ...speechInputSettingsResponse().settings, polishVoiceInput: true },
+      });
+  });
+
+  it("accepts a legacy version-one response and supplies the enabled default", () => {
+    const legacy = speechInputSettingsResponse();
+    const parsed = parseSpeechInputSettingsResponse(legacy);
+    expect(parsed.contractVersion).toBe(1);
+    expect(parsed.settings.polishVoiceInput).toBe(true);
+  });
+
+  it("strictly parses version-two polishing booleans", () => {
+    const valid = speechInputSettingsResponse({
+      contractVersion: 2,
+      settings: { ...speechInputSettingsResponse().settings, polishVoiceInput: false },
+    });
+    expect(parseSpeechInputSettingsResponse(valid)).toEqual(valid);
+    expect(() => parseSpeechInputSettingsResponse({
+      ...valid,
+      settings: { ...speechInputSettingsResponse().settings },
+    })).toThrow();
+    expect(() => parseSpeechInputSettingsResponse({
+      ...valid,
+      settings: { ...valid.settings, polishVoiceInput: "yes" },
+    })).toThrow();
   });
 
   it("rejects noncanonical revisions, wrong contract versions, and unknown or leaked fields", () => {
@@ -1719,6 +1755,7 @@ describe("speech input settings parser", () => {
       { ...valid, revision: "not-a-uuid" },
       { ...valid, revision: 42 },
       { ...valid, extra: true },
+      { ...valid, settings: { ...valid.settings, polishVoiceInput: "yes" } },
       { ...valid, settings: { ...valid.settings, extra: true } },
       { ...valid, settings: { ...valid.settings, language: "" } },
       { ...valid, settings: { ...valid.settings, language: "en-us" } },

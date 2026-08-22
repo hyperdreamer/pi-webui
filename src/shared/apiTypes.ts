@@ -351,6 +351,8 @@ export interface PiWebUiSpeechInputConfig {
   provider?: SpeechInputProviderPreference;
   /** Omitted means Auto. Stored as a canonical BCP 47 tag. */
   language?: string;
+  /** Default: true. */
+  polishVoiceInput?: boolean;
   cloud?: PiWebUiSpeechInputCloudConfig;
 }
 
@@ -363,16 +365,46 @@ export interface SpeechInputCredentialStatus {
 export interface SpeechInputSettings {
   provider: SpeechInputProviderPreference;
   language?: string;
+  /** Always resolved from persisted configuration, defaulting to true. */
+  polishVoiceInput: boolean;
   cloud: { baseUrl: string; model: string };
 }
 
-export interface SpeechInputSettingsResponse {
-  contractVersion: 1;
+/** Version-one wire settings allow the later polishing preference to be absent. */
+export interface LegacySpeechInputSettings extends Omit<SpeechInputSettings, "polishVoiceInput"> {
+  polishVoiceInput?: boolean;
+}
+
+interface SpeechInputSettingsResponseFields<TSettings> {
   /** Canonical lowercase UUID; opaque to clients. */
   revision: string;
-  settings: SpeechInputSettings;
+  settings: TSettings;
   credential: SpeechInputCredentialStatus;
 }
+
+/** Compatibility shape accepted from gateways that predate transcript polishing. */
+export interface LegacySpeechInputSettingsResponse
+  extends SpeechInputSettingsResponseFields<LegacySpeechInputSettings> {
+  contractVersion: 1;
+}
+
+/** Current gateway response shape. */
+export interface SpeechInputSettingsResponseV2
+  extends SpeechInputSettingsResponseFields<SpeechInputSettings> {
+  contractVersion: 2;
+}
+
+/**
+ * Consumer-facing response type. A version-one response may omit the setting;
+ * parsers project that omission to the effective enabled default.
+ */
+export interface SpeechInputSettingsResponse
+  extends Omit<LegacySpeechInputSettingsResponse, "contractVersion"> {
+  contractVersion: 1 | 2;
+}
+
+/** Browser updates may omit polishing while legacy clients roll forward. */
+export type SpeechInputSettingsUpdateSettings = LegacySpeechInputSettings;
 
 export type SpeechInputCredentialMutation =
   | { action: "preserve" }
@@ -381,7 +413,7 @@ export type SpeechInputCredentialMutation =
 
 export interface SpeechInputSettingsUpdate {
   expectedRevision: string;
-  settings: SpeechInputSettings;
+  settings: SpeechInputSettingsUpdateSettings;
   credential: SpeechInputCredentialMutation;
 }
 

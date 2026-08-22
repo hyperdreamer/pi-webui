@@ -51,9 +51,9 @@ describe("SpeechInputSettingsService reads", () => {
     const service = createSpeechInputSettingsService({ coordinator });
 
     await expect(service.read()).resolves.toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       revision: SPEECH_INPUT_TEST_REVISION,
-      settings: { provider: "auto", cloud: DEFAULT_CLOUD },
+      settings: { provider: "auto", polishVoiceInput: true, cloud: DEFAULT_CLOUD },
       credential: { configured: false, resolution: "missing" },
     });
   });
@@ -84,6 +84,33 @@ describe("SpeechInputSettingsService reads", () => {
 });
 
 describe("SpeechInputSettingsService preserve updates", () => {
+  it("preserves the current explicit false when a legacy update omits polishing", async () => {
+    const coordinator = createInMemorySpeechInputConfigCoordinator({
+      config: { speechInput: { polishVoiceInput: false } },
+    });
+    const service = createSpeechInputSettingsService({ coordinator });
+
+    await service.update(validUpdate({
+      settings: { provider: "browser", cloud: DEFAULT_CLOUD },
+    }));
+
+    expect(coordinator.current().loaded.config.speechInput?.polishVoiceInput).toBe(false);
+  });
+
+  it("persists an explicitly supplied polishing preference", async () => {
+    const coordinator = createInMemorySpeechInputConfigCoordinator({
+      config: { speechInput: { polishVoiceInput: true } },
+    });
+    const service = createSpeechInputSettingsService({ coordinator });
+
+    const response = await service.update(validUpdate({
+      settings: { provider: "browser", polishVoiceInput: false, cloud: DEFAULT_CLOUD },
+    }));
+
+    expect(coordinator.current().loaded.config.speechInput?.polishVoiceInput).toBe(false);
+    expect(response.settings.polishVoiceInput).toBe(false);
+  });
+
   it("applies provider, language, and model changes without changing the raw credential source", async () => {
     const coordinator = createInMemorySpeechInputConfigCoordinator({
       config: {
@@ -105,11 +132,12 @@ describe("SpeechInputSettingsService preserve updates", () => {
     }));
 
     expect(response).toEqual({
-      contractVersion: 1,
+      contractVersion: 2,
       revision: testSpeechInputRevision(2),
       settings: {
         provider: "browser",
         language: "en-US",
+        polishVoiceInput: true,
         cloud: { baseUrl: "https://API.OpenAI.com:443/v1/", model: "whisper-1" },
       },
       credential: { configured: true, source: "literal", resolution: "resolved" },
@@ -149,6 +177,7 @@ describe("SpeechInputSettingsService preserve updates", () => {
 
     expect(response.settings).toEqual({
       provider: "cloud",
+      polishVoiceInput: true,
       cloud: { baseUrl: "https://other.example.test/v1", model: "whisper-1" },
     });
   });
@@ -179,6 +208,7 @@ describe("SpeechInputSettingsService clear updates", () => {
         speechInput: {
           provider: "browser",
           language: "en-US",
+          polishVoiceInput: false,
           cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "sk-secret" },
         },
       },
@@ -197,12 +227,14 @@ describe("SpeechInputSettingsService clear updates", () => {
       speechInput: {
         provider: "browser",
         language: "en-US",
+        polishVoiceInput: false,
         cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
       },
     });
     expect(response.settings).toEqual({
       provider: "browser",
       language: "en-US",
+      polishVoiceInput: false,
       cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe" },
     });
     expect(response.credential).toEqual({ configured: false, resolution: "missing" });
@@ -284,6 +316,8 @@ describe("SpeechInputSettingsService update validation", () => {
       validUpdate({ settings: { provider: "cloud", language: "not a tag", cloud: DEFAULT_CLOUD } }),
       validUpdate({ settings: { provider: "cloud", language: "x".repeat(129), cloud: DEFAULT_CLOUD } }),
       validUpdate({ settings: { provider: "cloud", language: 7, cloud: DEFAULT_CLOUD } }),
+      validUpdate({ settings: { provider: "cloud", cloud: DEFAULT_CLOUD, polishVoiceInput: "yes" } }),
+      validUpdate({ settings: { provider: "cloud", cloud: DEFAULT_CLOUD, polishVoiceInput: undefined } }),
       validUpdate({ settings: { provider: "cloud", cloud: DEFAULT_CLOUD, extra: true } }),
       validUpdate({ settings: { provider: "cloud", cloud: {} } }),
       validUpdate({ settings: { provider: "cloud", cloud: { ...DEFAULT_CLOUD, model: "" } } }),

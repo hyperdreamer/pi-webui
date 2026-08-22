@@ -4,6 +4,7 @@ import type {
   SpeechInputCredentialMutation,
   SpeechInputSettings,
   SpeechInputSettingsResponse,
+  SpeechInputSettingsResponseV2,
   SpeechInputSettingsUpdate,
 } from "../../shared/apiTypes.js";
 import { canonicalBcp47LanguageTag, effectiveSpeechInputSettings, isCanonicalLowercaseUuid, speechInputTranscriptionEndpoint } from "../../shared/speechInput.js";
@@ -53,10 +54,10 @@ export interface SpeechInputSettingsServiceDependencies {
 export function createSpeechInputSettingsService(dependencies: SpeechInputSettingsServiceDependencies): SpeechInputSettingsService {
   const { coordinator, env, onCommitted } = dependencies;
 
-  const responseFromSnapshot = (snapshot: PiWebUiConfigMutationSnapshot): SpeechInputSettingsResponse => {
+  const responseFromSnapshot = (snapshot: PiWebUiConfigMutationSnapshot): SpeechInputSettingsResponseV2 => {
     const speech = snapshot.loaded.config.speechInput;
     return {
-      contractVersion: 1,
+      contractVersion: 2,
       revision: snapshot.speechInputRevision,
       settings: effectiveSpeechInputSettings(speech),
       credential: inspectPiCompatibleCredentialSource(speech?.cloud?.apiKey, env),
@@ -108,6 +109,7 @@ function applyPreserve(currentConfig: PiWebUiConfigValues, update: SpeechInputSe
     speechInput: {
       provider: update.settings.provider,
       ...(update.settings.language === undefined ? {} : { language: update.settings.language }),
+      ...retainedPolishVoiceInput(currentConfig, update),
       cloud: {
         baseUrl: update.settings.cloud.baseUrl,
         model: update.settings.cloud.model,
@@ -123,6 +125,7 @@ function applyReplace(currentConfig: PiWebUiConfigValues, update: SpeechInputSet
     speechInput: {
       provider: update.settings.provider,
       ...(update.settings.language === undefined ? {} : { language: update.settings.language }),
+      ...retainedPolishVoiceInput(currentConfig, update),
       cloud: {
         baseUrl: update.settings.cloud.baseUrl,
         model: update.settings.cloud.model,
@@ -130,6 +133,14 @@ function applyReplace(currentConfig: PiWebUiConfigValues, update: SpeechInputSet
       },
     },
   };
+}
+
+function retainedPolishVoiceInput(
+  currentConfig: PiWebUiConfigValues,
+  update: SpeechInputSettingsUpdate,
+): { polishVoiceInput?: boolean } {
+  const polishVoiceInput = update.settings.polishVoiceInput ?? currentConfig.speechInput?.polishVoiceInput;
+  return polishVoiceInput === undefined ? {} : { polishVoiceInput };
 }
 
 /**
@@ -150,7 +161,7 @@ function applyClear(currentConfig: PiWebUiConfigValues): PiWebUiConfigValues {
 }
 
 const UPDATE_KEYS = new Set(["expectedRevision", "settings", "credential"]);
-const SETTINGS_KEYS = new Set(["provider", "language", "cloud"]);
+const SETTINGS_KEYS = new Set(["provider", "language", "polishVoiceInput", "cloud"]);
 const CLOUD_KEYS = new Set(["baseUrl", "model"]);
 
 function parseSpeechInputSettingsUpdate(value: unknown): SpeechInputSettingsUpdate {
@@ -169,7 +180,7 @@ function parseSpeechInputSettingsUpdate(value: unknown): SpeechInputSettingsUpda
   };
 }
 
-function parseSettings(value: unknown): SpeechInputSettings {
+function parseSettings(value: unknown): SpeechInputSettingsUpdate["settings"] {
   const record = requireRecord(value, "Speech input settings update settings must be an object");
   rejectUnknownKeys(record, SETTINGS_KEYS, "Speech input settings update settings");
 
@@ -191,9 +202,19 @@ function parseSettings(value: unknown): SpeechInputSettings {
     language = canonical;
   }
 
+  let polishVoiceInput: boolean | undefined;
+  if (Object.hasOwn(record, "polishVoiceInput")) {
+    const polishVoiceInputValue = record["polishVoiceInput"];
+    if (typeof polishVoiceInputValue !== "boolean") {
+      throw new SpeechInputSettingsValidationError("Speech input settings polishVoiceInput must be a boolean");
+    }
+    polishVoiceInput = polishVoiceInputValue;
+  }
+
   return {
     provider,
     ...(language === undefined ? {} : { language }),
+    ...(polishVoiceInput === undefined ? {} : { polishVoiceInput }),
     cloud: parseCloud(record["cloud"]),
   };
 }

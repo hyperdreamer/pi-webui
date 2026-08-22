@@ -33,9 +33,9 @@ describe("speech input settings routes", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        contractVersion: 1,
+        contractVersion: 2,
         revision: SPEECH_INPUT_TEST_REVISION,
-        settings: { provider: "cloud", cloud: DEFAULT_CLOUD },
+        settings: { provider: "cloud", polishVoiceInput: true, cloud: DEFAULT_CLOUD },
         credential: { configured: true, source: "literal", resolution: "resolved" },
       });
       expect(response.body).not.toContain("sk-secret");
@@ -59,11 +59,12 @@ describe("speech input settings routes", () => {
 
       expect(update.statusCode).toBe(200);
       expect(update.json()).toEqual({
-        contractVersion: 1,
+        contractVersion: 2,
         revision: testSpeechInputRevision(2),
         settings: {
           provider: "browser",
           language: "pt-BR",
+          polishVoiceInput: true,
           cloud: { baseUrl: "https://gateway.example.test/v1", model: "whisper-1" },
         },
         credential: { configured: false, resolution: "missing" },

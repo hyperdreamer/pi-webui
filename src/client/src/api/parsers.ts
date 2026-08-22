@@ -1788,20 +1788,21 @@ export function parsePiWebUiConfigResponse(value: unknown): PiWebUiConfigRespons
 export function parseSpeechInputSettingsResponse(value: unknown): SpeechInputSettingsResponse {
   const record = requirePlainRecord(value, "speech input settings response");
   assertOnlyFields(record, ["contractVersion", "revision", "settings", "credential"], "speech input settings response");
-  if (record["contractVersion"] !== 1) throw new Error("Invalid speech input settings contract version");
+  const contractVersion = record["contractVersion"];
+  if (contractVersion !== 1 && contractVersion !== 2) throw new Error("Invalid speech input settings contract version");
   const revision = requireString(record, "revision");
   if (!isCanonicalLowercaseUuid(revision)) throw new Error("Invalid speech input settings revision");
   return {
-    contractVersion: 1,
+    contractVersion,
     revision,
-    settings: parseSpeechInputSettings(record["settings"]),
+    settings: parseSpeechInputSettings(record["settings"], contractVersion === 2),
     credential: parseSpeechInputCredentialStatus(record["credential"]),
   };
 }
 
-function parseSpeechInputSettings(value: unknown): SpeechInputSettings {
+function parseSpeechInputSettings(value: unknown, polishVoiceInputRequired: boolean): SpeechInputSettings {
   const record = requireObjectRecord(value, "speech input settings");
-  assertOnlyFields(record, ["provider", "language", "cloud"], "speech input settings");
+  assertOnlyFields(record, ["provider", "language", "polishVoiceInput", "cloud"], "speech input settings");
   const provider = record["provider"];
   if (provider !== "auto" && provider !== "browser" && provider !== "cloud") {
     throw new Error("Invalid speech input settings provider");
@@ -1810,9 +1811,15 @@ function parseSpeechInputSettings(value: unknown): SpeechInputSettings {
   if (language !== undefined && canonicalBcp47LanguageTag(language) !== language) {
     throw new Error("Invalid speech input settings language");
   }
+  const hasPolishVoiceInput = Object.hasOwn(record, "polishVoiceInput");
+  if (polishVoiceInputRequired && !hasPolishVoiceInput) {
+    throw new Error("Version-two speech input settings require polishVoiceInput");
+  }
+  const polishVoiceInput = hasPolishVoiceInput ? requireBoolean(record, "polishVoiceInput") : true;
   return {
     provider,
     ...optionalField("language", language),
+    polishVoiceInput,
     cloud: parseSpeechInputCloudSettings(record["cloud"]),
   };
 }
