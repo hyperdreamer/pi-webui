@@ -6,12 +6,11 @@ export type LatexRenderToString = (tex: string, options: KatexOptions) => string
 const MAX_DISCOVERY_BODY_UNITS = 2_048;
 const MAX_FORMULA_BODY_UNITS = 512;
 const MAX_MESSAGE_SOURCE_UNITS = 4_096;
-const MAX_FORMULA_COUNT = 8;
 const MAX_BRACE_DEPTH = 32;
 const MAX_CONTROL_SEQUENCE_STARTS = 64;
 const MAX_ALIGNMENT_SEPARATORS = 64;
-const MAX_RESERVED_OUTPUT_UNITS = 256_000;
-const RESERVED_OUTPUT_PER_FORMULA = 32_000;
+const MAX_MATH_OUTPUT_UNITS = 256_000;
+const MAX_FORMULA_OUTPUT_UNITS = 32_000;
 
 const MATH_OPTIONS = {
   output: "htmlAndMathml",
@@ -34,7 +33,6 @@ interface LatexMathToken {
 
 interface MathRenderContext {
   mathSourceUnits: number;
-  formulaCount: number;
   mathOutputUnits: number;
   outputAdmissionClosed: boolean;
 }
@@ -88,7 +86,6 @@ export function hasLatexDelimiterMarker(source: string): boolean {
 export function renderLatexMarkdown(source: string, renderMath: LatexRenderToString): string {
   const context: MathRenderContext = {
     mathSourceUnits: 0,
-    formulaCount: 0,
     mathOutputUnits: 0,
     outputAdmissionClosed: false,
   };
@@ -709,10 +706,7 @@ function renderLatexToken(token: Tokens.Generic, context: MathRenderContext, ren
   } catch {
     return literalForMathToken(mathToken);
   }
-  if (rendered.length > RESERVED_OUTPUT_PER_FORMULA) {
-    context.outputAdmissionClosed = true;
-    return literalForMathToken(mathToken);
-  }
+  if (!admitRenderedOutput(rendered, context)) return literalForMathToken(mathToken);
   return mathToken.displayMode
     ? `<div class="math-display">${rendered}</div>`
     : `<span class="math-inline">${rendered}</span>`;
@@ -731,13 +725,19 @@ function admitFormula(tex: string, context: MathRenderContext): boolean {
   if (context.outputAdmissionClosed) return false;
   if (tex.length > MAX_FORMULA_BODY_UNITS) return false;
   if (context.mathSourceUnits + tex.length > MAX_MESSAGE_SOURCE_UNITS) return false;
-  if (context.formulaCount >= MAX_FORMULA_COUNT) return false;
-  if (context.mathOutputUnits + RESERVED_OUTPUT_PER_FORMULA > MAX_RESERVED_OUTPUT_UNITS) return false;
   if (!hasSafeMathStructure(tex)) return false;
 
   context.mathSourceUnits += tex.length;
-  context.formulaCount += 1;
-  context.mathOutputUnits += RESERVED_OUTPUT_PER_FORMULA;
+  return true;
+}
+
+function admitRenderedOutput(rendered: string, context: MathRenderContext): boolean {
+  if (rendered.length > MAX_FORMULA_OUTPUT_UNITS
+    || context.mathOutputUnits + rendered.length > MAX_MATH_OUTPUT_UNITS) {
+    context.outputAdmissionClosed = true;
+    return false;
+  }
+  context.mathOutputUnits += rendered.length;
   return true;
 }
 

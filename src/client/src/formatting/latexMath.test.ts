@@ -313,19 +313,38 @@ describe("renderLatexMarkdown", () => {
     },
   );
 
-  it("caps formulas and aggregate source admission", () => {
+  it("renders small formulas beyond the former per-message count limit", () => {
     const adapter = recordingAdapter();
-    const source = Array.from({ length: 9 }, (_, index) => `$x${String(index)}$`).join(" ");
+    const formulas = Array.from({ length: 20 }, (_, index) => `x${String(index)}`);
+    const source = formulas.map((formula) => `$${formula}$`).join(" ");
+
+    const html = renderLatexMarkdown(source, adapter.render);
+
+    expect(adapter.calls.map(({ tex }) => tex)).toEqual(formulas);
+    expect(html).not.toContain("$x8$");
+    expect(html).not.toContain("$x19$");
+  });
+
+  it("caps aggregate TeX source admission without a formula-count limit", () => {
+    const adapter = recordingAdapter();
+    const source = Array.from({ length: 9 }, () => `$${"x".repeat(512)}$`).join(" ");
 
     const html = renderLatexMarkdown(source, adapter.render);
 
     expect(adapter.calls).toHaveLength(8);
-    expect(html).toContain("$x8$");
+    expect(html).toContain(`$${"x".repeat(512)}$`);
+  });
 
-    const aggregate = Array.from({ length: 9 }, () => `$${"x".repeat(512)}$`).join(" ");
-    const aggregateAdapter = recordingAdapter();
-    renderLatexMarkdown(aggregate, aggregateAdapter.render);
-    expect(aggregateAdapter.calls).toHaveLength(8);
+  it("closes later admission after actual aggregate rendered-output overflow", () => {
+    const adapter = recordingAdapter("x".repeat(32_000));
+    const formulas = Array.from({ length: 10 }, (_, index) => `x${String(index)}`);
+    const source = formulas.map((formula) => `$${formula}$`).join(" ");
+
+    const html = renderLatexMarkdown(source, adapter.render);
+
+    expect(adapter.calls.map(({ tex }) => tex)).toEqual(formulas.slice(0, 9));
+    expect(html).toContain("$x8$");
+    expect(html).toContain("$x9$");
   });
 
   it("closes later admission after an oversized rendered fragment", () => {
