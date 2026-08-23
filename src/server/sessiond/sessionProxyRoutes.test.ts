@@ -208,6 +208,17 @@ describe("machine-scoped session proxy routes", () => {
     ]);
   });
 
+  it("does not forward browser cancellation to notification mutations", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/machines/local/sessions/session-1/notifications/dismiss-all",
+      payload: { cwd: "/repo", daemonInstanceId: "daemon-test", throughOrder: 7, throughOverflowWatermark: 2 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(daemon.requestSignals).toEqual([undefined]);
+  });
+
   it("strips the machine prefix before forwarding auth requests", async () => {
     const response = await app.inject({ method: "POST", url: "/api/machines/local/auth/api-key", payload: { providerId: "p", key: "k" } });
 
@@ -216,12 +227,12 @@ describe("machine-scoped session proxy routes", () => {
     expect(daemon.requests).toEqual([{ method: "POST", path: "/auth/api-key", body: { providerId: "p", key: "k" } }]);
   });
 
-  it("forwards the Fastify lifecycle signal to generic daemon requests", async () => {
+  it("does not forward Fastify lifecycle cancellation to generic daemon requests", async () => {
     const response = await app.inject({ method: "GET", url: "/api/machines/local/sessions" });
 
     expect(response.statusCode).toBe(200);
     expect(daemon.requests).toEqual([{ method: "GET", path: "/sessions", body: undefined }]);
-    expect(daemon.requestSignals).toEqual([expect.any(AbortSignal)]);
+    expect(daemon.requestSignals).toEqual([undefined]);
   });
 
   it("forwards sessiond health and runtime aliases to daemon endpoints", async () => {

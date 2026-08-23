@@ -17,9 +17,9 @@ const FORWARDED_RESPONSE_HEADERS = [
 ] as const;
 
 export function registerSessionProxyRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
-  const proxy = async (request: { method: string; url: string; body?: unknown; signal?: AbortSignal }, reply: FastifyReply) => {
+  const proxy = async (request: { method: string; url: string; body?: unknown }, reply: FastifyReply) => {
     try {
-      const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body, request.signal);
+      const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body);
       reply.code(upstream.statusCode);
       forwardResponseHeaders(reply, upstream.headers);
       if (upstream.body === "") return await reply.send();
@@ -33,8 +33,8 @@ export function registerSessionProxyRoutes(app: FastifyInstance, daemon: Session
     }
   };
 
-  app.get(`${prefix}/sessiond/health`, (request, reply) => proxy({ method: "GET", url: `${prefix}/health`, signal: request.signal }, reply));
-  app.get(`${prefix}/sessiond/runtime`, (request, reply) => proxy({ method: "GET", url: `${prefix}/runtime`, signal: request.signal }, reply));
+  app.get(`${prefix}/sessiond/health`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/health` }, reply));
+  app.get(`${prefix}/sessiond/runtime`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/runtime` }, reply));
 
   app.get<{ Params: { sessionId: string } }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
     bridgeSockets(socket, daemon.connectWebSocket(stripPrefix(request.url, prefix)));
