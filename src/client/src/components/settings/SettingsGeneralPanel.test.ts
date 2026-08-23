@@ -360,6 +360,10 @@ describe("settings-general-panel speech input settings", () => {
     expect(text).toContain("Transcript polishing");
     expect(text).toContain("Enabling transcript polishing sends captured transcript text to the configured lightweight utility model for conservative cleanup.");
     expect(text).toContain("The utility model may use its configured provider.");
+    expect(text).toContain("Transcript polishing accepts at most two concurrent requests.");
+    expect(text).toContain("Each request has a 30-second client and route deadline; the utility-model provider has 25 seconds, leaving five seconds for cancellation, cleanup, and the HTTP response.");
+    expect(text).toContain("Input and polished output are each limited to 1 MiB of UTF-8 text.");
+    expect(text).toContain("If polishing times out or fails, PI WEBUI inserts the original transcript instead.");
     expect(strings).toContain('type="checkbox"');
     expect(strings).toContain('aria-label="Transcript polishing"');
     expect(templateValuesAfterMarker(card, ".checked=")).toEqual([true]);

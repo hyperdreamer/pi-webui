@@ -959,7 +959,7 @@
                 browser holds a newly entered source only in the password input and the in-flight same-origin request,
                 and clears it after a successful save (retaining it after a failure for correction).
               </p>
-              <h3>Capture and transcription limits</h3>
+              <h3>Capture, transcription, and polishing limits</h3>
               <ul>
                 <li>Capture/listening is hard-limited to ten minutes from the provider's successful start.</li>
                 <li>Browser recognition is stopped and finalized at the limit; because a recognition instance may never emit its terminal <code>end</code> event, a Stop request starts a 2,000 ms settlement watchdog that finalizes accumulated text when it expires.</li>
@@ -968,6 +968,10 @@
                 <li>Cloud credential command resolution is bounded to ten seconds, the provider request to 120 seconds (one total budget each, never reset between stages), and the client owns a 130-second Transcribing watchdog covering upload, credential resolution, provider request, and response even if the gateway connection is lost. Combined with the capture limit, a cloud run ends at most 12 minutes 10 seconds after recording starts, excluding user-controlled permission time.</li>
                 <li>Accepted recording types are <code>audio/webm;codecs=opus</code>, <code>audio/ogg;codecs=opus</code>, <code>audio/mp4;codecs=mp4a.40.2</code>, and <code>audio/mp4</code>. Other codec/parameter combinations are rejected.</li>
                 <li>Every accepted transcript must be nonempty and at most 1 MiB of UTF-8 text.</li>
+                <li>Transcript polishing accepts at most two concurrent requests.</li>
+                <li>Each request has a 30-second client and route deadline; the utility-model provider has 25 seconds, leaving five seconds for cancellation, cleanup, and the HTTP response.</li>
+                <li>Input and polished output are each limited to 1 MiB of UTF-8 text.</li>
+                <li>If polishing times out or fails, PI WEBUI inserts the original transcript instead.</li>
               </ul>
               <h3>Settings concurrency</h3>
               <p>

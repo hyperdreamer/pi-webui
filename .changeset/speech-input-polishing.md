@@ -2,4 +2,4 @@
 "@hyperdreamer/pi-webui": minor
 ---
 
-Expose the transcript-polishing preference in Speech input settings and document its lightweight utility-model behavior.
+Expose transcript-polishing controls with bounded request behavior, original-transcript fallback, and documented lightweight utility-model processing.

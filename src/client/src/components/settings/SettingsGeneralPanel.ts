@@ -240,6 +240,7 @@ export class SettingsGeneralPanel extends LitElement {
                 <span>Polish captured transcript before insertion</span>
               </label>
               <small>Enabling transcript polishing sends captured transcript text to the configured lightweight utility model for conservative cleanup. The utility model may use its configured provider.</small>
+              <small>Transcript polishing accepts at most two concurrent requests. Each request has a 30-second client and route deadline; the utility-model provider has 25 seconds, leaving five seconds for cancellation, cleanup, and the HTTP response. Input and polished output are each limited to 1 MiB of UTF-8 text. If polishing times out or fails, PI WEBUI inserts the original transcript instead.</small>
             </div>
             <footer class="form-actions speech-input-actions">
               <button type="button" ?disabled=${clearDisabled} @click=${() => { void this.clearSpeechInputCredential(); }}>Clear credential</button>

@@ -381,7 +381,7 @@ A plain `OPENAI_API_KEY` (no `$`) is a literal, not an environment reference. Mi
 
 The settings card shows only a redacted status — **Credential missing**, **Literal credential configured**, **Environment credential resolved/unresolved**, or **Command credential configured; checked when used** — never the source text, the resolved key, an environment name, or command text. The API key field is never prepopulated; the browser holds a newly entered source only in the password input and the in-flight same-origin request, and clears it after a successful save (retaining it after a failure for correction).
 
-**Capture and transcription limits.** Every run is bounded:
+**Capture, transcription, and polishing limits.** Every run is bounded:
 
 - Capture/listening is hard-limited to ten minutes from the provider's successful start.
 - Browser recognition is stopped and finalized at the limit; because a recognition instance may never emit its terminal `end` event, a Stop request starts a 2,000 ms settlement watchdog that finalizes accumulated text when it expires.
@@ -390,6 +390,10 @@ The settings card shows only a redacted status — **Credential missing**, **Lit
 - Cloud credential command resolution is bounded to ten seconds, the provider request to 120 seconds (one total budget each, never reset between stages), and the client owns a 130-second Transcribing watchdog covering upload, credential resolution, provider request, and response even if the gateway connection is lost. Combined with the capture limit, a cloud run ends at most 12 minutes 10 seconds after recording starts, excluding user-controlled permission time.
 - Accepted recording types are `audio/webm;codecs=opus`, `audio/ogg;codecs=opus`, `audio/mp4;codecs=mp4a.40.2`, and `audio/mp4`. Other codec/parameter combinations are rejected.
 - Every accepted transcript must be nonempty and at most 1 MiB of UTF-8 text.
+- Transcript polishing accepts at most two concurrent requests.
+- Each request has a 30-second client and route deadline; the utility-model provider has 25 seconds, leaving five seconds for cancellation, cleanup, and the HTTP response.
+- Input and polished output are each limited to 1 MiB of UTF-8 text.
+- If polishing times out or fails, PI WEBUI inserts the original transcript instead.
 
 **Settings concurrency.** Every speech mutation must match the latest opaque revision; a stale tab receives a `409` conflict and performs no write. Saving rotates the revision and tells other tabs (through a nonsecret channel containing only the new revision) to refetch; a burst of notifications requests one trailing refetch so no revision is lost. A dirty form preserves its draft and password, marks itself stale, and requires an explicit reload before retrying. Because a preserved credential cannot be silently redirected to a new endpoint, changing the cloud base URL while a credential is configured requires re-entering a replacement credential source in the same save, or clearing the saved credential first.
 
