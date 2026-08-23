@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.1
+
+### Patch Changes
+
+- a51461a: Prevent session notification dismissal from failing when the browser request is cancelled.
+
 ## 1.18.0
 
 ### Minor Changes
