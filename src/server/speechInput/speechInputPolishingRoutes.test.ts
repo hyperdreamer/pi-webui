@@ -119,6 +119,24 @@ describe("session-daemon speech input polishing route", () => {
     expect(polishing.calls[0]?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("writes the successful daemon response body over a real HTTP connection", async () => {
+    const polishing = serviceWith("polished transcript");
+    const app = await createDaemonApp(polishing.service);
+    apps.push(app);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected TCP server address");
+
+    const response = await fetch(`http://127.0.0.1:${String(address.port)}/speech-input/polish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "raw transcript" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ text: "polished transcript" });
+  });
+
   it.each([
     [null, "null body"],
     [[], "array body"],

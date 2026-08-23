@@ -53,12 +53,12 @@ interface ActiveRequest {
   controller: AbortController;
   releaseAdmission: () => void;
   cancelDeadline: () => void;
-  onRequestAbort: () => void;
   onRawAborted: () => void;
   onResponseClose: () => void;
   cleanup: () => void;
   active: boolean;
   responseStarted: boolean;
+  rawAborted: boolean;
 }
 
 type PolishingRequest = FastifyRequest<{ Body: unknown }>;
@@ -182,7 +182,6 @@ function registerPolishingHttpRoute(
       activeRequests.add(state);
       state.cleanup = () => { cleanup(state); };
 
-      request.signal.addEventListener("abort", state.onRequestAbort, { once: true });
       request.raw.once("aborted", state.onRawAborted);
       reply.raw.once("close", state.onResponseClose);
 
@@ -206,7 +205,7 @@ function registerPolishingHttpRoute(
           }
           return;
         }
-        if (!state.request.raw.destroyed) {
+        if (!state.rawAborted && !state.request.raw.destroyed) {
           try {
             state.request.raw.destroy();
           } catch {
@@ -216,7 +215,7 @@ function registerPolishingHttpRoute(
       }, SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS);
       if (!state.active) scheduled.cancel();
 
-      if (request.signal.aborted || request.raw.destroyed) cleanup(state);
+      if (request.raw.destroyed || reply.raw.destroyed) cleanup(state);
       hookDone();
     });
 
@@ -251,7 +250,6 @@ function registerPolishingHttpRoute(
       } catch {
         // Admission and downstream cancellation must still happen.
       }
-      state.request.signal.removeEventListener("abort", state.onRequestAbort);
       state.request.raw.removeListener("aborted", state.onRawAborted);
       state.reply.raw.removeListener("close", state.onResponseClose);
       try {
@@ -275,15 +273,17 @@ function createActiveRequest(
     controller,
     releaseAdmission,
     cancelDeadline: () => undefined,
-    onRequestAbort: () => undefined,
     onRawAborted: () => undefined,
     onResponseClose: () => undefined,
     cleanup: () => undefined,
     active: true,
     responseStarted: false,
+    rawAborted: false,
   };
-  state.onRequestAbort = () => { state.cleanup(); };
-  state.onRawAborted = () => { state.cleanup(); };
+  state.onRawAborted = () => {
+    state.rawAborted = true;
+    state.cleanup();
+  };
   state.onResponseClose = () => {
     if (!state.active || state.responseStarted || state.reply.sent || state.reply.raw.writableEnded) return;
     state.cleanup();
@@ -379,8 +379,8 @@ function headerValue(headers: Record<string, string>, name: string): string | un
 function isCurrent(state: ActiveRequest): boolean {
   return state.active
     && !state.controller.signal.aborted
-    && !state.request.signal.aborted
-    && !state.request.raw.destroyed;
+    && !state.rawAborted
+    && !state.reply.raw.destroyed;
 }
 
 function canWriteResponse(state: ActiveRequest): boolean {
