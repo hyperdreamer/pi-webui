@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.2
+
+### Patch Changes
+
+- 9e38363: Fix voice transcript polishing responses being returned with an empty body.
+
 ## 1.18.1
 
 ### Patch Changes
