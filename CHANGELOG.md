@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.18.0
+
+### Minor Changes
+
+- 6ff3b4c: Expose transcript-polishing controls with bounded request behavior, original-transcript fallback, and documented lightweight utility-model processing.
+
+### Patch Changes
+
+- c84ac36: Bound speech-polishing provider requests so they finish before the HTTP route deadline.
+
 ## 1.17.0
 
 ### Minor Changes
