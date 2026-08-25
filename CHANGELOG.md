@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.3
+
+### Patch Changes
+
+- a32bbfe: Upgrade the supported Pi Coding Agent package set to the 0.84.3 patch release.
+
 ## 1.18.2
 
 ### Patch Changes
