@@ -4,6 +4,23 @@ import { marked } from "marked";
 import { describe, expect, it, vi } from "vitest";
 import { clearMarkdownHtmlCache, markdownHtmlCacheChars, markdownHtmlCacheSize, setDefaultRenderMathForTesting, toSafeMarkdownHtml } from "./markdown";
 
+// The real MathJax engine never loads in jsdom. Model readiness explicitly so
+// the cache contract can be pinned in both states: before readiness the default
+// renderer falls back to literal TeX and must not cache it; once ready,
+// production math renders cache like any other text.
+const mathRendererState = vi.hoisted(() => ({ ready: false }));
+vi.mock("./mathRenderer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mathRenderer")>();
+  return {
+    ...actual,
+    isMathJaxReady: () => mathRendererState.ready,
+    renderLatexWithMathJax: (tex: string, options: { displayMode: boolean }): string => {
+      if (!mathRendererState.ready) throw new actual.MathJaxNotReadyError();
+      return `<mjx-container data-tex="${tex}" data-display="${String(options.displayMode)}"></mjx-container>`;
+    },
+  };
+});
+
 describe("toSafeMarkdownHtml", () => {
   it("renders representative math with the injected renderer surface", () => {
     setDefaultRenderMathForTesting((tex, { displayMode }) =>
@@ -17,15 +34,26 @@ describe("toSafeMarkdownHtml", () => {
     }
   });
 
-  it("caches production math renders but bypasses the cache for an injected adapter", () => {
+  it("caches production math renders once ready, never caches pre-readiness literals, and bypasses injected adapters", () => {
     clearMarkdownHtmlCache();
     const source = `$x$ ${String(Date.now())} ${Math.random().toString(36)}`;
     const before = markdownHtmlCacheSize();
 
-    const first = toSafeMarkdownHtml(source);
-    const second = toSafeMarkdownHtml(source);
+    // Pre-readiness the default renderer falls back to literal TeX; caching
+    // that would serve stale literals forever even after the readiness retry
+    // re-renders with cache bypass.
+    mathRendererState.ready = false;
+    const coldFirst = toSafeMarkdownHtml(source);
+    const coldSecond = toSafeMarkdownHtml(source);
 
-    expect(second).toBe(first);
+    expect(coldSecond).toBe(coldFirst);
+    expect(markdownHtmlCacheSize()).toBe(before);
+
+    mathRendererState.ready = true;
+    const warmFirst = toSafeMarkdownHtml(source);
+    const warmSecond = toSafeMarkdownHtml(source);
+
+    expect(warmSecond).toBe(warmFirst);
     expect(markdownHtmlCacheSize()).toBe(before + 1);
 
     const adapter = vi.fn(() => "<i>test-math</i>");

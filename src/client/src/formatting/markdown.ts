@@ -6,7 +6,7 @@ import {
   renderLatexMarkdown,
   type LatexRenderToString,
 } from "./latexMath";
-import { renderLatexWithMathJax } from "./mathRenderer";
+import { isMathJaxReady, renderLatexWithMathJax } from "./mathRenderer";
 
 const renderer = new marked.Renderer();
 renderer.html = ({ text }) => escapeHtml(text);
@@ -62,7 +62,14 @@ export interface MarkdownRenderOptions {
 }
 
 export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions = {}): string {
-  const useCache = options.cache !== false && options.renderMath === undefined;
+  // Before MathJax readiness the default renderer falls back to literal TeX
+  // for math tokens. Caching that fallback would keep serving stale literals
+  // even after the readiness retry re-renders with cache bypass, so pre-
+  // readiness math renders skip the cache just like injected adapters do.
+  const needsMathRender = hasLatexDelimiterMarker(text);
+  const useCache = options.cache !== false
+    && options.renderMath === undefined
+    && (!needsMathRender || isMathJaxReady());
 
   if (useCache) {
     const cached = markdownHtmlCache.get(text);
