@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 import { effectivePiWebUiConfig } from "./src/config";
 
 const { config } = effectivePiWebUiConfig();
@@ -91,7 +92,18 @@ function devDocsPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [devDocsPlugin()],
+  plugins: [
+    devDocsPlugin(),
+    viteStaticCopy({
+      targets: [
+        {
+          src: "../../node_modules/mathjax/es5/output/chtml/fonts/woff-v2/*",
+          dest: "mathjax/fonts",
+          rename: { stripBase: true },
+        },
+      ],
+    }),
+  ],
   root: "src/client",
   base: "./",
   build: {
