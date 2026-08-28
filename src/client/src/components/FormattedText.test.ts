@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { markdownHtmlCacheSize } from "../formatting/markdown";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { markdownHtmlCacheSize, setDefaultRenderMathForTesting } from "../formatting/markdown";
 import { FormattedText, LIVE_PLAIN_TEXT_MIN_CHARS, shouldRenderLivePlainText } from "./FormattedText";
 
-vi.mock("katex/dist/katex.min.css?inline", () => ({ default: "@font-face { font-family: KaTeX_Main; }" }));
+const fakeMathRenderer = (tex: string, options: { displayMode: boolean }): string =>
+  `<span class="mjx-container" data-display="${options.displayMode ? "true" : "false"}" data-tex="${tex}"></span>`;
+
+beforeEach(() => {
+  setDefaultRenderMathForTesting(fakeMathRenderer);
+});
 
 afterEach(() => {
+  setDefaultRenderMathForTesting(undefined);
   document.body.replaceChildren();
 });
 
@@ -80,7 +86,7 @@ describe("FormattedText live LaTeX rendering", () => {
       const container = formattedContainer(element);
       expect(container.classList.contains("plain")).toBe(true);
       expect(container.textContent).toBe(source);
-      expect(container.querySelector(".katex")).toBeNull();
+      expect(container.querySelector(".mjx-container")).toBeNull();
       expect(container.querySelector("math")).toBeNull();
     };
 
@@ -95,8 +101,7 @@ describe("FormattedText live LaTeX rendering", () => {
 
     const settled = formattedContainer(element);
     expect(settled.classList.contains("plain")).toBe(false);
-    expect(settled.querySelector(".katex")).not.toBeNull();
-    expect(settled.querySelector("math")).not.toBeNull();
+    expect(settled.querySelector(".mjx-container")).not.toBeNull();
     expect(settled.textContent).not.toBe("first $x^2$");
   });
 
@@ -125,10 +130,10 @@ describe("FormattedText live LaTeX rendering", () => {
     expect(displayRule).not.toMatch(/(?:overflow-y|height|max-height)\s*:/u);
   });
 
-  it("composes KaTeX CSS with the owned math wrapper rules", () => {
+  it("composes MathJax output with the owned math wrapper rules", () => {
     const styles = FormattedText.styles.toString();
 
-    expect(styles).toContain("KaTeX_Main");
+    expect(styles).toContain("mjx-container");
     expect(styles).toContain(".math-inline");
     expect(styles).toContain(".math-display");
     expect(styles).toContain("overflow-x");

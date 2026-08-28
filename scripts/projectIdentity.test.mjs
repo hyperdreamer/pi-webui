@@ -51,14 +51,14 @@ describe("project identity", () => {
     });
   });
 
-  it("ships KaTeX and its attribution notice", () => {
-    expect(packageManifest.dependencies).toMatchObject({ katex: "^0.18.4", "mathjax-full": "^3.2.2" });
+  it("ships MathJax and its attribution notice", () => {
+    expect(packageManifest.dependencies).toMatchObject({ "mathjax-full": "^3.2.2" });
     expect(packageManifest.devDependencies).toMatchObject({ mathjax: "^3.2.2" });
     expect(packageManifest.files).toContain("THIRD_PARTY_NOTICES.md");
     const notice = readFileSync(join(repositoryRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
-    expect(notice).toContain("KaTeX 0.18.4");
     expect(notice).toContain("MathJax 3.2.2");
     expect(notice).toContain("Apache License");
+    expect(notice).not.toContain("KaTeX");
   });
 
   it("uses PI WEBUI plugin and extension paths", () => {

@@ -41,14 +41,14 @@ describe("mathRenderer", () => {
 
     const inline = toSafeMarkdownHtml("$\\notin$", {
       cache: false,
-      renderMath: (tex, options) => renderLatexWithMathJax(tex, { displayMode: options.displayMode ?? false }),
+      renderMath: (tex, options) => renderLatexWithMathJax(tex, { displayMode: options.displayMode }),
     });
     expect(inline).toContain('class="math-inline"');
     expect(inline).toContain("mjx-c2209");
 
     const display = toSafeMarkdownHtml("$$\\frac{1}{2}$$", {
       cache: false,
-      renderMath: (tex, options) => renderLatexWithMathJax(tex, { displayMode: options.displayMode ?? false }),
+      renderMath: (tex, options) => renderLatexWithMathJax(tex, { displayMode: options.displayMode }),
     });
     expect(display).toContain('class="math-display"');
   });

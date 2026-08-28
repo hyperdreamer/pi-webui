@@ -1,5 +1,4 @@
-import { LitElement, css, html, unsafeCSS } from "lit";
-import katexCss from "katex/dist/katex.min.css?inline";
+import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { writeClipboardText } from "../clipboard";
@@ -98,12 +97,11 @@ export class FormattedText extends LitElement {
 
   static override styles = [
     formattedTextStyles,
-    unsafeCSS(katexCss),
     css`
       .formatted.plain { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-      .math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; }
+      .math-inline { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: -0.25em; }
       .math-display { display: block; max-width: 100%; overflow-x: auto; margin: 10px 0; }
-      .math-display > .katex-display { margin: 0; }
+      .math-display > mjx-container { margin: 0; }
     `,
   ];
 }

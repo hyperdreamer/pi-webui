@@ -1,12 +1,21 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionStatus } from "../api";
 import { ChatView } from "./ChatView";
 import type { FormattedText } from "./FormattedText";
+import { setDefaultRenderMathForTesting } from "../formatting/markdown";
 import type { ChatLine } from "./shared";
 
+const fakeMathRenderer = (tex: string, options: { displayMode: boolean }): string =>
+  `<span class="mjx-container" data-display="${options.displayMode ? "true" : "false"}" data-tex="${tex}"></span>`;
+
+beforeEach(() => {
+  setDefaultRenderMathForTesting(fakeMathRenderer);
+});
+
 afterEach(() => {
+  setDefaultRenderMathForTesting(undefined);
   document.body.replaceChildren();
   localStorage.clear();
 });
@@ -57,13 +66,13 @@ async function openEventGroup(view: ChatView): Promise<void> {
   await settleFormattedChildren(view);
 }
 
-function assertKaTeXSurface(element: FormattedText): void {
-  expect(element.shadowRoot?.querySelector(".katex")).not.toBeNull();
-  expect(element.shadowRoot?.querySelector("math")).not.toBeNull();
+function assertMathJaxSurface(element: FormattedText): void {
+  expect(element.shadowRoot?.querySelector(".mjx-container")).not.toBeNull();
+  expect(element.shadowRoot?.querySelector(".katex")).toBeNull();
 }
 
 describe("ChatView formatted LaTeX surfaces", () => {
-  it("renders every formatted ChatView route through the shared KaTeX boundary", async () => {
+  it("renders every formatted ChatView route through the shared MathJax boundary", async () => {
     const messages: ChatLine[] = [
       { role: "user", parts: [{ type: "text", text: "$x^2$" }] },
       { role: "assistant", parts: [{ type: "text", text: "$x^2$" }] },
@@ -101,7 +110,7 @@ describe("ChatView formatted LaTeX surfaces", () => {
       "$q$",
     ]);
     expect(children).toHaveLength(6);
-    for (const child of children) assertKaTeXSurface(child);
+    for (const child of children) assertMathJaxSurface(child);
 
     const bashArticle = view.shadowRoot?.querySelector<HTMLElement>("article.msg.bash");
     if (bashArticle === null || bashArticle === undefined) throw new Error("Expected the bash article");
@@ -123,8 +132,7 @@ describe("ChatView formatted LaTeX surfaces", () => {
     const liveContainer = live.shadowRoot?.querySelector<HTMLElement>(".formatted");
     expect(liveContainer?.classList.contains("plain")).toBe(true);
     expect(liveContainer?.textContent).toBe("$x^2$");
-    expect(liveContainer?.querySelector(".katex")).toBeNull();
-    expect(liveContainer?.querySelector("math")).toBeNull();
+    expect(liveContainer?.querySelector(".mjx-container")).toBeNull();
 
     view.status = baseStatus();
     await view.updateComplete;
@@ -133,7 +141,7 @@ describe("ChatView formatted LaTeX surfaces", () => {
     const settled = formattedChildren(view).at(-1);
     if (settled === undefined) throw new Error("Expected the settled formatted-text element");
     expect(settled.live).toBe(false);
-    assertKaTeXSurface(settled);
+    assertMathJaxSurface(settled);
     expect(settled.shadowRoot?.querySelector(".formatted.plain")).toBeNull();
   });
 });

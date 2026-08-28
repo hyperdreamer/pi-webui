@@ -1,4 +1,3 @@
-import { renderToString } from "katex";
 import { marked } from "marked";
 import {
   escapeHtml,
@@ -7,6 +6,7 @@ import {
   renderLatexMarkdown,
   type LatexRenderToString,
 } from "./latexMath";
+import { renderLatexWithMathJax } from "./mathRenderer";
 
 const renderer = new marked.Renderer();
 renderer.html = ({ text }) => escapeHtml(text);
@@ -39,6 +39,17 @@ interface CacheEntry {
 const markdownHtmlCache = new Map<string, CacheEntry>();
 let retainedChars = 0;
 
+let defaultRenderMath: LatexRenderToString = renderLatexWithMathJax;
+
+/**
+ * Test seam: swap the production MathJax renderer. Component tests pass a fake
+ * so jsdom never needs the real engine; pass `undefined` to restore MathJax.
+ * A custom renderer also forces the cache bypass that injected adapters use.
+ */
+export function setDefaultRenderMathForTesting(renderMath: LatexRenderToString | undefined): void {
+  defaultRenderMath = renderMath ?? renderLatexWithMathJax;
+}
+
 export interface MarkdownRenderOptions {
   /**
    * Whether the rendered HTML may be cached. Streaming text must pass `false`:
@@ -64,7 +75,7 @@ export function toSafeMarkdownHtml(text: string, options: MarkdownRenderOptions 
     }
   }
   const html = options.renderMath !== undefined || hasLatexDelimiterMarker(text)
-    ? renderLatexMarkdown(text, options.renderMath ?? renderToString)
+    ? renderLatexMarkdown(text, options.renderMath ?? defaultRenderMath)
     : marked.parse(text, { async: false, breaks: true, gfm: true, renderer });
 
   const safeHtml = sanitizeHtml(html);

@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { KatexOptions } from "katex";
-import { renderLatexMarkdown, type LatexRenderToString } from "./latexMath";
+import { escapeHtmlAttribute, renderLatexMarkdown, type LatexRenderToString } from "./latexMath";
 
 interface MathCall {
   tex: string;
-  options: KatexOptions;
+  options: { displayMode: boolean };
 }
 
 interface RecordingAdapter {
@@ -22,7 +21,7 @@ describe("renderLatexMarkdown", () => {
     return { render, calls };
   }
 
-  it("renders dollar and parenthesized inline formulas with bounded KaTeX options", () => {
+  it("renders dollar and parenthesized inline formulas with the display mode option", () => {
     const adapter = recordingAdapter();
 
     expect(renderLatexMarkdown("Before $x^2$ after.", adapter.render)).toContain('class="math-inline"');
@@ -30,13 +29,11 @@ describe("renderLatexMarkdown", () => {
 
     const firstCall = adapter.calls[0];
     expect(firstCall?.tex).toBe("x^2");
-    expect(firstCall?.options.output).toBe("htmlAndMathml");
     expect(firstCall?.options.displayMode).toBe(false);
-    expect(firstCall?.options.throwOnError).toBe(false);
-    expect(firstCall?.options.trust).toBe(false);
-    expect(firstCall?.options.strict).toBe("ignore");
-    expect(firstCall?.options.maxExpand).toBe(1000);
-    expect(firstCall?.options.maxSize).toBe(100);
+  });
+
+  it("escapes quotes and the core characters for the wrapper aria-label", () => {
+    expect(escapeHtmlAttribute(`a"b<c>&d`)).toBe("a&quot;b&lt;c&gt;&amp;d");
   });
 
   it("renders isolated display formulas", () => {

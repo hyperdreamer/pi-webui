@@ -2,15 +2,19 @@
 
 import { marked } from "marked";
 import { describe, expect, it, vi } from "vitest";
-import { clearMarkdownHtmlCache, markdownHtmlCacheChars, markdownHtmlCacheSize, toSafeMarkdownHtml } from "./markdown";
+import { clearMarkdownHtmlCache, markdownHtmlCacheChars, markdownHtmlCacheSize, setDefaultRenderMathForTesting, toSafeMarkdownHtml } from "./markdown";
 
 describe("toSafeMarkdownHtml", () => {
-  it("renders representative math with KaTeX HTML and MathML", () => {
-    const html = toSafeMarkdownHtml("Area: $x^2$", { cache: false });
-
-    expect(html).toContain('class="math-inline"');
-    expect(html).toContain("katex");
-    expect(html).toContain("MathML");
+  it("renders representative math with the injected renderer surface", () => {
+    setDefaultRenderMathForTesting((tex, { displayMode }) =>
+      `<span class="mjx-container" data-display="${displayMode ? "true" : "false"}" data-tex="${tex}"></span>`);
+    try {
+      const html = toSafeMarkdownHtml("Area: $x^2$", { cache: false });
+      expect(html).toContain('class="math-inline"');
+      expect(html).toContain('class="mjx-container"');
+    } finally {
+      setDefaultRenderMathForTesting(undefined);
+    }
   });
 
   it("caches production math renders but bypasses the cache for an injected adapter", () => {

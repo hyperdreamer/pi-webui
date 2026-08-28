@@ -1,7 +1,6 @@
 import { Marked, Renderer, type MarkedToken, type Token, type Tokens, type TokensList, type TokenizerStartFunction, type TokenizerThis } from "marked";
-import type { KatexOptions } from "katex";
 
-export type LatexRenderToString = (tex: string, options: KatexOptions) => string;
+export type LatexRenderToString = (tex: string, options: { displayMode: boolean }) => string;
 
 const MAX_DISCOVERY_BODY_UNITS = 2_048;
 const MAX_FORMULA_BODY_UNITS = 512;
@@ -11,15 +10,6 @@ const MAX_CONTROL_SEQUENCE_STARTS = 64;
 const MAX_ALIGNMENT_SEPARATORS = 64;
 const MAX_MATH_OUTPUT_UNITS = 256_000;
 const MAX_FORMULA_OUTPUT_UNITS = 32_000;
-
-const MATH_OPTIONS = {
-  output: "htmlAndMathml",
-  throwOnError: false,
-  trust: false,
-  strict: "ignore",
-  maxExpand: 1_000,
-  maxSize: 100,
-} as const satisfies Omit<KatexOptions, "displayMode">;
 
 type MathTokenType = "latex-inline" | "latex-display";
 type LiteralTokenType = "latex-inline-literal" | "latex-block-literal";
@@ -66,6 +56,11 @@ export function escapeHtml(text: string): string {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+/** Escape text for an HTML attribute value: the core escapes plus double quotes. */
+export function escapeHtmlAttribute(text: string): string {
+  return escapeHtml(text).replaceAll('"', "&quot;");
 }
 
 /** A cheap pre-check used by callers to avoid loading the math path for plain text. */
@@ -699,17 +694,15 @@ function renderLatexToken(token: Tokens.Generic, context: MathRenderContext, ren
   if (!admitFormula(mathToken.tex, context)) return literalForMathToken(mathToken);
   let rendered: string;
   try {
-    rendered = renderMath(mathToken.tex, {
-      ...MATH_OPTIONS,
-      displayMode: mathToken.displayMode,
-    });
+    rendered = renderMath(mathToken.tex, { displayMode: mathToken.displayMode });
   } catch {
     return literalForMathToken(mathToken);
   }
   if (!admitRenderedOutput(rendered, context)) return literalForMathToken(mathToken);
+  const label = `aria-label="${escapeHtmlAttribute(mathToken.tex)}"`;
   return mathToken.displayMode
-    ? `<div class="math-display">${rendered}</div>`
-    : `<span class="math-inline">${rendered}</span>`;
+    ? `<div class="math-display" role="img" ${label}>${rendered}</div>`
+    : `<span class="math-inline" role="img" ${label}>${rendered}</span>`;
 }
 
 function readLatexMathToken(token: Tokens.Generic): LatexMathToken | undefined {
