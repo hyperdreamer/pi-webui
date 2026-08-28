@@ -20,5 +20,13 @@ describe("FormattedText cold-start math retry", () => {
     }, { timeout: 10_000 });
 
     expect(element.shadowRoot?.querySelector(".math-inline")).not.toBeNull();
+
+    // CHTML draws glyphs with CSS, and document-head rules cannot reach a
+    // shadow root: the re-render must also deliver the stylesheet inside it.
+    const mathStyle = element.shadowRoot?.querySelector("style[data-mathjax-chtml]");
+    if (mathStyle == null) throw new Error("Expected the MathJax style element");
+    const cssText = mathStyle.textContent;
+    expect(cssText.trimStart().startsWith('mjx-container[jax="CHTML"]')).toBe(true);
+    expect(cssText).toContain("@font-face");
   });
 });

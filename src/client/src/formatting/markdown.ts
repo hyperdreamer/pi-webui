@@ -146,6 +146,18 @@ function sanitizeHtml(html: string): string {
       if (name.startsWith("on")) element.removeAttribute(attribute.name);
       if ((name === "href" || name === "src") && !isSafeUrl(attribute.value)) element.removeAttribute(attribute.name);
     }
+    // Inline `style` attributes normally carry MathJax's text-layout geometry
+    // (`padding-top`, `width`, `position: relative`, ...) and must survive.
+    // But a style that pulls the element out of the document flow is the
+    // UI-redressing primitive, and only relative/static are ever emitted.
+    // Reading the decoded CSSOM (not the raw attribute text) also catches
+    // CSS-escaped property names such as `p\6f sition: fixed`.
+    if (element instanceof HTMLElement) {
+      const position = element.style.position.trim().toLowerCase();
+      if (position === "fixed" || position === "absolute" || position === "sticky") {
+        element.removeAttribute("style");
+      }
+    }
     if (element.tagName === "A") {
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noreferrer noopener");

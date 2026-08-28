@@ -76,6 +76,26 @@ describe("toSafeMarkdownHtml", () => {
     expect(html).not.toMatch(/onerror/i);
   });
 
+  it("strips inline styles that reposition elements out of the document flow", () => {
+    const adapter = vi.fn(() =>
+      "<mjx-mi style=\"color: red;position:fixed;inset:0;z-index:99999;background:white\">EVIL</mjx-mi>");
+
+    const html = toSafeMarkdownHtml("before $x$ after", { renderMath: adapter });
+
+    expect(html).toContain("EVIL");
+    expect(html).not.toMatch(/style\s*=/u);
+  });
+
+  it("keeps MathJax's own layout styles", () => {
+    const adapter = vi.fn(() =>
+      "<mjx-block style=\"width: 1.302em; margin: 0.276em 0 0.276em; position: relative; left: 0.276em; top: 0; max-width: 1.302em;\">x</mjx-block>");
+
+    const html = toSafeMarkdownHtml("before $x$ after", { renderMath: adapter });
+
+    expect(html).toContain("position: relative");
+    expect(html).toContain("margin: 0.276em");
+  });
+
   it("preserves unmatched closing markers through the Markdown facade", () => {
     const html = toSafeMarkdownHtml(String.raw`before \) and \] after`, { cache: false });
 

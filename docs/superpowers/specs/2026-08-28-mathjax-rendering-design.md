@@ -34,7 +34,7 @@ The original LaTeX rendering design (2026-08-21) rejected MathJax because it "wo
 - Native MathML rendering (browser-owned layout, browser floor Chrome 109+/Safari 16.4+, per-OS font variance) — documented as the rejected alternative.
 - KaTeX retention with a curated glyph patch (whack-a-mole; does not fix overall typography).
 - Server-side math rendering in the session daemon or web API.
-- The MathJax `[safe]` extension: the existing source-level admission guards (forbidden `\def`/`\gdef`/`\let`/`\newcommand`/…, brace-depth, control-sequence and alignment-separator caps) remain the security boundary; MathJax v3 does not enable `\href`/`\url` by default.
+- The MathJax `[safe]` extension: the existing source-level admission guards remain the security boundary. `AllPackages` enables `\href`/`\style`/`\class`/`\cssId` (the `html` package) and raw-style splices like `\bbox`/`\unicode`/`\definecolor`, so the forbidden-command list is extended to cover that whole family, and the color commands (`\color`, `\textcolor`, `\colorbox`, `\fcolorbox`, colortbl's `\rowcolor`/`\cellcolor`/`\columncolor`) have their arguments validated against a safe color grammar, because MathJax's `named` color model passes unknown names through verbatim into inline `style` attributes.
 - MathJax optional-extensions tuning (e.g. `mhchem`/`physics`): the full es5 tree is served so extensions load on demand; failures fall back to literal source, same as KaTeX errors today.
 - SVG output: CHTML is chosen for lean DOM and string-cache compatibility; SVG with `fontCache: "none"` would inflate per-message HTML against the output budgets.
 - A pruned/slimmed MathJax asset copy: full es5 tree first, pruning is a possible follow-up.
@@ -53,7 +53,7 @@ A small bridge module owns MathJax lifecycle and the renderer function:
 
 - `LatexRenderToString` options narrow from `KatexOptions` to `{ displayMode: boolean }`; the `katex` type import and the `MATH_OPTIONS` constant are removed.
 - `markdown.ts` default `renderMath` becomes `renderLatexWithMathJax` via the bridge.
-- All admission guards, budgets (`MAX_FORMULA_BODY_UNITS`, `MAX_MESSAGE_SOURCE_UNITS`, `MAX_FORMULA_OUTPUT_UNITS`, `MAX_MATH_OUTPUT_UNITS`), forbidden commands, and the literal-fallback path are unchanged. CHTML output length is comparable to KaTeX's HTML output, so the budgets need no tuning.
+- All admission guards, budgets (`MAX_FORMULA_BODY_UNITS`, `MAX_MESSAGE_SOURCE_UNITS`, `MAX_FORMULA_OUTPUT_UNITS`, `MAX_MATH_OUTPUT_UNITS`), and the literal-fallback path are unchanged. The forbidden-command list gains the `html`-package family (`\href`/`\url`/`\style`/`\class`/`\cssId`) plus MathJax-only raw-splice commands (`\bbox`/`\unicode`/`\definecolor`), and color-command arguments are validated, because `AllPackages` enables commands that KaTeX's `trust: false` posture rejected. CHTML output length is comparable to KaTeX's HTML output, so the budgets need no tuning.
 - Error handling is unchanged: `renderLatexToken` already catches renderer throws and emits escaped source (`literalForMathToken`).
 
 ### Loading and cold start

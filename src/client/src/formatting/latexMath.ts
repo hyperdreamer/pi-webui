@@ -753,6 +753,7 @@ function hasSafeMathStructure(tex: string): boolean {
           const commandEnd = readControlSequenceEnd(tex, runEnd);
           const command = tex.slice(runEnd - 1, commandEnd);
           if (isForbiddenCommand(command)) return false;
+          if (!hasSafeColorArguments(tex, command, commandEnd)) return false;
           index = commandEnd - 1;
         } else {
           // The odd trailing backslash escapes the following punctuation or brace.
@@ -783,7 +784,100 @@ function readControlSequenceEnd(tex: string, start: number): number {
 }
 
 function isForbiddenCommand(command: string): boolean {
-  return ["\\def", "\\gdef", "\\edef", "\\xdef", "\\let", "\\newcommand", "\\renewcommand"].includes(command);
+  return [
+    // LaTeX macro primitives: user-defined macros cannot be admitted.
+    "\\def", "\\gdef", "\\edef", "\\xdef", "\\let", "\\newcommand", "\\renewcommand",
+    // MathJax `html` package: these splice user strings verbatim into HTML
+    // attributes or inline styles. KaTeX `trust: false` rejects the same
+    // command family, so the admission guard mirrors that posture.
+    "\\href", "\\url", "\\style", "\\class", "\\cssId",
+    // MathJax-only commands with the same raw-splice surface (`\bbox` passes
+    // arbitrary CSS styles through, `\unicode` splices a font family, and
+    // `\definecolor` stores raw values for later use by color commands).
+    "\\bbox", "\\unicode", "\\definecolor",
+  ].includes(command);
+}
+
+interface ColorCommandShape {
+  /** Whether the command accepts a leading `[model]` bracket. */
+  modelBracket: boolean;
+  /** Number of color arguments before the math body. */
+  colorArgs: number;
+}
+
+const COLOR_COMMAND_SHAPES: Record<string, ColorCommandShape> = {
+  "\\color": { modelBracket: true, colorArgs: 1 },
+  "\\textcolor": { modelBracket: true, colorArgs: 1 },
+  "\\colorbox": { modelBracket: false, colorArgs: 1 },
+  "\\fcolorbox": { modelBracket: false, colorArgs: 2 },
+  "\\rowcolor": { modelBracket: true, colorArgs: 1 },
+  "\\cellcolor": { modelBracket: true, colorArgs: 1 },
+  "\\columncolor": { modelBracket: true, colorArgs: 1 },
+};
+
+/** Registered color models that parse their values numerically and normalize them to hex. */
+const SAFE_COLOR_MODEL_PATTERN = /^(?:rgb|RGB|gray)$/u;
+
+/**
+ * Color value grammar accepted from user input for the `named` color model.
+ * MathJax's named model passes unknown names through verbatim, so any
+ * character that could escape the declaration (`;`, quotes, backslash,
+ * braces, `:`, `/`, `<`, `>`) is excluded. Named CSS colors, MathJax color
+ * names, hex values, and simple `rgb(...)`/`rgba(...)`/`hsl(...)` forms stay
+ * allowed because they cannot terminate or extend a declaration.
+ */
+const SAFE_COLOR_VALUE_PATTERN = /^[A-Za-z0-9#%(),.!\s-]+$/u;
+
+function hasSafeColorArguments(tex: string, command: string, commandEnd: number): boolean {
+  const shape = COLOR_COMMAND_SHAPES[command];
+  if (shape === undefined) return true;
+  let position = commandEnd;
+  let mathjaxValidated = false;
+  position = skipHorizontalWhitespace(tex, position);
+  if (tex[position] === "[") {
+    if (!shape.modelBracket) return false;
+    const closeBracket = tex.indexOf("]", position + 1);
+    if (closeBracket === -1) return false;
+    const model = tex.slice(position + 1, closeBracket).trim();
+    // The numeric models parse strictly and emit normalized hex, so the value
+    // cannot carry raw CSS; `named` passes unknown names through verbatim and
+    // needs the value check below. Unknown models render as MathJax errors.
+    mathjaxValidated = SAFE_COLOR_MODEL_PATTERN.test(model);
+    position = closeBracket + 1;
+  }
+  for (let argIndex = 0; argIndex < shape.colorArgs; argIndex += 1) {
+    position = skipHorizontalWhitespace(tex, position);
+    if (tex[position] !== "{") return false;
+    const closeBrace = findMatchingBrace(tex, position + 1);
+    if (closeBrace === -1) return false;
+    const value = tex.slice(position + 1, closeBrace);
+    if (!mathjaxValidated && !isSafeColorValue(value)) return false;
+    position = closeBrace + 1;
+  }
+  return true;
+}
+
+function isSafeColorValue(value: string): boolean {
+  return value.trim() !== "" && SAFE_COLOR_VALUE_PATTERN.test(value);
+}
+
+function skipHorizontalWhitespace(tex: string, start: number): number {
+  let position = start;
+  while (position < tex.length && /\s/u.test(tex[position] ?? "")) position += 1;
+  return position;
+}
+
+function findMatchingBrace(tex: string, start: number): number {
+  let depth = 0;
+  for (let index = start; index < tex.length; index += 1) {
+    if (tex[index] === "{") {
+      depth += 1;
+    } else if (tex[index] === "}") {
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return -1;
 }
 
 function literalForMathToken(token: LatexMathToken): string {

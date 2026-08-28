@@ -3,7 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { writeClipboardText } from "../clipboard";
 import { hasPotentialLatexMath, toSafeMarkdownHtml } from "../formatting/markdown";
-import { isMathJaxReady, renderLatexWithMathJax, whenMathJaxReady } from "../formatting/mathRenderer";
+import { installMathJaxStyles, isMathJaxReady, renderLatexWithMathJax, whenMathJaxReady } from "../formatting/mathRenderer";
 import { formattedTextStyles } from "./shared";
 
 /**
@@ -77,6 +77,12 @@ export class FormattedText extends LitElement {
 
   override updated(): void {
     this.enhanceCodeBlocks();
+    // CHTML draws every glyph through CSS, and document-head rules cannot
+    // reach a shadow root: deliver the stylesheet into the root that just
+    // rendered so MathJax output is actually visible. Idempotent per root.
+    if (hasPotentialLatexMath(this.text) && this.renderRoot instanceof ShadowRoot) {
+      installMathJaxStyles(this.renderRoot);
+    }
     this.scheduleMathRetry();
   }
 

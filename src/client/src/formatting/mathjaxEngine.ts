@@ -42,8 +42,13 @@ export function convertLatex(texSource: string, display: boolean): string {
   return output;
 }
 
-/** The complete CHTML stylesheet (all wrapper rules, `adaptiveCSS: false`), as a `<style>` element string. */
+/**
+ * The complete CHTML stylesheet (all wrapper rules, `adaptiveCSS: false`) as
+ * raw CSS text, without the outer `<style>` element. Consumers assign it via
+ * `textContent`/`replaceSync`; the wrapper string would make the CSS parser
+ * treat the first rule as garbage and drop it.
+ */
 export function mathJaxStyles(): string {
   const stylesheet: unknown = doc.outputJax.styleSheet(doc);
-  return adaptor.outerHTML(toLiteElement(stylesheet, "stylesheet"));
+  return adaptor.textContent(toLiteElement(stylesheet, "stylesheet"));
 }

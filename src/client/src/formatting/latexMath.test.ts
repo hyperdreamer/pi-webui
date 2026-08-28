@@ -298,8 +298,15 @@ describe("renderLatexMarkdown", () => {
     expect(html).toContain(source.replaceAll("&", "&amp;"));
   });
 
-  it.each(["def", "gdef", "edef", "xdef", "let", "newcommand", "renewcommand"])(
-    "rejects forbidden macro primitive \\%s",
+  it.each([
+    "def", "gdef", "edef", "xdef", "let", "newcommand", "renewcommand",
+    // User strings spliced verbatim into HTML attributes or inline styles;
+    // KaTeX `trust: false` postures against the same command family.
+    "href", "url", "style", "class", "cssId",
+    // MathJax-only commands with the same raw-splice surface.
+    "bbox", "unicode", "definecolor",
+  ])(
+    "rejects forbidden command that splices user strings into output \\%s",
     (command) => {
       const adapter = recordingAdapter();
       const source = `$\\${command}{x}$`;
@@ -309,6 +316,50 @@ describe("renderLatexMarkdown", () => {
       expect(adapter.calls).toHaveLength(0);
     },
   );
+
+  it.each([
+    ["\\textcolor{red}{x}"],
+    ["\\textcolor{Red}{x}"],
+    ["\\textcolor{#ff0000}{x}"],
+    ["\\textcolor{rgb(1,2,3)}{x}"],
+    ["\\textcolor[rgb]{0.5,0.5,0.5}{x}"],
+    ["\\textcolor[gray]{0.5}{x}"],
+    ["\\color{red}x"],
+    ["\\color[rgb]{1,0,0}x"],
+    ["\\colorbox{yellow}{X}"],
+    ["\\colorbox{red!50!blue}{X}"],
+    ["\\fcolorbox{red}{yellow}{X}"],
+    ["\\fcolorbox{red!50}{blue!20}{X}"],
+  ])("admits a safe color argument in %s", (source) => {
+    const adapter = recordingAdapter();
+
+    renderLatexMarkdown(`$${source}$`, adapter.render);
+
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["\\textcolor{red;position:fixed}{x}"],
+    ["\\textcolor{red\":inserted;position:fixed;background:white}{x}"],
+    ["\\textcolor{red'}quote;inset:0}{x}"],
+    ["\\textcolor{url(https://evil.example)}{x}"],
+    ["\\color{red;position:fixed}x"],
+    ["\\colorbox{yellow;inset:0}{X}"],
+    ["\\colorbox[unknown]{red}{X}"],
+    ["\\fcolorbox{red;position:fixed}{yellow}{X}"],
+    ["\\fcolorbox{red}{yellow;background:white}{X}"],
+    ["\\begin{array}{c}\\rowcolor{red;position:fixed} x\\end{array}"],
+    ["\\begin{array}{c}\\cellcolor{yellow;z-index:99999} x\\end{array}"],
+    ["\\begin{array}{c}\\columncolor{blue;inset:0} y\\end{array}"],
+  ])("rejects an injectable color argument in %s", (source) => {
+    const adapter = recordingAdapter();
+
+    const html = renderLatexMarkdown(`$${source}$`, adapter.render);
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(html).not.toContain("mjx-");
+    expect(html).not.toMatch(/style\s*=/u);
+  });
 
   it("renders small formulas beyond the former per-message count limit", () => {
     const adapter = recordingAdapter();

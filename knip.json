@@ -17,6 +17,6 @@
     "optional-skills/**/*.mjs"
   ],
   "ignoreExportsUsedInFile": true,
-  "ignoreDependencies": ["tsx", "mathjax", "mathjax-full"],
+  "ignoreDependencies": ["tsx", "mathjax"],
   "ignoreBinaries": ["tsx", "vite", "tsc", "knip", "eslint", "vitest", "changeset", "mkfifo", "taskkill"]
 }
