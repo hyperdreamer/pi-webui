@@ -3,6 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { writeClipboardText } from "../clipboard";
 import { hasPotentialLatexMath, toSafeMarkdownHtml } from "../formatting/markdown";
+import { isMathJaxReady, renderLatexWithMathJax, whenMathJaxReady } from "../formatting/mathRenderer";
 import { formattedTextStyles } from "./shared";
 
 /**
@@ -36,15 +37,47 @@ export class FormattedText extends LitElement {
    */
   @property({ type: Boolean }) live = false;
 
+  /** Set when a cold-start retry re-render must bypass the literal-fallback cache entry. */
+  private retryMathRender = false;
+  /** One subscription per element; the retry promise never resolves if the engine fails to load. */
+  private mathRetryScheduled = false;
+
   override render() {
     // A large live tail renders as plain text: Lit updates the single text node
     // in place instead of reparsing and rebuilding the whole subtree per delta.
     if (shouldRenderLivePlainText(this)) return html`<div class="formatted plain" dir="auto">${this.text}</div>`;
-    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text, { cache: !this.live }))}</div>`;
+    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(this.renderMarkdown())}</div>`;
+  }
+
+  private renderMarkdown(): string {
+    if (this.retryMathRender) {
+      this.retryMathRender = false;
+      // Cache bypass: the first attempt may have cached a literal-fallback render.
+      return toSafeMarkdownHtml(this.text, { cache: false, renderMath: renderLatexWithMathJax });
+    }
+    return toSafeMarkdownHtml(this.text, { cache: !this.live });
+  }
+
+  /**
+   * Cold-start insurance: a settled message rendered before MathJax finished
+   * loading shows literal source; re-render it once the engine is ready.
+   */
+  private scheduleMathRetry(): void {
+    if (this.mathRetryScheduled || isMathJaxReady() || this.live || !hasPotentialLatexMath(this.text)) return;
+    this.mathRetryScheduled = true;
+    void whenMathJaxReady()
+      .then(() => {
+        this.retryMathRender = true;
+        this.requestUpdate();
+      })
+      .catch(() => {
+        // The engine failed to load; the message stays literal source.
+      });
   }
 
   override updated(): void {
     this.enhanceCodeBlocks();
+    this.scheduleMathRetry();
   }
 
   private enhanceCodeBlocks(): void {
