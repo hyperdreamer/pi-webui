@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.5
+
+### Patch Changes
+
+- Upgrade the supported Pi Coding Agent package set to the 0.84.4 patch release.
+
 ## 1.18.4
 
 ### Patch Changes
