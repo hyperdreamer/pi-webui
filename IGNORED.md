@@ -51,7 +51,7 @@ upgrade the Pi package set together and require a clean full audit instead.
 | Last validated | 2026-08-08 |
 | Expires | 2026-08-25 (review anchor; the exception no longer applies) |
 | Upstream package path | `@earendil-works/pi-coding-agent@0.84.1` → published `npm-shrinkwrap.json` |
-| PI WEBUI compatibility range | `>=0.84.0 <0.85` |
+| PI WEBUI compatibility range | `>=0.85.0 <0.86` |
 | Bundling evidence | The package `files` allowlist excludes this register and all `node_modules`; verify with `npm pack --dry-run --ignore-scripts --json` at each release. |
 | Production-audit requirement | `npm audit --omit=dev --json` must remain clean. |
 

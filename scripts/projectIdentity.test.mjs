@@ -29,14 +29,14 @@ describe("project identity", () => {
 
   it("keeps the embedded Pi SDK dependencies aligned with its supported peer series", () => {
     expect(packageManifest.devDependencies).toMatchObject({
-      "@earendil-works/pi-agent-core": "^0.84.4",
-      "@earendil-works/pi-ai": "^0.84.4",
-      "@earendil-works/pi-coding-agent": "^0.84.4",
+      "@earendil-works/pi-agent-core": "^0.85.1",
+      "@earendil-works/pi-ai": "^0.85.1",
+      "@earendil-works/pi-coding-agent": "^0.85.1",
     });
     expect(packageManifest.peerDependencies).toMatchObject({
-      "@earendil-works/pi-agent-core": ">=0.84.0 <0.85",
-      "@earendil-works/pi-ai": ">=0.84.0 <0.85",
-      "@earendil-works/pi-coding-agent": ">=0.84.0 <0.85",
+      "@earendil-works/pi-agent-core": ">=0.85.0 <0.86",
+      "@earendil-works/pi-ai": ">=0.85.0 <0.86",
+      "@earendil-works/pi-coding-agent": ">=0.85.0 <0.86",
     });
   });
 
