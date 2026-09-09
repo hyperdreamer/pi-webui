@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.7
+
+### Patch Changes
+
+- a86f1be: Fix voice input transcript polishing failures with thinking models by removing the 512-token cap and suppressing reasoning during polishing.
+
 ## 1.18.6
 
 ### Patch Changes
