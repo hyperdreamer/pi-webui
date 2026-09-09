@@ -16,6 +16,7 @@ import type {
   UtilityModelResolver,
 } from "../sessions/utilityModelResolver.js";
 import {
+  SPEECH_INPUT_POLISHING_MAX_OUTPUT_BYTES,
   SpeechInputPolishingAbortedError,
   SpeechInputPolishingUnavailableError,
   createSpeechInputPolishingService,
@@ -46,7 +47,7 @@ describe("SpeechInputPolishingService", () => {
     expect(harnessConfiguredCandidates(service)).toHaveBeenCalledWith("lightweight");
   });
 
-  it("passes the fixed context, candidate thinking level, signal, and bounded one-shot options", async () => {
+  it("passes the fixed context, suppressed reasoning, signal, and bounded one-shot options", async () => {
     let received:
       | {
           model: Model<Api>;
@@ -79,15 +80,87 @@ describe("SpeechInputPolishingService", () => {
     expect(typeof received?.context.messages[0]?.timestamp).toBe("number");
     expect(received?.context.tools).toBeUndefined();
     expect(received?.options).toEqual(expect.objectContaining({
-      reasoning: "high",
       maxRetries: 0,
       cacheRetention: "none",
       signal: controller.signal,
       timeoutMs: SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS,
     }));
     expect(SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS).toBeLessThan(SPEECH_INPUT_POLISHING_ROUTE_TIMEOUT_MS);
-    expect(received?.options?.maxTokens).toEqual(expect.any(Number));
-    expect(received?.options?.maxTokens).toBeGreaterThan(0);
+    expect("maxTokens" in (received?.options ?? {})).toBe(false);
+    expect(received?.options?.maxTokens).toBeUndefined();
+    expect("reasoning" in (received?.options ?? {})).toBe(false);
+  });
+
+  it("omits maxTokens from completeSimple options", async () => {
+    let capturedOptions: ModelsSimpleStreamOptions | undefined;
+    const service = createHarness([candidate(firstModel)], (_model, _context, options) => {
+      capturedOptions = options;
+      return Promise.resolve(assistantMessage([{ type: "text", text: "polished text" }]));
+    });
+
+    await expect(service.polish(rawTranscript)).resolves.toBe("polished text");
+    expect(capturedOptions).toBeDefined();
+    expect("maxTokens" in (capturedOptions ?? {})).toBe(false);
+    expect(capturedOptions?.maxTokens).toBeUndefined();
+  });
+
+  it("omits reasoning property when model supports off", async () => {
+    let capturedOptions: ModelsSimpleStreamOptions | undefined;
+    const modelWithOptionalReasoning = fakeModel("acme", "reasoning-optional", ["off", "low", "high"]);
+    const service = createHarness([candidate(modelWithOptionalReasoning, "high")], (_model, _context, options) => {
+      capturedOptions = options;
+      return Promise.resolve(assistantMessage([{ type: "text", text: "polished text" }]));
+    });
+
+    await expect(service.polish(rawTranscript)).resolves.toBe("polished text");
+    expect("reasoning" in (capturedOptions ?? {})).toBe(false);
+  });
+
+  it("passes lowest clamped thinking level when model mandates reasoning", async () => {
+    let capturedOptions: ModelsSimpleStreamOptions | undefined;
+    const modelRequiringReasoning = fakeModel("acme", "reasoning-required", ["minimal", "low", "high"]);
+    const service = createHarness([candidate(modelRequiringReasoning, "high")], (_model, _context, options) => {
+      capturedOptions = options;
+      return Promise.resolve(assistantMessage([{ type: "text", text: "polished text" }]));
+    });
+
+    await expect(service.polish(rawTranscript)).resolves.toBe("polished text");
+    expect(capturedOptions?.reasoning).toBe("minimal");
+  });
+
+  it("evaluates clamping per candidate independently during fallback", async () => {
+    const optionsSeen: (ModelsSimpleStreamOptions | undefined)[] = [];
+    const candidate1 = candidate(fakeModel("acme", "model-1", ["off", "high"]), "high");
+    const candidate2 = candidate(fakeModel("acme", "model-2", ["minimal", "high"]), "high");
+
+    const service = createHarness([candidate1, candidate2], (model, _context, options) => {
+      optionsSeen.push(options);
+      if (model === candidate1.model) {
+        return Promise.resolve(assistantMessage([], "error"));
+      }
+      return Promise.resolve(assistantMessage([{ type: "text", text: "polished by candidate 2" }]));
+    });
+
+    await expect(service.polish(rawTranscript)).resolves.toBe("polished by candidate 2");
+    expect(optionsSeen).toHaveLength(2);
+    expect("reasoning" in (optionsSeen[0] ?? {})).toBe(false);
+    expect(optionsSeen[1]?.reasoning).toBe("minimal");
+  });
+
+  it("accepts output at exact 1 MiB boundary and rejects output exceeding 1 MiB", async () => {
+    const exactLimitText = "a".repeat(SPEECH_INPUT_POLISHING_MAX_OUTPUT_BYTES);
+    const serviceExact = createHarness([candidate(firstModel)], () =>
+      Promise.resolve(assistantMessage([{ type: "text", text: exactLimitText }])),
+    );
+    await expect(serviceExact.polish(rawTranscript)).resolves.toBe(exactLimitText);
+
+    const oversizedText = "a".repeat(SPEECH_INPUT_POLISHING_MAX_OUTPUT_BYTES + 1);
+    const serviceOversized = createHarness([candidate(firstModel)], () =>
+      Promise.resolve(assistantMessage([{ type: "text", text: oversizedText }])),
+    );
+    await expect(serviceOversized.polish(rawTranscript)).rejects.toBeInstanceOf(
+      SpeechInputPolishingUnavailableError,
+    );
   });
 
   it("extracts text blocks while ignoring thinking blocks", async () => {
@@ -226,7 +299,17 @@ function candidate(
   return { model, thinkingLevel, slot: "lightweight" };
 }
 
-function fakeModel(provider: string, id: string): Model<Api> {
+function fakeModel(
+  provider: string,
+  id: string,
+  thinkingLevels?: ThinkingLevel[],
+): Model<Api> {
+  const allLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+  const thinkingLevelMap = thinkingLevels === undefined
+    ? undefined
+    : Object.fromEntries(
+        allLevels.map((lvl) => [lvl, thinkingLevels.includes(lvl) ? lvl : null]),
+      );
   return {
     provider,
     id,
@@ -234,6 +317,7 @@ function fakeModel(provider: string, id: string): Model<Api> {
     api: "openai-completions",
     baseUrl: "https://example.invalid/v1",
     reasoning: true,
+    ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 8_192,
