@@ -1,9 +1,10 @@
-import type {
-  Api,
-  AssistantMessage,
-  Context,
-  Model,
-  ModelsSimpleStreamOptions,
+import {
+  clampThinkingLevel,
+  type Api,
+  type AssistantMessage,
+  type Context,
+  type Model,
+  type ModelsSimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../shared/speechInputAudio.js";
@@ -13,7 +14,6 @@ import type {
   UtilityModelResolver,
 } from "../sessions/utilityModelResolver.js";
 
-export const SPEECH_INPUT_POLISHING_MAX_TOKENS = 512;
 export const SPEECH_INPUT_POLISHING_MAX_OUTPUT_BYTES = SPEECH_INPUT_MAX_TRANSCRIPT_BYTES;
 export const SPEECH_INPUT_POLISHING_SYSTEM_PROMPT =
   "Return only polished plain text. Preserve meaning, intent, technical tokens, and explicit requirements. Correct capitalization, punctuation, spacing, and unambiguous disfluencies only. Do not add, delete, or infer requirements. Do not include explanations, markdown, quotation wrappers, labels, or commentary.";
@@ -90,10 +90,9 @@ export class SpeechInputPolishingService {
           systemPrompt: SPEECH_INPUT_POLISHING_SYSTEM_PROMPT,
           messages: [{ role: "user", content: text, timestamp: Date.now() }],
         };
+        const polishingThinkingLevel = clampThinkingLevel(candidate.model, "off");
         const options: ModelsSimpleStreamOptions = {
-          // pi-ai represents "off" by omitting its optional reasoning field.
-          ...(candidate.thinkingLevel === "off" ? {} : { reasoning: candidate.thinkingLevel }),
-          maxTokens: SPEECH_INPUT_POLISHING_MAX_TOKENS,
+          ...(polishingThinkingLevel === "off" ? {} : { reasoning: polishingThinkingLevel }),
           maxRetries: 0,
           cacheRetention: "none",
           timeoutMs: SPEECH_INPUT_POLISHING_MODEL_TIMEOUT_MS,
