@@ -113,6 +113,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "overrides": {
+    "@xmldom/xmldom": "^0.9.12"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hyperdreamer/pi-webui.git"
