@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.8
+
+### Patch Changes
+
+- d22cf9f: Keep browser tabs responsive during long streaming sessions by no longer broadcasting workspace activity for every streamed token.
+- d22cf9f: Update server and tooling dependencies to remediate npm audit findings, including a Fastify security update and patched fast-uri, js-yaml, smol-toml, Vitest, and XML parser versions.
+
 ## 1.18.7
 
 ### Patch Changes
