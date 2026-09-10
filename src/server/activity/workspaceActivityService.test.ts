@@ -73,6 +73,65 @@ describe("WorkspaceActivityService", () => {
     expect(events.at(-1)).toMatchObject({ type: "workspace.activity", activity: { cwd: "/repo", hasSessionActivity: false, hasTerminalActivity: false } });
   });
 
+  it("does not republish workspace activity for streaming heartbeats with unchanged flags", () => {
+    const events: RealtimeEvent[] = [];
+    const service = new WorkspaceActivityService({ publishRealtime: (event) => events.push(event) });
+
+    service.applySessionActivity("/repo", { sessionId: "s1", phase: "active", label: "receiving response", at: "t0" });
+    expect(events).toHaveLength(1);
+
+    // Every streamed delta republishes activity; none of these can change what a
+    // workspace row renders, so none of them may reach connected tabs.
+    for (let i = 1; i <= 25; i++) {
+      service.applySessionActivity("/repo", { sessionId: "s1", phase: "active", label: "receiving response", at: `t${String(i)}` });
+    }
+    expect(events).toHaveLength(1);
+
+    service.applySessionActivity("/repo", { sessionId: "s1", phase: "idle", label: "idle", at: "done" });
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ type: "workspace.activity", activity: { cwd: "/repo", hasSessionActivity: false, hasTerminalActivity: false } });
+  });
+
+  it("does not republish workspace activity for repeated active status snapshots", () => {
+    const events: RealtimeEvent[] = [];
+    const service = new WorkspaceActivityService({ publishRealtime: (event) => events.push(event) });
+
+    service.applySessionStatus("/repo", status({ isStreaming: true }));
+    service.applySessionStatus("/repo", status({ isStreaming: true, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 } }));
+    expect(events).toHaveLength(1);
+
+    service.applySessionStatus("/repo", status({ isStreaming: false }));
+    expect(events).toHaveLength(2);
+  });
+
+  it("does not republish workspace activity for repeated terminal updates", () => {
+    const events: RealtimeEvent[] = [];
+    const service = new WorkspaceActivityService({ publishRealtime: (event) => events.push(event) });
+
+    service.updateTerminal({ id: "t1", cwd: "/repo", exited: false });
+    service.updateTerminal({ id: "t1", cwd: "/repo", exited: false });
+    expect(events).toHaveLength(1);
+
+    service.updateTerminal({ id: "t1", cwd: "/repo", exited: true });
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ type: "workspace.activity", activity: { cwd: "/repo", hasSessionActivity: false, hasTerminalActivity: false } });
+  });
+
+  it("does not republish when one of several active sessions in a workspace stops", () => {
+    const events: RealtimeEvent[] = [];
+    const service = new WorkspaceActivityService({ publishRealtime: (event) => events.push(event) });
+
+    service.applySessionStatus("/repo", status({ sessionId: "s1", isStreaming: true }));
+    service.applySessionStatus("/repo", status({ sessionId: "s2", isStreaming: true }));
+    expect(events).toHaveLength(1);
+
+    service.applySessionStatus("/repo", status({ sessionId: "s1", isStreaming: false }));
+    expect(events).toHaveLength(1);
+
+    service.applySessionStatus("/repo", status({ sessionId: "s2", isStreaming: false }));
+    expect(events).toHaveLength(2);
+  });
+
   it("combines sessions and terminals and clears closed terminals", () => {
     const events: RealtimeEvent[] = [];
     const service = new WorkspaceActivityService({ publishRealtime: (event) => events.push(event) });

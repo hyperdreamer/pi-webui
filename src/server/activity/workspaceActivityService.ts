@@ -15,9 +15,20 @@ interface TerminalRecord {
   cwd: string;
 }
 
+/** The only fields a workspace row can observe, so the only ones worth republishing. */
+type VisibleWorkspaceActivity = Pick<WorkspaceActivity, "hasSessionActivity" | "hasTerminalActivity">;
+
 export class WorkspaceActivityService {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly terminals = new Map<string, TerminalRecord>();
+  /**
+   * Visible flags last published per cwd. A busy session republishes its
+   * activity for every streamed delta, but the summary only flips when a
+   * workspace starts or stops being active. Comparing against the last publish
+   * keeps first observations and every transition while dropping the per-delta
+   * heartbeat frames that used to flood every connected tab.
+   */
+  private readonly publishedActivity = new Map<string, VisibleWorkspaceActivity>();
 
   constructor(private readonly publisher?: WorkspaceActivityPublisher) {}
 
@@ -91,7 +102,15 @@ export class WorkspaceActivityService {
 
   private publishCwd(cwd: string | undefined): void {
     if (cwd === undefined || cwd === "") return;
-    this.publisher?.publishRealtime({ type: "workspace.activity", activity: this.summaryForCwd(cwd) });
+    const summary = this.summaryForCwd(cwd);
+    const visible: VisibleWorkspaceActivity = {
+      hasSessionActivity: summary.hasSessionActivity,
+      hasTerminalActivity: summary.hasTerminalActivity,
+    };
+    const previous = this.publishedActivity.get(cwd);
+    this.publishedActivity.set(cwd, visible);
+    if (previous?.hasSessionActivity === visible.hasSessionActivity && previous.hasTerminalActivity === visible.hasTerminalActivity) return;
+    this.publisher?.publishRealtime({ type: "workspace.activity", activity: summary });
   }
 
   private activeCwds(): string[] {
