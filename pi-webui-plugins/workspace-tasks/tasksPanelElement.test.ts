@@ -19,7 +19,9 @@ interface CatalogState {
 interface WorkspaceTasksWorkspaceState {
   readonly workspace: CatalogState;
   readonly global: CatalogState;
+  readonly sourceGenerations?: Readonly<Record<WorkspaceTaskScope, number>>;
   readonly move?: { readonly kind: "partial" | "unknown-outcome" | "conflict"; readonly message: string; readonly retryAllowed: boolean };
+  readonly moveError?: { readonly kind: "validation" | "unavailable"; readonly message: string };
   readonly mutationGate?: { readonly scopes: readonly WorkspaceTaskScope[]; readonly message: string };
 }
 
@@ -51,6 +53,23 @@ const state = (workspace: readonly WorkspaceTask[], global: readonly WorkspaceTa
   workspace: { kind: "loaded", config: { version: 1, tasks: workspace }, refreshing: false },
   global: { kind: "loaded", config: { version: 1, tasks: global }, refreshing: false },
 });
+
+function clonePanelState(source: TasksPanelElement["workspaceTasksState"]): TasksPanelElement["workspaceTasksState"] {
+  const cloneCatalog = (catalog: CatalogState): CatalogState => ({
+    ...catalog,
+    ...(catalog.config === undefined ? {} : {
+      config: { version: 1 as const, tasks: catalog.config.tasks.map((task) => ({ ...task })) },
+    }),
+  });
+  return {
+    workspace: cloneCatalog(source.workspace),
+    global: cloneCatalog(source.global),
+    ...(source.sourceGenerations === undefined ? {} : { sourceGenerations: { ...source.sourceGenerations } }),
+    ...(source.move === undefined ? {} : { move: { ...source.move } }),
+    ...(source.moveError === undefined ? {} : { moveError: { ...source.moveError } }),
+    ...(source.mutationGate === undefined ? {} : { mutationGate: { ...source.mutationGate, scopes: [...source.mutationGate.scopes] } }),
+  };
+}
 
 beforeEach(() => {
   defineTasksPanelElement();
@@ -118,7 +137,7 @@ describe("workspace tasks panel", () => {
     globalGroup.open = true;
     globalGroup.dispatchEvent(new Event("toggle"));
 
-    panel.workspaceTasksState = initial;
+    panel.workspaceTasksState = clonePanelState(initial);
     expect((panel.shadowRoot?.querySelector("details[data-group-scope='global']") as HTMLDetailsElement | null)?.open).toBe(true);
     expect((panel.shadowRoot?.querySelector("details[data-group-scope='workspace']") as HTMLDetailsElement | null)?.open).toBe(false);
 
@@ -154,6 +173,84 @@ describe("workspace tasks panel", () => {
     expect(panel.shadowRoot?.textContent).toContain("Global unavailable");
     button(panel, "[data-filter='workspace']").click();
     expect(panel.shadowRoot?.textContent).toContain("Project Build");
+  });
+
+  it("does not rewrite the shadow DOM when context, state, and actions are re-assigned unchanged", () => {
+    const panel = mount(state([workspaceTask({ group: "Checks" })], []));
+    button(panel, "[data-add-task]").click();
+    const inputBefore = panel.shadowRoot?.querySelector("[data-editor-title]");
+    const refreshBefore = button(panel, "[data-refresh]");
+    const stateBefore = panel.workspaceTasksState;
+    const actionsBefore = panel.workspaceTasksActions;
+
+    panel.context = createContext();
+    panel.workspaceTasksState = stateBefore;
+    panel.workspaceTasksActions = actionsBefore;
+
+    expect(inputBefore).not.toBeNull();
+    expect(panel.shadowRoot?.querySelector("[data-editor-title]")).toBe(inputBefore);
+    expect(button(panel, "[data-refresh]")).toBe(refreshBefore);
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+  });
+
+  it("treats a structurally identical state clone as a change and rewrites the shadow DOM", () => {
+    const panel = mount(state([workspaceTask({ group: "Checks" })], []));
+    const refreshBefore = button(panel, "[data-refresh]");
+
+    panel.workspaceTasksState = clonePanelState(panel.workspaceTasksState);
+
+    expect(button(panel, "[data-refresh]")).not.toBe(refreshBefore);
+    expect(panel.shadowRoot?.textContent).toContain("Build");
+  });
+
+  it("renders updated task content for a state object with different tasks", () => {
+    const panel = mount(state([workspaceTask({ id: "alpha", title: "Alpha" })], []));
+
+    panel.workspaceTasksState = state([workspaceTask({ id: "beta", title: "Beta" })], []);
+
+    expect(panel.shadowRoot?.textContent).toContain("Beta");
+    expect(panel.shadowRoot?.textContent).not.toContain("Alpha");
+  });
+
+  it("resets panel state when the context key changes", () => {
+    const panel = mount(state([workspaceTask()], []));
+    button(panel, "[data-add-task]").click();
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).not.toBeNull();
+
+    const base = createContext();
+    panel.context = { ...base, workspace: { ...base.workspace, id: "ws-2", path: "/tmp/ws-2" } };
+
+    expect(panel.shadowRoot?.querySelector("[data-task-editor]")).toBeNull();
+    expect(panel.shadowRoot?.querySelector("[data-panel-mode='view']")).not.toBeNull();
+    expect(button(panel, "[data-filter='all']").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("uses the newest context terminal facade after a skipped re-render", () => {
+    const firstRun = vi.fn<WorkspacePanelContext["terminal"]["runCommand"]>(() => Promise.resolve(terminalHandle()));
+    const panel = mount(state([workspaceTask()], []), { runCommand: firstRun });
+    const secondRun = vi.fn<WorkspacePanelContext["terminal"]["runCommand"]>(() => Promise.resolve(terminalHandle()));
+    const secondContext = createContext(secondRun);
+    const secondOpen = vi.fn();
+    panel.context = { ...secondContext, terminal: { ...secondContext.terminal, open: secondOpen } };
+
+    button(panel, "[data-run-task='workspace:build']").click();
+    expect(secondRun).toHaveBeenCalledTimes(1);
+    expect(firstRun).not.toHaveBeenCalled();
+
+    button(panel, "[data-open-terminal]").click();
+    expect(secondOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the DOM untouched for identical actions and rewrites it for a new actions object", () => {
+    const panel = mount(state([workspaceTask()], []));
+    const refreshBefore = button(panel, "[data-refresh]");
+    const actionsBefore = panel.workspaceTasksActions;
+
+    panel.workspaceTasksActions = actionsBefore;
+    expect(button(panel, "[data-refresh]")).toBe(refreshBefore);
+
+    panel.workspaceTasksActions = { ...actionsBefore };
+    expect(button(panel, "[data-refresh]")).not.toBe(refreshBefore);
   });
 });
 
