@@ -190,10 +190,7 @@ class PiWebUiTasksPanel extends BaseElement {
     const previousKey = contextKey(this.contextValue);
     const nextKey = contextKey(value);
     this.contextValue = value;
-    if (previousKey === nextKey) {
-      this.render();
-      return;
-    }
+    if (previousKey === nextKey && nextKey !== undefined) return;
     this.selectionGeneration += 1;
     this.terminalGeneration += 1;
     this.operation = undefined;
@@ -212,6 +209,7 @@ class PiWebUiTasksPanel extends BaseElement {
   }
 
   set workspaceTasksState(value: WorkspaceTasksPanelState) {
+    if (value === this.stateValue) return;
     const previous = this.stateValue;
     this.stateValue = value;
     this.recordPendingSourceObservations(value);
@@ -241,6 +239,7 @@ class PiWebUiTasksPanel extends BaseElement {
   }
 
   set workspaceTasksActions(value: WorkspaceTasksPanelActions) {
+    if (value === this.actionsValue) return;
     this.actionsValue = value;
     this.render();
   }
