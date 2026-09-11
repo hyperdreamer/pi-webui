@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.9
+
+### Patch Changes
+
+- 8410786: Keep the Workspace Tasks panel responsive while sessions stream.
+
 ## 1.18.8
 
 ### Patch Changes
