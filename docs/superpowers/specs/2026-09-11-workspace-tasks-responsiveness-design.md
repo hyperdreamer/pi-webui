@@ -22,8 +22,9 @@ responds slowly: collapse/expand of task groups, `Run`, and `Add Task` feel dela
    `render()` assigns `this.root.innerHTML = taskStyles() + <full panel template>` and
    re-binds every listener.
 
-Measured with a raw-CDP probe against the live released app (4x CPU throttle, 51 host
-renders over 4 s):
+Measured with a raw-CDP instrumentation run (per-setter and per-render counters, 4x CPU
+throttle, 51 host renders over 4 s) recorded in the run's diagnosis report; the archived
+probe script reproduces the panel/app render counts and click latencies:
 
 ```
 appRender: 51, contextSets: 51 (51 distinct objects),
@@ -86,9 +87,11 @@ set context(value: WorkspacePanelContext | undefined) {
 }
 ```
 
-The `nextKey !== undefined` condition preserves today's exact behavior for the
-`undefined -> undefined` case (a detached or empty panel still renders the "Select a
-workspace" placeholder), while a defined unchanged key skips.
+The `nextKey !== undefined` condition preserves the visible behavior for the
+`undefined -> undefined` case: a detached or empty panel still renders the "Select a
+workspace" placeholder, as today. (The reset block runs in that branch too, but no
+editor, operation, or pending action can exist while `contextValue` is undefined, so the
+only observable outcome is the placeholder render.) A defined unchanged key skips.
 
 The panel's rendered output does not depend on any other context field; the only context
 member read after mount is `contextValue.terminal` at dispatch/open time. `contextKey`
@@ -150,10 +153,11 @@ genuine controller replacement.
 Layer: component-boundary tests in `pi-webui-plugins/workspace-tasks/tasksPanelElement.test.ts`
 (jsdom, direct element assignment — the existing harness in that file).
 
-1. **Identical inputs do not rewrite the shadow DOM.** Mount with a loaded state; capture a
-   node reference (e.g. the refresh button). Assign a new context object with the same key,
-   the same state, and the same actions; assert the captured node is still the current node in
-   the shadow root.
+1. **Identical inputs do not rewrite the shadow DOM.** Mount with a loaded state; for the
+   strongest signal open the Add Task editor and capture its input node (otherwise capture
+   e.g. the refresh button). Assign a new context object with the same key, the same state,
+   and the same actions; assert the captured node is still the current node in the shadow
+   root and the editor is still open.
 2. **Identity, not deep equality, is the change signal.** Assign a structurally identical
    *clone* of the current state (same catalogs, new object) and assert the shadow DOM was
    rewritten (captured node identity changes). This pins the reference-equality contract so an
@@ -167,7 +171,8 @@ Layer: component-boundary tests in `pi-webui-plugins/workspace-tasks/tasksPanelE
    renders.
 5. **The newest context facade survives a skipped render.** Assign a second context with the
    same key but fresh `terminal.runCommand` and `terminal.open` spies; click `Run` and assert
-   `runCommand` was called, then click `Open Terminal` and assert `open` was called.
+   `runCommand` was called, then re-query `[data-open-terminal]` (the Run click re-renders the
+   panel), click it, and assert `open` was called.
 6. **Expansion persists across a state-driven render with new identity.** Toggle a group
    open, assign a structurally identical state object, and assert the group is still open.
    The existing "preserves expansion by scoped group key" test re-assigns the *same* state
@@ -184,11 +189,14 @@ Layer: component-boundary tests in `pi-webui-plugins/workspace-tasks/tasksPanelE
    **0 panel renders** while host re-renders deliver unchanged inputs (was 3 per host
    render). Click latency is recorded as a before/after measurement, not an equality
    expectation, because the app-wide host render path is unchanged and out of scope. The
-   probe script and its JSON results are archived PM evidence under
-   `$STATE_ROOT/reports/probe/` (`tasks-responsiveness-probe.mjs`, run from
-   `/data/home/guest/Development/pi-webui` with `node <script> --port 9333 --url
+   probe script and its JSON results are archived PM evidence under the run's
+   `reports/probe/` directory
+   (`/home/henry/.local/state/pi/project-manager/runs/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20260911-114113-f9cf2acd/reports/probe/tasks-responsiveness-probe.mjs`,
+   run from `/data/home/guest/Development/pi-webui` with `node <script> --port 9333 --url
    "http://127.0.0.1:8808/?machine=local&project=<id>&workspace=<id>&tool=workspace-tasks%3Aworkspace.tasks"
-   --out <result.json>`); the repository intentionally keeps no one-off probe script.
+   --out <result.json>`); the setter-level counters in section 1 come from the diagnosis
+   report's instrumentation run (`reports/diagnosis-workspace-tasks-responsiveness.md`).
+   The repository intentionally keeps no one-off probe script.
 3. `npm run verify` (typecheck, lint, knip, serial test suite).
 4. Patch Changeset: "Keep the Workspace Tasks panel responsive while sessions stream."
 
