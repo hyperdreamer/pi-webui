@@ -225,6 +225,17 @@ describe("workspace tasks panel", () => {
     expect(button(panel, "[data-filter='all']").getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("renders the workspace placeholder when an undefined context is assigned while already undefined", () => {
+    // A detached panel has no context yet, so this undefined -> undefined
+    // assignment must fall through to render() to draw the empty state.
+    const panel = document.createElement(tasksPanelTagName) as TasksPanelElement;
+
+    panel.context = undefined;
+    panel.context = undefined;
+
+    expect(panel.shadowRoot?.textContent).toContain("Select a workspace.");
+  });
+
   it("uses the newest context terminal facade after a skipped re-render", () => {
     const firstRun = vi.fn<WorkspacePanelContext["terminal"]["runCommand"]>(() => Promise.resolve(terminalHandle()));
     const panel = mount(state([workspaceTask()], []), { runCommand: firstRun });
