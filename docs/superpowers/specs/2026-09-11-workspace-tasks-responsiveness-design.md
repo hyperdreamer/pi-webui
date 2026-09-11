@@ -79,12 +79,16 @@ changes. New behavior:
 set context(value: WorkspacePanelContext | undefined) {
   const previousKey = contextKey(this.contextValue);
   const nextKey = contextKey(value);
-  this.contextValue = value;           // newest terminal facade stays usable
-  if (previousKey === nextKey) return; // host re-render: nothing this panel renders changed
+  this.contextValue = value;                 // newest terminal facade stays usable
+  if (previousKey === nextKey && nextKey !== undefined) return; // host re-render
   // unchanged reset of selectionGeneration, operations, editor, filter, mode, ...
   this.render();
 }
 ```
+
+The `nextKey !== undefined` condition preserves today's exact behavior for the
+`undefined -> undefined` case (a detached or empty panel still renders the "Select a
+workspace" placeholder), while a defined unchanged key skips.
 
 The panel's rendered output does not depend on any other context field; the only context
 member read after mount is `contextValue.terminal` at dispatch/open time. `contextKey`
@@ -137,9 +141,9 @@ genuine controller replacement.
 - Tasks state refresh/mutation/move/gate: new object from `publishCurrent` → render.
 - `Run` after a skipped re-render: must use the newest `contextValue.terminal`; covered by a
   test so a future refactor cannot silently drop the assignment.
-- A panel that has never received a context (`undefined` → `undefined`) skips rendering
-  rather than rendering the "Select a workspace" placeholder; `connectedCallback` still
-  renders once on mount.
+- A panel that has never received a context (`undefined` → `undefined`) keeps rendering the
+  "Select a workspace" placeholder, exactly as today; only a defined, unchanged key skips.
+  `connectedCallback` still renders once on mount.
 
 ## 5. Test Strategy
 
@@ -150,25 +154,41 @@ Layer: component-boundary tests in `pi-webui-plugins/workspace-tasks/tasksPanelE
    node reference (e.g. the refresh button). Assign a new context object with the same key,
    the same state, and the same actions; assert the captured node is still the current node in
    the shadow root.
-2. **A new state object still updates the DOM.** Assign a state with different tasks; assert
-   the rendered task rows change.
-3. **A different context key still resets the panel.** Open the Add Task editor, assign a
+2. **Identity, not deep equality, is the change signal.** Assign a structurally identical
+   *clone* of the current state (same catalogs, new object) and assert the shadow DOM was
+   rewritten (captured node identity changes). This pins the reference-equality contract so an
+   accidental deep-equal implementation fails. It also protects pending-action reconciliation,
+   which depends on observing every delivered state object even when only
+   `sourceGenerations` changed.
+3. **A state object with different content still updates the DOM.** Assign a state with
+   different tasks; assert the rendered task rows change.
+4. **A different context key still resets the panel.** Open the Add Task editor, assign a
    context with a different workspace id/path, assert the editor is gone and the view mode
    renders.
-4. **The newest context facade survives a skipped render.** Assign a second context with the
-   same key but a fresh `runCommand` spy; click `Run`; assert the new spy is called.
-5. **Actions guard.** Re-assigning the same actions object leaves the DOM untouched; a new
+5. **The newest context facade survives a skipped render.** Assign a second context with the
+   same key but fresh `terminal.runCommand` and `terminal.open` spies; click `Run` and assert
+   `runCommand` was called, then click `Open Terminal` and assert `open` was called.
+6. **Expansion persists across a state-driven render with new identity.** Toggle a group
+   open, assign a structurally identical state object, and assert the group is still open.
+   The existing "preserves expansion by scoped group key" test re-assigns the *same* state
+   object, which becomes a no-op under the guard; that assertion must be updated to deliver a
+   fresh object (or replaced by this test) so expansion persistence across renders stays
+   covered.
+7. **Actions guard.** Re-assigning the same actions object leaves the DOM untouched; a new
    actions object triggers a render (can be folded into test 1/2 or asserted separately).
-
-Existing tests (including "preserves expansion by scoped group key", which re-assigns the
-same state object) must keep passing.
 
 ## 6. Verification
 
 1. Focused tests: `npm test -- --run pi-webui-plugins/workspace-tasks/tasksPanelElement.test.ts`.
 2. CDP probe re-run against a build containing the fix with the same workload: expect
    **0 panel renders** while host re-renders deliver unchanged inputs (was 3 per host
-   render), and click latency back at the idle baseline.
+   render). Click latency is recorded as a before/after measurement, not an equality
+   expectation, because the app-wide host render path is unchanged and out of scope. The
+   probe script and its JSON results are archived PM evidence under
+   `$STATE_ROOT/reports/probe/` (`tasks-responsiveness-probe.mjs`, run from
+   `/data/home/guest/Development/pi-webui` with `node <script> --port 9333 --url
+   "http://127.0.0.1:8808/?machine=local&project=<id>&workspace=<id>&tool=workspace-tasks%3Aworkspace.tasks"
+   --out <result.json>`); the repository intentionally keeps no one-off probe script.
 3. `npm run verify` (typecheck, lint, knip, serial test suite).
 4. Patch Changeset: "Keep the Workspace Tasks panel responsive while sessions stream."
 
