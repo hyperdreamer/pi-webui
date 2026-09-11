@@ -1,0 +1,48 @@
+version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-11-workspace-tasks-responsiveness.md
+  sha256: ac00cf57c9d9d450c9ed99028dfcbd45d2f54153f5de581d749572a934eefd0a
+  commit: 4ec4ee6007f877545eea3cb444846b839cfbe8d5
+  task_numbers: [1, 2]
+lanes:
+  - id: workspace-tasks-panel-guards
+    task_ids: [T1, T2]
+    sequences: [1, 2]
+tasks:
+  T1:
+    plan_task: 1
+    lane: workspace-tasks-panel-guards
+    sequence: 1
+    depends_on: []
+    ownership:
+      - pi-webui-plugins/workspace-tasks/tasksPanelElement.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: tasks-panel-identity-guard-tests
+        paths:
+          - pi-webui-plugins/workspace-tasks/tasksPanelElement.test.ts
+        digest: sha256:ac00cf57c9d9d450c9ed99028dfcbd45d2f54153f5de581d749572a934eefd0a
+    consumes: []
+    validation:
+      - argv: [npm, run, typecheck]
+  T2:
+    plan_task: 2
+    lane: workspace-tasks-panel-guards
+    sequence: 2
+    depends_on: [T1]
+    ownership:
+      - pi-webui-plugins/workspace-tasks/tasksPanelElement.ts
+      - .changeset/workspace-tasks-panel-responsiveness.md
+    exclusive_resources: []
+    produces:
+      - interface: tasks-panel-setter-guards
+        paths:
+          - pi-webui-plugins/workspace-tasks/tasksPanelElement.ts
+        digest: sha256:ac00cf57c9d9d450c9ed99028dfcbd45d2f54153f5de581d749572a934eefd0a
+    consumes:
+      - interface: tasks-panel-identity-guard-tests
+        from: T1
+        digest: sha256:ac00cf57c9d9d450c9ed99028dfcbd45d2f54153f5de581d749572a934eefd0a
+    validation:
+      - argv: [npm, test, "--", "--run", pi-webui-plugins/workspace-tasks/tasksPanelElement.test.ts]
+      - argv: [npm, test, "--", "--run", pi-webui-plugins/workspace-tasks/tasksPanelElement.editor.test.ts]

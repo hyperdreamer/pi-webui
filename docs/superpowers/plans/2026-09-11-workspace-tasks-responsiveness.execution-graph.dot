@@ -1,0 +1,14 @@
+digraph workspace_tasks_responsiveness {
+    rankdir=TB;
+    graph [label="workspace-tasks-responsiveness (epoch 1)", labelloc=t];
+    node [shape=box, style=rounded];
+
+    subgraph cluster_workspace_tasks_panel_guards {
+        label="lane: workspace-tasks-panel-guards";
+
+        T1 [label="T1: Pin the identity-guard render contract with RED regression tests\ntier: Standard\nplan task 1"];
+        T2 [label="T2: Guard the three panel property setters and add the patch changeset\ntier: Fast\nplan task 2"];
+    }
+
+    T1 -> T2 [label="depends_on"];
+}
