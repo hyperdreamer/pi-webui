@@ -10,6 +10,7 @@ import { AuthService } from "./sessions/authService.js";
 import { registerAuthRoutes } from "./sessions/authRoutes.js";
 import { ModelsConfigService } from "./models/modelsConfigService.js";
 import { registerModelsConfigRoutes } from "./models/modelsConfigRoutes.js";
+import { createModelRateLimitOwner } from "./rateLimits/modelRateLimitOwner.js";
 import { SkillsConfigService } from "./skills/skillsConfigService.js";
 import { registerSkillsConfigRoutes } from "./skills/skillsConfigRoutes.js";
 import { PiSessionService } from "./sessions/piSessionService.js";
@@ -80,7 +81,14 @@ await runSessionDaemonStartup({
     await unreadStore.load();
     const workspaceActivity = new WorkspaceActivityService(eventHub);
     const auth = await AuthService.create({ agentDir: activeAgentProfile.dir, logger: app.log });
-    const models = new ModelsConfigService({ agentDir: activeAgentProfile.dir, modelRuntime: auth.runtime });
+    const rateLimits = createModelRateLimitOwner({ logger: app.log });
+    const models = new ModelsConfigService({
+      agentDir: activeAgentProfile.dir,
+      modelRuntime: auth.runtime,
+      rateLimits,
+      logger: app.log,
+    });
+    await models.initialize();
     const githubToken = resolveSkillsGitHubToken(daemonEnvironment);
     const skills = new SkillsConfigService({
       agentDir: activeAgentProfile.dir,
@@ -170,7 +178,7 @@ await runSessionDaemonStartup({
       ...getPiWebUiRuntimeComponent("sessiond", SESSIOND_RUNTIME_CAPABILITIES),
       activeAgentProfile,
     });
-    return { eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, speechInputPolishing };
+    return { eventHub, workspaceActivity, auth, models, rateLimits, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, speechInputPolishing };
   },
   registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent, speechInputPolishing }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
@@ -200,7 +208,7 @@ await runSessionDaemonStartup({
 
     app.get("/runtime", () => runtimeComponent);
   },
-  async listen({ auth, sessions, terminals, unreadStore }) {
+  async listen({ auth, sessions, rateLimits, terminals, unreadStore }) {
     let shuttingDown = false;
     async function shutdown(signal: NodeJS.Signals): Promise<void> {
       if (shuttingDown) return;
@@ -217,6 +225,7 @@ await runSessionDaemonStartup({
       await attempt("dispose terminals", () => { terminals.dispose(); });
       await attempt("dispose auth", () => { auth.dispose(); });
       await attempt("dispose sessions", () => sessions.dispose());
+      await attempt("dispose model rate limits", () => { rateLimits.dispose(); });
       await attempt("flush session unread state", () => unreadStore.flush());
       await attempt("close server", () => app.close());
     }

@@ -14,7 +14,7 @@ afterEach(async () => {
 describe("ModelsConfigService", () => {
   it("persists models.json and refreshes the daemon model runtime without a catalog lookup", async () => {
     const agentDir = await temporaryAgentDir();
-    const modelRuntime = { refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }) };
+    const modelRuntime = { refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }), getError: () => undefined };
     const models = new ModelsConfigService({ agentDir, modelRuntime });
     const config = {
       providers: {
@@ -25,7 +25,7 @@ describe("ModelsConfigService", () => {
       },
     };
 
-    await expect(models.save(config)).resolves.toEqual({ success: true });
+    await expect(models.save(config)).resolves.toEqual({ success: true, contractVersion: 1 });
 
     await expect(readFile(join(agentDir, "models.json"), "utf8")).resolves.toBe(`${JSON.stringify(config, null, 2)}\n`);
     expect(modelRuntime.refresh).toHaveBeenCalledExactlyOnceWith({ allowNetwork: false });
