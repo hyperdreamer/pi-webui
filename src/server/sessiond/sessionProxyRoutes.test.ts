@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ModelsConfigErrorResponse, ModelsConfigLimitsStatusResponse } from "../../shared/apiTypes.js";
 import { registerSessionProxyRoutes } from "./sessionProxyRoutes";
 
 let app: FastifyInstance;
@@ -291,6 +292,37 @@ describe("machine-scoped session proxy routes", () => {
     expect(response.statusCode).toBe(502);
     expect(response.json()).toEqual({ error: "Session daemon unavailable: connection refused" });
     expect(daemon.requests).toEqual([{ method: "GET", path: "/sessions", body: undefined }]);
+  });
+
+  it("proxies the models-config limits sidecar for the selected machine", async () => {
+    const status: ModelsConfigLimitsStatusResponse = { contractVersion: 1, revision: 3, admission: "ready", source: "accepted-document" };
+    daemon.respondWith({ statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(status) });
+
+    const response = await app.inject({ method: "GET", url: "/api/machines/local/models-config/limits" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(daemon.requests).toEqual([{ method: "GET", path: "/models-config/limits", body: undefined }]);
+  });
+
+  it("forwards a structured models-config error body unchanged", async () => {
+    const errorBody: ModelsConfigErrorResponse = {
+      error: "Model limits are invalid",
+      code: "MODELS_CONFIG_INVALID_LIMITS",
+      file: "models.json",
+      provider: "openai",
+      modelId: "gpt-5",
+      field: "tpm",
+      reason: "negative",
+      occurrence: 1,
+    };
+    daemon.respondWith({ statusCode: 422, headers: { "content-type": "application/json" }, body: JSON.stringify(errorBody) });
+
+    const response = await app.inject({ method: "PUT", url: "/api/machines/local/models-config", payload: { providers: {} } });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual(errorBody);
+    expect(daemon.requests).toEqual([{ method: "PUT", path: "/models-config", body: { providers: {} } }]);
   });
 
   it("preserves cwd query context when forwarding session event websockets", async () => {

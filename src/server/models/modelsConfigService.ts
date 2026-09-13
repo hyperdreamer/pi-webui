@@ -1,22 +1,85 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ModelConnectionTestRequest, ModelConnectionTestResponse, ModelDiscoveryModel, ModelDiscoveryRequest, ModelDiscoveryResponse, ModelsConfigDocument, ModelsConfigProvider, ModelsConfigSaveResponse } from "../../shared/apiTypes.js";
+import type {
+  ModelConnectionTestRequest,
+  ModelConnectionTestResponse,
+  ModelDiscoveryModel,
+  ModelDiscoveryRequest,
+  ModelDiscoveryResponse,
+  ModelsConfigDocument,
+  ModelsConfigErrorCode,
+  ModelsConfigLimitsStatusResponse,
+  ModelsConfigProvider,
+  ModelsConfigSaveResponse,
+} from "../../shared/apiTypes.js";
+import {
+  modelRateLimitFieldMessage,
+  type ModelRateLimitField,
+  type ModelRateLimitInvalidReason,
+} from "../../shared/modelRateLimits.js";
+import { wrapModelCompletion, type ModelCompletionFunction } from "../rateLimits/modelRateLimitAdapters.js";
+import {
+  extractModelRateLimits,
+  type ModelRateLimitValidationError,
+} from "../rateLimits/modelRateLimitConfig.js";
+import type { ModelRateLimitOwner } from "../rateLimits/modelRateLimitOwner.js";
+import { ModelsJsonParseError, parseModelsJsonText } from "./modelsJsonParser.js";
 
 const MODEL_CONNECTION_TEST_TIMEOUT_MS = 20_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
 
+const MODEL_CONFIGURATION_ERROR_PREFIXES = [
+  "Failed to load models.json:",
+  "Failed to parse models.json:",
+  "Invalid models.json schema:",
+] as const;
+
 type ModelConnectionRuntime = Pick<ModelRuntime, "getError" | "getModel" | "getAuth" | "completeSimple">;
 type ModelConnectionRuntimeFactory = (options: { modelsPath: string; authPath: string }) => Promise<ModelConnectionRuntime>;
-type ModelsReloadRuntime = Pick<ModelRuntime, "refresh">;
+type ModelsReloadRuntime = Pick<ModelRuntime, "refresh" | "getError">;
+
+export interface ModelsConfigServiceLogger {
+  warn(details: Record<string, unknown>, message: string): void;
+}
+
+export interface ModelsConfigServiceErrorDetails {
+  provider?: string;
+  modelId?: string;
+  field?: ModelRateLimitField;
+  reason?: ModelRateLimitInvalidReason;
+  occurrence?: number;
+  persisted?: boolean;
+}
+
+/** Structured models-config failure; routes map `code` to an HTTP status. */
+export class ModelsConfigServiceError extends Error {
+  constructor(
+    readonly code: ModelsConfigErrorCode,
+    message: string,
+    readonly details: ModelsConfigServiceErrorDetails = {},
+  ) {
+    super(message);
+    this.name = "ModelsConfigServiceError";
+  }
+}
 
 export interface ModelsConfigServiceDependencies {
   agentDir: string;
   /** The daemon's shared runtime, refreshed from models.json after a successful save. */
   modelRuntime?: ModelsReloadRuntime;
   createConnectionRuntime?: ModelConnectionRuntimeFactory;
+  /** Daemon-owned limiter that receives accepted snapshots. */
+  rateLimits?: ModelRateLimitOwner;
+  logger?: ModelsConfigServiceLogger;
 }
+
+type StoredDocumentRead =
+  | { kind: "missing" }
+  | { kind: "document"; document: ModelsConfigDocument };
 
 /**
  * Owns the active profile's editable `models.json` document and isolated model
@@ -28,29 +91,94 @@ export class ModelsConfigService {
   private readonly authPath: string;
   private readonly modelRuntime: ModelsReloadRuntime | undefined;
   private readonly createConnectionRuntime: ModelConnectionRuntimeFactory;
+  private readonly rateLimits: ModelRateLimitOwner | undefined;
+  private readonly logger: ModelsConfigServiceLogger | undefined;
+  private operationChain: Promise<void> = Promise.resolve();
 
-  constructor({ agentDir, modelRuntime, createConnectionRuntime = createConnectionRuntimeForProfile }: ModelsConfigServiceDependencies) {
+  constructor({
+    agentDir,
+    modelRuntime,
+    createConnectionRuntime = createConnectionRuntimeForProfile,
+    rateLimits,
+    logger,
+  }: ModelsConfigServiceDependencies) {
     this.modelsPath = join(agentDir, "models.json");
     this.authPath = join(agentDir, "auth.json");
     this.modelRuntime = modelRuntime;
     this.createConnectionRuntime = createConnectionRuntime;
+    this.rateLimits = rateLimits;
+    this.logger = logger;
+  }
+
+  /** Reads, validates, and publishes the startup snapshot. Never throws. */
+  async initialize(): Promise<void> {
+    await this.enqueue(async () => {
+      let source: "missing-file" | "accepted-document" = "accepted-document";
+      try {
+        const loaded = await this.readStoredDocument();
+        if (loaded.kind === "missing") source = "missing-file";
+        const document = loaded.kind === "missing" ? emptyModelsConfigDocument() : loaded.document;
+        const extraction = extractModelRateLimits(document);
+        if (!extraction.ok) throw invalidLimitsError(extraction.errors[0]);
+        this.rateLimits?.applySnapshot(extraction.snapshot, source);
+      } catch (error) {
+        this.rateLimits?.reportLoadFailure(errorMessage(error));
+        this.logger?.warn({ file: "models.json", err: error }, "failed to load models.json");
+      }
+    });
   }
 
   async read(): Promise<ModelsConfigDocument> {
-    try {
-      return normalizeModelsConfigDocument(JSON.parse(await readFile(this.modelsPath, "utf8")));
-    } catch (error) {
-      if (isMissingFile(error) || error instanceof SyntaxError) return emptyModelsConfigDocument();
-      throw error;
-    }
+    const loaded = await this.readStoredDocument();
+    return loaded.kind === "missing" ? emptyModelsConfigDocument() : loaded.document;
+  }
+
+  readLimitsStatus(): ModelsConfigLimitsStatusResponse {
+    const status = this.rateLimits?.readStatus();
+    if (status === undefined) return { contractVersion: 1, revision: 0, admission: "ready", source: "none" };
+    return {
+      contractVersion: 1,
+      revision: status.revision,
+      admission: status.admission,
+      source: status.source,
+      ...(status.error === undefined ? {} : { error: status.error }),
+    };
   }
 
   async save(value: unknown): Promise<ModelsConfigSaveResponse> {
-    const document = parseModelsConfigDocument(value);
-    await mkdir(dirname(this.modelsPath), { recursive: true });
-    await writeFile(this.modelsPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
-    await this.modelRuntime?.refresh({ allowNetwork: false });
-    return { success: true };
+    return await this.enqueue(async () => {
+      const shape = validateModelsConfigDraftShape(value);
+      if (!shape.ok) {
+        throw new ModelsConfigServiceError(
+          "MODELS_CONFIG_SAVE_INVALID",
+          `models.json save request is not a valid configuration: ${shape.message}`,
+        );
+      }
+
+      const extraction = extractModelRateLimits(shape.document);
+      if (!extraction.ok) throw invalidLimitsError(extraction.errors[0]);
+
+      try {
+        await this.readStoredDocument();
+      } catch (error) {
+        if (error instanceof ModelsConfigServiceError && error.code === "MODELS_CONFIG_PARSE_FAILED") {
+          throw new ModelsConfigServiceError(
+            "MODELS_CONFIG_UNREADABLE",
+            "models.json could not be read as a valid configuration; fix the file and reload before saving.",
+          );
+        }
+        throw error;
+      }
+
+      await this.persist(shape.document);
+      await this.refreshAfterSave(shape.document);
+      const revision = this.rateLimits?.applySnapshot(extraction.snapshot, "accepted-document");
+      return {
+        success: true,
+        contractVersion: 1,
+        ...(revision === undefined ? {} : { revision }),
+      };
+    });
   }
 
   async test(value: unknown): Promise<ModelConnectionTestResponse> {
@@ -74,7 +202,11 @@ export class ModelsConfigService {
         return { ok: false, error: `No API key found for "${request.providerName}"` };
       }
 
-      return await runModelConnectionTest(runtime, model, resolved.auth.apiKey, resolved.auth.headers);
+      const delegate: ModelCompletionFunction = (model, context, options) =>
+        runtime.completeSimple(model, context, options);
+      const rateLimits = this.rateLimits;
+      const completeSimple = rateLimits === undefined ? delegate : wrapModelCompletion(rateLimits, delegate);
+      return await runModelConnectionTest(completeSimple, model, resolved.auth.apiKey, resolved.auth.headers);
     } catch (error) {
       return { ok: false, error: errorMessage(error) };
     } finally {
@@ -107,24 +239,94 @@ export class ModelsConfigService {
       if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
     }
   }
+
+  private async readStoredDocument(): Promise<StoredDocumentRead> {
+    let content: string;
+    try {
+      content = await readFile(this.modelsPath, "utf8");
+    } catch (error) {
+      if (isMissingFile(error)) return { kind: "missing" };
+      throw new ModelsConfigServiceError("MODELS_CONFIG_IO_FAILED", `Failed to read models.json: ${errorMessage(error)}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = parseModelsJsonText(content);
+    } catch (error) {
+      if (error instanceof ModelsJsonParseError) {
+        throw new ModelsConfigServiceError("MODELS_CONFIG_PARSE_FAILED", `models.json could not be parsed: ${error.message}`);
+      }
+      throw error;
+    }
+
+    const shape = validateModelsConfigDraftShape(parsed);
+    if (!shape.ok) throw new ModelsConfigServiceError("MODELS_CONFIG_PARSE_FAILED", `models.json could not be parsed: ${shape.message}`);
+    return { kind: "document", document: shape.document };
+  }
+
+  private async persist(document: ModelsConfigDocument): Promise<void> {
+    try {
+      await writeModelsJsonAtomically(this.modelsPath, document);
+    } catch (error) {
+      throw new ModelsConfigServiceError("MODELS_CONFIG_PERSIST_FAILED", `Failed to persist models.json: ${errorMessage(error)}`);
+    }
+  }
+
+  private async refreshAfterSave(document: ModelsConfigDocument): Promise<void> {
+    const modelRuntime = this.modelRuntime;
+    if (modelRuntime === undefined) return;
+    try {
+      const result = await modelRuntime.refresh({ allowNetwork: false });
+      if (result.aborted) throw new Error("models.json refresh was aborted");
+      const configurationError = narrowRefreshFailure(modelRuntime.getError(), document);
+      if (configurationError !== undefined) throw new Error(configurationError);
+    } catch (error) {
+      const message = errorMessage(error);
+      this.rateLimits?.reportLoadFailure(message);
+      throw new ModelsConfigServiceError(
+        "MODELS_CONFIG_REFRESH_FAILED",
+        `models.json was saved, but the active model configuration could not be reloaded: ${message}`,
+        { persisted: true },
+      );
+    }
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.operationChain.then(operation, operation);
+    this.operationChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
 }
 
 export function emptyModelsConfigDocument(): ModelsConfigDocument {
   return { providers: {} };
 }
 
-export function normalizeModelsConfigDocument(value: unknown): ModelsConfigDocument {
-  if (!isRecord(value)) return emptyModelsConfigDocument();
-  const providers = value["providers"];
-  if (providers !== undefined && !isRecord(providers)) return { ...value, providers: {} };
-  return { ...value, ...(providers === undefined ? { providers: {} } : {}) };
-}
+/** One pure shape validator shared by read, save, and the save guard. */
+export function validateModelsConfigDraftShape(
+  value: unknown,
+): { ok: true; document: ModelsConfigDocument } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "models.json must be a JSON object" };
+  const rawProviders = value["providers"];
+  if (rawProviders === undefined) return { ok: true, document: { ...value, providers: {} } };
+  if (!isRecord(rawProviders)) return { ok: false, message: "models.json providers must be an object" };
 
-export function parseModelsConfigDocument(value: unknown): ModelsConfigDocument {
-  if (!isRecord(value)) throw new Error("models.json must be a JSON object");
-  const providers = value["providers"];
-  if (providers !== undefined && !isRecord(providers)) throw new Error("models.json providers must be an object");
-  return { ...value };
+  const providers: Record<string, ModelsConfigProvider> = {};
+  for (const [providerName, rawProvider] of Object.entries(rawProviders)) {
+    if (!isRecord(rawProvider)) return { ok: false, message: `models.json provider "${providerName}" must be an object` };
+    const rawModels = rawProvider["models"];
+    if (rawModels !== undefined) {
+      if (!Array.isArray(rawModels)) return { ok: false, message: `models.json provider "${providerName}" models must be an array` };
+      for (const entry of rawModels) {
+        if (!isRecord(entry)) return { ok: false, message: `models.json provider "${providerName}" model entries must be objects` };
+        if (typeof entry["id"] !== "string") return { ok: false, message: `models.json provider "${providerName}" model entries must have a string id` };
+      }
+    }
+    const provider: ModelsConfigProvider = {};
+    for (const [key, entry] of Object.entries(rawProvider)) provider[key] = entry;
+    providers[providerName] = provider;
+  }
+  return { ok: true, document: { ...value, providers } };
 }
 
 export function parseModelConnectionTestRequest(value: unknown): ModelConnectionTestRequest {
@@ -148,6 +350,168 @@ export function parseModelDiscoveryRequest(value: unknown): ModelDiscoveryReques
     providerName,
     provider: { ...provider, baseUrl: requiredTrimmedString(provider, "baseUrl") },
   };
+}
+
+function invalidLimitsError(error: ModelRateLimitValidationError | undefined): ModelsConfigServiceError {
+  if (error === undefined) return new ModelsConfigServiceError("MODELS_CONFIG_INVALID_LIMITS", "models.json has invalid rate limits");
+  return new ModelsConfigServiceError(
+    "MODELS_CONFIG_INVALID_LIMITS",
+    modelRateLimitFieldMessage(error.field, error.reason),
+    {
+      provider: error.provider,
+      modelId: error.modelId,
+      field: error.field,
+      reason: error.reason,
+      occurrence: error.occurrence,
+    },
+  );
+}
+
+function narrowRefreshFailure(error: string | undefined, document: ModelsConfigDocument): string | undefined {
+  if (error === undefined || error === "") return undefined;
+  const providerKeys = new Set(Object.keys(document.providers ?? {}));
+  for (const line of error.split("\n")) {
+    const trimmed = line.trim();
+    if (MODEL_CONFIGURATION_ERROR_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return trimmed;
+    const match = /^Provider "([^"]+)":/u.exec(trimmed);
+    if (match !== null && providerKeys.has(match[1] ?? "")) return trimmed;
+  }
+  return undefined;
+}
+
+async function writeModelsJsonAtomically(modelsPath: string, document: ModelsConfigDocument): Promise<void> {
+  await mkdir(dirname(modelsPath), { recursive: true });
+  const targetPath = await resolveModelsWriteTarget(modelsPath);
+  await mkdir(dirname(targetPath), { recursive: true });
+
+  const existing = await statIfExists(targetPath);
+  if (existing !== undefined && existing.nlink > 1) {
+    throw new Error("models.json has multiple hard links; refusing to replace one directory entry");
+  }
+  const mode = process.platform === "win32" || existing === undefined ? undefined : existing.mode & 0o7777;
+  const temporaryPath = join(dirname(targetPath), `${basename(targetPath)}.${String(process.pid)}.${randomUUID()}.tmp`);
+
+  let handle: FileHandle | undefined;
+  try {
+    handle = mode === undefined ? await open(temporaryPath, "w") : await open(temporaryPath, "w", mode);
+    await handle.writeFile(`${JSON.stringify(document, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, targetPath);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function resolveModelsWriteTarget(filePath: string): Promise<string> {
+  try {
+    return await realpath(filePath);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+    return await resolveMissingModelsWriteTarget(filePath);
+  }
+}
+
+/**
+ * Mirrors `resolveMissingWriteTarget` in `src/server/storage/projectStore.ts`.
+ * A missing leaf may itself be a dangling symlink, so walk `lstat`/`readlink`
+ * until an existing component is reached and return the physical target path
+ * instead of the link path. Otherwise the later `rename` would replace the
+ * link rather than write through it.
+ */
+async function resolveMissingModelsWriteTarget(filePath: string): Promise<string> {
+  let candidate = filePath;
+  const visited = new Set<string>();
+
+  for (;;) {
+    let metadata: Stats;
+    try {
+      metadata = await lstat(candidate);
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      if (candidate.endsWith(sep) || candidate.endsWith("/")) {
+        throw new Error(`models.json path must resolve to a file: ${filePath}`, { cause: error });
+      }
+      const physicalParent = await realpath(dirname(candidate));
+      return join(physicalParent, basename(candidate));
+    }
+
+    if (!metadata.isSymbolicLink()) return await realpath(candidate);
+
+    const physicalParent = await realpath(dirname(candidate));
+    const physicalCandidate = join(physicalParent, basename(candidate));
+    if (visited.has(physicalCandidate)) {
+      throw new Error("Cannot resolve models.json write target because of a symbolic-link cycle");
+    }
+    visited.add(physicalCandidate);
+
+    const target = await readlink(physicalCandidate);
+    // Preserve component order until the filesystem has traversed any symlink
+    // before `..`; path.join/resolve would collapse those components too soon.
+    candidate = isAbsolute(target) ? target : `${physicalParent}${physicalParent.endsWith(sep) ? "" : sep}${target}`;
+  }
+}
+
+async function statIfExists(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+}
+
+async function runModelConnectionTest(
+  completeSimple: ModelCompletionFunction,
+  model: NonNullable<ReturnType<ModelConnectionRuntime["getModel"]>>,
+  apiKey: string,
+  headers: Record<string, string | null> | undefined,
+): Promise<ModelConnectionTestResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => { controller.abort(); }, MODEL_CONNECTION_TEST_TIMEOUT_MS);
+  const startedAt = Date.now();
+  let status: number | undefined;
+
+  try {
+    const message = await completeSimple(model, {
+      messages: [{
+        role: "user",
+        content: "Reply with OK only.",
+        timestamp: Date.now(),
+      }],
+    }, {
+      apiKey,
+      ...(headers === undefined ? {} : { headers }),
+      maxTokens: 16,
+      timeoutMs: MODEL_CONNECTION_TEST_TIMEOUT_MS,
+      maxRetries: 0,
+      cacheRetention: "none",
+      signal: controller.signal,
+      onResponse: (response) => { status = response.status; },
+    });
+    const latencyMs = Date.now() - startedAt;
+
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      return {
+        ok: false,
+        error: message.errorMessage ?? (controller.signal.aborted ? "Test timed out" : "Model returned an error"),
+        latencyMs,
+        ...(status === undefined ? {} : { status }),
+      };
+    }
+
+    return {
+      ok: true,
+      latencyMs,
+      ...(status === undefined ? {} : { status }),
+      responseText: assistantText(message.content),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function modelsDocumentForConnectionTest(request: ModelConnectionTestRequest): ModelsConfigDocument {
@@ -285,56 +649,6 @@ function discoveredModel(id: string, name?: string): ModelDiscoveryModel | undef
 
 function firstString(...values: readonly unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string");
-}
-
-async function runModelConnectionTest(
-  runtime: ModelConnectionRuntime,
-  model: NonNullable<ReturnType<ModelConnectionRuntime["getModel"]>>,
-  apiKey: string,
-  headers: Record<string, string | null> | undefined,
-): Promise<ModelConnectionTestResponse> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => { controller.abort(); }, MODEL_CONNECTION_TEST_TIMEOUT_MS);
-  const startedAt = Date.now();
-  let status: number | undefined;
-
-  try {
-    const message = await runtime.completeSimple(model, {
-      messages: [{
-        role: "user",
-        content: "Reply with OK only.",
-        timestamp: Date.now(),
-      }],
-    }, {
-      apiKey,
-      ...(headers === undefined ? {} : { headers }),
-      maxTokens: 16,
-      timeoutMs: MODEL_CONNECTION_TEST_TIMEOUT_MS,
-      maxRetries: 0,
-      cacheRetention: "none",
-      signal: controller.signal,
-      onResponse: (response) => { status = response.status; },
-    });
-    const latencyMs = Date.now() - startedAt;
-
-    if (message.stopReason === "error" || message.stopReason === "aborted") {
-      return {
-        ok: false,
-        error: message.errorMessage ?? (controller.signal.aborted ? "Test timed out" : "Model returned an error"),
-        latencyMs,
-        ...(status === undefined ? {} : { status }),
-      };
-    }
-
-    return {
-      ok: true,
-      latencyMs,
-      ...(status === undefined ? {} : { status }),
-      responseText: assistantText(message.content),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function assistantText(content: readonly unknown[]): string {

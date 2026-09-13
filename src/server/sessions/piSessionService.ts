@@ -210,6 +210,8 @@ import {
   settleModelPolicySettings,
   type ModelPolicySettingsSnapshot,
 } from "./modelPolicySettingsPersistence.js";
+import { wrapModelStream } from "../rateLimits/modelRateLimitAdapters.js";
+import type { ModelRateLimitOwner } from "../rateLimits/modelRateLimitOwner.js";
 
 /**
  * Minimal structured-logging seam, shaped like Fastify's logger so sessiond can
@@ -1018,6 +1020,7 @@ export function createDefaultRuntimeFactory(
   spawn?: SpawnSessionFn,
   subsessions?: SubsessionToolDeps,
   modelPolicy?: ModelPolicyToolDeps,
+  modelRateLimitOwner?: ModelRateLimitOwner,
   sdk: PiWebUiAgentSessionSdk = {
     createServices: createAgentSessionServices,
     createFromServices: createAgentSessionFromServices,
@@ -1071,7 +1074,12 @@ export function createDefaultRuntimeFactory(
         ? {}
         : { thinkingLevel: initialThinkingLevel }),
     });
-    runtimeRefs.streamFunction = result.session.agent.streamFunction;
+    const delegateStreamFunction = result.session.agent.streamFunction;
+    const limitedStreamFunction = modelRateLimitOwner === undefined
+      ? delegateStreamFunction
+      : wrapModelStream(modelRateLimitOwner, delegateStreamFunction);
+    result.session.agent.streamFunction = limitedStreamFunction;
+    runtimeRefs.streamFunction = limitedStreamFunction;
     return { ...result, services, diagnostics: services.diagnostics };
   };
 }
@@ -1127,6 +1135,8 @@ export interface PiSessionServiceDependencies {
   modelTierRegistry?: ModelTierRegistry<AgentModel>;
   /** Injectable utility resolver; production resolves global config for each operation. */
   utilityModelResolver?: UtilityModelResolver<AgentModel>;
+  /** Daemon-owned limiter applied to every session stream call. */
+  modelRateLimitOwner?: ModelRateLimitOwner;
   heartbeatIntervalMs?: number;
   workspaceActivity?: Pick<
     WorkspaceActivityService,
@@ -1396,7 +1406,8 @@ export class PiSessionService implements SessionRouteService {
           ? undefined
           : {
               inspect: (sessionId) => this.modelPolicyCapability(sessionId),
-            }
+            },
+        deps.modelRateLimitOwner
       );
     this.createAgentRuntime =
       deps.createAgentRuntime ?? defaultCreateAgentRuntime;

@@ -393,6 +393,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
       undefined,
       undefined,
       undefined,
+      undefined,
       { createServices, createFromServices },
     );
     const sessionManager = SessionManager.inMemory(process.cwd());
