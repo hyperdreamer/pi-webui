@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { parseModelsConfigDocument } from "../../api/parsers";
 import type { ModelsConfigDocument } from "../../api";
 import {
   MODEL_API_OPTIONS,
   addCustomProvider,
   addModel,
+  applyRateLimitDraftField,
+  firstInvalidRateLimitDraft,
   modelApiOptionStates,
   modelIdOptionStates,
+  modelRateLimitDraftsFromDocument,
+  rateLimitDraftKey,
+  reconcileRateLimitDrafts,
   removeModel,
   renameProvider,
+  setModelRateLimitField,
   setThinkingLevelMapEntry,
   updateModel,
 } from "./modelsConfigDraft";
@@ -103,5 +110,93 @@ describe("modelsConfigDraft", () => {
     expect(setThinkingLevelMapEntry(existing, "medium", "disabled")).toEqual({ low: "budget", high: null, medium: null });
     expect(setThinkingLevelMapEntry(existing, "max", "custom", "maximum")).toEqual({ low: "budget", high: null, max: "maximum" });
     expect(setThinkingLevelMapEntry(undefined, "off", "default")).toBeUndefined();
+  });
+
+  it("encodes draft keys without separator collisions", () => {
+    expect(rateLimitDraftKey("a/b", "c", 0)).toBe('["model-rate-limit-draft","a/b","c",0]');
+    expect(rateLimitDraftKey("a", "b/c", 0)).not.toBe(rateLimitDraftKey("a/b", "c", 0));
+  });
+
+  it("derives drafts from valid and invalid stored values", () => {
+    const drafts = modelRateLimitDraftsFromDocument(parseModelsConfigDocument({
+      providers: { acme: { models: [
+        { id: "valid", tpm: 100, prm: 0 },
+        { id: "invalid", tpm: "bad" },
+      ] } },
+    }));
+
+    expect(drafts[rateLimitDraftKey("acme", "valid", 0)]).toEqual({ tpm: { text: "100" }, prm: { text: "0" } });
+    expect(drafts[rateLimitDraftKey("acme", "invalid", 0)]).toEqual({
+      tpm: { text: "", loadedInvalidValue: "bad", error: "Tokens per minute must be a whole number." },
+      prm: { text: "" },
+    });
+  });
+
+  it("applies valid, invalid, and blank draft text without trimming the stored text", () => {
+    const initial = { tpm: { text: "10" }, prm: { text: "" } };
+
+    expect(applyRateLimitDraftField(initial, "tpm", " 250 ")).toEqual({ tpm: { text: " 250 " }, prm: { text: "" } });
+    expect(applyRateLimitDraftField(initial, "tpm", "1e3")).toEqual({
+      tpm: { text: "1e3", error: "Tokens per minute must be a whole number." },
+      prm: { text: "" },
+    });
+    expect(applyRateLimitDraftField(initial, "prm", "0")).toEqual({ tpm: { text: "10" }, prm: { text: "0" } });
+    expect(applyRateLimitDraftField(initial, "tpm", "")).toEqual({ tpm: { text: "" }, prm: { text: "" } });
+  });
+
+  it("sets and deletes numeric fields without touching other members", () => {
+    const model = { id: "demo", name: "Demo", tpm: 5 };
+
+    expect(setModelRateLimitField(model, "tpm", 250)).toEqual({ id: "demo", name: "Demo", tpm: 250 });
+    expect(setModelRateLimitField(model, "tpm", undefined)).toEqual({ id: "demo", name: "Demo" });
+    expect(setModelRateLimitField(model, "prm", 0)).toEqual({ id: "demo", name: "Demo", tpm: 5, prm: 0 });
+  });
+
+  it("reconciles rename and add without orphaning drafts", () => {
+    const previous = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "b", prm: 2 }] } } };
+    const drafts = modelRateLimitDraftsFromDocument(previous);
+    const bKey = rateLimitDraftKey("acme", "b", 0);
+    const bDraft = drafts[bKey];
+    if (bDraft === undefined) throw new Error("Expected draft for b");
+    drafts[bKey] = applyRateLimitDraftField(bDraft, "prm", "bad");
+
+    const renamedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", prm: 2 }] } } };
+    const afterRename = reconcileRateLimitDrafts(drafts, previous, renamedDocument, { type: "rename", providerName: "acme", from: "b", to: "renamed" });
+
+    expect(afterRename[rateLimitDraftKey("acme", "renamed", 0)]?.prm.error).toBeDefined();
+    expect(afterRename[bKey]).toBeUndefined();
+
+    const addedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", prm: 2 }, { id: "new" }] } } };
+    const afterAdd = reconcileRateLimitDrafts(afterRename, renamedDocument, addedDocument);
+
+    expect(afterAdd[rateLimitDraftKey("acme", "new", 0)]).toEqual({ tpm: { text: "" }, prm: { text: "" } });
+    expect(afterAdd[rateLimitDraftKey("acme", "a", 0)]).toEqual({ tpm: { text: "1" }, prm: { text: "" } });
+  });
+
+  it("shifts drafts for later occurrences of a deleted duplicate", () => {
+    const previous = { providers: { acme: { models: [{ id: "demo", tpm: 1 }, { id: "demo", tpm: 2 }] } } };
+    const drafts = modelRateLimitDraftsFromDocument(previous);
+    drafts[rateLimitDraftKey("acme", "demo", 1)] = { tpm: { text: "bad", error: "Tokens per minute must be a whole number." }, prm: { text: "" } };
+    const next = { providers: { acme: { models: [{ id: "demo", tpm: 2 }] } } };
+
+    const afterDelete = reconcileRateLimitDrafts(drafts, previous, next, { type: "delete", providerName: "acme", modelId: "demo", occurrence: 0 });
+
+    expect(afterDelete[rateLimitDraftKey("acme", "demo", 0)]?.tpm.error).toBe("Tokens per minute must be a whole number.");
+    expect(afterDelete[rateLimitDraftKey("acme", "demo", 1)]).toBeUndefined();
+  });
+
+  it("returns the first invalid draft with its identity", () => {
+    const drafts = modelRateLimitDraftsFromDocument(parseModelsConfigDocument({
+      providers: { acme: { models: [{ id: "demo", tpm: "bad" }, { id: "second", prm: "worse" }] } },
+    }));
+
+    expect(firstInvalidRateLimitDraft(drafts)).toMatchObject({
+      key: rateLimitDraftKey("acme", "demo", 0),
+      providerName: "acme",
+      modelId: "demo",
+      field: "tpm",
+      message: "Tokens per minute must be a whole number.",
+    });
+    expect(firstInvalidRateLimitDraft({})).toBeUndefined();
   });
 });
