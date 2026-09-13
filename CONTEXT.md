@@ -28,6 +28,10 @@ _Avoid_: Project model profile, global gateway ladder
 One provider, model ID, and thinking level treated as a complete selection.
 _Avoid_: Model name, model-only selection
 
+**Model rate-limit budget**:
+The request and processed-token allowances shared by calls through one PI WEBUI instance to one provider and model ID. Other model identities have independent allowances; thinking levels and sessions do not divide the budget.
+_Avoid_: Global rate limit, provider-wide limit, per-session limit
+
 **Session model policy**:
 A session's active Exact or Tiered mode together with its remembered exact model selection and remembered tier.
 _Avoid_: Model group, model category
