@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rename, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type {
   ModelConnectionTestRequest,
@@ -411,7 +411,47 @@ async function resolveModelsWriteTarget(filePath: string): Promise<string> {
     return await realpath(filePath);
   } catch (error) {
     if (!isMissingFile(error)) throw error;
-    return join(await realpath(dirname(filePath)), basename(filePath));
+    return await resolveMissingModelsWriteTarget(filePath);
+  }
+}
+
+/**
+ * Mirrors `resolveMissingWriteTarget` in `src/server/storage/projectStore.ts`.
+ * A missing leaf may itself be a dangling symlink, so walk `lstat`/`readlink`
+ * until an existing component is reached and return the physical target path
+ * instead of the link path. Otherwise the later `rename` would replace the
+ * link rather than write through it.
+ */
+async function resolveMissingModelsWriteTarget(filePath: string): Promise<string> {
+  let candidate = filePath;
+  const visited = new Set<string>();
+
+  for (;;) {
+    let metadata: Stats;
+    try {
+      metadata = await lstat(candidate);
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      if (candidate.endsWith(sep) || candidate.endsWith("/")) {
+        throw new Error(`models.json path must resolve to a file: ${filePath}`, { cause: error });
+      }
+      const physicalParent = await realpath(dirname(candidate));
+      return join(physicalParent, basename(candidate));
+    }
+
+    if (!metadata.isSymbolicLink()) return await realpath(candidate);
+
+    const physicalParent = await realpath(dirname(candidate));
+    const physicalCandidate = join(physicalParent, basename(candidate));
+    if (visited.has(physicalCandidate)) {
+      throw new Error("Cannot resolve models.json write target because of a symbolic-link cycle");
+    }
+    visited.add(physicalCandidate);
+
+    const target = await readlink(physicalCandidate);
+    // Preserve component order until the filesystem has traversed any symlink
+    // before `..`; path.join/resolve would collapse those components too soon.
+    candidate = isAbsolute(target) ? target : `${physicalParent}${physicalParent.endsWith(sep) ? "" : sep}${target}`;
   }
 }
 

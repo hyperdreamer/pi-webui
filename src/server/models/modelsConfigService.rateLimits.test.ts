@@ -105,6 +105,22 @@ describe("ModelsConfigService rate limit lifecycle", () => {
     expect((await lstat(join(agentDir, "models.json"))).isSymbolicLink()).toBe(true);
   });
 
+  it("creates the missing target of a dangling symlink instead of replacing the link", async () => {
+    const agentDir = await temporaryAgentDir();
+    const realDir = await temporaryAgentDir();
+    const realPath = join(realDir, "real-models.json");
+    const modelsPath = join(agentDir, "models.json");
+    await symlink(realPath, modelsPath);
+    const models = new ModelsConfigService({ agentDir });
+
+    await expect(models.save(LIMITED_DOCUMENT)).resolves.toEqual({ success: true, contractVersion: 1 });
+
+    expect((await lstat(modelsPath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(realPath, "utf8")).toBe(`${JSON.stringify(LIMITED_DOCUMENT, null, 2)}\n`);
+    expect((await readdir(agentDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect((await readdir(realDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
   it("rejects a hard-linked target before creating a temporary file", async () => {
     const agentDir = await temporaryAgentDir();
     const otherDir = await temporaryAgentDir();
