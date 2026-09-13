@@ -1,4 +1,12 @@
-import { isRetryableAssistantError, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  isRetryableAssistantError,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type AssistantMessageEventStream,
+  type Model,
+} from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { wrapModelCompletion, wrapModelStream } from "./modelRateLimitAdapters";
@@ -45,6 +53,52 @@ function createOwner(tpm?: number, prm?: number) {
 function terminalWithInput(input: number): AssistantMessage {
   const base = fixtureTerminalMessage();
   return fixtureTerminalMessage({ usage: { ...base.usage, input, totalTokens: input } });
+}
+
+interface DuplicateTerminalProbe {
+  stream: AssistantMessageEventStream;
+  push(event: AssistantMessageEvent): void;
+  nextCallCount(): number;
+  returnCallCount(): number;
+}
+
+/**
+ * Counts how the pump consumes the delegate and replays a duplicate terminal on
+ * the second `next()`. Pi's `EventStream` drops pushes after a terminal event,
+ * so without this probe a pump that keeps consuming past the terminal is
+ * invisible to accounting assertions.
+ */
+function createDuplicateTerminalProbe(duplicate: AssistantMessage): DuplicateTerminalProbe {
+  const stream = createAssistantMessageEventStream();
+  const delegateIterator = stream[Symbol.asyncIterator]();
+  let nextCalls = 0;
+  let returnCalls = 0;
+  const iterator: AsyncIterator<AssistantMessageEvent> = {
+    next: () => {
+      nextCalls += 1;
+      if (nextCalls === 1) return delegateIterator.next();
+      if (nextCalls === 2) {
+        return Promise.resolve({ value: { type: "done", reason: "stop", message: duplicate }, done: false });
+      }
+      return Promise.resolve({ value: undefined, done: true });
+    },
+    return: (value?: unknown) => {
+      returnCalls += 1;
+      return delegateIterator.return === undefined
+        ? Promise.resolve({ value: undefined, done: true })
+        : delegateIterator.return(value);
+    },
+  };
+  Object.defineProperty(stream, Symbol.asyncIterator, {
+    value: (): AsyncIterator<AssistantMessageEvent> => iterator,
+    configurable: true,
+  });
+  return {
+    stream,
+    push: (event: AssistantMessageEvent): void => { stream.push(event); },
+    nextCallCount: () => nextCalls,
+    returnCallCount: () => returnCalls,
+  };
 }
 
 describe("model rate limit stream adapter", () => {
@@ -94,21 +148,27 @@ describe("model rate limit stream adapter", () => {
     await expect(followUp).resolves.toEqual({ status: "aborted" });
   });
 
-  it("accounts duplicate terminal events once", async () => {
-    const { owner } = createOwner(5);
-    const delegate = createControllableStream();
-    const wrapped = wrapModelStream(owner, vi.fn<StreamFn>(() => delegate.stream));
-    const message = terminalWithInput(5);
+  it("accounts duplicate terminal events once and stops consuming the delegate", async () => {
+    const { owner } = createOwner(10);
+    const first = terminalWithInput(5);
+    const probe = createDuplicateTerminalProbe(terminalWithInput(5));
+    const wrapped = wrapModelStream(owner, vi.fn<StreamFn>(() => probe.stream));
 
     const result = wrapped(fixtureModel(), context, {}).result();
-    delegate.push({ type: "done", reason: "stop", message });
-    delegate.push({ type: "done", reason: "stop", message: terminalWithInput(500) });
+    probe.push({ type: "done", reason: "stop", message: first });
 
-    await expect(result).resolves.toEqual(message);
+    await expect(result).resolves.toEqual(first);
+    // A pump that keeps consuming past the terminal would call next() again.
+    expect(probe.nextCallCount()).toBe(1);
+    expect(probe.returnCallCount()).toBe(1);
+
+    // Exactly one 5-token charge is retained, so the follow-up is admitted.
+    // A second charge would retain 10 and queue this acquire instead.
     const followUp = owner.acquire(identity);
-    expect(owner.pendingWaiterCount(identity)).toBe(1);
-    owner.dispose();
-    await expect(followUp).resolves.toEqual({ status: "aborted" });
+    expect(owner.pendingWaiterCount(identity)).toBe(0);
+    await expect(followUp).resolves.toEqual({ status: "granted" });
+    owner.completeCall(identity, undefined);
+    expect(owner.inFlightCount(identity)).toBe(0);
   });
 
   it("settles synthesized errors for a synchronous throw and a rejected delegate", async () => {
@@ -203,16 +263,19 @@ describe("model rate limit stream adapter", () => {
 
 describe("model rate limit completion adapter", () => {
   it("resolves the delegate message after recording usage once", async () => {
-    const { owner } = createOwner(5);
+    const { owner } = createOwner(10);
     const message = terminalWithInput(5);
     const delegate = vi.fn(() => Promise.resolve(message));
     const complete = wrapModelCompletion(owner, delegate);
 
     await expect(complete(fixtureModel(), context)).resolves.toEqual(message);
+    // Exactly one 5-token charge is retained, so the follow-up is admitted.
+    // A duplicated charge would retain 10 and queue this acquire instead.
     const followUp = owner.acquire(identity);
-    expect(owner.pendingWaiterCount(identity)).toBe(1);
-    owner.dispose();
-    await expect(followUp).resolves.toEqual({ status: "aborted" });
+    expect(owner.pendingWaiterCount(identity)).toBe(0);
+    await expect(followUp).resolves.toEqual({ status: "granted" });
+    owner.completeCall(identity, undefined);
+    expect(owner.inFlightCount(identity)).toBe(0);
   });
 
   it("resolves aborted and blocked terminals without calling the delegate", async () => {

@@ -138,8 +138,10 @@ async function pumpModelStream(
         continue;
       }
       const terminal = event.type === "done" ? event.message : event.error;
-      owner.completeCall(identity, terminal.usage);
+      // Account the terminal inside the first-`settle()` branch so exactly-once
+      // does not rest on the post-terminal `return` alone.
       if (settle()) {
+        owner.completeCall(identity, terminal.usage);
         stream.push(event);
         stream.end(terminal);
       }
