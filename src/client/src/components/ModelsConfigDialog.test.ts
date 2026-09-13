@@ -22,6 +22,24 @@ describe("models-config-dialog machine targeting", () => {
     expect(modelsApi.save).toHaveBeenCalledWith(config, "remote-a");
   });
 
+  it("loads the selected machine's limits status when the API provides it", async () => {
+    const config: ModelsConfigDocument = { providers: { custom: { api: "openai-completions" } } };
+    const limitsStatus = vi.fn().mockResolvedValue({ contractVersion: 1, revision: 1, admission: "ready", source: "accepted-document" });
+    const modelsApi = {
+      config: vi.fn().mockResolvedValue(config),
+      limitsStatus,
+      save: vi.fn().mockResolvedValue({ success: true }),
+      test: vi.fn(),
+      discover: vi.fn(),
+    };
+    const dialog = new ModelsConfigDialog();
+    dialog.machine = machine("remote-a");
+    dialog.modelsApi = modelsApi;
+
+    await callDialogPromise(dialog, "loadConfig");
+    await vi.waitFor(() => { expect(limitsStatus).toHaveBeenCalledWith("remote-a"); });
+  });
+
   it("tests the selected custom model against the selected machine", async () => {
     const config: ModelsConfigDocument = {
       providers: {

@@ -1,30 +1,45 @@
 import { LitElement, css, html, svg, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
+  HttpRequestError,
+  ModelsConfigRequestError,
   modelsConfigApi,
   type Machine,
   type ModelConnectionTestResponse,
   type ModelDiscoveryModel,
   type ModelsConfigDocument,
+  type ModelsConfigLimitsStatusResponse,
   type ModelsConfigModel,
   type ModelsConfigProvider,
 } from "../api";
+import { parseModelRateLimitDraftText, type ModelRateLimitField } from "../../../shared/modelRateLimits";
 import {
   THINKING_LEVELS,
   addCustomProvider,
   addModel,
+  applyRateLimitDraftField,
+  firstInvalidRateLimitDraft,
   modelApiOptionStates,
   modelIdOptionStates,
+  modelRateLimitDraftsFromDocument,
+  rateLimitDraftKey,
+  reconcileRateLimitDrafts,
   removeModel,
   removeProvider,
   renameProvider,
+  setModelRateLimitField,
   setThinkingLevelMapEntry,
   updateModel,
   updateProvider,
+  type ModelRateLimitDraft,
+  type ModelRateLimitDraftMap,
+  type RateLimitDraftReconciliationChange,
   type ThinkingLevel,
 } from "./models/modelsConfigDraft";
 
-type ModelsConfigApi = Pick<typeof modelsConfigApi, "config" | "save" | "test" | "discover">;
+type ModelsConfigApi = Pick<typeof modelsConfigApi, "config" | "save" | "test" | "discover"> & {
+  limitsStatus?: (machineId?: string) => Promise<ModelsConfigLimitsStatusResponse>;
+};
 
 type ModelsSelection =
   | { type: "provider"; providerName: string }
@@ -72,6 +87,10 @@ export class ModelsConfigDialog extends LitElement {
   @state() private advancedErrors: Record<string, string> = {};
   @state() private modelTests: Record<string, ModelTestState> = {};
   @state() private discoveredModels: Record<string, ModelDiscoveryState> = {};
+  @state() private loadFailed = false;
+  @state() private rateLimitDrafts: ModelRateLimitDraftMap = {};
+  @state() private rateLimitsStatus: ModelsConfigLimitsStatusResponse | undefined;
+  @state() private rateLimitsStatusError = "";
 
   private loadRequestSequence = 0;
   private modelDiscoverySequence = 0;
@@ -119,7 +138,7 @@ export class ModelsConfigDialog extends LitElement {
           <div class="dialog-body">
             ${this.renderNavigation()}
             <main class="detail-pane">
-              ${this.loading ? html`<div class="empty-state">Loading model configuration...</div>` : this.renderDetail()}
+              ${this.loading ? html`<div class="empty-state">Loading model configuration...</div>` : this.loadFailed ? this.renderLoadFailed() : this.renderDetail()}
             </main>
           </div>
 
@@ -127,12 +146,13 @@ export class ModelsConfigDialog extends LitElement {
             <div class="footer-message" aria-live="polite">
               ${this.error !== "" ? html`<span class="error-message">${this.error}</span>` : null}
               ${this.savedMessage !== "" ? html`<span class="saved-message">${this.savedMessage}</span>` : null}
+              ${this.renderRateLimitsNotice()}
             </div>
             <button type="button" class="secondary" @click=${() => { this.configureAuth(); }}>
               ${keyIcon()} Authentication
             </button>
             <button type="button" class="secondary" @click=${() => { this.close(); }}>Close</button>
-            <button type="button" class="primary" ?disabled=${this.saving || this.loading} @click=${() => { void this.saveConfig(); }}>
+            <button type="button" class="primary" ?disabled=${this.saving || this.loading || this.loadFailed || this.rateLimitSaveBlock() !== ""} @click=${() => { void this.saveConfig(); }}>
               ${this.saving ? "Saving..." : "Save"}
             </button>
           </footer>
@@ -154,7 +174,7 @@ export class ModelsConfigDialog extends LitElement {
           ` : providers.map(([providerName, provider]) => this.renderProviderTreeNode(providerName, provider))}
         </div>
         <div class="tree-actions">
-          <button type="button" class="add-provider" @click=${() => { this.addCustomProvider(); }}>
+          <button type="button" class="add-provider" ?disabled=${this.loadFailed} @click=${() => { this.addCustomProvider(); }}>
             ${plusIcon()} Add provider
           </button>
           <button type="button" class="auth-link" @click=${() => { this.configureAuth(); }}>
@@ -347,6 +367,14 @@ export class ModelsConfigDialog extends LitElement {
           </div>
         </div>
 
+        <section class="rate-limits-section">
+          <span class="section-label">Rate limits</span>
+          <div class="field-grid two-columns">
+            ${this.renderRateLimitField("tpm", "Tokens per minute (TPM)", providerName, index, model)}
+            ${this.renderRateLimitField("prm", "Requests per minute (PRM)", providerName, index, model)}
+          </div>
+        </section>
+
         <section class="cost-section">
           <div>
             <span class="section-label">Cost</span>
@@ -453,38 +481,184 @@ export class ModelsConfigDialog extends LitElement {
     this.loading = true;
     this.error = "";
     this.savedMessage = "";
+    this.loadFailed = false;
+    this.rateLimitsStatus = undefined;
+    this.rateLimitsStatusError = "";
+
+    const statusRequest = this.modelsApi.limitsStatus?.(machineId);
+    const statusResult = statusRequest === undefined
+      ? undefined
+      : statusRequest.then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+
     try {
       const config = normalizeConfig(await this.modelsApi.config(machineId));
       if (!this.isCurrentLoad(requestSequence, machineId)) return;
       this.config = config;
+      this.rateLimitDrafts = modelRateLimitDraftsFromDocument(config);
       this.selection = validSelection(this.selection, config);
       this.providerNameDraft = this.selection?.type === "provider" ? this.selection.providerName : "";
       this.renameError = "";
       this.advancedErrors = {};
       this.modelTests = {};
     } catch (error) {
-      if (this.isCurrentLoad(requestSequence, machineId)) this.error = `Failed to load models configuration: ${errorMessage(error)}`;
+      if (this.isCurrentLoad(requestSequence, machineId)) {
+        this.loadFailed = true;
+        this.config = { providers: {} };
+        this.selection = undefined;
+        this.providerNameDraft = "";
+        this.rateLimitDrafts = {};
+        this.modelTests = {};
+        this.discoveredModels = {};
+        this.error = `Failed to load models configuration: ${errorMessage(error)}`;
+      }
     } finally {
       if (this.isCurrentLoad(requestSequence, machineId)) this.loading = false;
     }
+
+    if (statusResult !== undefined) await this.applyLimitsStatus(requestSequence, machineId, statusResult);
+  }
+
+  private async applyLimitsStatus(
+    requestSequence: number,
+    machineId: string,
+    result: Promise<{ ok: true; value: ModelsConfigLimitsStatusResponse } | { ok: false; error: unknown }>,
+  ): Promise<void> {
+    const settled = await result;
+    if (!this.isCurrentLoad(requestSequence, machineId)) return;
+    if (settled.ok) {
+      this.rateLimitsStatus = settled.value;
+      this.rateLimitsStatusError = "";
+      return;
+    }
+    this.rateLimitsStatus = undefined;
+    this.rateLimitsStatusError = settled.error instanceof HttpRequestError && settled.error.status === 404
+      ? ""
+      : `Failed to load rate-limit status: ${errorMessage(settled.error)}`;
   }
 
   private async saveConfig(): Promise<void> {
-    if (this.saving || this.loading) return;
+    if (this.saving || this.loading || this.loadFailed) return;
+    if (this.rateLimitSaveBlock() !== "") {
+      this.error = this.rateLimitSaveBlock();
+      return;
+    }
     const machineId = this.machineId();
     this.saving = true;
     this.error = "";
     this.savedMessage = "";
     try {
-      await this.modelsApi.save(this.config, machineId);
+      const response = await this.modelsApi.save(this.config, machineId);
       if (machineId !== this.machineId()) return;
+      this.rateLimitDrafts = modelRateLimitDraftsFromDocument(this.config);
+      this.rateLimitsStatus = {
+        contractVersion: 1,
+        revision: response.revision ?? 0,
+        admission: "ready",
+        source: "accepted-document",
+      };
+      this.rateLimitsStatusError = "";
       this.setSavedMessage(`Saved and reloaded models for ${this.machineLabel()}.`);
       this.onSaved?.();
     } catch (error) {
-      if (machineId === this.machineId()) this.error = `Failed to save models configuration: ${errorMessage(error)}`;
+      if (machineId === this.machineId()) this.applySaveFailure(error);
     } finally {
       if (machineId === this.machineId()) this.saving = false;
     }
+  }
+
+  private applySaveFailure(error: unknown): void {
+    if (error instanceof ModelsConfigRequestError) {
+      const { code, provider, modelId, field, occurrence } = error.details;
+      if (code === "MODELS_CONFIG_INVALID_LIMITS" && field !== undefined) {
+        const key = rateLimitDraftKey(provider ?? "", modelId ?? "", occurrence ?? 0);
+        const current = this.rateLimitDrafts[key];
+        if (current !== undefined) {
+          const rejected: ModelRateLimitDraft = field === "tpm"
+            ? { ...current, tpm: { ...current.tpm, error: error.message } }
+            : { ...current, prm: { ...current.prm, error: error.message } };
+          this.rateLimitDrafts = { ...this.rateLimitDrafts, [key]: rejected };
+        }
+      }
+      if (code === "MODELS_CONFIG_REFRESH_FAILED") {
+        this.error = `Saved, but the active model configuration could not be reloaded: ${error.message}`;
+        return;
+      }
+      if (code === "MODELS_CONFIG_UNREADABLE") {
+        this.error = `${error.message} Fix models.json externally, then Reload before saving.`;
+        return;
+      }
+    }
+    this.error = `Failed to save models configuration: ${errorMessage(error)}`;
+  }
+
+  private rateLimitSaveBlock(): string {
+    const invalid = firstInvalidRateLimitDraft(this.rateLimitDrafts);
+    return invalid === undefined ? "" : `Fix rate limits for ${invalid.providerName}/${invalid.modelId} before saving.`;
+  }
+
+  private rateLimitsNotice(): string {
+    const block = this.rateLimitSaveBlock();
+    if (block !== "") return block;
+    const status = this.rateLimitsStatus;
+    if (status === undefined) return this.rateLimitsStatusError;
+    if (status.admission === "blocked") return `Model requests are blocked: ${status.error ?? ""}`;
+    if (status.source === "last-known-good" && status.error !== undefined) {
+      return `Active limits come from the last accepted configuration: ${status.error}`;
+    }
+    return this.rateLimitsStatusError;
+  }
+
+  private renderRateLimitsNotice(): TemplateResult | null {
+    const notice = this.rateLimitsNotice();
+    return notice === "" ? null : html`<span class="rate-limits-notice">${notice}</span>`;
+  }
+
+  private renderLoadFailed(): TemplateResult {
+    return html`<div class="empty-state"><strong>Model configuration could not be loaded.</strong><span>Fix the file on the selected machine, then use Reload.</span></div>`;
+  }
+
+  private renderRateLimitField(field: ModelRateLimitField, label: string, providerName: string, index: number, model: ModelsConfigModel): TemplateResult {
+    const id = field === "tpm" ? "model-tpm" : "model-prm";
+    const draft = this.rateLimitDraftFor(providerName, index, model);
+    const error = draft[field].error;
+    return html`
+      <div class="field-stack">
+        <label for=${id}>${label}</label>
+        <input id=${id} type="number" min="0" step="1" inputmode="numeric" placeholder="Unlimited" .value=${draft[field].text} @input=${(event: Event) => { this.applyRateLimitInput(providerName, index, model, field, textValue(event)); }}>
+        ${error === undefined ? null : html`<span class="field-error">${error}</span>`}
+      </div>
+    `;
+  }
+
+  private rateLimitDraftFor(providerName: string, index: number, model: ModelsConfigModel): ModelRateLimitDraft {
+    const occurrence = this.occurrenceOf(providerName, index, model.id);
+    return this.rateLimitDrafts[rateLimitDraftKey(providerName, model.id, occurrence)] ?? { tpm: { text: "" }, prm: { text: "" } };
+  }
+
+  private applyRateLimitInput(providerName: string, index: number, model: ModelsConfigModel, field: ModelRateLimitField, text: string): void {
+    const occurrence = this.occurrenceOf(providerName, index, model.id);
+    const key = rateLimitDraftKey(providerName, model.id, occurrence);
+    const current = this.rateLimitDrafts[key] ?? { tpm: { text: "" }, prm: { text: "" } };
+    this.rateLimitDrafts = { ...this.rateLimitDrafts, [key]: applyRateLimitDraftField(current, field, text) };
+    const parsed = parseModelRateLimitDraftText(text);
+    if (!parsed.ok) return;
+    this.replaceModel(providerName, index, setModelRateLimitField(model, field, parsed.value));
+  }
+
+  private occurrenceOf(providerName: string, index: number, modelId: string): number {
+    const models = this.config.providers?.[providerName]?.models ?? [];
+    let occurrence = 0;
+    for (let candidate = 0; candidate < index; candidate += 1) {
+      if (models[candidate]?.id === modelId) occurrence += 1;
+    }
+    return occurrence;
+  }
+
+  private reconcileDrafts(previousDocument: ModelsConfigDocument, change?: RateLimitDraftReconciliationChange): void {
+    this.rateLimitDrafts = reconcileRateLimitDrafts(this.rateLimitDrafts, previousDocument, this.config, change);
   }
 
   private async testModel(providerName: string, index: number): Promise<void> {
@@ -553,14 +727,18 @@ export class ModelsConfigDialog extends LitElement {
   }
 
   private addCustomProvider(): void {
+    const previousDocument = this.config;
     const added = addCustomProvider(this.config);
     this.config = added.config;
+    this.reconcileDrafts(previousDocument);
     this.selectProvider(added.providerName);
   }
 
   private deleteProvider(providerName: string): void {
+    const previousDocument = this.config;
     this.clearProviderDiscovery(providerName);
     this.config = removeProvider(this.config, providerName);
+    this.reconcileDrafts(previousDocument);
     this.modelTests = clearProviderTests(this.modelTests, providerName);
     const nextProvider = Object.keys(this.config.providers ?? {})[0];
     if (nextProvider === undefined) {
@@ -572,6 +750,7 @@ export class ModelsConfigDialog extends LitElement {
   }
 
   private renameSelectedProvider(providerName: string): void {
+    const previousDocument = this.config;
     const renamed = renameProvider(this.config, providerName, this.providerNameDraft);
     if ("error" in renamed) {
       this.renameError = renamed.error;
@@ -580,6 +759,7 @@ export class ModelsConfigDialog extends LitElement {
     const newName = this.providerNameDraft.trim();
     this.clearProviderDiscovery(providerName);
     this.config = renamed.config;
+    this.reconcileDrafts(previousDocument);
     this.modelTests = renameProviderTests(this.modelTests, providerName, newName);
     this.selectProvider(newName);
   }
@@ -592,18 +772,31 @@ export class ModelsConfigDialog extends LitElement {
 
   private addModel(providerName: string): void {
     const count = this.config.providers?.[providerName]?.models?.length ?? 0;
+    const previousDocument = this.config;
     this.config = addModel(this.config, providerName);
+    this.reconcileDrafts(previousDocument);
     this.selectModel(providerName, count);
   }
 
   private deleteModel(providerName: string, index: number): void {
+    const deleted = this.config.providers?.[providerName]?.models?.[index];
+    const previousDocument = this.config;
+    const occurrence = deleted === undefined ? 0 : this.occurrenceOf(providerName, index, deleted.id);
     this.config = removeModel(this.config, providerName, index);
+    if (deleted !== undefined) {
+      this.reconcileDrafts(previousDocument, { type: "delete", providerName, modelId: deleted.id, occurrence });
+    }
     this.modelTests = clearProviderTests(this.modelTests, providerName);
     this.selectProvider(providerName);
   }
 
   private replaceModel(providerName: string, index: number, model: ModelsConfigModel): void {
+    const previousModel = this.config.providers?.[providerName]?.models?.[index];
+    const previousDocument = this.config;
     this.config = updateModel(this.config, providerName, index, model);
+    if (previousModel !== undefined && previousModel.id !== model.id) {
+      this.reconcileDrafts(previousDocument, { type: "rename", providerName, from: previousModel.id, to: model.id });
+    }
     const key = modelTestKey(providerName, index);
     if (this.modelTests[key] !== undefined) this.modelTests = recordWithoutKey(this.modelTests, key);
   }
@@ -725,6 +918,10 @@ export class ModelsConfigDialog extends LitElement {
     this.advancedErrors = {};
     this.modelTests = {};
     this.discoveredModels = {};
+    this.loadFailed = false;
+    this.rateLimitDrafts = {};
+    this.rateLimitsStatus = undefined;
+    this.rateLimitsStatusError = "";
   }
 
   private machineId(): string {
@@ -818,6 +1015,8 @@ export class ModelsConfigDialog extends LitElement {
     .switch-row { display: flex; flex-wrap: wrap; gap: 14px 20px; }
     .check-row { display: inline-flex; align-items: center; gap: 7px; color: var(--pi-text-secondary); font-size: 12px; cursor: pointer; }
     .check-row input { width: 14px; height: 14px; margin: 0; accent-color: var(--pi-accent); }
+    .rate-limits-section { display: grid; gap: 10px; }
+    .rate-limits-notice { color: var(--pi-muted); }
     .thinking-section, .cost-section { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--pi-border-muted); border-radius: 6px; background: var(--pi-surface); }
     .thinking-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
     .thinking-heading p, .cost-section p { margin-top: 3px; color: var(--pi-muted); font-size: 12px; line-height: 1.4; }
