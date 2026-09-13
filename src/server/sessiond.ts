@@ -10,6 +10,7 @@ import { AuthService } from "./sessions/authService.js";
 import { registerAuthRoutes } from "./sessions/authRoutes.js";
 import { ModelsConfigService } from "./models/modelsConfigService.js";
 import { registerModelsConfigRoutes } from "./models/modelsConfigRoutes.js";
+import { wrapModelCompletion } from "./rateLimits/modelRateLimitAdapters.js";
 import { createModelRateLimitOwner } from "./rateLimits/modelRateLimitOwner.js";
 import { SkillsConfigService } from "./skills/skillsConfigService.js";
 import { registerSkillsConfigRoutes } from "./skills/skillsConfigRoutes.js";
@@ -107,8 +108,12 @@ await runSessionDaemonStartup({
       thinkingLevelsForModel: runtimeThinkingLevels,
       logger: app.log,
     });
+    const rateLimitsCompletion = wrapModelCompletion(
+      rateLimits,
+      (model, context, options) => auth.runtime.completeSimple(model, context, options),
+    );
     const speechInputPolishing = createSpeechInputPolishingService({
-      modelRuntime: auth.runtime,
+      modelRuntime: { completeSimple: rateLimitsCompletion },
       utilityModelResolver,
     });
     const spawnTargets = config.spawnSessions
