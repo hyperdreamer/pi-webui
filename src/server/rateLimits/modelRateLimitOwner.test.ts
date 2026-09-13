@@ -222,6 +222,24 @@ describe("model rate limit owner", () => {
     expect(rateLimits.pendingWaiterCount(sibling)).toBe(0);
   });
 
+  it("retains PRM-only history when an identity leaves and re-enters the snapshot", async () => {
+    const { rateLimits } = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 1) } });
+
+    await expect(rateLimits.acquire(demo)).resolves.toEqual({ status: "granted" });
+    rateLimits.completeCall(demo, undefined);
+    expect(rateLimits.activeIdentityCount()).toBe(1);
+
+    rateLimits.applySnapshot(fixtureSnapshot({}), "accepted-document");
+    expect(rateLimits.activeIdentityCount()).toBe(1);
+
+    rateLimits.applySnapshot(fixtureSnapshot({ acme: { "demo-model": fixtureLimits(undefined, 1) } }), "accepted-document");
+    const queued = rateLimits.acquire(demo);
+
+    expect(rateLimits.pendingWaiterCount(demo)).toBe(1);
+    rateLimits.dispose();
+    await expect(queued).resolves.toEqual({ status: "aborted" });
+  });
+
   it("keeps at most one timer per blocked identity and clears it after draining", async () => {
     const { clock, rateLimits } = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 1) } });
 
@@ -242,8 +260,8 @@ describe("model rate limit owner", () => {
     expect(clock.pendingTimerCount()).toBe(0);
   });
 
-  it("releases in-flight counts on completion and prunes idle states", async () => {
-    const { rateLimits } = createOwner();
+  it("releases in-flight counts on completion and retains request history until the window expires", async () => {
+    const { clock, rateLimits } = createOwner();
 
     await rateLimits.acquire(demo);
     expect(rateLimits.inFlightCount(demo)).toBe(1);
@@ -251,6 +269,10 @@ describe("model rate limit owner", () => {
 
     rateLimits.completeCall(demo, undefined);
     expect(rateLimits.inFlightCount(demo)).toBe(0);
+    expect(rateLimits.activeIdentityCount()).toBe(1);
+
+    clock.advance(60_000);
+    rateLimits.completeCall(demo, undefined);
     expect(rateLimits.activeIdentityCount()).toBe(0);
   });
 

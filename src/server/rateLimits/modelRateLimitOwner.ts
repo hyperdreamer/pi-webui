@@ -418,6 +418,7 @@ class ModelRateLimitOwnerImpl implements ModelRateLimitOwner, ModelRateLimitDiag
     if (
       state.queue.length > 0 ||
       state.inFlight > 0 ||
+      state.requestTimestamps.length > 0 ||
       state.tokenUsages.length > 0 ||
       hasEnabledLimit(state.limits)
     ) return;
