@@ -259,6 +259,19 @@ The navigation footer exposes **Models** for the selected machine and **Skills**
 
 **Skills** lists the skills available to the selected workspace. It can toggle the `disable-model-invocation` frontmatter setting in a `SKILL.md`, search skills.sh, and install or update skills at global or project scope. Review third-party skill sources before installing them. After changing, installing, or updating a skill, use `/reload` in each idle session that should pick up the changed resource.
 
+### Per-model rate limits
+
+Custom providers can carry optional **TPM** (tokens per minute) and **PRM** (requests per minute) limits per model. In **Models → Model configuration**, select a model and edit **Rate limits** between its Context window / Max output tokens fields and Cost. Leave a field blank for `Unlimited`, or set `0` to disable that dimension explicitly. The existing **Save** action persists the values into `models.json` for the selected machine's active profile and activates accepted limits without a daemon restart.
+
+- **TPM** counts the model call's reported terminal usage: `input + output + cacheRead + cacheWrite`. `totalTokens` is not added again, and `maxTokens`, prompt size, and streaming deltas are never reserved or counted.
+- The window is rolling 60 seconds, not aligned calendar minutes: an entry stops counting exactly 60 seconds after it was recorded, and a call is admitted only while the retained request count is below PRM and the retained token sum is below TPM.
+- Calls to one provider plus model ID share one budget across every session, spawned session, compaction, branch summary, session name, utility fallback, speech polishing, and connection test in that daemon. Different model IDs, and the same model ID under different provider names, are independent.
+- When a limit is exhausted, later calls to that model wait in first-in, first-out order. Waiting never spends a PRM unit. Cancelling a waiting call removes it before dispatch; an already-dispatched call keeps its unit and reports its usage.
+- Reported usage can exceed TPM for one call: actual usage is not a hard ceiling. Already-dispatched calls finish, and later calls wait until recorded usage ages out.
+- Limits are local to the daemon and its active agent profile. Separate machines, separate daemons, standalone Pi CLI runs, and other applications do not share them.
+- Installing this feature requires one manual `pi-webui-sessiond.service` restart. Editing `models.json` outside PI WEBUI requires a daemon restart before the new limits are guaranteed to load; saving through the dialog activates accepted limits immediately.
+- If `models.json` cannot be parsed, the dialog reports the failure and refuses to overwrite the file. If a limit value is invalid, the document stays editable so you can repair it in place. A daemon with no accepted configuration reports `Model requests are blocked: ...` in the dialog and fails model calls closed until a valid document is saved.
+
 ### Utility models
 
 `utilityModels` is a machine-global setting stored in `$PI_WEBUI_CONFIG` or `~/.config/pi-webui/config.json`. In **Settings → Utility models**, configure models and thinking levels for utility work on the selected machine. This is separate from **Settings → Model tiers**, which controls session model routing.
