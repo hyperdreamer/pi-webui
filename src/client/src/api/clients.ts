@@ -1,4 +1,4 @@
-import type { DeleteWorkspaceFileResponse, FileSuggestion, HostSpeechSpeakRequest, HostSpeechStatus, HostSpeechStopResponse, HostSpeechTerminalResult, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { DeleteWorkspaceFileResponse, FileSuggestion, HostSpeechSpeakRequest, HostSpeechStatus, HostSpeechStopResponse, HostSpeechTerminalResult, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, ModelsConfigSaveResponse, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
@@ -13,7 +13,8 @@ import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
-import { request } from "./http";
+import { request, requestJson } from "./http";
+import { modelsConfigErrorFromBody } from "./modelsConfigError";
 import {
   arrayOf,
   parseAborted,
@@ -48,6 +49,7 @@ import {
   parseModelTierSettingsResponse,
   parseUtilityModelSettingsResponse,
   parseModelsConfigDocument,
+  parseModelsConfigLimitsStatusResponse,
   parseModelsConfigSaveResponse,
   parseSkillMutationResponse,
   parseSkillSearchResponse,
@@ -267,7 +269,18 @@ function modelsConfigPath(machineId = "local"): string {
 
 export const modelsConfigApi = {
   config: (machineId = "local") => request(modelsConfigPath(machineId), parseModelsConfigDocument),
-  save: (config: ModelsConfigDocument, machineId = "local") => request(modelsConfigPath(machineId), parseModelsConfigSaveResponse, { method: "PUT", body: JSON.stringify(config) }),
+  limitsStatus: (machineId = "local") =>
+    request(`${modelsConfigPath(machineId)}/limits`, parseModelsConfigLimitsStatusResponse),
+  save: async (config: ModelsConfigDocument, machineId = "local"): Promise<ModelsConfigSaveResponse> => {
+    const { status, body } = await requestJson(modelsConfigPath(machineId), {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+    if (status < 200 || status >= 300) {
+      throw modelsConfigErrorFromBody(body, status, "Failed to save models configuration.");
+    }
+    return parseModelsConfigSaveResponse(body);
+  },
   test: (input: ModelConnectionTestRequest, machineId = "local") => request(`${modelsConfigPath(machineId)}/test`, parseModelConnectionTestResponse, { method: "POST", body: JSON.stringify(input) }),
   discover: (input: ModelDiscoveryRequest, machineId = "local") => request(`${modelsConfigPath(machineId)}/discover`, parseModelDiscoveryResponse, { method: "POST", body: JSON.stringify(input) }),
 };

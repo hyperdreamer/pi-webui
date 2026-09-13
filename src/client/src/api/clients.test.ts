@@ -425,6 +425,56 @@ describe("Models configuration API", () => {
     expect(init?.method).toBe("POST");
     expect(JSON.parse(requestBody(init))).toEqual(input);
   });
+
+  it("reads the limits sidecar through the nested-deployment machine route", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const fetchMock = stubJsonFetch({ contractVersion: 1, revision: 2, admission: "ready", source: "accepted-document" });
+
+    await expect(modelsConfigApi.limitsStatus("remote /?")).resolves.toEqual({
+      contractVersion: 1,
+      revision: 2,
+      admission: "ready",
+      source: "accepted-document",
+    });
+
+    const [url] = fetchCall(fetchMock, 0);
+    expect(toUrl(url).pathname).toBe("/nested/pi-webui/api/machines/remote%20%2F%3F/models-config/limits");
+  });
+
+  it("throws a structured models configuration error for a failed save and parses a successful revision", async () => {
+    const body = {
+      error: "Tokens per minute must be a whole number.",
+      code: "MODELS_CONFIG_INVALID_LIMITS",
+      file: "models.json",
+      provider: "acme",
+      modelId: "demo",
+      field: "tpm",
+      occurrence: 0,
+      reason: "not-a-number",
+    };
+    stubSequenceFetch([
+      new Response(JSON.stringify(body), { status: 400, headers: { "content-type": "application/json" } }),
+      jsonResponse({ success: true, contractVersion: 1, revision: 7 }),
+    ]);
+
+    await expect(modelsConfigApi.save({ providers: {} })).rejects.toMatchObject({
+      name: "ModelsConfigRequestError",
+      status: 400,
+      message: body.error,
+      details: {
+        code: "MODELS_CONFIG_INVALID_LIMITS",
+        file: "models.json",
+        provider: "acme",
+        modelId: "demo",
+        field: "tpm",
+        occurrence: 0,
+        reason: "not-a-number",
+      },
+    });
+
+    await expect(modelsConfigApi.save({ providers: {} })).resolves.toEqual({ success: true, contractVersion: 1, revision: 7 });
+  });
 });
 
 describe("Utility model settings API", () => {
