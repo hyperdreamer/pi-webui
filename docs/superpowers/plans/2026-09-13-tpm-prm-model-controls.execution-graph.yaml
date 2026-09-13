@@ -1,0 +1,407 @@
+version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-13-tpm-prm-model-controls.md
+  sha256: 29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+  commit: 5a1eee4e5fa4c501bf5b580b7d93ed53013516ed
+  task_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+lanes:
+  - id: model-core
+    task_ids: [T1, T2, T3, T4, T5, T6]
+    sequences: [1, 2, 3, 4, 5, 6]
+  - id: server-wiring
+    task_ids: [T7, T8, T9, T10, T11]
+    sequences: [1, 2, 3, 4, 5]
+  - id: client-and-docs
+    task_ids: [T12, T13, T14, T15, T16]
+    sequences: [1, 2, 3, 4, 5]
+tasks:
+  T1:
+    plan_task: 1
+    lane: model-core
+    sequence: 1
+    depends_on: []
+    ownership:
+      - src/shared/modelRateLimits.ts
+      - src/shared/modelRateLimits.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-rate-limit-values
+        paths:
+          - src/shared/modelRateLimits.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/shared/modelRateLimits.test.ts"]
+  T2:
+    plan_task: 2
+    lane: model-core
+    sequence: 2
+    depends_on: [T1]
+    ownership:
+      - src/server/models/modelsJsonParser.ts
+      - src/server/models/modelsJsonParser.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: models-json-parser
+        paths:
+          - src/server/models/modelsJsonParser.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/models/modelsJsonParser.test.ts"]
+  T3:
+    plan_task: 3
+    lane: model-core
+    sequence: 3
+    depends_on: [T2]
+    ownership:
+      - src/server/rateLimits/modelRateLimitConfig.ts
+      - src/server/rateLimits/modelRateLimitConfig.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-rate-limit-snapshot
+        paths:
+          - src/server/rateLimits/modelRateLimitConfig.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/rateLimits/modelRateLimitConfig.test.ts"]
+  T4:
+    plan_task: 4
+    lane: model-core
+    sequence: 4
+    depends_on: [T3]
+    ownership:
+      - src/server/rateLimits/modelRateLimitOwner.ts
+      - src/server/rateLimits/modelRateLimitTestSupport.ts
+      - src/server/rateLimits/modelRateLimitOwner.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-rate-limit-owner
+        paths:
+          - src/server/rateLimits/modelRateLimitOwner.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-test-support
+        paths:
+          - src/server/rateLimits/modelRateLimitTestSupport.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-snapshot
+        from: T3
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/rateLimits/modelRateLimitOwner.test.ts"]
+  T5:
+    plan_task: 5
+    lane: model-core
+    sequence: 5
+    depends_on: [T4]
+    ownership:
+      - src/server/rateLimits/modelRateLimitAdapters.ts
+      - src/server/rateLimits/modelRateLimitAdapters.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-rate-limit-adapters
+        paths:
+          - src/server/rateLimits/modelRateLimitAdapters.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-owner
+        from: T4
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-test-support
+        from: T4
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/rateLimits/modelRateLimitAdapters.test.ts"]
+  T6:
+    plan_task: 6
+    lane: model-core
+    sequence: 6
+    depends_on: [T5]
+    ownership:
+      - src/server/rateLimits/modelRateLimitPiCompatibility.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: pi-runtime-compatibility-evidence
+        paths:
+          - src/server/rateLimits/modelRateLimitPiCompatibility.test.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-json-parser
+        from: T2
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-snapshot
+        from: T3
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/rateLimits/modelRateLimitPiCompatibility.test.ts"]
+  T7:
+    plan_task: 7
+    lane: server-wiring
+    sequence: 1
+    depends_on: [T1]
+    ownership:
+      - src/shared/apiTypes.ts
+      - src/shared/federatedRoutes.ts
+      - src/server/sessiond/sessionProxyRoutes.ts
+      - src/server/sessiond/sessionProxyRoutes.test.ts
+      - src/server/app.remoteProxy.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: models-config-api-contracts
+        paths:
+          - src/shared/apiTypes.ts
+          - src/shared/federatedRoutes.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessiond/sessionProxyRoutes.test.ts", "src/server/app.remoteProxy.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  T8:
+    plan_task: 8
+    lane: server-wiring
+    sequence: 2
+    depends_on: [T7]
+    ownership:
+      - src/server/models/modelsConfigService.ts
+      - src/server/models/modelsConfigService.test.ts
+      - src/server/models/modelsConfigService.rateLimits.test.ts
+      - src/server/sessiond.ts
+    exclusive_resources: []
+    produces:
+      - interface: models-config-service
+        paths:
+          - src/server/models/modelsConfigService.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-json-parser
+        from: T2
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-snapshot
+        from: T3
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-owner
+        from: T4
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-adapters
+        from: T5
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: models-config-api-contracts
+        from: T7
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/models/modelsConfigService.rateLimits.test.ts", "src/server/models/modelsConfigService.test.ts"]
+  T9:
+    plan_task: 9
+    lane: server-wiring
+    sequence: 3
+    depends_on: [T8]
+    ownership:
+      - src/server/models/modelsConfigRoutes.ts
+      - src/server/models/modelsConfigRoutes.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: models-config-routes
+        paths:
+          - src/server/models/modelsConfigRoutes.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-config-service
+        from: T8
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: models-config-api-contracts
+        from: T7
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/models/modelsConfigRoutes.test.ts"]
+  T10:
+    plan_task: 10
+    lane: server-wiring
+    sequence: 4
+    depends_on: [T9]
+    ownership:
+      - src/server/sessions/piSessionService.ts
+      - src/server/sessions/piSessionService.promptQueue.test.ts
+      - src/server/sessions/piSessionService.rateLimits.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: session-stream-wrapping
+        paths:
+          - src/server/sessions/piSessionService.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-owner
+        from: T4
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-adapters
+        from: T5
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: models-config-service
+        from: T8
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/piSessionService.rateLimits.test.ts", "src/server/sessions/piSessionService.promptQueue.test.ts"]
+  T11:
+    plan_task: 11
+    lane: server-wiring
+    sequence: 5
+    depends_on: [T10]
+    ownership:
+      - src/server/sessiond.ts
+      - src/server/speechInput/speechInputPolishingService.rateLimits.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: speech-polishing-wiring
+        paths:
+          - src/server/sessiond.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-owner
+        from: T4
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-adapters
+        from: T5
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: session-stream-wrapping
+        from: T10
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/speechInput/speechInputPolishingService.rateLimits.test.ts"]
+  T12:
+    plan_task: 12
+    lane: client-and-docs
+    sequence: 1
+    depends_on: [T1, T7]
+    ownership:
+      - src/client/src/api/modelsConfigError.ts
+      - src/client/src/api/parsers.ts
+      - src/client/src/api/clients.ts
+      - src/client/src/api.ts
+      - src/client/src/api/parsers.modelsConfig.test.ts
+      - src/client/src/api/clients.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: client-models-config-api
+        paths:
+          - src/client/src/api/modelsConfigError.ts
+          - src/client/src/api/clients.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-config-api-contracts
+        from: T7
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/parsers.modelsConfig.test.ts", "src/client/src/api/clients.test.ts"]
+  T13:
+    plan_task: 13
+    lane: client-and-docs
+    sequence: 2
+    depends_on: [T12]
+    ownership:
+      - src/client/src/components/models/modelsConfigDraft.ts
+      - src/client/src/components/models/modelsConfigDraft.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: client-rate-limit-drafts
+        paths:
+          - src/client/src/components/models/modelsConfigDraft.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/models/modelsConfigDraft.test.ts"]
+  T14:
+    plan_task: 14
+    lane: client-and-docs
+    sequence: 3
+    depends_on: [T13]
+    ownership:
+      - src/client/src/components/ModelsConfigDialog.ts
+      - src/client/src/components/ModelsConfigDialog.test.ts
+      - src/client/src/components/ModelsConfigDialog.rateLimits.test.ts
+      - src/client/src/components/PiWebUiApp.modelsConfig.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: models-dialog-rate-limits-section
+        paths:
+          - src/client/src/components/ModelsConfigDialog.ts
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: client-models-config-api
+        from: T12
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: client-rate-limit-drafts
+        from: T13
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: model-rate-limit-values
+        from: T1
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/ModelsConfigDialog.rateLimits.test.ts", "src/client/src/components/ModelsConfigDialog.test.ts", "src/client/src/components/PiWebUiApp.modelsConfig.test.ts"]
+  T15:
+    plan_task: 15
+    lane: client-and-docs
+    sequence: 4
+    depends_on: [T14]
+    ownership:
+      - src/client/rate-limits-probe.html
+      - src/client/rate-limits-probe.ts
+      - rate-limits-probe-cdp.mjs
+    exclusive_resources: []
+    produces:
+      - interface: browser-geometry-evidence
+        paths: []
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-dialog-rate-limits-section
+        from: T14
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["node", "-e", "const fs=require('node:fs'); const s=fs.readFileSync('src/client/src/components/ModelsConfigDialog.ts','utf8'); for (const x of ['rate-limits-section','model-tpm','model-prm']) if (!s.includes(x)) process.exit(1);"]
+  T16:
+    plan_task: 16
+    lane: client-and-docs
+    sequence: 5
+    depends_on: [T15]
+    ownership:
+      - docs/config.md
+      - docs/config.html
+      - .changeset/per-model-tpm-prm-controls.md
+    exclusive_resources: []
+    produces:
+      - interface: user-documentation-and-changeset
+        paths:
+          - docs/config.md
+          - docs/config.html
+          - .changeset/per-model-tpm-prm-controls.md
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    consumes:
+      - interface: models-config-routes
+        from: T9
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: speech-polishing-wiring
+        from: T11
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: models-dialog-rate-limits-section
+        from: T14
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+      - interface: browser-geometry-evidence
+        from: T15
+        digest: sha256:29c006c88b52fb688935508ab54bd6ca1add8561a0563782de20df15806a3460
+    validation:
+      - argv: ["node", "-e", "const fs=require('node:fs'); const t=[fs.readFileSync('docs/config.md','utf8'),fs.readFileSync('docs/config.html','utf8'),fs.readFileSync('.changeset/per-model-tpm-prm-controls.md','utf8')].join('\\n'); for (const needle of ['Rate limits','TPM','PRM','rolling 60 seconds','pi-webui-sessiond.service','Unlimited']) if(!t.includes(needle)) { console.error('missing '+needle); process.exit(1); } console.log('docs ok');"]

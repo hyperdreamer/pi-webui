@@ -1,0 +1,53 @@
+digraph tpm_prm_model_controls {
+    rankdir=TB;
+    graph [label="tpm-prm-model-controls (epoch 1)", labelloc=t];
+    node [shape=box, style=rounded];
+
+    subgraph cluster_model_core {
+        label="lane: model-core";
+
+        T1 [label="T1: Shared rate-limit value contract\ntier: Standard\nplan task 1"];
+        T2 [label="T2: Pi-compatible models.json parser\ntier: Standard\nplan task 2"];
+        T3 [label="T3: Limits snapshot extraction and identity\ntier: Standard\nplan task 3"];
+        T4 [label="T4: Rolling-window rate-limit owner\ntier: Advanced\nplan task 4"];
+        T5 [label="T5: Stream and completion adapters\ntier: Advanced\nplan task 5"];
+        T6 [label="T6: Installed-Pi compatibility parity\ntier: Standard\nplan task 6"];
+    }
+
+    subgraph cluster_server_wiring {
+        label="lane: server-wiring";
+
+        T7 [label="T7: Structured API contracts and limits sidecar plumbing\ntier: Standard\nplan task 7"];
+        T8 [label="T8: Models-config service lifecycle\ntier: Advanced\nplan task 8"];
+        T9 [label="T9: Models-config route contract\ntier: Standard\nplan task 9"];
+        T10 [label="T10: Session runtime stream wrapping\ntier: Advanced\nplan task 10"];
+        T11 [label="T11: Speech polishing completion wiring\ntier: Standard\nplan task 11"];
+    }
+
+    subgraph cluster_client_and_docs {
+        label="lane: client-and-docs";
+
+        T12 [label="T12: Client API for limits status and structured errors\ntier: Standard\nplan task 12"];
+        T13 [label="T13: Client rate-limit draft helpers\ntier: Standard\nplan task 13"];
+        T14 [label="T14: Dialog Rate limits section\ntier: Advanced\nplan task 14"];
+        T15 [label="T15: Browser geometry verification\ntier: Capable\nplan task 15"];
+        T16 [label="T16: Documentation and release note\ntier: Standard\nplan task 16"];
+    }
+
+    T1 -> T2 [label="depends_on"];
+    T2 -> T3 [label="depends_on"];
+    T3 -> T4 [label="depends_on"];
+    T4 -> T5 [label="depends_on"];
+    T5 -> T6 [label="depends_on"];
+    T1 -> T7 [label="depends_on"];
+    T7 -> T8 [label="depends_on"];
+    T8 -> T9 [label="depends_on"];
+    T9 -> T10 [label="depends_on"];
+    T10 -> T11 [label="depends_on"];
+    T1 -> T12 [label="depends_on"];
+    T7 -> T12 [label="depends_on"];
+    T12 -> T13 [label="depends_on"];
+    T13 -> T14 [label="depends_on"];
+    T14 -> T15 [label="depends_on"];
+    T15 -> T16 [label="depends_on"];
+}
