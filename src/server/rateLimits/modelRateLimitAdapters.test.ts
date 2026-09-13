@@ -22,7 +22,7 @@ import {
   fixtureLimits,
   fixtureSnapshot,
   fixtureTerminalMessage,
-} from "./modelRateLimitTestSupport";
+} from "./modelRateLimit.testSupport";
 
 const identity = fixtureIdentity("anthropic", "demo-model");
 

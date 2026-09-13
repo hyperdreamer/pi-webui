@@ -109,7 +109,7 @@ describe("model rate limit extraction", () => {
   it("collects all errors in provider, entry, and field order", () => {
     const document: ModelsConfigDocument = {
       providers: {
-        first: { models: [model("", { tpm: 1, prm: 2 }), model("b", { tpm: 1.5 })] },
+        first: { models: [model("", { tpm: 1, prm: 2 }), model("b", { tpm: 1.5 }), model("b", { prm: 3.5 })] },
         second: { models: [model("a", { prm: -1 })] },
       },
     };
@@ -122,6 +122,7 @@ describe("model rate limit extraction", () => {
       { provider: "first", modelId: "", occurrence: 0, field: "tpm", reason: "missing-model-id" },
       { provider: "first", modelId: "", occurrence: 0, field: "prm", reason: "missing-model-id" },
       { provider: "first", modelId: "b", occurrence: 0, field: "tpm", reason: "not-an-integer" },
+      { provider: "first", modelId: "b", occurrence: 1, field: "prm", reason: "not-an-integer" },
       { provider: "second", modelId: "a", occurrence: 0, field: "prm", reason: "negative" },
     ]);
   });

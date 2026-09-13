@@ -8,7 +8,7 @@ import {
   fixtureLimits,
   fixtureSnapshot,
   fixtureTerminalMessage,
-} from "./modelRateLimitTestSupport";
+} from "./modelRateLimit.testSupport";
 
 const demo = fixtureIdentity("acme", "demo-model");
 const sibling = fixtureIdentity("acme", "sibling-model");
