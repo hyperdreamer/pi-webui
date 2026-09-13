@@ -128,6 +128,7 @@ await runSessionDaemonStartup({
       workspaceActivity,
       logger: app.log,
       utilityModelResolver,
+      modelRateLimitOwner: rateLimits,
       ...(spawnTargets === undefined ? {} : { spawnTargets }),
       subsessionsEnabled: spawnTargets !== undefined && config.subsessions,
       notificationStore,
