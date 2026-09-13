@@ -1,3 +1,10 @@
+import {
+  MODEL_RATE_LIMIT_FIELDS,
+  modelRateLimitFieldMessage,
+  parseModelRateLimitDraftText,
+  parseModelRateLimitStoredValue,
+  type ModelRateLimitField,
+} from "../../../../shared/modelRateLimits";
 import type { ModelsConfigDocument, ModelsConfigModel, ModelsConfigProvider } from "../../api";
 
 export const MODEL_API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
@@ -117,6 +124,103 @@ export function setThinkingLevelMapEntry(
   return Object.keys(next).length === 0 ? undefined : next;
 }
 
+export interface ModelRateLimitFieldDraft {
+  /** Text shown in the numeric input. "" means clear. */
+  text: string;
+  /** Raw loaded value when the stored value cannot be represented as input text. */
+  loadedInvalidValue?: unknown;
+  /** Present while this field is invalid; blocks Save. */
+  error?: string;
+}
+
+export interface ModelRateLimitDraft {
+  tpm: ModelRateLimitFieldDraft;
+  prm: ModelRateLimitFieldDraft;
+}
+
+export type ModelRateLimitDraftMap = Record<string, ModelRateLimitDraft>;
+
+export type RateLimitDraftReconciliationChange =
+  | { type: "rename"; providerName: string; from: string; to: string }
+  | { type: "delete"; providerName: string; modelId: string; occurrence: number };
+
+/** Unambiguous identity key for one models[] occurrence. */
+export function rateLimitDraftKey(providerName: string, modelId: string, occurrence: number): string {
+  return JSON.stringify(["model-rate-limit-draft", providerName, modelId, occurrence]);
+}
+
+export function modelRateLimitDraftsFromDocument(document: ModelsConfigDocument): ModelRateLimitDraftMap {
+  const drafts: ModelRateLimitDraftMap = {};
+  for (const [providerName, provider] of Object.entries(document.providers ?? {})) {
+    const occurrences = new Map<string, number>();
+    for (const model of provider.models ?? []) {
+      const occurrence = occurrences.get(model.id) ?? 0;
+      occurrences.set(model.id, occurrence + 1);
+      drafts[rateLimitDraftKey(providerName, model.id, occurrence)] = modelRateLimitDraftFromEntry(model);
+    }
+  }
+  return drafts;
+}
+
+export function applyRateLimitDraftField(
+  draft: ModelRateLimitDraft,
+  field: ModelRateLimitField,
+  text: string,
+): ModelRateLimitDraft {
+  const parsed = parseModelRateLimitDraftText(text);
+  const nextField: ModelRateLimitFieldDraft = parsed.ok
+    ? { text }
+    : { text, error: modelRateLimitFieldMessage(field, parsed.reason) };
+  return { ...draft, [field]: nextField };
+}
+
+export function setModelRateLimitField(
+  model: ModelsConfigModel,
+  field: ModelRateLimitField,
+  value: number | undefined,
+): ModelsConfigModel {
+  const next = { ...model };
+  if (value !== undefined) {
+    next[field] = value;
+    return next;
+  }
+  if (field === "tpm") {
+    delete next.tpm;
+  } else {
+    delete next.prm;
+  }
+  return next;
+}
+
+export function reconcileRateLimitDrafts(
+  drafts: ModelRateLimitDraftMap,
+  previousDocument: ModelsConfigDocument,
+  nextDocument: ModelsConfigDocument,
+  change?: RateLimitDraftReconciliationChange,
+): ModelRateLimitDraftMap {
+  const carried = change === undefined ? { ...drafts } : draftsAfterChange(drafts, previousDocument, change);
+  const nextDrafts = modelRateLimitDraftsFromDocument(nextDocument);
+  const result: ModelRateLimitDraftMap = {};
+  for (const [key, nextDraft] of Object.entries(nextDrafts)) {
+    result[key] = carried[key] ?? nextDraft;
+  }
+  return result;
+}
+
+export function firstInvalidRateLimitDraft(
+  drafts: ModelRateLimitDraftMap,
+): { key: string; providerName: string; modelId: string; field: ModelRateLimitField; message: string } | undefined {
+  for (const [key, draft] of Object.entries(drafts)) {
+    for (const field of MODEL_RATE_LIMIT_FIELDS) {
+      const error = draft[field].error;
+      if (error === undefined) continue;
+      const identity = rateLimitDraftKeyIdentity(key);
+      return { key, providerName: identity.providerName, modelId: identity.modelId, field, message: error };
+    }
+  }
+  return undefined;
+}
+
 function withProviders(config: ModelsConfigDocument, providers: Record<string, ModelsConfigProvider>): ModelsConfigDocument {
   return { ...config, providers };
 }
@@ -142,4 +246,68 @@ function nextCustomProviderName(providers: Record<string, ModelsConfigProvider>)
   let index = 1;
   while (providers[candidate] !== undefined) candidate = `new-provider-${String(index++)}`;
   return candidate;
+}
+
+function modelRateLimitDraftFromEntry(entry: ModelsConfigModel): ModelRateLimitDraft {
+  const draft: ModelRateLimitDraft = { tpm: { text: "" }, prm: { text: "" } };
+  for (const field of MODEL_RATE_LIMIT_FIELDS) {
+    const parsed = parseModelRateLimitStoredValue(entry[field]);
+    if (!parsed.ok) {
+      draft[field] = { text: "", loadedInvalidValue: entry[field], error: modelRateLimitFieldMessage(field, parsed.reason) };
+    } else if (parsed.value !== undefined) {
+      draft[field] = { text: String(parsed.value) };
+    }
+  }
+  return draft;
+}
+
+function draftsAfterChange(
+  drafts: ModelRateLimitDraftMap,
+  previousDocument: ModelsConfigDocument,
+  change: RateLimitDraftReconciliationChange,
+): ModelRateLimitDraftMap {
+  if (change.type === "rename") {
+    const unchanged: ModelRateLimitDraftMap = {};
+    const moved: ModelRateLimitDraftMap = {};
+    for (const [key, draft] of Object.entries(drafts)) {
+      const identity = rateLimitDraftKeyIdentity(key);
+      if (identity.providerName === change.providerName && identity.modelId === change.from) {
+        moved[rateLimitDraftKey(change.providerName, change.to, identity.occurrence)] = draft;
+      } else {
+        unchanged[key] = draft;
+      }
+    }
+    return { ...unchanged, ...moved };
+  }
+
+  const count = occurrenceCount(previousDocument, change.providerName, change.modelId);
+  const next: ModelRateLimitDraftMap = {};
+  for (const [key, draft] of Object.entries(drafts)) {
+    const identity = rateLimitDraftKeyIdentity(key);
+    if (identity.providerName !== change.providerName || identity.modelId !== change.modelId) {
+      next[key] = draft;
+      continue;
+    }
+    if (identity.occurrence === change.occurrence) continue;
+    const shiftedOccurrence =
+      identity.occurrence > change.occurrence && identity.occurrence < count ? identity.occurrence - 1 : identity.occurrence;
+    next[rateLimitDraftKey(change.providerName, change.modelId, shiftedOccurrence)] = draft;
+  }
+  return next;
+}
+
+function occurrenceCount(document: ModelsConfigDocument, providerName: string, modelId: string): number {
+  const models = document.providers?.[providerName]?.models ?? [];
+  return models.filter((model) => model.id === modelId).length;
+}
+
+function rateLimitDraftKeyIdentity(key: string): { providerName: string; modelId: string; occurrence: number } {
+  const parsed: unknown = JSON.parse(key);
+  if (!Array.isArray(parsed)) return { providerName: "", modelId: "", occurrence: -1 };
+  const entry: readonly unknown[] = parsed;
+  return {
+    providerName: typeof entry[1] === "string" ? entry[1] : "",
+    modelId: typeof entry[2] === "string" ? entry[2] : "",
+    occurrence: typeof entry[3] === "number" ? entry[3] : -1,
+  };
 }
