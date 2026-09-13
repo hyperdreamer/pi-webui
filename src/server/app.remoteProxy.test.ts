@@ -564,6 +564,27 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).toHaveBeenCalledWith("POST", "/api/sessions/s1/queue/clear", { cwd: "/repo" });
   });
 
+  it("allowlists and proxies the models-config limits sidecar exactly once", async () => {
+    expect(FEDERATED_HTTP_ROUTES.filter((route) => route.path === "/models-config/limits")).toEqual([
+      { method: "GET", path: "/models-config/limits" },
+    ]);
+    expect(REMOTE_HTTP_ROUTES).toContainEqual({ method: "GET", path: "/models-config/limits" });
+
+    const status = { contractVersion: 1, revision: 2, admission: "blocked", source: "none", error: "bad file" };
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify(status)]),
+    }));
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({ method: "GET", url: `/api/machines/${machineId}/models-config/limits` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(status);
+    expect(request).toHaveBeenCalledWith("GET", "/api/models-config/limits", undefined);
+  });
+
   it("forwards remote JSON request bodies and normalizes remote timeouts", async () => {
     const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();

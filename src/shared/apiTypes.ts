@@ -1,3 +1,4 @@
+import type { ModelRateLimitField, ModelRateLimitInvalidReason } from "./modelRateLimits.js";
 import type { ThinkingLevel } from "./thinkingLevels.js";
 import type { WorkspaceTask, WorkspaceTasksConfig } from "./workspaceTasks.js";
 
@@ -1228,10 +1229,16 @@ export interface ModelsConfigModel {
   maxTokens?: number | undefined;
   cost?: { input?: number | undefined; output?: number | undefined; cacheRead?: number | undefined; cacheWrite?: number | undefined } | undefined;
   compat?: Record<string, unknown> | undefined;
+  /** Optional tokens-per-minute limit; omitted or 0 disables the dimension. */
+  tpm?: number | undefined;
+  /** Optional requests-per-minute limit; omitted or 0 disables the dimension. */
+  prm?: number | undefined;
 }
 
 export interface ModelsConfigSaveResponse {
   success: true;
+  contractVersion?: 1;
+  revision?: number;
 }
 
 export interface ModelConnectionTestRequest {
@@ -1254,6 +1261,51 @@ export interface ModelDiscoveryRequest {
 
 export interface ModelDiscoveryResponse {
   models: ModelDiscoveryModel[];
+}
+
+/** Sidecar admission state reported by GET /models-config/limits. */
+export type ModelsConfigLimitsAdmission = "ready" | "blocked";
+
+export type ModelsConfigLimitsSource =
+  | "none"
+  | "missing-file"
+  | "accepted-document"
+  | "last-known-good";
+
+export interface ModelsConfigLimitsStatusResponse {
+  contractVersion: 1;
+  /** 0 until this process accepts its first valid snapshot. */
+  revision: number;
+  admission: ModelsConfigLimitsAdmission;
+  source: ModelsConfigLimitsSource;
+  /** Present when admission is blocked or a last-known-good snapshot is active. */
+  error?: string;
+}
+
+export type ModelsConfigErrorCode =
+  | "MODELS_CONFIG_PARSE_FAILED"
+  | "MODELS_CONFIG_IO_FAILED"
+  | "MODELS_CONFIG_SAVE_INVALID"
+  | "MODELS_CONFIG_INVALID_LIMITS"
+  | "MODELS_CONFIG_UNREADABLE"
+  | "MODELS_CONFIG_PERSIST_FAILED"
+  | "MODELS_CONFIG_REFRESH_FAILED"
+  | "MODELS_CONFIG_INTERNAL";
+
+export interface ModelsConfigErrorResponse {
+  /** Existing human-readable message; kept for old clients. */
+  error: string;
+  code: ModelsConfigErrorCode;
+  /** Always "models.json" for this feature. */
+  file: "models.json";
+  provider?: string;
+  modelId?: string;
+  field?: ModelRateLimitField;
+  /** Machine-readable validation reason when one field is invalid. */
+  reason?: ModelRateLimitInvalidReason;
+  occurrence?: number;
+  /** True only on MODELS_CONFIG_REFRESH_FAILED after a successful write. */
+  persisted?: boolean;
 }
 
 export interface ModelConnectionTestResponse {

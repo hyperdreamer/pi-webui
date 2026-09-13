@@ -31,6 +31,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "PUT", path: "/models-config" },
   { method: "POST", path: "/models-config/test" },
   { method: "POST", path: "/models-config/discover" },
+  { method: "GET", path: "/models-config/limits" },
   { method: "GET", path: "/session-defaults" },
   { method: "PUT", path: "/session-defaults" },
   { method: "GET", path: "/model-tiers" },
