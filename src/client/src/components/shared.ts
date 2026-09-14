@@ -608,6 +608,10 @@ export const chatStyles = css`
   .msg.event-group.live { border-color: var(--pi-success-border); background: var(--pi-success-bg); }
   .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
   .msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); background: var(--pi-success-bg); color: var(--pi-success); }
+  /* A collapsed group has no body, so the summary separator has nothing to
+     separate. Dropping it also stops its straight 1px line from overhanging the
+     rounded container border at the bottom corners. */
+  .msg.event-group:not([open]) > summary { border-bottom: 0; border-radius: 9px; }
   .msg.event-group > summary .label { margin: 0; }
   .group-body { padding: 0 12px 12px; }
   .event-group-window-control { display: flex; justify-content: flex-start; padding: 10px 12px 0; }

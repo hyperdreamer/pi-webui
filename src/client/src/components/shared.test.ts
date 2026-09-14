@@ -71,3 +71,28 @@ describe("terminal modal header", () => {
     expect(styles).toMatch(/@media \(max-width:\s*360px\)\s*\{[\s\S]*?\.terminal-modal-header\s*\{[^}]*gap:\s*6px;[^}]*padding-inline:\s*8px;[^}]*\}/);
   });
 });
+
+describe("event group collapsed corner", () => {
+  // Comments are stripped before asserting: Lit's `cssText` retains comments, so a
+  // commented-out rule would still satisfy a raw `toContain` and these tests would
+  // pass while the fix was inert.
+  const cssWithoutComments = (): string => chatStyles.cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // Exact strings, not substrings: `border-radius: 9px` alone is also satisfied by
+  // the buggy `9px 9px 0 0`, and with `.msg { overflow: visible }` a square bottom
+  // corner paints over the container's rounded border ring.
+  it("closes the summary bottom when the group is collapsed, so its separator cannot overhang the rounded container border", () => {
+    expect(cssWithoutComments()).toContain(".msg.event-group:not([open]) > summary { border-bottom: 0; border-radius: 9px; }");
+  });
+
+  // Bound to the selector but scoped to the two load-bearing declarations, so an
+  // unrelated edit to this rule (top, z-index, gap, padding, background, colour)
+  // does not fail a test that is about the bottom separator.
+  it("keeps the open separator at the container's inner radius with its muted 1px bottom border", () => {
+    expect(cssWithoutComments()).toMatch(/\.msg\.event-group > summary \{[^}]*border-radius: 9px 9px 0 0;[^}]*border-bottom: 1px solid var\(--pi-border-muted\);[^}]*\}/);
+  });
+
+  it("keeps the live open separator's success border colour", () => {
+    expect(cssWithoutComments()).toContain(".msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); background: var(--pi-success-bg); color: var(--pi-success); }");
+  });
+});
