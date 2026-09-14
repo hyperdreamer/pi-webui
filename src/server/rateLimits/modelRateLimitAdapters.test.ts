@@ -43,10 +43,10 @@ function fixtureModel(): Model<Api> {
 
 const context = { messages: [{ role: "user" as const, content: "hello", timestamp: 0 }] };
 
-function createOwner(tpm?: number, prm?: number) {
+function createOwner(tpm?: number, rpm?: number) {
   const clock = createFakeModelRateLimitClock();
   const owner = createModelRateLimitOwner({ clock });
-  owner.applySnapshot(fixtureSnapshot({ anthropic: { "demo-model": fixtureLimits(tpm, prm) } }), "accepted-document");
+  owner.applySnapshot(fixtureSnapshot({ anthropic: { "demo-model": fixtureLimits(tpm, rpm) } }), "accepted-document");
   return { clock, owner };
 }
 
@@ -195,7 +195,7 @@ describe("model rate limit stream adapter", () => {
     expect(owner.inFlightCount(identity)).toBe(0);
   });
 
-  it("never calls the delegate for a pre-dispatch abort and spends no prm unit", async () => {
+  it("never calls the delegate for a pre-dispatch abort and spends no rpm unit", async () => {
     const { owner } = createOwner(undefined, 1);
     const controller = new AbortController();
     const streamFn = vi.fn<StreamFn>(() => { throw new Error("delegate must not run"); });

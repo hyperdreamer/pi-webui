@@ -36,7 +36,7 @@ const LIMITED_FIXTURE = `{
       "apiKey": "test-key",
       "customProviderFlag": "kept",
       "models": [
-        { "id": "model-large", "name": "Large", "contextWindow": 200000, "maxTokens": 8192, "customModelFlag": "kept", "tpm": 100000, "prm": 60 },
+        { "id": "model-large", "name": "Large", "contextWindow": 200000, "maxTokens": 8192, "customModelFlag": "kept", "tpm": 100000, "rpm": 60 },
         { "id": "model-small", "name": "Small", "tpm": 300000 }
       ]
     }
@@ -76,7 +76,7 @@ afterEach(async () => {
 });
 
 describe("installed Pi 0.85.1 rate limit compatibility", () => {
-  it("loads identical model behavior with and without tpm/prm", async () => {
+  it("loads identical model behavior with and without tpm/rpm", async () => {
     const plain = await createRuntime(PLAIN_FIXTURE);
     const limited = await createRuntime(LIMITED_FIXTURE);
 

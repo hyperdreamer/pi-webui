@@ -1232,7 +1232,7 @@ export interface ModelsConfigModel {
   /** Optional tokens-per-minute limit; omitted or 0 disables the dimension. */
   tpm?: number | undefined;
   /** Optional requests-per-minute limit; omitted or 0 disables the dimension. */
-  prm?: number | undefined;
+  rpm?: number | undefined;
 }
 
 export interface ModelsConfigSaveResponse {

@@ -25,13 +25,13 @@ describe("parseModelsConfigDocument", () => {
     expect(() => parseModelDiscoveryResponse({ models: [{ name: "missing-id" }] })).toThrow("id");
   });
 
-  it("types numeric tpm/prm while preserving invalid stored values", () => {
+  it("types numeric tpm/rpm while preserving invalid stored values", () => {
     const parsed = parseModelsConfigDocument({
-      providers: { acme: { models: [{ id: "demo", tpm: 100, prm: "bad" }] } },
+      providers: { acme: { models: [{ id: "demo", tpm: 100, rpm: "bad" }] } },
     });
 
     expect(parsed.providers?.["acme"]?.models?.[0]?.tpm).toBe(100);
-    expect(parsed.providers?.["acme"]?.models?.[0]?.prm).toBe("bad");
+    expect(parsed.providers?.["acme"]?.models?.[0]?.rpm).toBe("bad");
   });
 
   it("parses the strict limits status sidecar", () => {

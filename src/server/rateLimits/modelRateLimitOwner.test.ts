@@ -13,7 +13,7 @@ import {
 const demo = fixtureIdentity("acme", "demo-model");
 const sibling = fixtureIdentity("acme", "sibling-model");
 
-type LimitMap = Record<string, Record<string, { tpm?: number; prm?: number }>>;
+type LimitMap = Record<string, Record<string, { tpm?: number; rpm?: number }>>;
 
 function createOwner(limits: LimitMap = {}) {
   const clock = createFakeModelRateLimitClock();
@@ -33,7 +33,7 @@ describe("model rate limit owner", () => {
     expect(clock.pendingTimerCount()).toBe(0);
   });
 
-  it("admits exactly prm requests and queues the next request until the window expires", async () => {
+  it("admits exactly rpm requests and queues the next request until the window expires", async () => {
     const { clock, rateLimits } = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 2) } });
 
     await expect(rateLimits.acquire(demo)).resolves.toEqual({ status: "granted" });
@@ -222,7 +222,7 @@ describe("model rate limit owner", () => {
     expect(rateLimits.pendingWaiterCount(sibling)).toBe(0);
   });
 
-  it("retains PRM-only history when an identity leaves and re-enters the snapshot", async () => {
+  it("retains RPM-only history when an identity leaves and re-enters the snapshot", async () => {
     const { rateLimits } = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 1) } });
 
     await expect(rateLimits.acquire(demo)).resolves.toEqual({ status: "granted" });
@@ -353,7 +353,7 @@ describe("model rate limit owner", () => {
     const first = rateLimits.acquire(demo);
     const second = rateLimits.acquire(demo);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toMatchObject({ provider: "acme", modelId: "demo-model", dimension: "prm" });
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ provider: "acme", modelId: "demo-model", dimension: "rpm" });
 
     rateLimits.dispose();
     await expect(first).resolves.toEqual({ status: "aborted" });

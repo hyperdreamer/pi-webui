@@ -135,7 +135,7 @@ export interface ModelRateLimitFieldDraft {
 
 export interface ModelRateLimitDraft {
   tpm: ModelRateLimitFieldDraft;
-  prm: ModelRateLimitFieldDraft;
+  rpm: ModelRateLimitFieldDraft;
 }
 
 export type ModelRateLimitDraftMap = Record<string, ModelRateLimitDraft>;
@@ -187,7 +187,7 @@ export function setModelRateLimitField(
   if (field === "tpm") {
     delete next.tpm;
   } else {
-    delete next.prm;
+    delete next.rpm;
   }
   return next;
 }
@@ -249,7 +249,7 @@ function nextCustomProviderName(providers: Record<string, ModelsConfigProvider>)
 }
 
 function modelRateLimitDraftFromEntry(entry: ModelsConfigModel): ModelRateLimitDraft {
-  const draft: ModelRateLimitDraft = { tpm: { text: "" }, prm: { text: "" } };
+  const draft: ModelRateLimitDraft = { tpm: { text: "" }, rpm: { text: "" } };
   for (const field of MODEL_RATE_LIMIT_FIELDS) {
     const parsed = parseModelRateLimitStoredValue(entry[field]);
     if (!parsed.ok) {

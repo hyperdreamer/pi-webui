@@ -120,28 +120,28 @@ describe("modelsConfigDraft", () => {
   it("derives drafts from valid and invalid stored values", () => {
     const drafts = modelRateLimitDraftsFromDocument(parseModelsConfigDocument({
       providers: { acme: { models: [
-        { id: "valid", tpm: 100, prm: 0 },
+        { id: "valid", tpm: 100, rpm: 0 },
         { id: "invalid", tpm: "bad" },
       ] } },
     }));
 
-    expect(drafts[rateLimitDraftKey("acme", "valid", 0)]).toEqual({ tpm: { text: "100" }, prm: { text: "0" } });
+    expect(drafts[rateLimitDraftKey("acme", "valid", 0)]).toEqual({ tpm: { text: "100" }, rpm: { text: "0" } });
     expect(drafts[rateLimitDraftKey("acme", "invalid", 0)]).toEqual({
       tpm: { text: "", loadedInvalidValue: "bad", error: "Tokens per minute must be a whole number." },
-      prm: { text: "" },
+      rpm: { text: "" },
     });
   });
 
   it("applies valid, invalid, and blank draft text without trimming the stored text", () => {
-    const initial = { tpm: { text: "10" }, prm: { text: "" } };
+    const initial = { tpm: { text: "10" }, rpm: { text: "" } };
 
-    expect(applyRateLimitDraftField(initial, "tpm", " 250 ")).toEqual({ tpm: { text: " 250 " }, prm: { text: "" } });
+    expect(applyRateLimitDraftField(initial, "tpm", " 250 ")).toEqual({ tpm: { text: " 250 " }, rpm: { text: "" } });
     expect(applyRateLimitDraftField(initial, "tpm", "1e3")).toEqual({
       tpm: { text: "1e3", error: "Tokens per minute must be a whole number." },
-      prm: { text: "" },
+      rpm: { text: "" },
     });
-    expect(applyRateLimitDraftField(initial, "prm", "0")).toEqual({ tpm: { text: "10" }, prm: { text: "0" } });
-    expect(applyRateLimitDraftField(initial, "tpm", "")).toEqual({ tpm: { text: "" }, prm: { text: "" } });
+    expect(applyRateLimitDraftField(initial, "rpm", "0")).toEqual({ tpm: { text: "10" }, rpm: { text: "0" } });
+    expect(applyRateLimitDraftField(initial, "tpm", "")).toEqual({ tpm: { text: "" }, rpm: { text: "" } });
   });
 
   it("sets and deletes numeric fields without touching other members", () => {
@@ -149,34 +149,34 @@ describe("modelsConfigDraft", () => {
 
     expect(setModelRateLimitField(model, "tpm", 250)).toEqual({ id: "demo", name: "Demo", tpm: 250 });
     expect(setModelRateLimitField(model, "tpm", undefined)).toEqual({ id: "demo", name: "Demo" });
-    expect(setModelRateLimitField(model, "prm", 0)).toEqual({ id: "demo", name: "Demo", tpm: 5, prm: 0 });
+    expect(setModelRateLimitField(model, "rpm", 0)).toEqual({ id: "demo", name: "Demo", tpm: 5, rpm: 0 });
   });
 
   it("reconciles rename and add without orphaning drafts", () => {
-    const previous = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "b", prm: 2 }] } } };
+    const previous = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "b", rpm: 2 }] } } };
     const drafts = modelRateLimitDraftsFromDocument(previous);
     const bKey = rateLimitDraftKey("acme", "b", 0);
     const bDraft = drafts[bKey];
     if (bDraft === undefined) throw new Error("Expected draft for b");
-    drafts[bKey] = applyRateLimitDraftField(bDraft, "prm", "bad");
+    drafts[bKey] = applyRateLimitDraftField(bDraft, "rpm", "bad");
 
-    const renamedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", prm: 2 }] } } };
+    const renamedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", rpm: 2 }] } } };
     const afterRename = reconcileRateLimitDrafts(drafts, previous, renamedDocument, { type: "rename", providerName: "acme", from: "b", to: "renamed" });
 
-    expect(afterRename[rateLimitDraftKey("acme", "renamed", 0)]?.prm.error).toBeDefined();
+    expect(afterRename[rateLimitDraftKey("acme", "renamed", 0)]?.rpm.error).toBeDefined();
     expect(afterRename[bKey]).toBeUndefined();
 
-    const addedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", prm: 2 }, { id: "new" }] } } };
+    const addedDocument = { providers: { acme: { models: [{ id: "a", tpm: 1 }, { id: "renamed", rpm: 2 }, { id: "new" }] } } };
     const afterAdd = reconcileRateLimitDrafts(afterRename, renamedDocument, addedDocument);
 
-    expect(afterAdd[rateLimitDraftKey("acme", "new", 0)]).toEqual({ tpm: { text: "" }, prm: { text: "" } });
-    expect(afterAdd[rateLimitDraftKey("acme", "a", 0)]).toEqual({ tpm: { text: "1" }, prm: { text: "" } });
+    expect(afterAdd[rateLimitDraftKey("acme", "new", 0)]).toEqual({ tpm: { text: "" }, rpm: { text: "" } });
+    expect(afterAdd[rateLimitDraftKey("acme", "a", 0)]).toEqual({ tpm: { text: "1" }, rpm: { text: "" } });
   });
 
   it("shifts drafts for later occurrences of a deleted duplicate", () => {
     const previous = { providers: { acme: { models: [{ id: "demo", tpm: 1 }, { id: "demo", tpm: 2 }] } } };
     const drafts = modelRateLimitDraftsFromDocument(previous);
-    drafts[rateLimitDraftKey("acme", "demo", 1)] = { tpm: { text: "bad", error: "Tokens per minute must be a whole number." }, prm: { text: "" } };
+    drafts[rateLimitDraftKey("acme", "demo", 1)] = { tpm: { text: "bad", error: "Tokens per minute must be a whole number." }, rpm: { text: "" } };
     const next = { providers: { acme: { models: [{ id: "demo", tpm: 2 }] } } };
 
     const afterDelete = reconcileRateLimitDrafts(drafts, previous, next, { type: "delete", providerName: "acme", modelId: "demo", occurrence: 0 });
@@ -187,7 +187,7 @@ describe("modelsConfigDraft", () => {
 
   it("returns the first invalid draft with its identity", () => {
     const drafts = modelRateLimitDraftsFromDocument(parseModelsConfigDocument({
-      providers: { acme: { models: [{ id: "demo", tpm: "bad" }, { id: "second", prm: "worse" }] } },
+      providers: { acme: { models: [{ id: "demo", tpm: "bad" }, { id: "second", rpm: "worse" }] } },
     }));
 
     expect(firstInvalidRateLimitDraft(drafts)).toMatchObject({

@@ -1069,8 +1069,8 @@ function parseModelsConfigModel(value: unknown): ModelsConfigModel {
   if (compat !== undefined) model.compat = { ...compat };
   const tpm = record["tpm"];
   if (typeof tpm === "number") model.tpm = tpm;
-  const prm = record["prm"];
-  if (typeof prm === "number") model.prm = prm;
+  const rpm = record["rpm"];
+  if (typeof rpm === "number") model.rpm = rpm;
   return model;
 }
 

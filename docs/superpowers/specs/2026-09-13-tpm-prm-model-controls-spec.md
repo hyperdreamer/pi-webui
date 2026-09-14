@@ -1,8 +1,8 @@
-# Technical Specification: Per-Model TPM and PRM Controls
+# Technical Specification: Per-Model TPM and RPM Controls
 
 **Date:** 2026-09-13
-**Status:** Approved by the user on 2026-09-13; the frontier specification review passed with no blocking findings and its nonblocking recommendations are incorporated in this document.
-**Related Design Document:** `docs/superpowers/specs/2026-09-13-tpm-prm-model-controls-design.md` (approved at commit `be84b8b7801d1bc5a30304a32aae92711a30e5f1`)
+**Status:** Approved by the user on 2026-09-13; amended on 2026-09-14 to name the requests-per-minute field RPM. The frontier specification review passed with no blocking findings and its nonblocking recommendations are incorporated in this document.
+**Related Design Document:** `docs/superpowers/specs/2026-09-13-tpm-rpm-model-controls-design.md` (approved at commit `be84b8b7801d1bc5a30304a32aae92711a30e5f1`)
 **Target Package:** `@hyperdreamer/pi-webui`
 **Change Class:** user-visible feature (minor)
 **Operation Class:** session-daemon runtime ownership change; installation requires one manual `pi-webui-sessiond.service` restart
@@ -14,14 +14,14 @@
 ### 1.1 Purpose
 
 This specification defines the exact implementation contract for optional per-model
-TPM and PRM controls in PI WEBUI. It preserves every approved product decision in the
+TPM and RPM controls in PI WEBUI. It preserves every approved product decision in the
 design document:
 
 - independent budgets keyed by exact provider name plus exact model ID;
-- `tpm` and `prm` stored directly on `providers[provider].models[]` entries;
+- `tpm` and `rpm` stored directly on `providers[provider].models[]` entries;
 - TPM charged from actual terminal token usage
   (`input + output + cacheRead + cacheWrite`);
-- PRM counted per underlying model-call dispatch;
+- RPM counted per underlying model-call dispatch;
 - a rolling 60-second window, never calendar-minute buckets;
 - FIFO admission per model; originating cancellation preserved; existing caller
   deadlines preserved;
@@ -51,14 +51,14 @@ These decisions resolve the open points left by the design; each is binding.
    language. No new runtime dependency is added. Parity is proven by tests that run
    the same fixtures through the installed Pi runtime.
 3. **Limits-invalid versus parse-failed.** A syntactically valid document with an
-   invalid `tpm`/`prm` remains readable and editable through the dialog so the user
+   invalid `tpm`/`rpm` remains readable and editable through the dialog so the user
    can repair it; its limits snapshot is rejected and never activated as unlimited.
    A document that fails parsing is not rendered as an empty document and cannot be
    saved until it is fixed externally and reloaded.
 4. **Read response shape.** `GET /models-config` keeps returning the bare document
    so existing clients and remote daemons remain safe in both version directions. A
    new sidecar endpoint reports active limiter status; the new client validates
-   `tpm`/`prm` values itself with the shared pure validator.
+   `tpm`/`rpm` values itself with the shared pure validator.
 5. **No capability flag.** The dialog detects limiter support by the sidecar
    endpoint's success or 404; no entry is added to `PI_WEBUI_CAPABILITIES` or
    `FEDERATED_HTTP_ROUTES` capability requirements.
@@ -82,7 +82,7 @@ These decisions resolve the open points left by the design; each is binding.
 
 ### 1.3 Scope
 
-- Add optional `tpm`/`prm` fields on explicit `models[]` entries in the active
+- Add optional `tpm`/`rpm` fields on explicit `models[]` entries in the active
   profile's `models.json`.
 - Add a daemon-owned rolling-window admission and accounting owner shared by every
   model call surface the design lists.
@@ -126,12 +126,12 @@ These decisions resolve the open points left by the design; each is binding.
    daemon consumes the same budget, across interactive prompts, tool continuations,
    follow-ups, steering, spawned sessions, compaction, branch summaries, naming, PI
    WEBUI utility fallback, speech polishing, and connection checks.
-2. **Independent dimensions.** `tpm` and `prm` are independently enabled, disabled,
+2. **Independent dimensions.** `tpm` and `rpm` are independently enabled, disabled,
    changed, and accounted.
 3. **Correct rolling window.** Timestamps are taken from a monotonic clock; an entry
    expires exactly 60,000 ms after its timestamp; admission uses strict `<` against
    the retained sums.
-4. **Safe waiting.** Calls never spend a PRM unit, allocate a response stream, or
+4. **Safe waiting.** Calls never spend a RPM unit, allocate a response stream, or
    invoke a delegate while waiting. Cancellation and shutdown remove waiters and
    timers without leaks.
 5. **One-time accounting.** Terminal usage is recorded exactly once per dispatched
@@ -159,7 +159,7 @@ These decisions resolve the open points left by the design; each is binding.
 
 ### 3.1 Configuration Document
 
-`tpm` and `prm` are optional, non-negative safe integers stored directly on entries
+`tpm` and `rpm` are optional, non-negative safe integers stored directly on entries
 of `providers[provider].models[]`:
 
 ```json
@@ -170,8 +170,8 @@ of `providers[provider].models[]`:
       "api": "openai-completions",
       "apiKey": "$EXAMPLE_API_KEY",
       "models": [
-        { "id": "model-large", "tpm": 100000, "prm": 60 },
-        { "id": "model-small", "tpm": 300000, "prm": 120 }
+        { "id": "model-large", "tpm": 100000, "rpm": 60 },
+        { "id": "model-small", "tpm": 300000, "rpm": 120 }
       ]
     }
   }
@@ -187,9 +187,9 @@ Rules:
    dimension.
 3. No limit inherits from the document root, a provider, `modelOverrides`, another
    model, or another provider.
-4. Root-level and provider-level `tpm`/`prm` fields remain opaque. They are
+4. Root-level and provider-level `tpm`/`rpm` fields remain opaque. They are
    preserved byte-for-byte through the value round trip and never activate a limit.
-5. `modelOverrides` entries may carry unknown `tpm`/`prm` fields; they remain opaque
+5. `modelOverrides` entries may carry unknown `tpm`/`rpm` fields; they remain opaque
    and never activate a limit.
 6. Unrecognized document, provider, and model fields survive parsing, editing, and
    saving. `models.json` is written back with the existing
@@ -206,7 +206,7 @@ New file `src/shared/modelRateLimits.ts` owns the dialect-independent value cont
 used by both server and client. It has no Node or browser dependencies.
 
 ```ts
-export const MODEL_RATE_LIMIT_FIELDS = ["tpm", "prm"] as const;
+export const MODEL_RATE_LIMIT_FIELDS = ["tpm", "rpm"] as const;
 export type ModelRateLimitField = (typeof MODEL_RATE_LIMIT_FIELDS)[number];
 
 export const MODEL_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -226,7 +226,7 @@ export type ModelRateLimitInvalidFieldReason = Exclude<
 
 export interface ModelRateLimitValues {
   tpm?: number;
-  prm?: number;
+  rpm?: number;
 }
 
 export type ModelRateLimitFieldParse =
@@ -268,7 +268,7 @@ export function sumModelTerminalTokens(usage: unknown): number;
 
 `modelRateLimitValuesFromEntry`:
 
-1. Iterates `MODEL_RATE_LIMIT_FIELDS` in declaration order (`tpm` before `prm`).
+1. Iterates `MODEL_RATE_LIMIT_FIELDS` in declaration order (`tpm` before `rpm`).
 2. Validates each present field with `parseModelRateLimitStoredValue`; the first
    failure returns `{ ok: false, field, reason }`.
 3. Returns `{ ok: true, values }` containing only positive parsed values; omitted
@@ -289,7 +289,7 @@ export function sumModelTerminalTokens(usage: unknown): number;
 messages:
 
 - `"tpm"`/`"not-a-number"`: `"Tokens per minute must be a whole number."`
-- `"prm"`/`"not-a-number"`: `"Requests per minute must be a whole number."`
+- `"rpm"`/`"not-a-number"`: `"Requests per minute must be a whole number."`
 - `"not-finite"`, `"not-an-integer"`, `"negative"`, `"unsafe-integer"`:
   field label plus `" must be a non-negative whole number."`
 - `"missing-model-id"`: `"Set a Model ID before setting rate limits."`
@@ -354,7 +354,7 @@ Extraction rules:
      exact `id` within that provider array.
    - If the entry is not a record, skip it (shape validation rejects it earlier).
    - If the entry has no non-empty string `id`:
-     - if it has a `tpm` or `prm` field, collect a `missing-model-id` error for that
+     - if it has a `tpm` or `rpm` field, collect a `missing-model-id` error for that
        field with `modelId: ""` and the current occurrence;
      - otherwise skip the entry.
    - Validate the entry with `modelRateLimitValuesFromEntry`. On failure, collect a
@@ -373,7 +373,7 @@ Extraction rules:
 7. Any collected error rejects the whole snapshot. A syntactically valid document
    with an invalid limit is never activated as unlimited.
 8. Errors are ordered by provider key insertion order, then model entry order, then
-   `tpm` before `prm`.
+   `tpm` before `rpm`.
 
 ### 3.4 API Types
 
@@ -383,7 +383,7 @@ Extend `src/shared/apiTypes.ts`:
 export interface ModelsConfigModel {
   /** ... existing members ... */
   tpm?: number | undefined;
-  prm?: number | undefined;
+  rpm?: number | undefined;
 }
 ```
 
@@ -472,7 +472,7 @@ export interface ModelRateLimitFieldDraft {
 
 export interface ModelRateLimitDraft {
   tpm: ModelRateLimitFieldDraft;
-  prm: ModelRateLimitFieldDraft;
+  rpm: ModelRateLimitFieldDraft;
 }
 
 export type ModelRateLimitDraftMap = Record<string, ModelRateLimitDraft>;
@@ -666,7 +666,7 @@ fixtures through the installed public runtime
 (`ModelRuntime.create({ modelsPath, authPath, allowModelNetwork: false })`) and
 asserts:
 
-1. Model behavior is identical with and without `tpm`/`prm`: per provider, compare
+1. Model behavior is identical with and without `tpm`/`rpm`: per provider, compare
    `getModels(provider)` ids, `api`, `baseUrl`, `contextWindow`, `maxTokens`,
    `reasoning`, `thinkingLevelMap`, `input`, `cost`, and merged `compat`.
 2. `getError()` is `undefined` for both fixtures.
@@ -798,25 +798,25 @@ Derived admission checks, evaluated at monotonic `now` after pruning:
    `tokenUsages[0]` whose timestamp is `<= now - MODEL_RATE_LIMIT_WINDOW_MS`.
    Entries with timestamp strictly greater than `now - 60000` remain. An entry
    expires exactly 60,000 ms after its timestamp.
-2. `prmDisabled = limits.prm === undefined`; `tpmDisabled = limits.tpm === undefined`.
+2. `prmDisabled = limits.rpm === undefined`; `tpmDisabled = limits.tpm === undefined`.
 3. `canAdmit(state, now)` is `true` only when both enabled conditions hold:
-   - `prmDisabled || state.requestTimestamps.length < limits.prm`;
+   - `prmDisabled || state.requestTimestamps.length < limits.rpm`;
    - `tpmDisabled || retainedTokenSum(state) < limits.tpm`.
-4. Equality is not admission: `length < prm` and `sum < tpm` are strict.
+4. Equality is not admission: `length < rpm` and `sum < tpm` are strict.
 
 ### 5.4 Queue, Wakeup, Cancellation, Shutdown Algorithms
 
 `acquire(identity, signal)`:
 
 1. If `signal?.aborted === true`, return `{ status: "aborted" }` immediately; do not
-   create state and do not spend a PRM unit.
+   create state and do not spend a RPM unit.
 2. If the owner admission state is `blocked`, return
    `{ status: "blocked", code, error }` immediately. Never queue while blocked.
 3. Get or create the identity state and call `prune(state, clock.now())` before every
    admission decision. If the identity queue is empty and `canAdmit(state, now)`:
    - append `now` to `requestTimestamps` and increment `inFlight` synchronously;
    - return `{ status: "granted" }`.
-   Admission and PRM recording happen in the same synchronous decision, before the
+   Admission and RPM recording happen in the same synchronous decision, before the
    delegate is invoked, so concurrent admissions cannot spend the last request slot
    twice.
 4. Otherwise create a waiter, push it to the FIFO queue, register a one-shot abort
@@ -906,7 +906,7 @@ Abort listener:
 1. **Window.** Retain entries with timestamp `> now - 60000`; an entry expires
    exactly at `timestamp + 60000`.
 2. **Disabled dimensions.** Omitted or `0` disables a dimension independently. With
-   both disabled, `acquire` grants immediately and never queues. With `prm = 22` and
+   both disabled, `acquire` grants immediately and never queues. With `rpm = 22` and
    `tpm` omitted, only the request count applies, and vice versa.
 3. **Overshoot.** Actual-usage accounting is not a hard ceiling. Any admitted
    request, including the first, can report more tokens than `tpm`. Concurrent
@@ -914,10 +914,10 @@ Abort listener:
    later calls wait until recorded usage falls below `tpm`.
 4. **No reservation.** `maxTokens`, prompt size, and streaming deltas are never
    counted. Only terminal usage is recorded.
-5. **Per-dispatch PRM.** PRM counts admission to an underlying model-call dispatch.
+5. **Per-dispatch RPM.** RPM counts admission to an underlying model-call dispatch.
    Internal transport retries are part of that dispatch and keep Pi's behavior.
    Application-level retries that invoke the model-call interface again are new
-   requests. A thrown error without usage still consumes its dispatched PRM unit.
+   requests. A thrown error without usage still consumes its dispatched RPM unit.
    Pre-dispatch aborts consume nothing.
 6. **No cross-model blocking.** Queues and timers are per identity. Requests for
    other models progress independently.
@@ -967,7 +967,7 @@ Pump algorithm:
      owner error; do not invoke the delegate; do not call `completeCall`.
    - `aborted` -> settle with a synthesized terminal `aborted` message;
      do not invoke the delegate; do not call `completeCall`.
-   - `granted` -> continue. A PRM unit is already charged.
+   - `granted` -> continue. A RPM unit is already charged.
 2. Invoke the delegate inside `try`/`catch` and await a returned promise when
    present. A synchronous throw or rejected promise settles with a synthesized
    terminal `error` message carrying the error text, then calls
@@ -1247,8 +1247,8 @@ Proxy registration:
 
 1. `GET /models-config` keeps returning the bare document. The client parser
    (`parseModelsConfigDocument` in `src/client/src/api/parsers.ts`) is extended to
-   assign typed `tpm`/`prm` when the value is a number, while preserving every other
-   value (including invalid `tpm`/`prm` values) in the copied record for the shared
+   assign typed `tpm`/`rpm` when the value is a number, while preserving every other
+   value (including invalid `tpm`/`rpm` values) in the copied record for the shared
    validator.
 2. The dialog calls `modelsApi.config(machineId)` and, when available,
    `modelsApi.limitsStatus(machineId)` under the same load-request sequence and
@@ -1287,7 +1287,7 @@ Context window (tokens)             Max output tokens
 [128000                   ]        [16384                  ]
 
 Rate limits
-Tokens per minute (TPM)             Requests per minute (PRM)
+Tokens per minute (TPM)             Requests per minute (RPM)
 [100000                   ]        [60                     ]
 
 Cost
@@ -1307,8 +1307,8 @@ Exact markup requirements:
    - `label for="model-tpm"` with text `Tokens per minute (TPM)` and
      `<input id="model-tpm" type="number" min="0" step="1" inputmode="numeric">`
      with placeholder `Unlimited`;
-   - `label for="model-prm"` with text `Requests per minute (PRM)` and
-     `<input id="model-prm" type="number" min="0" step="1" inputmode="numeric">`
+   - `label for="model-rpm"` with text `Requests per minute (RPM)` and
+     `<input id="model-rpm" type="number" min="0" step="1" inputmode="numeric">`
      with placeholder `Unlimited`.
 4. Each input is followed by `field-error` text when invalid. Errors fit at mobile
    widths.
@@ -1351,7 +1351,7 @@ Exact markup requirements:
    timeout. The final completion passes through the shared owner using the resolved
    model's `{ provider, modelId }`.
 2. The temporary document built for the test may contain the request's draft
-   `tpm`/`prm`, but the limiter never reads them. Admission uses the saved active
+   `tpm`/`rpm`, but the limiter never reads them. Admission uses the saved active
    snapshot for the resolved identity. An unsaved draft never replaces live limits
    and never creates a private budget.
 3. A queued connection test counts wait time against its existing 20-second
@@ -1364,7 +1364,7 @@ Exact markup requirements:
 1. `GET /models-config` keeps its bare-document shape in both directions, so an old
    UI talking to a new daemon and a new UI talking to a remote old daemon both read
    and save models safely.
-2. A new daemon stores `tpm`/`prm` as ordinary JSON fields; an old daemon round-trips
+2. A new daemon stores `tpm`/`rpm` as ordinary JSON fields; an old daemon round-trips
    them as unknown fields and Pi 0.85.1 ignores them.
 3. The `GET /models-config/limits` sidecar is additive. A 404 means the selected
    machine's daemon does not enforce limits; the dialog still edits and saves the
@@ -1376,7 +1376,7 @@ Exact markup requirements:
    additively.
 6. `PUT /models-config` refuses to write while the on-disk file is unparseable, so
    even a stale client that loaded an empty fallback cannot destroy the file.
-7. Existing documents without `tpm`/`prm` produce an empty snapshot and behave as
+7. Existing documents without `tpm`/`rpm` produce an empty snapshot and behave as
    before: all models unlimited.
 
 ---
@@ -1390,7 +1390,7 @@ Exact markup requirements:
 | `MODELS_CONFIG_PARSE_FAILED` | 422 | `models.json` fails Pi-compatible parse or draft shape validation on read | `models.json could not be parsed:` |
 | `MODELS_CONFIG_IO_FAILED` | 500 | Read of `models.json` fails with a non-ENOENT filesystem error | `Failed to read models.json:` |
 | `MODELS_CONFIG_SAVE_INVALID` | 400 | Save body fails draft shape validation | `models.json save request is not a valid configuration:` |
-| `MODELS_CONFIG_INVALID_LIMITS` | 400 | A `tpm`/`prm` value is invalid or a limits field has no model ID | field message from `modelRateLimitFieldMessage` |
+| `MODELS_CONFIG_INVALID_LIMITS` | 400 | A `tpm`/`rpm` value is invalid or a limits field has no model ID | field message from `modelRateLimitFieldMessage` |
 | `MODELS_CONFIG_UNREADABLE` | 409 | Save attempted while the on-disk file fails to parse or shape-validate | `models.json could not be read as a valid configuration; fix the file and reload before saving.` |
 | `MODELS_CONFIG_PERSIST_FAILED` | 500 | Atomic write, fsync, or rename fails | `Failed to persist models.json:` |
 | `MODELS_CONFIG_REFRESH_FAILED` | 502 | Persistence succeeded but narrow refresh validation failed; body carries `persisted: true` | `models.json was saved, but the active model configuration could not be reloaded:` |
@@ -1454,13 +1454,13 @@ owner tests assert the structured code.
 | `src/server/speechInput/speechInputPolishingService.rateLimits.test.ts` | Speech-polishing completion-adapter integration tests. |
 | `src/client/src/api/modelsConfigError.ts` | `ModelsConfigRequestError` and body mapping. |
 | `src/client/src/components/ModelsConfigDialog.rateLimits.test.ts` | Dialog draft/Save/status behavior tests. |
-| `.changeset/per-model-tpm-prm-controls.md` | User-facing release note (minor). |
+| `.changeset/per-model-tpm-rpm-controls.md` | User-facing release note (minor). |
 
 ### 10.2 Modified Files
 
 | Path | Change |
 | --- | --- |
-| `src/shared/apiTypes.ts` | Add `tpm`/`prm` to `ModelsConfigModel`; add limits status and structured error types; extend `ModelsConfigSaveResponse`. |
+| `src/shared/apiTypes.ts` | Add `tpm`/`rpm` to `ModelsConfigModel`; add limits status and structured error types; extend `ModelsConfigSaveResponse`. |
 | `src/shared/federatedRoutes.ts` | Add `GET /models-config/limits` to `FEDERATED_HTTP_ROUTES`. |
 | `src/server/models/modelsConfigService.ts` | Pi-compatible read, shape guard, limits extraction, atomic write, serialized save chain, narrow refresh validation, publication, status, connection-test completion adapter, logger. |
 | `src/server/models/modelsConfigService.test.ts` | Update existing service fakes and save-response assertions for the additive revision and refresh contracts. |
@@ -1471,7 +1471,7 @@ owner tests assert the structured code.
 | `src/server/app.remoteProxy.test.ts` | Extend federated-route coverage for the limits sidecar. |
 | `src/server/sessions/piSessionService.ts` | Add optional `modelRateLimitOwner` dependency; wrap `result.session.agent.streamFunction` and publish the wrapped function through `UtilityModelExtensionRuntimeRefs`. |
 | `src/server/sessions/piSessionService.promptQueue.test.ts` | Update the `createDefaultRuntimeFactory` call site for the optional owner parameter. |
-| `src/client/src/api/parsers.ts` | Typed `tpm`/`prm` parsing; limits status, save revision, and structured error parsers. |
+| `src/client/src/api/parsers.ts` | Typed `tpm`/`rpm` parsing; limits status, save revision, and structured error parsers. |
 | `src/client/src/api/parsers.modelsConfig.test.ts` | Extend model-config parser coverage for invalid-value preservation and structured responses. |
 | `src/client/src/api/clients.ts` | `limitsStatus`; structured `save` error handling. |
 | `src/client/src/api.ts` | Re-export new shared types used by the dialog. |
@@ -1563,9 +1563,9 @@ DOM dependency or vitest environment.
 | --- | --- | --- |
 | Shared values | `src/shared/modelRateLimits.test.ts` | Omitted, `0`, positive, negative, fraction, `NaN`, `Infinity`, unsafe integer, string, boolean, `null`, object; draft text canonical/blank/`+5`/`007`/`1e3`/`1.5`/`0x10`/`1_000`/unsafe; all four terminal counters and invalid-counter zeroing; `totalTokens` never added; no `NaN`/negative result. |
 | Parser dialect | `src/server/models/modelsJsonParser.test.ts` | BOM; `//` comments; comment markers inside strings; escaped quotes; trailing commas in objects and arrays with whitespace/newlines; duplicate keys last-wins; block comments rejected; `#` comments rejected; invalid JSON rejected with `ModelsJsonParseError`. |
-| Extraction | `src/server/rateLimits/modelRateLimitConfig.test.ts` | Fields only on explicit `models[]`; root/provider/`modelOverrides` `tpm`/`prm` ignored and preserved; per-provider/per-model isolation; collision-safe identity (`a/b` + `c` vs `a` + `b/c`); duplicate IDs last-entry wins including omitted dimension on the last entry; invalid value on a shadowed duplicate rejects the snapshot; all errors collected with provider/modelId/occurrence/field/reason; ids with leading/trailing whitespace remain distinct. |
-| Owner semantics | `src/server/rateLimits/modelRateLimitOwner.test.ts` | Fake clock: both-disabled immediate admit; PRM equality (`prm = 10` admits 10, 11th waits); TPM equality; request and token expiry at exactly 60,000 ms and 59,999 ms; different timestamps per dimension; all four counters; overshoot by first and concurrent calls; disabled dimensions independent; multiple waiters FIFO; cancelled head does not starve the next; unrelated model progresses; config raise/disable wakes; config lower lengthens; usage preserved across toggle/provider edit; remove model/provider does not cancel work or retarget; exactly one timer per blocked identity and zero after drain; `completeCall` releases `inFlight`; dispose settles waiters and clears timers; blocked admission returns the structured error without queueing; `pruneIdleEntries` keeps states with waiters/history/in-flight. |
-| Adapters | `src/server/rateLimits/modelRateLimitAdapters.test.ts` | Async-iteration event order; `.result()`-only consumer gets the terminal message while the caller never iterates; usage recorded exactly once before the terminal event/result is forwarded; duplicate terminal events accounted once; delegate throws synchronously; delegate rejects; stream ends without terminal; pre-dispatch abort makes no delegate call and no PRM charge; blocked admission produces the `MODEL_RATE_LIMITS_BLOCKED` terminal whose full message does not match Pi's retry classifier; delegate options forwarded unchanged; double-wrap guard returns the delegate; completion adapter resolves usage-recorded message, resolves aborted/blocked terminals, and rejects delegate failures after one `completeCall`. |
+| Extraction | `src/server/rateLimits/modelRateLimitConfig.test.ts` | Fields only on explicit `models[]`; root/provider/`modelOverrides` `tpm`/`rpm` ignored and preserved; per-provider/per-model isolation; collision-safe identity (`a/b` + `c` vs `a` + `b/c`); duplicate IDs last-entry wins including omitted dimension on the last entry; invalid value on a shadowed duplicate rejects the snapshot; all errors collected with provider/modelId/occurrence/field/reason; ids with leading/trailing whitespace remain distinct. |
+| Owner semantics | `src/server/rateLimits/modelRateLimitOwner.test.ts` | Fake clock: both-disabled immediate admit; RPM equality (`rpm = 10` admits 10, 11th waits); TPM equality; request and token expiry at exactly 60,000 ms and 59,999 ms; different timestamps per dimension; all four counters; overshoot by first and concurrent calls; disabled dimensions independent; multiple waiters FIFO; cancelled head does not starve the next; unrelated model progresses; config raise/disable wakes; config lower lengthens; usage preserved across toggle/provider edit; remove model/provider does not cancel work or retarget; exactly one timer per blocked identity and zero after drain; `completeCall` releases `inFlight`; dispose settles waiters and clears timers; blocked admission returns the structured error without queueing; `pruneIdleEntries` keeps states with waiters/history/in-flight. |
+| Adapters | `src/server/rateLimits/modelRateLimitAdapters.test.ts` | Async-iteration event order; `.result()`-only consumer gets the terminal message while the caller never iterates; usage recorded exactly once before the terminal event/result is forwarded; duplicate terminal events accounted once; delegate throws synchronously; delegate rejects; stream ends without terminal; pre-dispatch abort makes no delegate call and no RPM charge; blocked admission produces the `MODEL_RATE_LIMITS_BLOCKED` terminal whose full message does not match Pi's retry classifier; delegate options forwarded unchanged; double-wrap guard returns the delegate; completion adapter resolves usage-recorded message, resolves aborted/blocked terminals, and rejects delegate failures after one `completeCall`. |
 | Pi compatibility | `src/server/rateLimits/modelRateLimitPiCompatibility.test.ts` | Section 4.4 items 1-7 using `ModelRuntime.create` with `allowModelNetwork: false` and temp fixture files. |
 | Config lifecycle | `src/server/models/modelsConfigService.rateLimits.test.ts` | Missing file -> empty document and `missing-file` source; parse failure -> structured error with no empty fallback and no write; invalid limits -> read returns the document while publish is rejected; save shape/limits rejection; save guard `MODELS_CONFIG_UNREADABLE`; atomic write uses a sibling temp file and rename, preserves an existing restricted mode such as `0600`, follows a symlink to update its effective target, rejects hard-linked targets without creating a temp file, and asserts no temp remains on failure; persist failure keeps active limits; refresh failure reports `persisted: true` and keeps last-known-good; refresh success publishes a higher revision and wakes waiters; serialized saves cannot publish older over newer; connection test uses saved limits and does not publish draft values; `initialize` never throws. |
 | Routes | `src/server/models/modelsConfigRoutes.test.ts` | Every status/code in Section 8.1; `file`, `provider`, `modelId`, `field`, `occurrence`, `persisted` fields; `GET /models-config` still returns a bare document on success; sidecar shape. |
@@ -1573,7 +1573,7 @@ DOM dependency or vitest environment.
 | Federated routes | `src/server/app.remoteProxy.test.ts` | `GET /models-config/limits` is in `FEDERATED_HTTP_ROUTES` exactly once and is proxied to remote machines. |
 | Session integration | `src/server/sessions/piSessionService.rateLimits.test.ts` | Two independently created sessions share one model budget; interactive stream call goes through the wrapper exactly once; naming, compaction/branch-summary utility paths, and utility fallback each charge the actual candidate model; runtime replacement re-wraps and does not double-wrap; session dispose aborts queued waiters; blocked owner fails sessions closed with the structured terminal. |
 | Speech polishing | `src/server/speechInput/speechInputPolishingService.rateLimits.test.ts` | Polishing charges the actual candidate model through the injected completion adapter; abort during queue wait preserves the route deadline and does not dispatch later. |
-| Client API | `src/client/src/api/clients.test.ts` and parser tests | Typed `tpm`/`prm` parse plus invalid-value preservation; strict limits-status parser (unknown keys, wrong version, bad admission/source); save revision parsing; structured save error mapping with fallback to `error`; `limitsStatus` 404 surface; nested-deployment URL encoding for the new path. |
+| Client API | `src/client/src/api/clients.test.ts` and parser tests | Typed `tpm`/`rpm` parse plus invalid-value preservation; strict limits-status parser (unknown keys, wrong version, bad admission/source); save revision parsing; structured save error mapping with fallback to `error`; `limitsStatus` 404 surface; nested-deployment URL encoding for the new path. |
 | Client drafts | `src/client/src/components/models/modelsConfigDraft.test.ts` | Key encoding collision cases; derivation from valid/invalid stored values; apply valid/invalid/blank/`0`; set/delete field; reconcile on add/delete/rename including deleting an earlier duplicate and shifting later occurrences; `firstInvalidRateLimitDraft`. |
 | Dialog behavior | `src/client/src/components/ModelsConfigDialog.rateLimits.test.ts` (`@vitest-environment jsdom`) | Mount the real element with a stub `modelsApi`, dispatch real `input` and `click` events, and await `updateComplete`: section presence/labels/placeholders; valid set/change/clear updates the Save payload; invalid input blocks Save and shows the field error; invalid draft on another model blocks Save after navigation; loaded invalid stored value blocks Save; load failure disables Save; blocked-admission status banner; last-known-good status banner; status 404 tolerated; machine switch clears drafts and ignores stale async results; structured save error maps code, field, and reason to the field; Test remains usable with an invalid draft; close/reopen restores saved values and leaves a second model unchanged. Geometry and keyboard-focus order are out of scope here and belong to Section 11.4. |
 | App wiring | `src/client/src/components/PiWebUiApp.modelsConfig.test.ts` | Existing dialog open/close and machine targeting stay green. |
@@ -1587,7 +1587,7 @@ DOM dependency or vitest environment.
    - `fixtureTerminalMessage(overrides)` building a complete `AssistantMessage`.
    - `createControllableStream()` returning `{ stream, push, end, error }` for
      delegate streams and helper `deferred<T>()` promises.
-   - `fixtureLimits(tpm?, prm?)` and `fixtureIdentity(provider, modelId)`.
+   - `fixtureLimits(tpm?, rpm?)` and `fixtureIdentity(provider, modelId)`.
 2. Filesystem fixtures use `mkdtemp` under `os.tmpdir()` and are removed in
    `afterEach`, matching `modelsConfigService.test.ts`.
 3. Pi compatibility fixtures are written with exact text (including BOM and `//`
@@ -1605,7 +1605,7 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
 
 1. Create a temporary HTML fixture under `src/client` that imports the real
    `ModelsConfigDialog`, sets a stub `modelsApi` with a valid document containing a
-   model with `tpm`/`prm`, mounts it, waits for two animation frames, and writes a
+   model with `tpm`/`rpm`, mounts it, waits for two animation frames, and writes a
    JSON measurement object to a stable result element.
 2. Serve it with `npm run dev:client -- --port <unused> --strictPort`.
 3. Launch headless Chromium with a remote-debugging port and use CDP
@@ -1620,14 +1620,14 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
      context/max-output row bottom and its bottom is less than or equal to the cost
      section top;
    - desktop (above 700): the TPM input's right edge is less than or equal to the
-     PRM input's left edge and their vertical ranges overlap (two columns);
-   - mobile (at or below 700): the PRM input's top is greater than or equal to the
+     RPM input's left edge and their vertical ranges overlap (two columns);
+   - mobile (at or below 700): the RPM input's top is greater than or equal to the
      TPM input's bottom (one column);
    - both inputs stay inside the dialog's left/right edges;
    - the `Rate limits` label, field labels, and any `.field-error` element have
      `scrollWidth <= clientWidth` (no clipping or overlap);
    - keyboard order: after focusing `#model-tpm` and dispatching Tab, focus reaches
-     `#model-prm`, then the first cost input.
+     `#model-rpm`, then the first cost input.
 6. Remove the temporary fixture, CDP script, browser profile, and logs; stop the
    temporary Vite process; confirm no temporary file remains in `git status`.
 7. Record the measurement JSON and screenshots in the implementation handoff as
@@ -1675,14 +1675,14 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
    external edits, and a short note that limits are local to the daemon and active
    profile. Keep `README.md` unchanged unless its quick-start path changes. Add FAQ
    troubleshooting only if operator recovery needs it.
-6. Release note: add `.changeset/per-model-tpm-prm-controls.md` with
+6. Release note: add `.changeset/per-model-tpm-rpm-controls.md` with
    `"@hyperdreamer/pi-webui": minor`. Do not edit `CHANGELOG.md` manually.
 
 ---
 
 ## 13. Acceptance Criteria
 
-1. `tpm` and `prm` round-trip through read, GUI edit, Save, and Pi loading, and
+1. `tpm` and `rpm` round-trip through read, GUI edit, Save, and Pi loading, and
    unknown fields remain intact; two assertions in
    `src/server/rateLimits/modelRateLimitPiCompatibility.test.ts` prove model
    behavior is identical with and without the fields.
@@ -1694,7 +1694,7 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
 4. `completeCall` records terminal usage once, before the terminal event/result is
    forwarded, for successful, failed, and aborted calls, with invalid counters
    contributing zero.
-5. Waiting never spends a PRM unit or invokes a delegate; cancelling the head or any
+5. Waiting never spends a RPM unit or invokes a delegate; cancelling the head or any
    waiter removes it without a charge; dispatch rechecks cancellation; shutdown and
    session disposal leave no waiters, timers, or listeners.
 6. Raising or disabling a limit wakes eligible waiters immediately; lowering a limit
@@ -1755,6 +1755,13 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
 11. **Hard-linked models files are not supported for atomic persistence.** Saves reject
     a target with multiple directory links rather than silently diverging one link;
     symlinked paths are resolved and remain supported.
+12. **The requests-per-minute field is `rpm`, not `prm`.** This amendment (2026-09-14)
+    corrects the original spelling, which was carried over verbatim from the user's
+    first phrasing and recorded in the design's terminology table. Every field key,
+    type member, message, label, DOM id, test, and document now uses `rpm`/`RPM`;
+    `tpm` is unchanged. The shipped implementation had not been released, so no
+    migration is required. The design, plan, and execution-graph artifacts retain the
+    original spelling as historical run records.
 
 ---
 

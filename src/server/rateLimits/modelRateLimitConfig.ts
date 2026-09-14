@@ -84,7 +84,7 @@ export function extractModelRateLimits(document: ModelsConfigDocument): ModelRat
   for (const [provider, providerLimits] of limits) {
     const enabled = new Map<string, ModelRateLimitValues>();
     for (const [modelId, values] of providerLimits) {
-      if (values.tpm !== undefined || values.prm !== undefined) enabled.set(modelId, values);
+      if (values.tpm !== undefined || values.rpm !== undefined) enabled.set(modelId, values);
     }
     if (enabled.size > 0) enabledLimits.set(provider, enabled);
   }

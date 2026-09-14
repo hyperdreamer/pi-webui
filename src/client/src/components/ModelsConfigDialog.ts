@@ -371,7 +371,7 @@ export class ModelsConfigDialog extends LitElement {
           <span class="section-label">Rate limits</span>
           <div class="field-grid two-columns">
             ${this.renderRateLimitField("tpm", "Tokens per minute (TPM)", providerName, index, model)}
-            ${this.renderRateLimitField("prm", "Requests per minute (PRM)", providerName, index, model)}
+            ${this.renderRateLimitField("rpm", "Requests per minute (RPM)", providerName, index, model)}
           </div>
         </section>
 
@@ -578,7 +578,7 @@ export class ModelsConfigDialog extends LitElement {
         if (current !== undefined) {
           const rejected: ModelRateLimitDraft = field === "tpm"
             ? { ...current, tpm: { ...current.tpm, error: error.message } }
-            : { ...current, prm: { ...current.prm, error: error.message } };
+            : { ...current, rpm: { ...current.rpm, error: error.message } };
           this.rateLimitDrafts = { ...this.rateLimitDrafts, [key]: rejected };
         }
       }
@@ -621,7 +621,7 @@ export class ModelsConfigDialog extends LitElement {
   }
 
   private renderRateLimitField(field: ModelRateLimitField, label: string, providerName: string, index: number, model: ModelsConfigModel): TemplateResult {
-    const id = field === "tpm" ? "model-tpm" : "model-prm";
+    const id = field === "tpm" ? "model-tpm" : "model-rpm";
     const draft = this.rateLimitDraftFor(providerName, index, model);
     const error = draft[field].error;
     return html`
@@ -635,13 +635,13 @@ export class ModelsConfigDialog extends LitElement {
 
   private rateLimitDraftFor(providerName: string, index: number, model: ModelsConfigModel): ModelRateLimitDraft {
     const occurrence = this.occurrenceOf(providerName, index, model.id);
-    return this.rateLimitDrafts[rateLimitDraftKey(providerName, model.id, occurrence)] ?? { tpm: { text: "" }, prm: { text: "" } };
+    return this.rateLimitDrafts[rateLimitDraftKey(providerName, model.id, occurrence)] ?? { tpm: { text: "" }, rpm: { text: "" } };
   }
 
   private applyRateLimitInput(providerName: string, index: number, model: ModelsConfigModel, field: ModelRateLimitField, text: string): void {
     const occurrence = this.occurrenceOf(providerName, index, model.id);
     const key = rateLimitDraftKey(providerName, model.id, occurrence);
-    const current = this.rateLimitDrafts[key] ?? { tpm: { text: "" }, prm: { text: "" } };
+    const current = this.rateLimitDrafts[key] ?? { tpm: { text: "" }, rpm: { text: "" } };
     this.rateLimitDrafts = { ...this.rateLimitDrafts, [key]: applyRateLimitDraftField(current, field, text) };
     const parsed = parseModelRateLimitDraftText(text);
     if (!parsed.ok) return;

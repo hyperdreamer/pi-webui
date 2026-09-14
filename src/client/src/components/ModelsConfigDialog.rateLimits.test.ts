@@ -9,7 +9,7 @@ const DOCUMENT: ModelsConfigDocument = {
   providers: {
     acme: {
       api: "openai-completions",
-      models: [{ id: "demo", tpm: 100, prm: 60 }, { id: "other" }],
+      models: [{ id: "demo", tpm: 100, rpm: 60 }, { id: "other" }],
     },
   },
 };
@@ -115,7 +115,7 @@ describe("ModelsConfigDialog rate limits", () => {
     expect(section).not.toBeNull();
     expect(section?.querySelector(".section-label")?.textContent).toBe("Rate limits");
     expect(shadow(dialog).querySelector("#model-tpm")?.getAttribute("placeholder")).toBe("Unlimited");
-    expect(shadow(dialog).querySelector("#model-prm")?.getAttribute("placeholder")).toBe("Unlimited");
+    expect(shadow(dialog).querySelector("#model-rpm")?.getAttribute("placeholder")).toBe("Unlimited");
     const costSection = shadow(dialog).querySelector("section.cost-section");
     expect(section !== null && costSection !== null && (section.compareDocumentPosition(costSection) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
   });
@@ -125,7 +125,7 @@ describe("ModelsConfigDialog rate limits", () => {
     await selectModel(dialog, 0);
 
     await inputText(dialog, "model-tpm", "250");
-    await inputText(dialog, "model-prm", "");
+    await inputText(dialog, "model-rpm", "");
     await clickSave(dialog);
     await vi.waitFor(() => { expect(modelsApi.save).toHaveBeenCalledTimes(1); });
 
@@ -199,7 +199,7 @@ describe("ModelsConfigDialog rate limits", () => {
       file: "models.json",
       provider: "acme",
       modelId: "demo",
-      field: "prm",
+      field: "rpm",
       occurrence: 0,
       reason: "not-a-number",
     });
@@ -208,7 +208,7 @@ describe("ModelsConfigDialog rate limits", () => {
 
     await clickSave(dialog);
     await vi.waitFor(() => {
-      expect(shadow(dialog).querySelector("#model-prm")?.closest(".field-stack")?.querySelector(".field-error")?.textContent)
+      expect(shadow(dialog).querySelector("#model-rpm")?.closest(".field-stack")?.querySelector(".field-error")?.textContent)
         .toBe("Requests per minute must be a whole number.");
     });
     expect(saveButton(dialog).disabled).toBe(true);

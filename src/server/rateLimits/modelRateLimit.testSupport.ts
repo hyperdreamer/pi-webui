@@ -101,8 +101,8 @@ export function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
-export function fixtureLimits(tpm?: number, prm?: number): ModelRateLimitValues {
-  return { ...(tpm === undefined ? {} : { tpm }), ...(prm === undefined ? {} : { prm }) };
+export function fixtureLimits(tpm?: number, rpm?: number): ModelRateLimitValues {
+  return { ...(tpm === undefined ? {} : { tpm }), ...(rpm === undefined ? {} : { rpm }) };
 }
 
 export function fixtureIdentity(provider: string, modelId: string): ModelRateLimitIdentity {

@@ -62,9 +62,9 @@ describe("ModelsConfigService rate limit lifecycle", () => {
     await expect(models.save({ providers: { acme: { models: [{ id: 5 }] } } })).rejects.toMatchObject({
       code: "MODELS_CONFIG_SAVE_INVALID",
     });
-    await expect(models.save({ providers: { acme: { models: [{ id: "demo", prm: -1 }] } } })).rejects.toMatchObject({
+    await expect(models.save({ providers: { acme: { models: [{ id: "demo", rpm: -1 }] } } })).rejects.toMatchObject({
       code: "MODELS_CONFIG_INVALID_LIMITS",
-      details: { provider: "acme", modelId: "demo", field: "prm", reason: "negative", occurrence: 0 },
+      details: { provider: "acme", modelId: "demo", field: "rpm", reason: "negative", occurrence: 0 },
     });
     await expect(readFile(join(agentDir, "models.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -192,13 +192,13 @@ describe("ModelsConfigService rate limit lifecycle", () => {
     const modelRuntime = { refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }), getError: () => undefined };
     const models = new ModelsConfigService({ agentDir, modelRuntime, rateLimits });
     await models.initialize();
-    await models.save({ providers: { acme: { models: [{ id: "demo", tpm: 1, prm: 1 }] } } });
+    await models.save({ providers: { acme: { models: [{ id: "demo", tpm: 1, rpm: 1 }] } } });
     await rateLimits.acquire(identity);
     rateLimits.completeCall(identity, { input: 1 });
     const queued = rateLimits.acquire(identity);
     expect(rateLimits.pendingWaiterCount(identity)).toBe(1);
 
-    await models.save({ providers: { acme: { models: [{ id: "demo", tpm: 100, prm: 5 }] } } });
+    await models.save({ providers: { acme: { models: [{ id: "demo", tpm: 100, rpm: 5 }] } } });
 
     await expect(queued).resolves.toEqual({ status: "granted" });
     expect(rateLimits.readStatus().revision).toBe(3);
@@ -231,7 +231,7 @@ describe("ModelsConfigService rate limit lifecycle", () => {
     const agentDir = await temporaryAgentDir();
     const { clock, rateLimits } = ownerWithClock();
     await writeDocument(agentDir, {
-      providers: { acme: { api: "openai-completions", baseUrl: "https://api.example.test/v1", apiKey: "test-key", models: [{ id: "demo", prm: 1 }] } },
+      providers: { acme: { api: "openai-completions", baseUrl: "https://api.example.test/v1", apiKey: "test-key", models: [{ id: "demo", rpm: 1 }] } },
     });
     const connectionModel = {
       id: "demo",

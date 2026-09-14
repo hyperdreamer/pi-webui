@@ -321,15 +321,15 @@ class ModelRateLimitOwnerImpl implements ModelRateLimitOwner, ModelRateLimitDiag
   }
 
   private canAdmit(state: ModelCallBudgetState): boolean {
-    if (state.limits.prm !== undefined && state.requestTimestamps.length >= state.limits.prm) return false;
+    if (state.limits.rpm !== undefined && state.requestTimestamps.length >= state.limits.rpm) return false;
     return state.limits.tpm === undefined || this.retainedTokenSum(state) < state.limits.tpm;
   }
 
-  private exhaustedDimension(state: ModelCallBudgetState): "tpm" | "prm" | "tpm+prm" | undefined {
-    const prmExhausted = state.limits.prm !== undefined && state.requestTimestamps.length >= state.limits.prm;
+  private exhaustedDimension(state: ModelCallBudgetState): "tpm" | "rpm" | "tpm+rpm" | undefined {
+    const prmExhausted = state.limits.rpm !== undefined && state.requestTimestamps.length >= state.limits.rpm;
     const tpmExhausted = state.limits.tpm !== undefined && this.retainedTokenSum(state) >= state.limits.tpm;
-    if (prmExhausted && tpmExhausted) return "tpm+prm";
-    if (prmExhausted) return "prm";
+    if (prmExhausted && tpmExhausted) return "tpm+rpm";
+    if (prmExhausted) return "rpm";
     if (tpmExhausted) return "tpm";
     return undefined;
   }
@@ -437,5 +437,5 @@ class ModelRateLimitOwnerImpl implements ModelRateLimitOwner, ModelRateLimitDiag
 }
 
 function hasEnabledLimit(limits: ModelRateLimitValues): boolean {
-  return limits.tpm !== undefined || limits.prm !== undefined;
+  return limits.tpm !== undefined || limits.rpm !== undefined;
 }

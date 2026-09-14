@@ -1,4 +1,4 @@
-export const MODEL_RATE_LIMIT_FIELDS = ["tpm", "prm"] as const;
+export const MODEL_RATE_LIMIT_FIELDS = ["tpm", "rpm"] as const;
 export type ModelRateLimitField = (typeof MODEL_RATE_LIMIT_FIELDS)[number];
 
 export const MODEL_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -18,7 +18,7 @@ export type ModelRateLimitInvalidFieldReason = Exclude<
 
 export interface ModelRateLimitValues {
   tpm?: number;
-  prm?: number;
+  rpm?: number;
 }
 
 export type ModelRateLimitFieldParse =
@@ -33,7 +33,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Validates one stored `tpm`/`prm` value from models.json. */
+/** Validates one stored `tpm`/`rpm` value from models.json. */
 export function parseModelRateLimitStoredValue(value: unknown): ModelRateLimitFieldParse {
   if (value === undefined) return { ok: true, value: undefined };
   if (typeof value !== "number") return { ok: false, reason: "not-a-number" };

@@ -59,7 +59,7 @@ function structuredDetails(record: Record<string, unknown>): ModelsConfigRequest
   if (typeof record["provider"] === "string") details.provider = record["provider"];
   if (typeof record["modelId"] === "string") details.modelId = record["modelId"];
   const field = record["field"];
-  if (field === "tpm" || field === "prm") details.field = field;
+  if (field === "tpm" || field === "rpm") details.field = field;
   if (typeof record["occurrence"] === "number") details.occurrence = record["occurrence"];
   const reason = record["reason"];
   if (isModelRateLimitInvalidReason(reason)) details.reason = reason;

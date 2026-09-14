@@ -11,7 +11,7 @@ import {
 
 describe("model rate limit values", () => {
   it("exposes the two fields and the rolling window", () => {
-    expect(MODEL_RATE_LIMIT_FIELDS).toEqual(["tpm", "prm"]);
+    expect(MODEL_RATE_LIMIT_FIELDS).toEqual(["tpm", "rpm"]);
     expect(MODEL_RATE_LIMIT_WINDOW_MS).toBe(60_000);
   });
 
@@ -45,10 +45,10 @@ describe("model rate limit values", () => {
 
   it("keeps only positive values and reports the first invalid field in field order", () => {
     expect(modelRateLimitValuesFromEntry({})).toEqual({ ok: true, values: {} });
-    expect(modelRateLimitValuesFromEntry({ tpm: 0, prm: 5 })).toEqual({ ok: true, values: { prm: 5 } });
-    expect(modelRateLimitValuesFromEntry({ tpm: 9, prm: 5 })).toEqual({ ok: true, values: { tpm: 9, prm: 5 } });
-    expect(modelRateLimitValuesFromEntry({ prm: "5" })).toEqual({ ok: false, field: "prm", reason: "not-a-number" });
-    expect(modelRateLimitValuesFromEntry({ tpm: -1, prm: "5" })).toEqual({ ok: false, field: "tpm", reason: "negative" });
+    expect(modelRateLimitValuesFromEntry({ tpm: 0, rpm: 5 })).toEqual({ ok: true, values: { rpm: 5 } });
+    expect(modelRateLimitValuesFromEntry({ tpm: 9, rpm: 5 })).toEqual({ ok: true, values: { tpm: 9, rpm: 5 } });
+    expect(modelRateLimitValuesFromEntry({ rpm: "5" })).toEqual({ ok: false, field: "rpm", reason: "not-a-number" });
+    expect(modelRateLimitValuesFromEntry({ tpm: -1, rpm: "5" })).toEqual({ ok: false, field: "tpm", reason: "negative" });
   });
 
   it("sums only the four terminal counters and never adds totalTokens", () => {
@@ -63,10 +63,10 @@ describe("model rate limit values", () => {
 
   it("returns stable field messages", () => {
     expect(modelRateLimitFieldMessage("tpm", "not-a-number")).toBe("Tokens per minute must be a whole number.");
-    expect(modelRateLimitFieldMessage("prm", "not-a-number")).toBe("Requests per minute must be a whole number.");
+    expect(modelRateLimitFieldMessage("rpm", "not-a-number")).toBe("Requests per minute must be a whole number.");
     expect(modelRateLimitFieldMessage("tpm", "negative")).toBe("Tokens per minute must be a non-negative whole number.");
-    expect(modelRateLimitFieldMessage("prm", "not-finite")).toBe("Requests per minute must be a non-negative whole number.");
+    expect(modelRateLimitFieldMessage("rpm", "not-finite")).toBe("Requests per minute must be a non-negative whole number.");
     expect(modelRateLimitFieldMessage("tpm", "unsafe-integer")).toBe("Tokens per minute must be a non-negative whole number.");
-    expect(modelRateLimitFieldMessage("prm", "missing-model-id")).toBe("Set a Model ID before setting rate limits.");
+    expect(modelRateLimitFieldMessage("rpm", "missing-model-id")).toBe("Set a Model ID before setting rate limits.");
   });
 });
