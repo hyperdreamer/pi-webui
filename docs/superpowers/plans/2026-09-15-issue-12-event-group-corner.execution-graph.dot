@@ -1,0 +1,8 @@
+digraph execution_graph {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontname="Helvetica"];
+  subgraph cluster_lane_1 {
+    label="lane-1";
+    "T1" [label="T1: Close collapsed event-group bottom corners\ntier=standard | plan_task=1 | lane=lane-1"];
+  }
+}

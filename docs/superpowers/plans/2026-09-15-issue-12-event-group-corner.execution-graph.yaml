@@ -1,0 +1,69 @@
+schema_version: 1
+run_id: pm-run-20260915-013111-47219abd
+epoch: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-15-issue-12-event-group-corner.md
+  sha256: e3642ca773d9d0415b0aafb9ce09020dba6d4d2e5e176fc723fcf4e81f165808
+  commit_oid: 3080032e2e1223b9f13660be8a090d147e420928
+  task_numbers:
+    - 1
+  validated_at: "2026-09-14T18:20:48.457Z"
+  validator_exit: 0
+  validator_digest: e3642ca773d9d0415b0aafb9ce09020dba6d4d2e5e176fc723fcf4e81f165808
+lanes:
+  -
+    id: lane-1
+    sequence: 1
+    task_ids:
+      - T1
+tasks:
+  -
+    id: T1
+    plan_task: 1
+    title: "Close collapsed event-group bottom corners"
+    lane: lane-1
+    sequence: 1
+    implementer_tier: standard
+    depends_on: []
+    ownership:
+      - src/client/src/components/shared.ts
+      - src/client/src/components/shared.test.ts
+      - .changeset/issue-12-event-group-corner.md
+    exclusive_resources: []
+    interfaces:
+      consumes: []
+      produces:
+        -
+          name: collapsed-summary-corner-contract
+          signature: ".msg.event-group:not([open]) > summary { border-bottom: 0; border-radius: 9px; }"
+          digest: e002c747c3783f2859214dce1a1632ffe826d9960bafc2987dc0a2844e7f5193
+        -
+          name: open-summary-separator-guard
+          signature: ".msg.event-group > summary { border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); }"
+          digest: e025cc47b795c8f72c9c655fb1c754ab67db11bfce4c7f0b1e66306e0213a4a2
+        -
+          name: live-summary-separator-guard
+          signature: ".msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); }"
+          digest: 6df28323187529bcee357c2882e13c18fc530fa5a5124a1a2fefa033c3766a3b
+    validation:
+      -
+        argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/client/src/components/shared.test.ts
+        mutates_git: false
+      -
+        argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      -
+        argv:
+          - npx
+          - eslint
+          - src/client/src/components/shared.ts
+          - src/client/src/components/shared.test.ts
+        mutates_git: false
