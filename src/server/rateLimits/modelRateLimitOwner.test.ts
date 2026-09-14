@@ -122,12 +122,12 @@ describe("model rate limit owner", () => {
     tpmOnly.rateLimits.dispose();
     await expect(blocked).resolves.toEqual({ status: "aborted" });
 
-    const prmOnly = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 5) } });
-    for (let index = 0; index < 5; index += 1) await prmOnly.rateLimits.acquire(demo);
-    prmOnly.rateLimits.completeCall(demo, { input: 1_000_000 });
-    const sixth = prmOnly.rateLimits.acquire(demo);
-    expect(prmOnly.rateLimits.pendingWaiterCount(demo)).toBe(1);
-    prmOnly.rateLimits.dispose();
+    const rpmOnly = createOwner({ acme: { "demo-model": fixtureLimits(undefined, 5) } });
+    for (let index = 0; index < 5; index += 1) await rpmOnly.rateLimits.acquire(demo);
+    rpmOnly.rateLimits.completeCall(demo, { input: 1_000_000 });
+    const sixth = rpmOnly.rateLimits.acquire(demo);
+    expect(rpmOnly.rateLimits.pendingWaiterCount(demo)).toBe(1);
+    rpmOnly.rateLimits.dispose();
     await expect(sixth).resolves.toEqual({ status: "aborted" });
   });
 

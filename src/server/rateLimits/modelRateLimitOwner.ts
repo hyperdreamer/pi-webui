@@ -326,10 +326,10 @@ class ModelRateLimitOwnerImpl implements ModelRateLimitOwner, ModelRateLimitDiag
   }
 
   private exhaustedDimension(state: ModelCallBudgetState): "tpm" | "rpm" | "tpm+rpm" | undefined {
-    const prmExhausted = state.limits.rpm !== undefined && state.requestTimestamps.length >= state.limits.rpm;
+    const rpmExhausted = state.limits.rpm !== undefined && state.requestTimestamps.length >= state.limits.rpm;
     const tpmExhausted = state.limits.tpm !== undefined && this.retainedTokenSum(state) >= state.limits.tpm;
-    if (prmExhausted && tpmExhausted) return "tpm+rpm";
-    if (prmExhausted) return "rpm";
+    if (rpmExhausted && tpmExhausted) return "tpm+rpm";
+    if (rpmExhausted) return "rpm";
     if (tpmExhausted) return "tpm";
     return undefined;
   }

@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Status:** Approved by the user on 2026-09-13; amended on 2026-09-14 to name the requests-per-minute field RPM. The frontier specification review passed with no blocking findings and its nonblocking recommendations are incorporated in this document.
-**Related Design Document:** `docs/superpowers/specs/2026-09-13-tpm-rpm-model-controls-design.md` (approved at commit `be84b8b7801d1bc5a30304a32aae92711a30e5f1`)
+**Related Design Document:** `docs/superpowers/specs/2026-09-13-tpm-prm-model-controls-design.md` (approved at commit `be84b8b7801d1bc5a30304a32aae92711a30e5f1`)
 **Target Package:** `@hyperdreamer/pi-webui`
 **Change Class:** user-visible feature (minor)
 **Operation Class:** session-daemon runtime ownership change; installation requires one manual `pi-webui-sessiond.service` restart
@@ -798,9 +798,9 @@ Derived admission checks, evaluated at monotonic `now` after pruning:
    `tokenUsages[0]` whose timestamp is `<= now - MODEL_RATE_LIMIT_WINDOW_MS`.
    Entries with timestamp strictly greater than `now - 60000` remain. An entry
    expires exactly 60,000 ms after its timestamp.
-2. `prmDisabled = limits.rpm === undefined`; `tpmDisabled = limits.tpm === undefined`.
+2. `rpmDisabled = limits.rpm === undefined`; `tpmDisabled = limits.tpm === undefined`.
 3. `canAdmit(state, now)` is `true` only when both enabled conditions hold:
-   - `prmDisabled || state.requestTimestamps.length < limits.rpm`;
+   - `rpmDisabled || state.requestTimestamps.length < limits.rpm`;
    - `tpmDisabled || retainedTokenSum(state) < limits.tpm`.
 4. Equality is not admission: `length < rpm` and `sum < tpm` are strict.
 
@@ -1761,7 +1761,10 @@ Follow the `probe-narrow-lit-layout-with-chromium-cdp` procedure:
     type member, message, label, DOM id, test, and document now uses `rpm`/`RPM`;
     `tpm` is unchanged. The shipped implementation had not been released, so no
     migration is required. The design, plan, and execution-graph artifacts retain the
-    original spelling as historical run records.
+    original spelling as historical run records. Artifact filenames keep their
+    historical spelling too, including this specification's own `tpm-prm` slug and
+    the related design-document link above; only file contents were corrected, so a
+    reference to the design document must use that file's real name.
 
 ---
 
