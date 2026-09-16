@@ -1,0 +1,93 @@
+schema_version: 1
+run_id: pm-run-20260916-084204-555d6665
+epoch: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-16-subsession-stabilization.md
+  sha256: 4aca10569682610259b27ca1b0429ea2ee3c37ef7939e5b63440ee071fa19276
+  commit_oid: f4c5151e231235cb0748feea38e175a54b5230bb
+  task_numbers:
+    - 1
+  validated_at: "2026-09-16T01:36:06.236Z"
+  validator_exit: 0
+  validator_digest: 4aca10569682610259b27ca1b0429ea2ee3c37ef7939e5b63440ee071fa19276
+lanes:
+  -
+    id: lane-1
+    sequence: 1
+    task_ids:
+      - T1
+tasks:
+  -
+    id: T1
+    plan_task: 1
+    title: "Enable tracked subsessions by default and remove Beta framing"
+    lane: lane-1
+    sequence: 1
+    implementer_tier: standard
+    depends_on: []
+    ownership:
+      - src/config.ts
+      - src/shared/apiTypes.ts
+      - src/server/sessions/piSessionService.ts
+      - src/client/src/components/settings/SettingsSessiondPanel.ts
+      - src/config.test.ts
+      - docs/config.md
+      - docs/config.html
+      - docs/install.html
+      - docs/optional-skills.md
+      - .changeset/subsessions-enabled-by-default.md
+    exclusive_resources: []
+    interfaces:
+      consumes: []
+      produces:
+        -
+          name: subsessions-default-enabled
+          signature: "subsessionsEnabled(env, config) returns `config.subsessions ?? true`, so tracked subsessions are on unless the config file or PI_WEBUI_SUBSESSIONS disables them"
+          digest: d503b964345f42073440a2b50bf55550ef70d698be8c94c37b9d6eab5d2322c8
+        -
+          name: subsessions-effective-config-default
+          signature: "effectivePiWebUiConfig(...).config.subsessions === true with no persisted key, pinned by src/config.test.ts"
+          digest: dcd4d33a3769fea02effb5bed0107a32effef7e945d307d98e593ccbf0c4d157
+        -
+          name: settings-panel-subsession-help-copy
+          signature: "<small>When enabled, agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires \"Allow agents to start sessions\". On by default.</small>"
+          digest: e782248297bf5b6dbebcf69633872612581303f118e7e2bcfc82fe1b12b1d3ee
+        -
+          name: subsessions-docs-default-true
+          signature: "docs/config.md, docs/config.html, docs/install.html, and docs/optional-skills.md state subsessions default to true and no longer carry Beta framing"
+          digest: c580ad53e30760be731ada9ca08baf79594edc9249b7ee7848e7d3bee72b4698
+        -
+          name: subsessions-changeset
+          signature: ".changeset/subsessions-enabled-by-default.md with \"@hyperdreamer/pi-webui\": minor and the pinned single-line body"
+          digest: d43f7a8c85a6e08991d6d72372ee69d8036acea5e956d893d2a7813536b6d16a
+    validation:
+      -
+        argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/config.test.ts
+        mutates_git: false
+      -
+        argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      -
+        argv:
+          - npx
+          - eslint
+          - src/config.ts
+          - src/shared/apiTypes.ts
+          - src/server/sessions/piSessionService.ts
+          - src/client/src/components/settings/SettingsSessiondPanel.ts
+          - src/config.test.ts
+        mutates_git: false
+      -
+        argv:
+          - npm
+          - run
+          - verify:fast
+        mutates_git: false
