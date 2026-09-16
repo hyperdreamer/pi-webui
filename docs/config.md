@@ -103,7 +103,7 @@ Process restarts depend on the key:
     }
   },
   "spawnSessions": true,
-  "subsessions": false,
+  "subsessions": true,
   "plugins": {
     "workspace-tasks": { "enabled": true },
     "updates": { "enabled": true },
@@ -154,7 +154,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Companion CLI command | `agent.command` | `PI_WEBUI_AGENT_COMMAND` | Global/session daemon | Not supported locally | Restart session daemon on that machine; affects doctor/status/update checks |
 | Agent profile state directory | `agent.dir` | `PI_WEBUI_AGENT_DIR` (`PI_CODING_AGENT_DIR` for Pi compatibility) | Global/session daemon | Not supported locally | Restart session daemon on that machine; affects auth, models, settings, sessions, Pi packages, and package-backed plugins |
 | Agent can spawn sessions | `spawnSessions` | `PI_WEBUI_SPAWN_SESSIONS` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
-| Tracked subsessions (beta) | `subsessions` | `PI_WEBUI_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon on that machine |
+| Tracked subsessions | `subsessions` | `PI_WEBUI_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon on that machine |
 | Model tier routing ladder | `modelTiers` | — | Global | Not supported locally | Saved settings apply immediately on save; requires remote peer capability `settings.modelTiers` |
 | Utility model routing | `utilityModels` | — | Global | Not supported locally | Saved settings apply immediately on the next utility operation; requires remote peer capability `settings.utilityModels` |
 | Local gateway text to speech | `tts` | — | Global | Not supported locally | Next utterance after settings save; no service restart |
@@ -427,7 +427,7 @@ For troubleshooting permission denial, unsupported browsers or codecs, unresolve
 
 `spawnSessions` controls whether agents receive the `spawn_session` tool. It defaults to `true`; set it to `false` if you do not want an agent to start independent PI WEBUI sessions.
 
-`subsessions` is beta and controls whether agents receive the tracked-subsession tools: `spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, and `yield_to_subsessions`. It defaults to `false` and also requires `spawnSessions` to be enabled.
+`subsessions` controls whether agents receive the tracked-subsession tools: `spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, `yield_to_subsessions`, and the paired read-only `get_model_policy` inspection tool. It defaults to `true` and also requires `spawnSessions` to be enabled.
 
 Tracked subsessions are join-oriented. Calling `spawn_subsession` returns immediately, so the parent can continue independent work while the child runs. Work whose result the parent does not need to join belongs in the fire-and-forget `spawn_session` tool instead.
 

@@ -470,10 +470,8 @@ export interface PiWebUiConfigValues {
   /** When true, LLMs can start new sessions via the spawn_session tool. */
   spawnSessions?: boolean;
   /**
-   * Beta: when true, LLMs can start tracked child sessions via the
-   * spawn_subsession / list_subsessions / check_subsession / read_subsession
-   * tools. Off by default
-   * while the capability stabilizes. Requires spawnSessions to be enabled.
+   * When true, LLMs can start tracked child sessions via the `spawn_subsession`
+   * family of tools. On by default; requires `spawnSessions` to be enabled.
    */
   subsessions?: boolean;
   /** Desired Pi-compatible agent profile and companion CLI (Pi by default). */

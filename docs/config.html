@@ -260,7 +260,7 @@
     }
   },
   "spawnSessions": true,
-  "subsessions": false,
+  "subsessions": true,
   "plugins": {
     "workspace-tasks": { "enabled": true },
     "updates": { "enabled": true },
@@ -409,7 +409,7 @@
                       <td>Restart session daemon on that machine</td>
                     </tr>
                     <tr>
-                      <td>Tracked subsessions (beta)</td>
+                      <td>Tracked subsessions</td>
                       <td><code>subsessions</code></td>
                       <td><code>PI_WEBUI_SUBSESSIONS</code></td>
                       <td>Global/session daemon</td>
@@ -1060,9 +1060,10 @@
 
               <h3><code>subsessions</code></h3>
               <p>
-                Boolean. Beta. Controls whether agents receive the tracked-subsession tools:
+                Boolean. Controls whether agents receive the tracked-subsession tools:
                 <code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>,
-                <code>read_subsession</code>, and <code>yield_to_subsessions</code>. Defaults to <code>false</code> and also
+                <code>read_subsession</code>, <code>yield_to_subsessions</code>, and the paired read-only
+                <code>get_model_policy</code> inspection tool. Defaults to <code>true</code> and also
                 requires <code>spawnSessions</code> to be enabled.
               </p>
               <p>

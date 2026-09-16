@@ -36,7 +36,7 @@ Six tiers are available, ascending: `economy`, `fast`, `standard`, `advanced`,
 
 ## Requirements
 
-- Pi with subagent support, and `subsessions` enabled in your PI WEBUI config.
+- Pi with subagent support; tracked subsessions are enabled by default and require `spawnSessions`.
 - A configured model tier ladder. The controller resolves tier names through
   your ladder, so every tier you reference must map to a model.
 - Node 22.19 or newer, matching the repository floor.

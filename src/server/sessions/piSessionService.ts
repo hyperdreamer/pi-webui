@@ -1152,10 +1152,10 @@ export interface PiSessionServiceDependencies {
    */
   spawnTargets?: SpawnTargetResolver;
   /**
-   * Beta: when true (and `spawnTargets` is provided), the tracked-subsession
-   * tools are available to sessions whose creation provenance permits
-   * delegation. Off by default so the capability can ship in main without
-   * being exposed in releases.
+   * When true (and `spawnTargets` is provided), the tracked-subsession tools
+   * and the paired `get_model_policy` tool are available to sessions whose
+   * creation provenance permits delegation. Omit to keep the capability
+   * disabled.
    */
   subsessionsEnabled?: boolean;
   /** Structured logger for notable runtime events (e.g. spawns). */
@@ -1368,8 +1368,8 @@ export class PiSessionService implements SessionRouteService {
       deps.unreadPublicationRetryDelayMs ?? DEFAULT_UNREAD_PUBLICATION_RETRY_MS
     );
     this.unreadPublicationRetryDelayMs = this.unreadPublicationRetryInitialMs;
-    // Subsessions are a beta capability gated behind their own flag, and they
-    // also require the spawn capability (they share its project-scope resolver).
+    // Subsessions have their own flag and also require the spawn capability
+    // (they share its project-scope resolver).
     const subsessionsActive =
       this.spawnTargets !== undefined && deps.subsessionsEnabled === true;
     this.createRuntime =
