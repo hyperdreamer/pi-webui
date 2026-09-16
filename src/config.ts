@@ -193,7 +193,7 @@ export function resolveEffectivePiWebUiConfig(loaded: LoadedPiWebUiConfig, optio
       // Always resolved (on by default) so the effective config is the single
       // source of truth for the runtime state and the settings UI toggle.
       spawnSessions: spawnSessionsEnabled(env, loaded.config),
-      // Beta capability, resolved off by default.
+      // On by default, like spawnSessions; resolved here so the effective config is the single source of truth.
       subsessions: subsessionsEnabled(env, loaded.config),
       agent: { command: agent.command, dir: agent.dir },
     },
@@ -613,17 +613,15 @@ function parseSubsessions(value: unknown, path: string): boolean {
 }
 
 /**
- * Beta: whether LLMs may start tracked child sessions via the spawn_subsession
- * family of tools. Off by default while the capability stabilizes, so it can
- * ship in main without affecting releases; enable with the env var
- * `PI_WEBUI_SUBSESSIONS` or the `subsessions` config key. The env var takes
- * precedence over the config file. Subsessions also require spawnSessions to be
- * enabled (they share the same project-scope resolver).
+ * On by default; whether LLMs may start tracked child sessions via the
+ * `spawn_subsession` family. Disable with the env var `PI_WEBUI_SUBSESSIONS`
+ * or the `subsessions` config key; the env var takes precedence. Subsessions
+ * also require `spawnSessions` to be enabled.
  */
 export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config: PiWebUiConfig = {}): boolean {
   const fromEnv = env["PI_WEBUI_SUBSESSIONS"];
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv === "1" || fromEnv.toLowerCase() === "true";
-  return config.subsessions ?? false;
+  return config.subsessions ?? true;
 }
 
 function parseString(value: unknown, key: string, path: string): string {

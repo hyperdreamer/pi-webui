@@ -45,7 +45,7 @@ export class SettingsSessiondPanel extends LitElement {
     // state, so an unset config file still shows the feature as enabled.
     const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
     const subsessionsOverridden = config?.envOverrides.subsessions === true;
-    // Beta, off by default; also requires spawn to be enabled.
+    // On by default; also requires spawn to be enabled.
     const effectiveSubsessions = config?.effectiveConfig.subsessions === true && effectiveSpawn;
     const agentCommandOverridden = config?.envOverrides.agentCommand === true;
     const profileEditingSupported = this.agentProfileSupport.state === "supported";
@@ -127,7 +127,6 @@ export class SettingsSessiondPanel extends LitElement {
           <div class="field">
             <span class="field-heading">
               <span>Allow agents to start tracked subsessions</span>
-              <span class="beta-badge">beta</span>
               ${subsessionsOverridden ? html`<span class="override-badge">environment override</span>` : null}
             </span>
             <label class="toggle">
@@ -139,7 +138,7 @@ export class SettingsSessiondPanel extends LitElement {
               >
               <span>Enable the <code>spawn_subsession</code> tools</span>
             </label>
-            <small>Beta: agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". Off by default.</small>
+            <small>When enabled, agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". On by default.</small>
           </div>
           <section class="effective-card" aria-label="Desired and active session daemon configuration summary">
             <h3>Desired after environment overrides</h3>
@@ -234,7 +233,6 @@ export class SettingsSessiondPanel extends LitElement {
     .text-input:disabled { opacity: .55; cursor: not-allowed; }
     .toggle input:disabled { cursor: not-allowed; }
     .override-badge { border: 1px solid var(--pi-warning-border); border-radius: 999px; color: var(--pi-warning); background: var(--pi-warning-surface); padding: 2px 7px; font-size: 11px; font-weight: 600; text-transform: none; }
-    .beta-badge { border: 1px solid var(--pi-border); border-radius: 999px; color: var(--pi-muted); background: var(--pi-bg); padding: 2px 7px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
     .effective-card { display: grid; gap: 10px; }
     .effective-card dl { display: grid; gap: 8px; margin: 0; }
     .effective-card dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: baseline; }
