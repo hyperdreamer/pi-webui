@@ -161,6 +161,7 @@ No new error paths. The existing behavior is preserved:
 | `docs/config.md` | Example config `"subsessions": false` → `true`; matrix row label "Tracked subsessions (beta)" → "Tracked subsessions"; section text drops "is beta" and "defaults to `false`" in favor of "defaults to `true`". The join/yield/notice paragraphs are unchanged. |
 | `docs/config.html` | Synchronized copies: example card, matrix row, `subsessions` section text. |
 | `docs/install.html` | "Common config" example `"subsessions": false` → `true`, matching the adjacent `"spawnSessions": true`. |
+| `docs/optional-skills.md` | Requirements line "Pi with subagent support, and `subsessions` enabled in your PI WEBUI config." no longer implies an opt-in step: state that tracked subsessions are enabled by default and require `spawnSessions`. |
 | `README.md` | Unchanged. |
 
 ## Test strategy
