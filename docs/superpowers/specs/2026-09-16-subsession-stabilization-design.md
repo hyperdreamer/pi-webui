@@ -1,6 +1,6 @@
 # Subsessions graduation — Design
 
-- **Status:** Approved (design); round-1 review findings folded in, round-2 confirmation pending
+- **Status:** Approved (design); design review clean (round 2, zero blockers)
 - **Date:** 2026-09-16
 - **PM run:** `pm-run-20260916-084204-555d6665`
 - **Topic slug:** `subsession-stabilization`
@@ -20,7 +20,7 @@ The capability's full surface:
 | Default resolver | `src/config.ts` — `subsessionsEnabled()` |
 | Effective-config assembly | `src/config.ts` — `effectivePiWebUiConfig()` |
 | Config request/response + env overrides | `src/server/configRoutes.ts` |
-| Daemon wiring | `src/server/sessiond.ts` |
+| Daemon wiring | `src/server/sessiond.ts` — **no change required**: `:58` resolves `effectivePiWebUiConfig()` and `:138` consumes the resolved boolean, so the only production default that changes is `src/config.ts:626` |
 | Tool gating and runtime comments | `src/server/sessions/piSessionService.ts` |
 | Settings panel field | `src/client/src/components/settings/SettingsSessiondPanel.ts` |
 | Browser API type | `src/shared/apiTypes.ts` |
@@ -33,7 +33,7 @@ to `true`.
 
 Tool family governed by the flag: `spawn_subsession`, `list_subsessions`,
 `check_subsession`, `read_subsession`, `yield_to_subsessions` — plus `get_model_policy`,
-which `piSessionService.ts:996-1010` registers in the same tool batch and whose `inspect`
+which `piSessionService.ts:996-1006` registers in the same tool batch and whose `inspect`
 dependency is supplied only when `subsessionsActive` (`:1405-1409`). `CHANGELOG.md:260`
 already documents that pairing ("registered only alongside the subsession tools"), so the
 setting governs six tools, not five.
@@ -125,8 +125,8 @@ adjacent "Allow agents to start sessions" field, copy rewritten. Rejected altern
   slot to surface the dependency; adds persistent chrome for a constraint the help text
   already states.
 
-Companion mockup artifact (gitignored, local only):
-`integration/.superpowers/brainstorm/638097-1789520057/content/subsession-field-layout.html`
+Companion mockup artifact (gitignored, local only, repo-relative):
+`.superpowers/brainstorm/638097-1789520057/content/subsession-field-layout.html`
 
 Rendered result for the subsession field:
 
@@ -162,9 +162,10 @@ On by default.
 
 ### Beta-marker inventory
 
-Every site that carries the Beta or off-by-default framing, with its replacement. This
-list is the falsifiable form of Goal 2; the diff must leave no Beta framing behind in the
-subsessions surface.
+Every code, UI, and test site that carries the Beta or off-by-default framing, with its
+replacement. Documentation Beta sites are listed separately in the Documentation table.
+This list is the falsifiable form of Goal 2; the diff must leave no Beta framing behind in
+the subsessions surface.
 
 | Location | Current | Replacement |
 | --- | --- | --- |
@@ -198,8 +199,8 @@ No new error paths. The existing behavior is preserved:
 
 | File | Change |
 | --- | --- |
-| `docs/config.md` | Example config `"subsessions": false` → `true`; matrix row label "Tracked subsessions (beta)" → "Tracked subsessions"; section text drops "is beta" and "defaults to `false`" in favor of "defaults to `true`", and the tool enumeration at `:430` adds `get_model_policy`. The join/yield/notice paragraphs are unchanged. |
-| `docs/config.html` | Synchronized copies: example card, matrix row, `subsessions` section text, and the tool enumeration at `:1063` adding `get_model_policy`. |
+| `docs/config.md` | Example config `"subsessions": false` → `true`; matrix row label "Tracked subsessions (beta)" → "Tracked subsessions"; section text drops "is beta" and "defaults to `false`" in favor of "defaults to `true`", and the tool enumeration at `:430` becomes "…`yield_to_subsessions`, and the paired read-only `get_model_policy` inspection tool" so `get_model_policy` is not misclassified as a subsession tool. The join/yield/notice paragraphs are unchanged. |
+| `docs/config.html` | In the `subsessions` section at `:1061-1066`: drop `Beta.` from "Boolean. Beta. Controls …", append "and the paired read-only `get_model_policy` inspection tool" to the enumeration at `:1064-1065`, and change "Defaults to `false`" to "Defaults to `true`". Also update the example card at `:263` and the matrix row at `:412` ("Tracked subsessions (beta)" → "Tracked subsessions"). |
 | `docs/install.html` | "Common config" example `"subsessions": false` → `true`, matching the adjacent `"spawnSessions": true`. |
 | `docs/optional-skills.md` | Requirements line "Pi with subagent support, and `subsessions` enabled in your PI WEBUI config." no longer implies an opt-in step: state that tracked subsessions are enabled by default and require `spawnSessions`. |
 | `README.md` | Unchanged. |
