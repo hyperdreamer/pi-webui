@@ -97,10 +97,16 @@ describe("projectSessionTree", () => {
       treeNode(entry("assistant-error", null, "message", { message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }], stopReason: "error", errorMessage: "private provider error" } })),
       treeNode(entry("tool-error", null, "message", { message: { role: "toolResult", toolName: "bash", content: [{ type: "image", data: "private-image", mimeType: "image/png" }], details: "private", isError: true } })),
       treeNode(entry("bash", null, "message", { message: { role: "bashExecution", command: "npm test", output: "private shell output", fullOutputPath: "/private/path" } })),
+      treeNode(entry("system-prompt", null, "message", { message: { role: "system", content: "", sections: { tools: "private section" }, timestamp: 0 } })),
+      treeNode(entry("system-tools", null, "message", { message: { role: "system", content: "", toolsAdded: [{ name: "read" }], timestamp: 0 } })),
+      treeNode(entry("system-plain", null, "message", { message: { role: "system", content: "", timestamp: 0 } })),
       treeNode(entry("custom-visible", null, "custom_message", { customType: "notice", content: "visible notice", display: true, details: "private" })),
       treeNode(entry("custom-hidden", null, "custom_message", { customType: "private-custom-type", content: "private hidden content", display: false })),
       treeNode(entry("compaction", null, "compaction", { summary: "compact summary", details: "private" })),
       treeNode(entry("branch", null, "branch_summary", { summary: "branch summary", details: "private" })),
+      treeNode(entry("context-omit", null, "context_edit", { targetId: "entry-42", replacement: null })),
+      treeNode(entry("context-replace", null, "context_edit", { targetId: "entry-43", replacement: { content: "private replacement" } })),
+      treeNode(entry("usage", null, "usage", { kind: "cache_warm", provider: "private-provider", model: "private-model", usage: { input: 1 }, note: "private note" })),
       treeNode(entry("model", null, "model_change", { provider: "anthropic", modelId: "claude" })),
       treeNode(entry("thinking", null, "thinking_level_change", { thinkingLevel: "high" })),
       treeNode(entry("info", null, "session_info", { name: "Tree work" })),
@@ -113,10 +119,16 @@ describe("projectSessionTree", () => {
     expect(byId.get("assistant-error")).toMatchObject({ kind: "assistant", summary: "Assistant error" });
     expect(byId.get("tool-error")).toMatchObject({ kind: "tool-result", summary: "Tool error (bash): [image]" });
     expect(byId.get("bash")).toMatchObject({ kind: "bash", summary: "Shell: npm test" });
+    expect(byId.get("system-prompt")).toMatchObject({ kind: "system", summary: "System prompt updated" });
+    expect(byId.get("system-tools")).toMatchObject({ kind: "system", summary: "System tools updated" });
+    expect(byId.get("system-plain")).toMatchObject({ kind: "system", summary: "System update" });
     expect(byId.get("custom-visible")).toMatchObject({ kind: "custom-message", summary: "Custom message (notice): visible notice" });
     expect(byId.get("custom-hidden")).toMatchObject({ kind: "custom-message", summary: "Hidden custom message" });
     expect(byId.get("compaction")).toMatchObject({ kind: "compaction", summary: "compact summary" });
     expect(byId.get("branch")).toMatchObject({ kind: "branch-summary", summary: "branch summary" });
+    expect(byId.get("context-omit")).toMatchObject({ kind: "context-edit", summary: "Context edit: omit entry-42" });
+    expect(byId.get("context-replace")).toMatchObject({ kind: "context-edit", summary: "Context edit: replace entry-43" });
+    expect(byId.get("usage")).toMatchObject({ kind: "usage", summary: "Usage: cache_warm" });
     expect(byId.get("model")).toMatchObject({ kind: "model-change", summary: "Model: anthropic/claude" });
     expect(byId.get("thinking")).toMatchObject({ kind: "thinking-level-change", summary: "Thinking level: high" });
     expect(byId.get("info")).toMatchObject({ kind: "session-info", summary: "Session name: Tree work" });

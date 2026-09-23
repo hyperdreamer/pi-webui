@@ -2346,8 +2346,11 @@ function parseSessionTreeNodeKind(value: unknown): SessionTreeNodeKind {
     case "tool-result":
     case "bash":
     case "custom-message":
+    case "system":
     case "compaction":
     case "branch-summary":
+    case "context-edit":
+    case "usage":
     case "model-change":
     case "thinking-level-change":
     case "session-info":

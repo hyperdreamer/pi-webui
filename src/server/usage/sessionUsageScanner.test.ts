@@ -29,11 +29,14 @@ describe("usageTotalsFromLine", () => {
     expect(usageTotalsFromLine(line)).toEqual({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5 });
   });
 
-  it("reads branch_summary and compaction usage", () => {
+  it("reads branch_summary, compaction, and standalone usage entries", () => {
     const branch = JSON.stringify({ type: "branch_summary", usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } } });
     const compaction = JSON.stringify({ type: "compaction", usage: { input: 4, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.2 } } });
+    const usage = JSON.stringify({ type: "usage", kind: "cache_warm", provider: "anthropic", model: "demo", usage: { input: 7, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } } });
     expect(usageTotalsFromLine(branch)?.input).toBe(3);
     expect(usageTotalsFromLine(compaction)?.cost).toBeCloseTo(0.2);
+    expect(usageTotalsFromLine(usage)?.input).toBe(7);
+    expect(usageTotalsFromLine(usage)?.cost).toBeCloseTo(0.02);
   });
 
   it("ignores user message usage", () => {

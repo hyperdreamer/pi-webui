@@ -7,6 +7,7 @@ import {
   type Model,
   type ModelsSimpleStreamOptions,
   type SimpleStreamOptions,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { ModelRateLimitIdentity } from "./modelRateLimitConfig.js";
@@ -20,7 +21,7 @@ const MODEL_RATE_LIMIT_WRAPPED = Symbol("pi-webui.modelRateLimitWrapped");
 /** A `StreamFn` that always returns its event stream synchronously. */
 type ModelStreamFunction = (
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream;
 
@@ -91,7 +92,7 @@ async function pumpModelStream(
   stream: AssistantMessageEventStream,
   identity: ModelRateLimitIdentity,
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions | undefined,
 ): Promise<void> {
   let settled = false;

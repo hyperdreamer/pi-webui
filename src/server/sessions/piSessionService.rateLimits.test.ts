@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, InMemoryCredentialStore, normalizeContext, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
@@ -93,7 +93,7 @@ describe("PiSessionService rate limit integration", () => {
     const sessionA = makeFactory(owner, completedStream(0));
     const sessionB = makeFactory(owner, completedStream(0));
     const model = { ...testModel(), id: "demo-model" };
-    const context = { messages: [] };
+    const context = normalizeContext({ messages: [] });
 
     const first = await createRuntimeSession(sessionA.factory);
     const second = await createRuntimeSession(sessionB.factory);
@@ -119,7 +119,7 @@ describe("PiSessionService rate limit integration", () => {
 
     expect(first.session.agent.streamFunction).not.toBe(second.session.agent.streamFunction);
     expect(wrapModelStream(owner, first.session.agent.streamFunction)).toBe(first.session.agent.streamFunction);
-    await expect((await first.session.agent.streamFunction(catalogModel(), { messages: [] }, {})).result()).resolves.toMatchObject({ stopReason: "stop" });
+    await expect((await first.session.agent.streamFunction(catalogModel(), normalizeContext({ messages: [] }), {})).result()).resolves.toMatchObject({ stopReason: "stop" });
     expect(sessionA.streamFunction).toHaveBeenCalledTimes(1);
   });
 
@@ -191,7 +191,7 @@ describe("PiSessionService rate limit integration", () => {
     await owner.acquire(identity);
     const controller = new AbortController();
 
-    const queued = (await runtime.session.agent.streamFunction(model, { messages: [] }, { signal: controller.signal })).result();
+    const queued = (await runtime.session.agent.streamFunction(model, normalizeContext({ messages: [] }), { signal: controller.signal })).result();
     expect(owner.pendingWaiterCount(identity)).toBe(1);
     controller.abort();
 
@@ -206,7 +206,7 @@ describe("PiSessionService rate limit integration", () => {
     const session = makeFactory(owner, completedStream(0));
     const runtime = await createRuntimeSession(session.factory);
 
-    const message = await (await runtime.session.agent.streamFunction(catalogModel(), { messages: [] }, {})).result();
+    const message = await (await runtime.session.agent.streamFunction(catalogModel(), normalizeContext({ messages: [] }), {})).result();
 
     expect(message.stopReason).toBe("error");
     expect(message.errorMessage).toBe(`${MODEL_RATE_LIMITS_BLOCKED_MESSAGE} models.json could not be parsed: bad`);

@@ -7091,6 +7091,11 @@ function historyMessages(session: PiAgentSession): unknown[] {
       const message = entry["message"];
       const entryId = getString(entry, "id");
       const role = getString(message, "role");
+      // Pi 0.86+ persists transcript-backed system prompt and tool updates as
+      // system message entries. Pi's chat and export viewers render system
+      // messages invisibly, so the conversation projection drops them without
+      // disturbing the previous-assistant bookkeeping used for forking.
+      if (role === "system") continue;
       if (role === "user" && isRecord(message) && entryId !== undefined) {
         // History action fields are service-owned annotations, never persisted
         // user-message payload fields supplied by an extension.

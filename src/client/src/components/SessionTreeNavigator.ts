@@ -541,8 +541,11 @@ export function sessionTreeKindLabel(kind: SessionTreeNodeKind): string {
     case "tool-result": return "Tool result";
     case "bash": return "Shell";
     case "custom-message": return "Custom message";
+    case "system": return "System";
     case "compaction": return "Compaction";
     case "branch-summary": return "Branch summary";
+    case "context-edit": return "Context edit";
+    case "usage": return "Usage";
     case "model-change": return "Model";
     case "thinking-level-change": return "Thinking";
     case "session-info": return "Session info";
@@ -553,7 +556,10 @@ export function sessionTreeKindLabel(kind: SessionTreeNodeKind): string {
 }
 
 function isBookkeepingKind(kind: SessionTreeNodeKind): boolean {
-  return kind === "model-change"
+  return kind === "system"
+    || kind === "context-edit"
+    || kind === "usage"
+    || kind === "model-change"
     || kind === "thinking-level-change"
     || kind === "session-info"
     || kind === "label"

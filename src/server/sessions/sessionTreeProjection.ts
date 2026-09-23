@@ -93,6 +93,10 @@ function projectEntry(entry: ProjectableSessionEntry): EntryProjection {
       return { kind: "compaction", summary: summary(entry["summary"], "Compaction summary") };
     case "branch_summary":
       return { kind: "branch-summary", summary: summary(entry["summary"], "Branch summary") };
+    case "context_edit":
+      return { kind: "context-edit", summary: contextEditSummary(entry) };
+    case "usage":
+      return { kind: "usage", summary: namedSummary("Usage", entry["kind"], "Usage entry") };
     case "model_change":
       return { kind: "model-change", summary: modelChangeSummary(entry) };
     case "thinking_level_change":
@@ -119,6 +123,8 @@ function projectMessage(value: unknown): EntryProjection {
       return { kind: "tool-result", summary: toolResultSummary(value) };
     case "bashExecution":
       return { kind: "bash", summary: namedSummary("Shell", value["command"], "Shell command") };
+    case "system":
+      return { kind: "system", summary: systemMessageSummary(value) };
     case "custom":
       return projectCustomMessage(value);
     case "compactionSummary":
@@ -169,6 +175,20 @@ function toolResultSummary(message: Record<string, unknown>): string {
     : `${isError ? "Tool error" : "Tool result"} (${toolName})`;
   const content = contentPreview(message["content"], true);
   return summary(content === "" ? prefix : `${prefix}: ${content}`, prefix);
+}
+
+function contextEditSummary(entry: Record<string, unknown>): string {
+  const targetId = optionalPlainText(entry["targetId"], NAMED_FIELD_MAX_LENGTH);
+  const action = entry["replacement"] === null ? "omit" : "replace";
+  return `Context edit: ${targetId === undefined ? action : `${action} ${targetId}`}`;
+}
+
+function systemMessageSummary(message: Record<string, unknown>): string {
+  const hasTools = Array.isArray(message["toolsAdded"]) || Array.isArray(message["toolsRemoved"]);
+  const hasSections = isRecord(message["sections"]) && Object.keys(message["sections"]).length > 0;
+  if (hasTools && !hasSections) return "System tools updated";
+  if (hasSections && !hasTools) return "System prompt updated";
+  return "System update";
 }
 
 function modelChangeSummary(entry: Record<string, unknown>): string {

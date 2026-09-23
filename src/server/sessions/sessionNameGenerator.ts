@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { ThinkingLevel } from "../../shared/thinkingLevels.js";
 
@@ -30,7 +30,7 @@ export async function generateShortSessionName<TApi extends Api>(
   };
   const stream = await streamFn(
     model,
-    context,
+    normalizeContext(context),
     {
       maxTokens: 24,
       ...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),

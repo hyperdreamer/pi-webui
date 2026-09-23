@@ -1,5 +1,5 @@
 /**
- * Pi 0.85.1 compatibility: optional leading BOM, `//` line comments, and
+ * Pi 0.87.1 compatibility: optional leading BOM, `//` line comments, and
  * trailing commas are accepted; block comments and hash comments are not.
  * Mirrors `dist/utils/text.js` and `dist/utils/json.js` in the installed Pi.
  */

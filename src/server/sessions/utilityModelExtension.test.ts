@@ -1,9 +1,9 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
   createAssistantMessageEventStream,
+  normalizeContext,
   type Api,
   type AuthResult,
-  type Context,
   type Model,
   type SimpleStreamOptions,
   type Usage,
@@ -51,7 +51,7 @@ type CompactFn = typeof PiCompact;
 describe("utility model branch summary handler", () => {
   it("uses only lightweight and returns Pi's summary details and usage", async () => {
     const signal = new AbortController().signal;
-    const retry = { enabled: true, maxRetries: 4, baseDelayMs: 25 };
+    const retry = { enabled: true, maxRetries: 4, baseDelayMs: 25, maxAgentDelayMs: 60_000 };
     const streamResult = createAssistantMessageEventStream();
     const streamFunction = vi.fn<StreamFn>(() => streamResult);
     const generateBranchSummary = vi.fn<GenerateBranchSummaryFn>(() => Promise.resolve({
@@ -114,7 +114,7 @@ describe("utility model branch summary handler", () => {
     expect(options?.headers).not.toHaveProperty("x-remove");
     expect(options?.streamFn).toBeDefined();
 
-    const streamContext: Context = { messages: [] };
+    const streamContext = normalizeContext({ messages: [] });
     const streamOptions: SimpleStreamOptions = { maxTokens: 128 };
     expect(
       await options?.streamFn?.(lightweightModel, streamContext, streamOptions),
@@ -137,7 +137,7 @@ describe("utility model branch summary handler", () => {
       modelRuntime: { getAuth: () => Promise.resolve({ auth: { apiKey: "test-key" } }) },
       refs: runtimeRefs(
         streamFunction,
-        { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+        { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 60_000 },
         1_024,
       ),
       generateBranchSummary,
@@ -219,7 +219,7 @@ describe("utility model branch summary handler", () => {
 describe("utility model compaction handler", () => {
   it("retries same-model context and lightweight descriptors with their exact levels", async () => {
     const controller = new AbortController();
-    const retry = { enabled: true, maxRetries: 2, baseDelayMs: 10 };
+    const retry = { enabled: true, maxRetries: 2, baseDelayMs: 10, maxAgentDelayMs: 60_000 };
     const streamResult = createAssistantMessageEventStream();
     const streamFunction = vi.fn<StreamFn>(() => streamResult);
     let compactionAttempts = 0;
@@ -286,7 +286,7 @@ describe("utility model compaction handler", () => {
 
     const contextStream = compact.mock.calls[0]?.[7];
     const lightweightStream = compact.mock.calls[1]?.[7];
-    const streamContext: Context = { messages: [] };
+    const streamContext = normalizeContext({ messages: [] });
     expect(
       await contextStream?.(contextModel, streamContext, { maxTokens: 64 }),
     ).toBe(streamResult);
@@ -347,7 +347,7 @@ describe("utility model compaction handler", () => {
       },
       refs: runtimeRefs(
         vi.fn<StreamFn>(() => createAssistantMessageEventStream()),
-        { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+        { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 60_000 },
         1_024,
       ),
       generateBranchSummary: successfulBranchSummary(),
@@ -452,7 +452,7 @@ function handlerDependencies(options: HandlerOptions = {}) {
     },
     refs: options.refs ?? runtimeRefs(
       streamFunction,
-      { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+      { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 60_000 },
       1_024,
     ),
     generateBranchSummary: options.generateBranchSummary ?? successfulBranchSummary(),
@@ -481,7 +481,7 @@ function resolvedCandidate(
 
 function runtimeRefs(
   streamFunction: StreamFn,
-  retry: { enabled: boolean; maxRetries: number; baseDelayMs: number },
+  retry: { enabled: boolean; maxRetries: number; baseDelayMs: number; maxAgentDelayMs: number },
   reserveTokens: number,
 ): UtilityModelExtensionRuntimeRefs {
   return {

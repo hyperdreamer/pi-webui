@@ -22,7 +22,7 @@ describe("Pi-compatible models.json parser", () => {
     expect(stripModelsJsonComments('{"a": [\n1,\n2,\n],\n}')).toBe('{"a": [\n1,\n2\n]\n}');
   });
 
-  it("parses BOM, comments, and trailing commas like Pi 0.85.1", () => {
+  it("parses BOM, comments, and trailing commas like Pi 0.87.1", () => {
     const text = '\uFEFF{ // provider list\n "providers": { "acme": { "models": [{ "id": "demo", },], }, },\n}';
     expect(parseModelsJsonText(text)).toEqual({ providers: { acme: { models: [{ id: "demo" }] } } });
   });

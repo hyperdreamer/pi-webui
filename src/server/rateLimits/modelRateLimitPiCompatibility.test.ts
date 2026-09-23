@@ -75,7 +75,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("installed Pi 0.85.1 rate limit compatibility", () => {
+describe("installed Pi 0.87.1 rate limit compatibility", () => {
   it("loads identical model behavior with and without tpm/rpm", async () => {
     const plain = await createRuntime(PLAIN_FIXTURE);
     const limited = await createRuntime(LIMITED_FIXTURE);

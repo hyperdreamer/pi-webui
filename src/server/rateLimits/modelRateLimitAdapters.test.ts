@@ -1,6 +1,7 @@
 import {
   createAssistantMessageEventStream,
   isRetryableAssistantError,
+  normalizeContext,
   type Api,
   type AssistantMessage,
   type AssistantMessageEvent,
@@ -41,7 +42,7 @@ function fixtureModel(): Model<Api> {
   };
 }
 
-const context = { messages: [{ role: "user" as const, content: "hello", timestamp: 0 }] };
+const context = normalizeContext({ messages: [{ role: "user" as const, content: "hello", timestamp: 0 }] });
 
 function createOwner(tpm?: number, rpm?: number) {
   const clock = createFakeModelRateLimitClock();

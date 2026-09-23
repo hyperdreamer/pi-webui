@@ -20,7 +20,7 @@ export interface SessionHeaderSummary {
 }
 
 /** Entry types whose own `usage` counts, matching Pi's `getSessionStats`. */
-const USAGE_ENTRY_TYPES = new Set(["branch_summary", "compaction"]);
+const USAGE_ENTRY_TYPES = new Set(["branch_summary", "compaction", "usage"]);
 /** Message roles whose `usage` counts. User messages carry none. */
 const USAGE_MESSAGE_ROLES = new Set(["assistant", "toolResult"]);
 const SESSION_HEADER_READ_BYTES = 4 * 1024;
@@ -69,6 +69,10 @@ function totalsFromUsage(usage: Record<string, unknown>): UsageTotals {
  * Extract the usage contribution of one JSONL line, or undefined when the line
  * carries none. Callers prefilter on the `"usage"` substring; this function
  * still tolerates any line so it is safe to call directly in tests.
+ *
+ * Pi records standalone `usage` entries (for example cache warming) alongside
+ * compaction and branch-summary usage, and its `getSessionStats` counts all of
+ * them; this reader must stay in step so project totals match Pi.
  */
 export function usageTotalsFromLine(line: string): UsageTotals | undefined {
   let parsed: unknown;
