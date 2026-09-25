@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.20.0
+
+### Minor Changes
+
+- 7335a5f: Enable the tracked-subsession tools (`spawn_subsession`, `list_subsessions`, `check_subsession`, `read_subsession`, `yield_to_subsessions`) and the paired `get_model_policy` tool by default. The `subsessions` session-daemon setting now defaults to `true`; disable it with `subsessions: false` or `PI_WEBUI_SUBSESSIONS=0`. The new default applies after the session daemon on each machine restarts.
+
+### Patch Changes
+
+- b5d85e0: Keep PI WEBUI's session accounting and history in step with Pi 0.87: project usage totals now include Pi's standalone `usage` entries (such as prompt-cache warming), the session tree labels the new `context-edit`, `usage`, and `system` entry kinds, and Pi's transcript-backed system prompt and tool updates stay out of the conversation view like they do in Pi's own chat.
+- b5d85e0: Upgrade the supported Pi Coding Agent package set to the 0.87.x release series (`0.87.1`).
+
 ## 1.19.1
 
 ### Patch Changes
