@@ -782,6 +782,16 @@ describe("PiWebUiApp model tier catalog save publish", () => {
       exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
     });
   });
+
+  it("does not re-read the session policy for a ladder save of a machine the user is not viewing", () => {
+    const app = policyCapableActiveApp();
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+
+    invokeModelTiersSaved(app, "remote-other", validCatalog());
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+  });
 });
 
 describe("PiWebUiApp starter defaults capability ordering", () => {

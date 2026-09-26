@@ -2081,9 +2081,7 @@ export class PiWebUiApp extends LitElement {
     try {
       const catalog = await modelTiersApi.settings(machineId);
       if (!isCurrent()) return false;
-      this.modelTierCatalogMachineId = machineId;
-      this.modelTierCatalog = catalog;
-      this.completeStarterModelPolicyFromActiveTier();
+      this.publishMachineModelTierCatalog(machineId, catalog);
       return true;
     } catch (error) {
       if (!isCurrent()) return false;
@@ -2135,27 +2133,38 @@ export class PiWebUiApp extends LitElement {
   }
 
   /**
-   * Publish a successful ladder save as the selected machine's catalog so the
-   * composer's tier choices update without a reload. The save supersedes any
-   * load still in flight: the sequence bump retires it (it can no longer
-   * publish, and its `finally` skips the loading flag, which is why the flag is
-   * cleared here) and the shared load handle is dropped. A save for a machine
-   * the user is not viewing is ignored because the catalog is a per-machine
-   * projection.
+   * Publish a successful catalog read or ladder save as the selected machine's
+   * catalog so the composer's controls update without a reload. The save
+   * supersedes any load still in flight: the sequence bump retires it (it can
+   * no longer publish, and its `finally` skips the loading flag, which is why
+   * the flag is cleared here) and the shared load handle is dropped. A publish
+   * for a machine the user is not viewing is ignored because the catalog is a
+   * per-machine projection.
    */
-  private handleModelTiersSaved(machineId: string, response: ModelTierSettingsResponse): void {
+  private publishMachineModelTierCatalog(machineId: string, catalog: ModelTierSettingsResponse): void {
     if (selectedMachineId(this.state) !== machineId) return;
     this.modelTierCatalogMachineId = machineId;
-    this.modelTierCatalog = response;
+    this.modelTierCatalog = catalog;
     this.modelTierCatalogError = "";
     this.modelTierCatalogSeq += 1;
     this.modelTierCatalogLoad = undefined;
     this.modelTierCatalogLoading = false;
     this.completeStarterModelPolicyFromActiveTier();
-    // `ladderValid` and `blockedReason` in the published session status are
-    // computed server-side and stale after a ladder change, so re-read the
-    // active policy only when the composer is actually showing it.
+  }
+
+  /**
+   * `ladderValid` and `blockedReason` in the published session status are
+   * computed server-side and stale after a tier-catalog change, so re-read the
+   * active policy only when the composer is actually showing it.
+   */
+  private revalidateActiveModelPolicyAfterTierCatalogChange(): void {
     if (activePolicyComposerScope(this.state) !== undefined) void this.sessions.loadModelPolicy();
+  }
+
+  private handleModelTiersSaved(machineId: string, response: ModelTierSettingsResponse): void {
+    if (selectedMachineId(this.state) !== machineId) return;
+    this.publishMachineModelTierCatalog(machineId, response);
+    this.revalidateActiveModelPolicyAfterTierCatalogChange();
   }
 
   private completeStarterModelPolicyFromActiveTier(): void {
