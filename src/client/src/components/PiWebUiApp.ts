@@ -2133,13 +2133,13 @@ export class PiWebUiApp extends LitElement {
   }
 
   /**
-   * Publish a successful catalog read or ladder save as the selected machine's
-   * catalog so the composer's controls update without a reload. The save
-   * supersedes any load still in flight: the sequence bump retires it (it can
-   * no longer publish, and its `finally` skips the loading flag, which is why
-   * the flag is cleared here) and the shared load handle is dropped. A publish
-   * for a machine the user is not viewing is ignored because the catalog is a
-   * per-machine projection.
+   * Publish a successful catalog read, ladder save, or Models-dialog refresh as
+   * the selected machine's catalog so the composer's controls update without a
+   * reload. A publish supersedes any load still in flight: the sequence bump
+   * retires it (it can no longer publish, and its `finally` skips the loading
+   * flag, which is why the flag is cleared here) and the shared load handle is
+   * dropped. A publish for a machine the user is not viewing is ignored because
+   * the catalog is a per-machine projection.
    */
   private publishMachineModelTierCatalog(machineId: string, catalog: ModelTierSettingsResponse): void {
     if (selectedMachineId(this.state) !== machineId) return;
