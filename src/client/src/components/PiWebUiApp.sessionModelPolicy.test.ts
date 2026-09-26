@@ -646,6 +646,47 @@ describe("PiWebUiApp model tier catalog stale guards", () => {
   });
 });
 
+describe("PiWebUiApp model tier catalog load result", () => {
+  it("returns true from the request that published the catalog", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+
+    await expect(loadModelTierCatalog(app, "local")).resolves.toBe(true);
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+  });
+
+  it("returns false from a failed request and keeps the failure visible", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+
+    await expect(loadModelTierCatalog(app, "local")).resolves.toBe(false);
+
+    expect(modelTierCatalog(app)).toBeUndefined();
+    expect(modelTierCatalogError(app)).toContain("catalog offline");
+    expect(modelTierCatalogLoading(app)).toBe(false);
+  });
+
+  it("returns false from a request superseded by a newer load", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    const slow = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings")
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce(validCatalog());
+
+    const first = loadModelTierCatalog(app, "local");
+    await loadModelTierCatalog(app, "local");
+    slow.resolve({ ...validCatalog(), valid: false, configError: "stale" });
+
+    await expect(first).resolves.toBe(false);
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(modelTierCatalogLoading(app)).toBe(false);
+  });
+});
+
 describe("PiWebUiApp model tier catalog save publish", () => {
   it("publishes a selected-machine ladder save as the app catalog and clears the catalog error", () => {
     const app = createApp();
@@ -2719,19 +2760,23 @@ function promptEditorTemplate(app: PiWebUiApp): TemplateResult {
   return template;
 }
 
-function loadModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
+function loadModelTierCatalog(
+  app: PiWebUiApp,
+  machineId: string,
+  guard?: "machine" | "machine-workspace",
+): Promise<boolean> {
   const method: unknown = Reflect.get(app, "loadModelTierCatalog");
   if (typeof method !== "function") throw new Error("PiWebUiApp.loadModelTierCatalog is not callable");
-  const result: unknown = Reflect.apply(method, app, [machineId]);
-  if (!isPromise(result)) throw new Error("PiWebUiApp.loadModelTierCatalog did not return a promise");
+  const result: unknown = Reflect.apply(method, app, guard === undefined ? [machineId] : [machineId, guard]);
+  if (!isPromiseOfBoolean(result)) throw new Error("PiWebUiApp.loadModelTierCatalog did not return a promise");
   return result;
 }
 
-function ensureModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
+function ensureModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<boolean> {
   const method: unknown = Reflect.get(app, "ensureModelTierCatalog");
   if (typeof method !== "function") throw new Error("PiWebUiApp.ensureModelTierCatalog is not callable");
   const result: unknown = Reflect.apply(method, app, [machineId]);
-  if (!isPromise(result)) throw new Error("PiWebUiApp.ensureModelTierCatalog did not return a promise");
+  if (!isPromiseOfBoolean(result)) throw new Error("PiWebUiApp.ensureModelTierCatalog did not return a promise");
   return result;
 }
 
@@ -2911,6 +2956,10 @@ function isThinkingLevelOption(value: unknown): value is ThinkingLevelOption {
 }
 
 function isPromise(value: unknown): value is Promise<void> {
+  return value instanceof Promise;
+}
+
+function isPromiseOfBoolean(value: unknown): value is Promise<boolean> {
   return value instanceof Promise;
 }
 

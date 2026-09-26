@@ -507,7 +507,7 @@ export class PiWebUiApp extends LitElement {
   private modelTierCatalogLoad: {
     machineId: string;
     workspaceId: string | undefined;
-    promise: Promise<void>;
+    promise: Promise<boolean>;
   } | undefined;
   @state() private modelsConfigDialogOpen = false;
   @state() private projectBrowserOpen = false;
@@ -2044,15 +2044,19 @@ export class PiWebUiApp extends LitElement {
   /**
    * Fetch the selected machine's tier catalog for whichever policy control is
    * open. Two independent guards protect the single shared field: the response
-   * must still belong to the machine and workspace it was issued for, and it
-   * must be the newest issued request, so neither a machine/workspace switch nor
-   * a slow earlier response can publish a catalog the user is no longer looking
-   * at.
+   * must still belong to the machine (and, unless the caller asked for the
+   * machine-only scope, the workspace) it was issued for, and it must be the
+   * newest issued request, so neither a machine/workspace switch nor a slow
+   * earlier response can publish a catalog the user is no longer looking at.
+   * The resolved boolean is true only when this request published.
    */
-  private loadModelTierCatalog(machineId: string): Promise<void> {
+  private loadModelTierCatalog(
+    machineId: string,
+    guard: ModelTierCatalogLoadGuard = "machine-workspace",
+  ): Promise<boolean> {
     const workspaceId = this.state.selectedWorkspace?.id;
     const seq = ++this.modelTierCatalogSeq;
-    const promise = this.performModelTierCatalogLoad(machineId, workspaceId, seq);
+    const promise = this.performModelTierCatalogLoad(machineId, workspaceId, seq, guard);
     this.modelTierCatalogLoad = { machineId, workspaceId, promise };
     const clear = () => {
       if (this.modelTierCatalogLoad?.promise === promise) this.modelTierCatalogLoad = undefined;
@@ -2065,30 +2069,33 @@ export class PiWebUiApp extends LitElement {
     machineId: string,
     workspaceId: string | undefined,
     seq: number,
-  ): Promise<void> {
+    guard: ModelTierCatalogLoadGuard,
+  ): Promise<boolean> {
     const isCurrent = () => (
       seq === this.modelTierCatalogSeq
       && selectedMachineId(this.state) === machineId
-      && this.state.selectedWorkspace?.id === workspaceId
+      && (guard === "machine" || this.state.selectedWorkspace?.id === workspaceId)
     );
     this.modelTierCatalogLoading = true;
     this.modelTierCatalogError = "";
     try {
       const catalog = await modelTiersApi.settings(machineId);
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       this.modelTierCatalogMachineId = machineId;
       this.modelTierCatalog = catalog;
       this.completeStarterModelPolicyFromActiveTier();
+      return true;
     } catch (error) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       this.modelTierCatalogError = errorMessage(error);
+      return false;
     } finally {
       if (seq === this.modelTierCatalogSeq) this.modelTierCatalogLoading = false;
     }
   }
 
-  private ensureModelTierCatalog(machineId: string): Promise<void> {
-    if (this.selectedMachineModelTierCatalog() !== undefined) return Promise.resolve();
+  private ensureModelTierCatalog(machineId: string): Promise<boolean> {
+    if (this.selectedMachineModelTierCatalog() !== undefined) return Promise.resolve(true);
     const workspaceId = this.state.selectedWorkspace?.id;
     const current = this.modelTierCatalogLoad;
     if (current?.machineId === machineId && current.workspaceId === workspaceId) {
@@ -2185,7 +2192,7 @@ export class PiWebUiApp extends LitElement {
     const current = this.activeModelPolicyDraftForState(this.state);
     if (current !== undefined) return current;
 
-    const loads: Promise<void>[] = [];
+    const loads: Promise<unknown>[] = [];
     if (this.state.modelPolicy === undefined) loads.push(this.sessions.loadModelPolicy());
     if (this.selectedMachineModelTierCatalog() === undefined) {
       loads.push(this.ensureModelTierCatalog(selectedMachineId(this.state)));
@@ -4930,6 +4937,8 @@ function starterModelPolicySelectionScope(
     state.selectedSession?.cwd,
   ]);
 }
+
+type ModelTierCatalogLoadGuard = "machine" | "machine-workspace";
 
 function activePolicyComposerScope(state: AppState): string | undefined {
   if (selectedModelPolicyStatus(state) === undefined) return undefined;
