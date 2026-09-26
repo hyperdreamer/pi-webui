@@ -1,7 +1,7 @@
 import type { TemplateResult } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
-import type { Project } from "../api";
+import { modelTiersApi, type Machine, type ModelTierSettingsResponse, type Project } from "../api";
 import { initialAppState, type AppState } from "../appState";
 // Template inspection is proportionate here: these tests target custom-element
 // callback boundaries between the navigation, overlays, and application shell.
@@ -9,6 +9,7 @@ import { findTemplateContaining, templateStrings, templateValueAfterMarker } fro
 import { PiWebUiApp } from "./PiWebUiApp";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -18,6 +19,31 @@ const project: Project = {
   path: "/work/project-a",
   createdAt: "2026-07-26T00:00:00.000Z",
 };
+
+const remoteMachine: Machine = {
+  id: "remote-a",
+  name: "Remote build host",
+  kind: "remote",
+  baseUrl: "https://remote.example.test/",
+  createdAt: "2026-07-26T00:00:00.000Z",
+  updatedAt: "2026-07-26T00:00:00.000Z",
+};
+
+function wiringCatalog(): ModelTierSettingsResponse {
+  return {
+    contractVersion: 1,
+    models: [],
+    rows: {
+      economy: { valid: true },
+      fast: { valid: true },
+      standard: { valid: true },
+      advanced: { valid: true },
+      capable: { valid: true },
+      frontier: { valid: true },
+    },
+    valid: true,
+  };
+}
 
 describe("PiWebUiApp navigation actions", () => {
   it("opens the project dialog from the Projects section add control", () => {
@@ -346,6 +372,24 @@ describe("PiWebUiApp navigation actions", () => {
   });
 });
 
+describe("PiWebUiApp models config save wiring", () => {
+  it("binds the Models dialog onSaved callback to a refresh of the selected machine's tier catalog", () => {
+    const app = createApp();
+    setAppState(app, { ...initialAppState(), selectedMachine: remoteMachine });
+    const settings = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(wiringCatalog());
+    Reflect.set(app, "modelsConfigDialogOpen", true);
+
+    const dialog = findTemplateContaining(renderApp(app), "<models-config-dialog");
+    if (dialog === undefined) throw new Error("PiWebUiApp did not render models-config-dialog");
+    expect(typeof templateValueAfterMarker(dialog, ".onSaved=")).toBe("function");
+
+    invokeModelsConfigOnSaved(app);
+
+    expect(settings).toHaveBeenCalledOnce();
+    expect(settings).toHaveBeenCalledWith("remote-a");
+  });
+});
+
 type RenderNavigationPanel = (this: PiWebUiApp) => TemplateResult;
 type RenderApp = (this: PiWebUiApp) => TemplateResult;
 type IsChatObscured = (this: PiWebUiApp) => boolean;
@@ -398,6 +442,14 @@ function sessionBrowserDialogTemplate(app: PiWebUiApp): TemplateResult {
   const template = findTemplateContaining(renderApp(app), "<session-browser-dialog");
   if (template === undefined) throw new Error("PiWebUiApp did not render session-browser-dialog");
   return template;
+}
+
+function invokeModelsConfigOnSaved(app: PiWebUiApp): void {
+  const dialog = findTemplateContaining(renderApp(app), "<models-config-dialog");
+  if (dialog === undefined) throw new Error("PiWebUiApp did not render models-config-dialog");
+  const callback: unknown = templateValueAfterMarker(dialog, ".onSaved=");
+  if (typeof callback !== "function") throw new Error("models-config-dialog did not bind onSaved");
+  Reflect.apply(callback, undefined, []);
 }
 
 function templateCallbackAfterMarker(template: TemplateResult, marker: string): NavigationCallback {

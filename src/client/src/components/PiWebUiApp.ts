@@ -2167,6 +2167,23 @@ export class PiWebUiApp extends LitElement {
     this.revalidateActiveModelPolicyAfterTierCatalogChange();
   }
 
+  private handleModelsConfigSaved(): void {
+    void this.refreshModelTierCatalogAfterModelsSave();
+  }
+
+  /**
+   * A Models-dialog save changed this machine's `models.json`, so re-read the
+   * machine-global tier catalog even when one is already published and publish
+   * it as the current projection. Only a successful publish revalidates the
+   * active session policy, so a failed refresh cannot mask the catalog
+   * diagnostic with a policy error.
+   */
+  private async refreshModelTierCatalogAfterModelsSave(): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const published = await this.loadModelTierCatalog(machineId, "machine");
+    if (published) this.revalidateActiveModelPolicyAfterTierCatalogChange();
+  }
+
   private completeStarterModelPolicyFromActiveTier(): void {
     const defaults = this.starterSessionDefaults;
     const draft = this.starterModelPolicy;
@@ -4876,7 +4893,7 @@ export class PiWebUiApp extends LitElement {
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
         ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onForceCleanup=${() => { void this.runForceSessionCleanup(); }} .forceCleanupResult=${this.sessionCleanupDialog.forceCleanupResult} .runningForce=${this.sessionCleanupDialog.runningForce === true} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
-        ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }}></models-config-dialog>` : null}
+        ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }} .onSaved=${() => { this.handleModelsConfigSaved(); }}></models-config-dialog>` : null}
         ${this.skillsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<skills-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .onClose=${() => { this.skillsConfigDialogOpen = false; }}></skills-config-dialog>` : null}
         ${this.pluginsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<plugins-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .session=${state.selectedSession} .onClose=${() => { this.pluginsConfigDialogOpen = false; }} .onReloaded=${() => this.sessions.refreshSelectedSession(state.selectedSession?.id)}></plugins-config-dialog>` : null}
         ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
