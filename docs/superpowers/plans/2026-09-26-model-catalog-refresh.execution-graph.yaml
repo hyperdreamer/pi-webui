@@ -1,0 +1,80 @@
+version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-26-model-catalog-refresh.md
+  sha256: 0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+  commit: 018a49418d996c147e1bcb58b2900b83d8552116
+  task_numbers: [1, 2, 3]
+lanes:
+  - id: client-refresh
+    task_ids: [T1, T2, T3]
+    sequences: [1, 2, 3]
+tasks:
+  T1:
+    plan_task: 1
+    lane: client-refresh
+    sequence: 1
+    depends_on: []
+    ownership:
+      - src/client/src/components/PiWebUiApp.ts
+      - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-tier-catalog-load-guard-and-result
+        paths:
+          - src/client/src/components/PiWebUiApp.ts
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+    consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  T2:
+    plan_task: 2
+    lane: client-refresh
+    sequence: 2
+    depends_on: [T1]
+    ownership:
+      - src/client/src/components/PiWebUiApp.ts
+      - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+    exclusive_resources: []
+    produces:
+      - interface: model-tier-catalog-publish-and-revalidate
+        paths:
+          - src/client/src/components/PiWebUiApp.ts
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+    consumes:
+      - interface: model-tier-catalog-load-guard-and-result
+        from: T1
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+      - argv: ["npx", "eslint", "src/client/src/components/PiWebUiApp.ts", "src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts"]
+  T3:
+    plan_task: 3
+    lane: client-refresh
+    sequence: 3
+    depends_on: [T2]
+    ownership:
+      - src/client/src/components/PiWebUiApp.ts
+      - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+      - src/client/src/components/PiWebUiApp.modelsConfig.test.ts
+      - .changeset/model-catalog-refresh-after-save.md
+    exclusive_resources: []
+    produces:
+      - interface: models-config-save-refresh
+        paths:
+          - src/client/src/components/PiWebUiApp.ts
+          - src/client/src/components/PiWebUiApp.modelsConfig.test.ts
+          - .changeset/model-catalog-refresh-after-save.md
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+    consumes:
+      - interface: model-tier-catalog-load-guard-and-result
+        from: T1
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+      - interface: model-tier-catalog-publish-and-revalidate
+        from: T2
+        digest: sha256:0280273fd476cac61b0a3840b1ed8d7fcf7364db66f1f14ae816b26d4761748d
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts", "src/client/src/components/PiWebUiApp.modelsConfig.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+      - argv: ["npm", "run", "verify:fast"]

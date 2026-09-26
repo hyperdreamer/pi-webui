@@ -1,0 +1,16 @@
+digraph model_catalog_refresh {
+    rankdir=TB;
+    graph [label="model-catalog-refresh (epoch 1)", labelloc=t];
+    node [shape=box, style=rounded];
+
+    subgraph cluster_client_refresh {
+        label="lane: client-refresh";
+
+        T1 [label="T1: Report whether a catalog load published\ntier: Standard\nplan task 1"];
+        T2 [label="T2: Share the catalog publish and policy revalidation paths\ntier: Standard\nplan task 2"];
+        T3 [label="T3: Refresh the catalog after a Models-dialog save\ntier: Advanced\nplan task 3"];
+    }
+
+    T1 -> T2 [label="depends_on"];
+    T2 -> T3 [label="depends_on"];
+}
