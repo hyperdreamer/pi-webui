@@ -507,7 +507,7 @@ export class PiWebUiApp extends LitElement {
   private modelTierCatalogLoad: {
     machineId: string;
     workspaceId: string | undefined;
-    promise: Promise<void>;
+    promise: Promise<boolean>;
   } | undefined;
   @state() private modelsConfigDialogOpen = false;
   @state() private projectBrowserOpen = false;
@@ -2044,15 +2044,19 @@ export class PiWebUiApp extends LitElement {
   /**
    * Fetch the selected machine's tier catalog for whichever policy control is
    * open. Two independent guards protect the single shared field: the response
-   * must still belong to the machine and workspace it was issued for, and it
-   * must be the newest issued request, so neither a machine/workspace switch nor
-   * a slow earlier response can publish a catalog the user is no longer looking
-   * at.
+   * must still belong to the machine (and, unless the caller asked for the
+   * machine-only scope, the workspace) it was issued for, and it must be the
+   * newest issued request, so neither a machine/workspace switch nor a slow
+   * earlier response can publish a catalog the user is no longer looking at.
+   * The resolved boolean is true only when this request published.
    */
-  private loadModelTierCatalog(machineId: string): Promise<void> {
+  private loadModelTierCatalog(
+    machineId: string,
+    guard: ModelTierCatalogLoadGuard = "machine-workspace",
+  ): Promise<boolean> {
     const workspaceId = this.state.selectedWorkspace?.id;
     const seq = ++this.modelTierCatalogSeq;
-    const promise = this.performModelTierCatalogLoad(machineId, workspaceId, seq);
+    const promise = this.performModelTierCatalogLoad(machineId, workspaceId, seq, guard);
     this.modelTierCatalogLoad = { machineId, workspaceId, promise };
     const clear = () => {
       if (this.modelTierCatalogLoad?.promise === promise) this.modelTierCatalogLoad = undefined;
@@ -2065,30 +2069,31 @@ export class PiWebUiApp extends LitElement {
     machineId: string,
     workspaceId: string | undefined,
     seq: number,
-  ): Promise<void> {
+    guard: ModelTierCatalogLoadGuard,
+  ): Promise<boolean> {
     const isCurrent = () => (
       seq === this.modelTierCatalogSeq
       && selectedMachineId(this.state) === machineId
-      && this.state.selectedWorkspace?.id === workspaceId
+      && (guard === "machine" || this.state.selectedWorkspace?.id === workspaceId)
     );
     this.modelTierCatalogLoading = true;
     this.modelTierCatalogError = "";
     try {
       const catalog = await modelTiersApi.settings(machineId);
-      if (!isCurrent()) return;
-      this.modelTierCatalogMachineId = machineId;
-      this.modelTierCatalog = catalog;
-      this.completeStarterModelPolicyFromActiveTier();
+      if (!isCurrent()) return false;
+      this.publishMachineModelTierCatalog(machineId, catalog);
+      return true;
     } catch (error) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       this.modelTierCatalogError = errorMessage(error);
+      return false;
     } finally {
       if (seq === this.modelTierCatalogSeq) this.modelTierCatalogLoading = false;
     }
   }
 
-  private ensureModelTierCatalog(machineId: string): Promise<void> {
-    if (this.selectedMachineModelTierCatalog() !== undefined) return Promise.resolve();
+  private ensureModelTierCatalog(machineId: string): Promise<boolean> {
+    if (this.selectedMachineModelTierCatalog() !== undefined) return Promise.resolve(true);
     const workspaceId = this.state.selectedWorkspace?.id;
     const current = this.modelTierCatalogLoad;
     if (current?.machineId === machineId && current.workspaceId === workspaceId) {
@@ -2128,27 +2133,55 @@ export class PiWebUiApp extends LitElement {
   }
 
   /**
-   * Publish a successful ladder save as the selected machine's catalog so the
-   * composer's tier choices update without a reload. The save supersedes any
-   * load still in flight: the sequence bump retires it (it can no longer
-   * publish, and its `finally` skips the loading flag, which is why the flag is
-   * cleared here) and the shared load handle is dropped. A save for a machine
-   * the user is not viewing is ignored because the catalog is a per-machine
-   * projection.
+   * Publish a successful catalog read, ladder save, or Models-dialog refresh as
+   * the selected machine's catalog so the composer's controls update without a
+   * reload. A publish supersedes any load still in flight: the sequence bump
+   * retires it (it can no longer publish, and its `finally` skips the loading
+   * flag, which is why the flag is cleared here) and the shared load handle is
+   * dropped. A publish for a machine the user is not viewing is ignored because
+   * the catalog is a per-machine projection.
    */
-  private handleModelTiersSaved(machineId: string, response: ModelTierSettingsResponse): void {
+  private publishMachineModelTierCatalog(machineId: string, catalog: ModelTierSettingsResponse): void {
     if (selectedMachineId(this.state) !== machineId) return;
     this.modelTierCatalogMachineId = machineId;
-    this.modelTierCatalog = response;
+    this.modelTierCatalog = catalog;
     this.modelTierCatalogError = "";
     this.modelTierCatalogSeq += 1;
     this.modelTierCatalogLoad = undefined;
     this.modelTierCatalogLoading = false;
     this.completeStarterModelPolicyFromActiveTier();
-    // `ladderValid` and `blockedReason` in the published session status are
-    // computed server-side and stale after a ladder change, so re-read the
-    // active policy only when the composer is actually showing it.
+  }
+
+  /**
+   * `ladderValid` and `blockedReason` in the published session status are
+   * computed server-side and stale after a tier-catalog change, so re-read the
+   * active policy only when the composer is actually showing it.
+   */
+  private revalidateActiveModelPolicyAfterTierCatalogChange(): void {
     if (activePolicyComposerScope(this.state) !== undefined) void this.sessions.loadModelPolicy();
+  }
+
+  private handleModelTiersSaved(machineId: string, response: ModelTierSettingsResponse): void {
+    if (selectedMachineId(this.state) !== machineId) return;
+    this.publishMachineModelTierCatalog(machineId, response);
+    this.revalidateActiveModelPolicyAfterTierCatalogChange();
+  }
+
+  private handleModelsConfigSaved(): void {
+    void this.refreshModelTierCatalogAfterModelsSave();
+  }
+
+  /**
+   * A Models-dialog save changed this machine's `models.json`, so re-read the
+   * machine-global tier catalog even when one is already published and publish
+   * it as the current projection. Only a successful publish revalidates the
+   * active session policy, so a failed refresh cannot mask the catalog
+   * diagnostic with a policy error.
+   */
+  private async refreshModelTierCatalogAfterModelsSave(): Promise<void> {
+    const machineId = selectedMachineId(this.state);
+    const published = await this.loadModelTierCatalog(machineId, "machine");
+    if (published) this.revalidateActiveModelPolicyAfterTierCatalogChange();
   }
 
   private completeStarterModelPolicyFromActiveTier(): void {
@@ -2185,7 +2218,7 @@ export class PiWebUiApp extends LitElement {
     const current = this.activeModelPolicyDraftForState(this.state);
     if (current !== undefined) return current;
 
-    const loads: Promise<void>[] = [];
+    const loads: Promise<unknown>[] = [];
     if (this.state.modelPolicy === undefined) loads.push(this.sessions.loadModelPolicy());
     if (this.selectedMachineModelTierCatalog() === undefined) {
       loads.push(this.ensureModelTierCatalog(selectedMachineId(this.state)));
@@ -4860,7 +4893,7 @@ export class PiWebUiApp extends LitElement {
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
         ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onForceCleanup=${() => { void this.runForceSessionCleanup(); }} .forceCleanupResult=${this.sessionCleanupDialog.forceCleanupResult} .runningForce=${this.sessionCleanupDialog.runningForce === true} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
-        ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }}></models-config-dialog>` : null}
+        ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }} .onSaved=${() => { this.handleModelsConfigSaved(); }}></models-config-dialog>` : null}
         ${this.skillsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<skills-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .onClose=${() => { this.skillsConfigDialogOpen = false; }}></skills-config-dialog>` : null}
         ${this.pluginsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<plugins-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .session=${state.selectedSession} .onClose=${() => { this.pluginsConfigDialogOpen = false; }} .onReloaded=${() => this.sessions.refreshSelectedSession(state.selectedSession?.id)}></plugins-config-dialog>` : null}
         ${this.systemPromptDialogOpen && state.selectedSession !== undefined ? html`<system-prompt-dialog .machine=${state.selectedMachine} .session=${state.selectedSession} .onClose=${() => { this.systemPromptDialogOpen = false; }}></system-prompt-dialog>` : null}
@@ -4930,6 +4963,8 @@ function starterModelPolicySelectionScope(
     state.selectedSession?.cwd,
   ]);
 }
+
+type ModelTierCatalogLoadGuard = "machine" | "machine-workspace";
 
 function activePolicyComposerScope(state: AppState): string | undefined {
   if (selectedModelPolicyStatus(state) === undefined) return undefined;

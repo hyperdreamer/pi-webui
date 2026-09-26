@@ -75,6 +75,15 @@ const repairModelOption: ModelTierModelOption = {
   thinkingLevels: ["low", "medium", "high"],
 };
 
+const newModelOption: ModelTierModelOption = {
+  model: { provider: "openai", id: "gpt-new" },
+  name: "New",
+  // The draft's current thinking level must be present: `updateDraftExactModel`
+  // blanks an unsupported level (`sessionModelPolicyDraft.ts:137-151`), and the
+  // starter-path test below depends on "medium" surviving the pick.
+  thinkingLevels: ["low", "medium", "high"],
+};
+
 function validLadder(): ModelTierLadder {
   return {
     economy: { model: { ...defaultModelOption.model }, thinkingLevel: "low" },
@@ -110,6 +119,24 @@ function invalidTierCatalog(tier: ModelTier, reason: string): ModelTierSettingsR
     rows: { ...catalog.rows, [tier]: { valid: false, reason } },
     valid: false,
   };
+}
+
+function catalogWithNewModel(): ModelTierSettingsResponse {
+  const catalog = validCatalog();
+  return { ...catalog, models: [...catalog.models, newModelOption] };
+}
+
+function catalogWithNewStandardModel(): ModelTierSettingsResponse {
+  const catalog = catalogWithNewModel();
+  return {
+    ...catalog,
+    ladder: { ...validLadder(), standard: { model: { provider: "openai", id: "gpt-new" }, thinkingLevel: "medium" } },
+  };
+}
+
+function catalogWithoutDefaultModel(): ModelTierSettingsResponse {
+  const catalog = validCatalog();
+  return { ...catalog, models: catalog.models.filter((option) => option.model.id !== "gpt-default") };
 }
 
 function starterDefaults(overrides: Partial<SessionDefaultsResponse> = {}): SessionDefaultsResponse {
@@ -646,6 +673,47 @@ describe("PiWebUiApp model tier catalog stale guards", () => {
   });
 });
 
+describe("PiWebUiApp model tier catalog load result", () => {
+  it("returns true from the request that published the catalog", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+
+    await expect(loadModelTierCatalog(app, "local")).resolves.toBe(true);
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+  });
+
+  it("returns false from a failed request and keeps the failure visible", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+
+    await expect(loadModelTierCatalog(app, "local")).resolves.toBe(false);
+
+    expect(modelTierCatalog(app)).toBeUndefined();
+    expect(modelTierCatalogError(app)).toContain("catalog offline");
+    expect(modelTierCatalogLoading(app)).toBe(false);
+  });
+
+  it("returns false from a request superseded by a newer load", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    const slow = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings")
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce(validCatalog());
+
+    const first = loadModelTierCatalog(app, "local");
+    await loadModelTierCatalog(app, "local");
+    slow.resolve({ ...validCatalog(), valid: false, configError: "stale" });
+
+    await expect(first).resolves.toBe(false);
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(modelTierCatalogLoading(app)).toBe(false);
+  });
+});
+
 describe("PiWebUiApp model tier catalog save publish", () => {
   it("publishes a selected-machine ladder save as the app catalog and clears the catalog error", () => {
     const app = createApp();
@@ -740,6 +808,237 @@ describe("PiWebUiApp model tier catalog save publish", () => {
       tier: "standard",
       exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
     });
+  });
+
+  it("does not re-read the session policy for a ladder save of a machine the user is not viewing", () => {
+    const app = policyCapableActiveApp();
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+
+    invokeModelTiersSaved(app, "remote-other", validCatalog());
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe("PiWebUiApp models config save catalog refresh", () => {
+  it("makes a newly saved model selectable through the active policy picker without a reload", async () => {
+    const timers = manualTimers();
+    const app = policyCapableActiveApp(timers);
+    const settings = vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithNewModel());
+    const saveModelPolicy = vi.spyOn(sessionController(app), "saveModelPolicy").mockResolvedValue();
+
+    invokeModelsConfigSaved(app);
+    await flush();
+    await pickModel(app, "openai/gpt-new");
+    await timers.runAll();
+
+    expect(settings).toHaveBeenCalledWith(remoteMachine.id);
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+    expect(saveModelPolicy).toHaveBeenCalledOnce();
+    expect(saveModelPolicy).toHaveBeenCalledWith({
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-new" }, thinkingLevel: "medium" },
+    });
+    expect(modelTierCatalogError(app)).toBe("");
+  });
+
+  it("re-reads the active session policy once after a save-triggered refresh publishes", async () => {
+    const app = policyCapableActiveApp();
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithNewModel());
+
+    invokeModelsConfigSaved(app);
+    await flush();
+
+    expect(loadModelPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-read the session policy when no policy composer is showing", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithNewModel());
+
+    invokeModelsConfigSaved(app);
+    await flush();
+
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+  });
+
+  it("keeps the previous catalog and skips policy revalidation when the save-triggered refresh fails", async () => {
+    const app = policyCapableActiveApp();
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+
+    invokeModelsConfigSaved(app);
+    await flush();
+
+    expect(modelTierCatalog(app)).toEqual(validCatalog());
+    expect(modelTierCatalogError(app)).toContain("catalog offline");
+    expect(modelTierCatalogLoading(app)).toBe(false);
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+    expect(appState(app).error).toBe("");
+  });
+
+  it("releases a failed save-triggered load so ensure issues a fresh request", async () => {
+    const app = policyCapableActiveApp();
+    Reflect.set(app, "modelTierCatalog", undefined);
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    const settings = vi.spyOn(modelTiersApi, "settings")
+      .mockRejectedValueOnce(new Error("catalog offline"))
+      .mockResolvedValueOnce(catalogWithNewModel());
+
+    invokeModelsConfigSaved(app);
+    await flush();
+
+    expect(modelTierCatalog(app)).toBeUndefined();
+    expect(modelTierCatalogError(app)).toContain("catalog offline");
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+
+    const retried = await ensureModelTierCatalog(app, remoteMachine.id);
+
+    expect(settings).toHaveBeenCalledTimes(2);
+    expect(retried).toBe(true);
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+    expect(modelTierCatalogError(app)).toBe("");
+  });
+
+  it("drops a save-triggered refresh whose machine is no longer selected", async () => {
+    const app = createApp();
+    setAppState(app, starterState());
+    const pending = deferred<ModelTierSettingsResponse>();
+    const settings = vi.spyOn(modelTiersApi, "settings")
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(catalogWithNewModel());
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+
+    invokeModelsConfigSaved(app);
+
+    expect(settings).toHaveBeenCalledWith("local");
+
+    setAppState(app, activeState({
+      selectedMachine: remoteMachine,
+      machineRuntimes: { [remoteMachine.id]: machineRuntime([PI_WEBUI_CAPABILITIES.sessionsModelPolicy]) },
+      modelPolicy: exactPolicyResponse(),
+      availableThinkingLevels: ["off", "low", "medium", "high"],
+    }));
+    pending.resolve(validCatalog());
+    await flush();
+
+    expect(modelTierCatalog(app)).toBeUndefined();
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+
+    await loadModelTierCatalog(app, remoteMachine.id);
+
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+    expect(loadModelPolicy).not.toHaveBeenCalled();
+  });
+
+  it("publishes a save-triggered refresh across a workspace switch and completes the new workspace's starter draft from it", async () => {
+    const app = createApp();
+    const saveLoad = deferred<ModelTierSettingsResponse>();
+    const settings = vi.spyOn(modelTiersApi, "settings").mockReturnValue(saveLoad.promise);
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2WithoutResolvedModel());
+    setAppState(app, { ...fullPreferenceCapableStarterState(), workspaces: [mainWorkspace, featureWorkspace] });
+    setModelTierCatalog(app, validCatalog(), "local");
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    invokeModelsConfigSaved(app);
+
+    const previous = appState(app);
+    const next: AppState = { ...previous, selectedWorkspace: featureWorkspace, workspaces: [mainWorkspace, featureWorkspace] };
+    stubWorkspaceChangeSideEffects(app);
+    setRouteRestoreInProgress(app);
+    setAppState(app, next);
+    handleWorkspaceChange(app, previous, next);
+    saveLoad.resolve(catalogWithNewStandardModel());
+    await flush();
+
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewStandardModel());
+    expect(starterModelPolicy(app)).toBeUndefined();
+
+    await loadStarterSessionDefaults(app, featureWorkspace);
+
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "openai", id: "gpt-new" }, thinkingLevel: "medium" },
+    });
+    expect(settings).toHaveBeenCalledOnce();
+  });
+
+  it("makes a newly saved model selectable for a full-capability starter draft", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithNewModel());
+    setAppState(app, fullPreferenceCapableStarterState());
+    setModelTierCatalog(app, validCatalog(), "local");
+    await loadStarterSessionDefaults(app, mainWorkspace);
+
+    invokeModelsConfigSaved(app);
+    await flush();
+    await pickStarterModel(app, "openai/gpt-new");
+
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+    expect(starterModelPolicy(app)).toEqual({
+      mode: "tiered",
+      tier: "standard",
+      exact: { model: { provider: "openai", id: "gpt-new" }, thinkingLevel: "medium" },
+    });
+  });
+
+  it("lets a ladder save that publishes mid-flight win over an older save-triggered refresh", async () => {
+    const app = policyCapableActiveApp();
+    const saveLoad = deferred<ModelTierSettingsResponse>();
+    vi.spyOn(modelTiersApi, "settings").mockReturnValueOnce(saveLoad.promise);
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    const ladderCatalog: ModelTierSettingsResponse = { ...validCatalog(), configError: "ladder publish" };
+
+    invokeModelsConfigSaved(app);
+    invokeModelTiersSaved(app, remoteMachine.id, ladderCatalog);
+    saveLoad.resolve(catalogWithNewModel());
+    await flush();
+
+    expect(modelTierCatalog(app)).toEqual(ladderCatalog);
+    expect(modelTierCatalogError(app)).toBe("");
+    expect(modelTierCatalogLoading(app)).toBe(false);
+    expect(loadModelPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes a removed model fail closed after a save-triggered refresh without substituting a selection", async () => {
+    const timers = manualTimers();
+    const app = policyCapableActiveApp(timers);
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithoutDefaultModel());
+    const saveModelPolicy = vi.spyOn(sessionController(app), "saveModelPolicy").mockResolvedValue();
+
+    invokeModelsConfigSaved(app);
+    await flush();
+    await pickModel(app, "openai/gpt-default");
+    await timers.runAll();
+
+    expect(modelTierCatalog(app)).toEqual(catalogWithoutDefaultModel());
+    expect(saveModelPolicy).not.toHaveBeenCalled();
+    expect(modelTierCatalogError(app)).toBe("Model openai/gpt-default is unavailable in the model policy catalog");
+    expect(timers.size()).toBe(0);
+    expect(promptEditorStatus(promptEditorTemplate(app)).model).toEqual({ provider: "openai", id: "gpt-default" });
+  });
+
+  it("publishes the refreshed catalog without a policy re-read for an archived selected session", async () => {
+    const app = createApp();
+    setAppState(app, activeState({
+      status: undefined,
+      selectedSession: { ...activeSession(), archived: true },
+    }));
+    const loadModelPolicy = vi.spyOn(sessionController(app), "loadModelPolicy").mockResolvedValue();
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(catalogWithNewModel());
+
+    invokeModelsConfigSaved(app);
+    await flush();
+
+    expect(modelTierCatalog(app)).toEqual(catalogWithNewModel());
+    expect(loadModelPolicy).not.toHaveBeenCalled();
   });
 });
 
@@ -2719,19 +3018,23 @@ function promptEditorTemplate(app: PiWebUiApp): TemplateResult {
   return template;
 }
 
-function loadModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
+function loadModelTierCatalog(
+  app: PiWebUiApp,
+  machineId: string,
+  guard?: "machine" | "machine-workspace",
+): Promise<boolean> {
   const method: unknown = Reflect.get(app, "loadModelTierCatalog");
   if (typeof method !== "function") throw new Error("PiWebUiApp.loadModelTierCatalog is not callable");
-  const result: unknown = Reflect.apply(method, app, [machineId]);
-  if (!isPromise(result)) throw new Error("PiWebUiApp.loadModelTierCatalog did not return a promise");
+  const result: unknown = Reflect.apply(method, app, guard === undefined ? [machineId] : [machineId, guard]);
+  if (!isPromiseOfBoolean(result)) throw new Error("PiWebUiApp.loadModelTierCatalog did not return a promise");
   return result;
 }
 
-function ensureModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<void> {
+function ensureModelTierCatalog(app: PiWebUiApp, machineId: string): Promise<boolean> {
   const method: unknown = Reflect.get(app, "ensureModelTierCatalog");
   if (typeof method !== "function") throw new Error("PiWebUiApp.ensureModelTierCatalog is not callable");
   const result: unknown = Reflect.apply(method, app, [machineId]);
-  if (!isPromise(result)) throw new Error("PiWebUiApp.ensureModelTierCatalog did not return a promise");
+  if (!isPromiseOfBoolean(result)) throw new Error("PiWebUiApp.ensureModelTierCatalog did not return a promise");
   return result;
 }
 
@@ -2747,6 +3050,20 @@ function invokeModelTiersSaved(app: PiWebUiApp, machineId: string, response: Mod
   const callback: unknown = templateValueAfterMarker(dialog, ".onModelTiersSaved=");
   if (typeof callback !== "function") throw new Error("settings-dialog did not bind onModelTiersSaved");
   Reflect.apply(callback, undefined, [machineId, response]);
+}
+
+/**
+ * Open the Models dialog overlay and invoke the `.onSaved=` handler bound on
+ * `<models-config-dialog>`, so these tests exercise the real render wiring
+ * rather than the private handler alone.
+ */
+function invokeModelsConfigSaved(app: PiWebUiApp): void {
+  if (!Reflect.set(app, "modelsConfigDialogOpen", true)) throw new Error("Could not open the Models dialog");
+  const dialog = findTemplateContaining(renderApp(app), "<models-config-dialog");
+  if (dialog === undefined) throw new Error("PiWebUiApp did not render models-config-dialog");
+  const callback: unknown = templateValueAfterMarker(dialog, ".onSaved=");
+  if (typeof callback !== "function") throw new Error("models-config-dialog did not bind onSaved");
+  Reflect.apply(callback, undefined, []);
 }
 
 function loadStarterSessionDefaults(app: PiWebUiApp, workspace: Workspace): Promise<void> {
@@ -2911,6 +3228,10 @@ function isThinkingLevelOption(value: unknown): value is ThinkingLevelOption {
 }
 
 function isPromise(value: unknown): value is Promise<void> {
+  return value instanceof Promise;
+}
+
+function isPromiseOfBoolean(value: unknown): value is Promise<boolean> {
   return value instanceof Promise;
 }
 
