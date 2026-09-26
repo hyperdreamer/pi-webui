@@ -1016,12 +1016,12 @@ describe("PiWebUiApp models config save catalog refresh", () => {
     invokeModelsConfigSaved(app);
     await flush();
     await pickModel(app, "openai/gpt-default");
+    expect(timers.size()).toBe(0);
     await timers.runAll();
 
     expect(modelTierCatalog(app)).toEqual(catalogWithoutDefaultModel());
     expect(saveModelPolicy).not.toHaveBeenCalled();
     expect(modelTierCatalogError(app)).toBe("Model openai/gpt-default is unavailable in the model policy catalog");
-    expect(timers.size()).toBe(0);
     expect(promptEditorStatus(promptEditorTemplate(app)).model).toEqual({ provider: "openai", id: "gpt-default" });
   });
 
