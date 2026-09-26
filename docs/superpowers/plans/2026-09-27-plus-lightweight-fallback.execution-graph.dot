@@ -1,0 +1,67 @@
+digraph plus_lightweight_fallback {
+    rankdir=TB;
+    graph [label="plus-lightweight-fallback (epoch 1)", labelloc=t];
+    node [shape=box, style=rounded];
+
+    subgraph cluster_server_resolution {
+        label="lane: server-resolution";
+
+        T1 [label="T1: Typed tier resolution errors\ntier: Fast\nplan task 1"];
+        T2 [label="T2: Typed session policy resolution errors\ntier: Fast\nplan task 2"];
+        T3 [label="T3: Utility resolver inspection diagnostics\ntier: Advanced\nplan task 3"];
+        T4 [label="T4: Pure substituted-policy and error builders\ntier: Fast\nplan task 4"];
+        T5 [label="T5: Server resolve split and fallback orchestration\ntier: Capable\nplan task 5"];
+    }
+
+    subgraph cluster_capability {
+        label="lane: capability";
+
+        T6 [label="T6: Lightweight fallback capability\ntier: Fast\nplan task 6"];
+    }
+
+    subgraph cluster_client_decision {
+        label="lane: client-decision";
+
+        T7 [label="T7: Starter policy structural predicate and start decision\ntier: Standard\nplan task 7"];
+    }
+
+    subgraph cluster_client_render {
+        label="lane: client-render";
+
+        T8 [label="T8: Untruncated warning rendering\ntier: Standard\nplan task 8"];
+    }
+
+    subgraph cluster_client_notice {
+        label="lane: client-notice";
+
+        T9 [label="T9: `policy-fallback` starter notice kind\ntier: Fast\nplan task 9"];
+    }
+
+    subgraph cluster_client_app {
+        label="lane: client-app";
+
+        T10 [label="T10: Starter projection, warning binding, and capability-gated start\ntier: Advanced\nplan task 10"];
+        T11 [label="T11: Confirmed event union, write context, and guarded adoption\ntier: Advanced\nplan task 11"];
+        T12 [label="T12: Status-derived substitution detection and notice\ntier: Advanced\nplan task 12"];
+    }
+
+    subgraph cluster_docs_release {
+        label="lane: docs-release";
+
+        T13 [label="T13: Documentation and changeset\ntier: Fast\nplan task 13"];
+    }
+
+    T1 -> T2 [label="depends_on"];
+    T2 -> T3 [label="depends_on"];
+    T3 -> T4 [label="depends_on"];
+    T4 -> T5 [label="depends_on"];
+    T6 -> T10 [label="depends_on"];
+    T7 -> T10 [label="depends_on"];
+    T7 -> T13 [label="depends_on"];
+    T8 -> T10 [label="depends_on"];
+    T9 -> T12 [label="depends_on"];
+    T9 -> T13 [label="depends_on"];
+    T10 -> T11 [label="depends_on"];
+    T11 -> T12 [label="depends_on"];
+    T11 -> T13 [label="depends_on"];
+}
