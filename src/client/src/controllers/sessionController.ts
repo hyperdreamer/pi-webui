@@ -8,12 +8,13 @@ import { clearDraft, moveDraft, saveDraft } from "../promptDraftStorage";
 import { ChatTranscriptStore } from "../chatTranscriptStore";
 import { isShellInput } from "../inputModes";
 import { fileCompletionInsertText } from "../promptCompletions";
+import { sameExactSelection } from "../components/sessionModelPolicyDraft";
 import { SessionSocket, type GlobalSessionEvent, type SessionUiEvent } from "../sessionSocket";
 import { StreamEventBuffer, isBufferedStreamEvent } from "../streamEventBuffer";
 import { isArchivableSessionInfo, isTransientNewSessionInfo, sessionPersistenceOptionsForRuntime } from "../sessionPersistence";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
-import type { ClientSessionModelPolicyStatus, PromptAttachmentDelivery, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionNotificationInboxEvent, StarterModelPolicyPreference } from "../../../shared/apiTypes";
+import type { ClientSessionModelPolicyStatus, ExactModelSelection, PromptAttachmentDelivery, SessionModelPolicyMode, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionNotificationInboxEvent, StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
@@ -67,10 +68,25 @@ export interface SelectedSessionReady {
   session: SessionInfo;
 }
 
-export interface StarterModelPolicyConfirmedEvent {
+export type StarterModelPolicyConfirmedEvent =
+  | {
+      reason: "creation";
+      machineId: string;
+      session: SessionInfo;
+      requestedPolicy: StarterModelPolicyPreference;
+    }
+  | {
+      reason: "policy-save";
+      machineId: string;
+      session: SessionInfo;
+      policy: StarterModelPolicyPreference;
+    };
+
+export interface StarterModelPolicySubstitutionEvent {
   machineId: string;
   session: SessionInfo;
-  policy: StarterModelPolicyPreference;
+  requestedPolicy: StarterModelPolicyPreference;
+  confirmed: { mode: SessionModelPolicyMode; resolved: ExactModelSelection };
 }
 
 export interface SessionControllerDependencies {
@@ -87,6 +103,7 @@ export interface SessionControllerDependencies {
   replacePromptEditorText?: (replacement: PromptEditorTextReplacement) => void | Promise<void>;
   onSelectedSessionReady?: (selection: SelectedSessionReady) => void;
   onStarterModelPolicyConfirmed?: (event: StarterModelPolicyConfirmedEvent) => void;
+  onStarterModelPolicySubstitution?: (event: StarterModelPolicySubstitutionEvent) => void;
   refreshProjectSessionCatalog?: () => void | Promise<void>;
 }
 
@@ -126,6 +143,14 @@ interface PendingSessionStart {
 interface SuppressedCreatedSession {
   session: SessionInfo;
   machineId: string;
+}
+
+interface StarterPolicySubstitutionCheck {
+  machineId: string;
+  session: SessionInfo;
+  requestedPolicy: StarterModelPolicyPreference;
+  /** Set once an applied status has decided the check; never re-armed. */
+  observed: boolean;
 }
 
 interface SelectedSessionRefreshTarget {
@@ -191,6 +216,7 @@ export class SessionController {
   private readonly replacePromptEditorText: SessionControllerDependencies["replacePromptEditorText"];
   private readonly onSelectedSessionReady: SessionControllerDependencies["onSelectedSessionReady"];
   private readonly onStarterModelPolicyConfirmed: SessionControllerDependencies["onStarterModelPolicyConfirmed"];
+  private readonly onStarterModelPolicySubstitution: SessionControllerDependencies["onStarterModelPolicySubstitution"];
   private readonly refreshProjectSessionCatalog: NonNullable<SessionControllerDependencies["refreshProjectSessionCatalog"]>;
   private selectionSeq = 0;
   private sessionReorderInFlight = false;
@@ -234,6 +260,7 @@ export class SessionController {
   // stale and must be re-read.
   private modelPolicyConfirmedStatus: ClientSessionModelPolicyStatus | undefined;
   private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
+  private readonly starterModelPolicySubstitutionChecks = new Map<string, StarterPolicySubstitutionCheck>();
   private readonly suppressedCreatedSessions = new Map<string, SuppressedCreatedSession>();
   private readonly selectedSessionRefreshes = new TrailingRefreshCoordinator<string>();
   /**
@@ -264,6 +291,7 @@ export class SessionController {
     this.replacePromptEditorText = deps.replacePromptEditorText;
     this.onSelectedSessionReady = deps.onSelectedSessionReady;
     this.onStarterModelPolicyConfirmed = deps.onStarterModelPolicyConfirmed;
+    this.onStarterModelPolicySubstitution = deps.onStarterModelPolicySubstitution;
     this.refreshProjectSessionCatalog = deps.refreshProjectSessionCatalog ?? (() => undefined);
   }
 
@@ -280,6 +308,7 @@ export class SessionController {
     this.selectionLoad.abort();
     this.socket.close();
     this.clearPendingUpdates();
+    this.starterModelPolicySubstitutionChecks.clear();
   }
 
   clearActiveSession() {
@@ -344,9 +373,10 @@ export class SessionController {
         && session.creationSource === "session-list-plus"
       ) {
         this.publishStarterModelPolicyConfirmed({
+          reason: "creation",
           machineId,
           session: { ...session },
-          policy: pending.request.initialModelPolicy,
+          requestedPolicy: pending.request.initialModelPolicy,
         });
       }
       return true;
@@ -1257,6 +1287,7 @@ export class SessionController {
           && response.session.modelPolicy?.blockedReason === undefined
         ) {
           this.publishStarterModelPolicyConfirmed({
+            reason: "policy-save",
             machineId,
             session: { ...sessionInfo },
             policy: cloneStarterModelPolicyPreference(response.policy),
@@ -1329,6 +1360,67 @@ export class SessionController {
       this.onStarterModelPolicyConfirmed?.(event);
     } catch {
       // Confirmed preference writeback is observational and must not block session work.
+    }
+  }
+
+  private captureStarterModelPolicySubstitution(
+    session: SessionInfo,
+    machineId: string,
+    requestedPolicy: StarterModelPolicyPreference,
+  ): void {
+    if (this.starterModelPolicySubstitutionChecks.has(session.id)) return;
+    const check: StarterPolicySubstitutionCheck = {
+      machineId,
+      session: { ...session },
+      requestedPolicy: cloneStarterModelPolicyPreference(requestedPolicy),
+      observed: false,
+    };
+    this.starterModelPolicySubstitutionChecks.set(session.id, check);
+    const stored = this.getState().sessionStatuses[session.id];
+    if (stored !== undefined) this.runStarterPolicySubstitutionCheck(session.id, stored);
+  }
+
+  private plusPendingStartPolicy(cwd: string, machineId: string): StarterModelPolicyPreference | undefined {
+    for (const pending of this.pendingSessionStarts.values()) {
+      if (
+        pending.cwd === cwd
+        && pending.machineId === machineId
+        && !pending.discarded
+        && pending.request.kind === "plus"
+      ) {
+        return pending.request.initialModelPolicy;
+      }
+    }
+    return undefined;
+  }
+
+  private runStarterPolicySubstitutionCheck(sessionId: string, status: SessionStatus): void {
+    const check = this.starterModelPolicySubstitutionChecks.get(sessionId);
+    if (check === undefined || check.observed) return;
+    const modelPolicy = status.modelPolicy;
+    if (modelPolicy === undefined) return;
+    check.observed = true;
+    const requested = check.requestedPolicy;
+    const substituted = requested.mode === "exact"
+      ? modelPolicy.mode !== "exact" || !sameExactSelection(modelPolicy.resolved, requested.exact)
+      : modelPolicy.mode === "exact";
+    if (!substituted) return;
+    const event: StarterModelPolicySubstitutionEvent = {
+      machineId: check.machineId,
+      session: { ...check.session },
+      requestedPolicy: cloneStarterModelPolicyPreference(requested),
+      confirmed: {
+        mode: modelPolicy.mode,
+        resolved: {
+          model: { ...modelPolicy.resolved.model },
+          thinkingLevel: modelPolicy.resolved.thinkingLevel,
+        },
+      },
+    };
+    try {
+      this.onStarterModelPolicySubstitution?.(event);
+    } catch {
+      // Substitution reporting is observational and must not block session work.
     }
   }
 
@@ -1733,6 +1825,9 @@ export class SessionController {
       return false;
     }
 
+    if (pending.request.kind === "plus") {
+      this.captureStarterModelPolicySubstitution(session, pending.machineId, pending.request.initialModelPolicy);
+    }
     rememberCachedNewSession(session, pending.machineId);
     moveDraft(machineSessionKey(pending.machineId, tempId), machineSessionKey(pending.machineId, session.id));
     // The composer was scoped to the temporary id; without this move an unsent
@@ -1891,6 +1986,10 @@ export class SessionController {
     }
     const machineId = selectedMachineId(state);
     if (this.hasPendingStartFor(session.cwd, machineId)) {
+      const requested = this.plusPendingStartPolicy(session.cwd, machineId);
+      if (requested !== undefined) {
+        this.captureStarterModelPolicySubstitution(session, machineId, requested);
+      }
       this.suppressedCreatedSessions.set(session.id, { session, machineId });
       if (projectSessions !== state.projectSessions) this.setState({ projectSessions });
       return;
@@ -1916,6 +2015,7 @@ export class SessionController {
       activity: state.selectedSession?.id === status.sessionId && clearsStaleActivity ? undefined : state.activity,
     });
     this.invalidateSupersededModelPolicy(status);
+    this.runStarterPolicySubstitutionCheck(status.sessionId, status);
   }
 
   private applySessionName(sessionId: string, name: string | undefined) {

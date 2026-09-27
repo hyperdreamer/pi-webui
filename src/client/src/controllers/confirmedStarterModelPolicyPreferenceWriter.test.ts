@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { deferred, oldSession, type SessionInfo } from "./sessionController.testSupport";
+import type { StarterModelPolicyPreference } from "../../../shared/apiTypes";
+import { deferred, fullStarterModelPolicyPreference, oldSession, type SessionInfo } from "./sessionController.testSupport";
 import {
   ConfirmedStarterModelPolicyPreferenceWriter,
+  type ConfirmedPreferenceWriteContext,
   type ConfirmedStarterModelPolicyPreferenceWriterDependencies,
   type StarterModelPolicyPreferenceWriteScope,
   type StarterModelPolicyPreferenceWriteSnapshot,
 } from "./confirmedStarterModelPolicyPreferenceWriter";
 
+const saveContext: ConfirmedPreferenceWriteContext = { reason: "policy-save" };
+
 describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
   it("serializes one scope, clones session references, and coalesces pending targets", async () => {
-    const first = deferred<unknown>();
-    const second = deferred<unknown>();
+    const first = deferred<StarterModelPolicyPreference>();
+    const second = deferred<StarterModelPolicyPreference>();
     const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
@@ -24,10 +28,10 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
     const superseded: SessionInfo = { ...oldSession, id: "session-b" };
     const latest: SessionInfo = { ...oldSession, id: "session-c" };
 
-    const initialWrite = writer.write(scope, initial);
+    const initialWrite = writer.write(scope, initial, saveContext);
     initial.id = "mutated-after-enqueue";
-    const supersededWrite = writer.write(scope, superseded);
-    const latestWrite = writer.write(scope, latest);
+    const supersededWrite = writer.write(scope, superseded, saveContext);
+    const latestWrite = writer.write(scope, latest, saveContext);
     latest.id = "also-mutated-after-enqueue";
 
     expect(remember).toHaveBeenCalledTimes(1);
@@ -36,7 +40,7 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
     expect(remember.mock.calls[0]?.[1]).toMatchObject({ id: "session-a", cwd: "/repo" });
     expect(remember.mock.calls[0]?.[1]).not.toBe(initial);
 
-    first.resolve(undefined);
+    first.resolve(fullStarterModelPolicyPreference);
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
     expect(remember).toHaveBeenNthCalledWith(
       2,
@@ -44,7 +48,7 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
       expect.objectContaining({ id: "session-c", cwd: "/repo" }),
     );
 
-    second.resolve(undefined);
+    second.resolve(fullStarterModelPolicyPreference);
     await Promise.all([initialWrite, supersededWrite, latestWrite]);
     expect(writer.snapshot(scope)).toEqual({ saving: false });
     expect(changes.at(-1)).toEqual({ saving: false });
@@ -54,10 +58,10 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
     const machineARepo = { machineId: "remote-a", cwd: "/repo" };
     const machineAOther = { machineId: "remote-a", cwd: "/other" };
     const machineBRepo = { machineId: "remote-b", cwd: "/repo" };
-    const requests = new Map<string, ReturnType<typeof deferred<unknown>>>([
-      [scopeKey(machineARepo), deferred<unknown>()],
-      [scopeKey(machineAOther), deferred<unknown>()],
-      [scopeKey(machineBRepo), deferred<unknown>()],
+    const requests = new Map<string, ReturnType<typeof deferred<StarterModelPolicyPreference>>>([
+      [scopeKey(machineARepo), deferred<StarterModelPolicyPreference>()],
+      [scopeKey(machineAOther), deferred<StarterModelPolicyPreference>()],
+      [scopeKey(machineBRepo), deferred<StarterModelPolicyPreference>()],
     ]);
     const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>((scope) => {
       const request = requests.get(scopeKey(scope));
@@ -66,9 +70,9 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
     });
     const writer = new ConfirmedStarterModelPolicyPreferenceWriter({ remember });
 
-    const first = writer.write(machineARepo, { ...oldSession, id: "session-a" });
-    const second = writer.write(machineAOther, { ...oldSession, id: "session-b", cwd: "/other" });
-    const third = writer.write(machineBRepo, { ...oldSession, id: "session-c" });
+    const first = writer.write(machineARepo, { ...oldSession, id: "session-a" }, saveContext);
+    const second = writer.write(machineAOther, { ...oldSession, id: "session-b", cwd: "/other" }, saveContext);
+    const third = writer.write(machineBRepo, { ...oldSession, id: "session-c" }, saveContext);
 
     expect(remember).toHaveBeenCalledTimes(3);
     expect(writer.snapshot(machineARepo)).toEqual({ saving: true });
@@ -76,48 +80,48 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
     expect(writer.snapshot(machineBRepo)).toEqual({ saving: true });
     expect(writer.snapshot({ machineId: "unused", cwd: "/repo" })).toEqual({ saving: false });
 
-    requests.get(scopeKey(machineARepo))?.resolve(undefined);
+    requests.get(scopeKey(machineARepo))?.resolve(fullStarterModelPolicyPreference);
     await first;
     await vi.waitFor(() => { expect(writer.snapshot(machineARepo)).toEqual({ saving: false }); });
     expect(writer.snapshot(machineAOther)).toEqual({ saving: true });
     expect(writer.snapshot(machineBRepo)).toEqual({ saving: true });
 
-    requests.get(scopeKey(machineAOther))?.resolve(undefined);
-    requests.get(scopeKey(machineBRepo))?.resolve(undefined);
+    requests.get(scopeKey(machineAOther))?.resolve(fullStarterModelPolicyPreference);
+    requests.get(scopeKey(machineBRepo))?.resolve(fullStarterModelPolicyPreference);
     await Promise.all([second, third]);
   });
 
   it("keeps an older failure until the queued success settles, then clears it", async () => {
-    const first = deferred<unknown>();
-    const second = deferred<unknown>();
+    const first = deferred<StarterModelPolicyPreference>();
+    const second = deferred<StarterModelPolicyPreference>();
     const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     const writer = new ConfirmedStarterModelPolicyPreferenceWriter({ remember });
     const scope = { machineId: "remote-a", cwd: "/repo" };
 
-    const failed = writer.write(scope, { ...oldSession, id: "session-a" });
-    const succeeding = writer.write(scope, { ...oldSession, id: "session-b" });
+    const failed = writer.write(scope, { ...oldSession, id: "session-a" }, saveContext);
+    const succeeding = writer.write(scope, { ...oldSession, id: "session-b" }, saveContext);
 
     first.reject(new Error("first failed"));
     await expect(failed).resolves.toBeUndefined();
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
     expect(writer.snapshot(scope)).toEqual({ saving: true, error: "Error: first failed" });
 
-    second.resolve(undefined);
+    second.resolve(fullStarterModelPolicyPreference);
     await expect(succeeding).resolves.toBeUndefined();
     await vi.waitFor(() => { expect(writer.snapshot(scope)).toEqual({ saving: false }); });
   });
 
   it("contains observer exceptions so they cannot poison remember requests", async () => {
     const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(fullStarterModelPolicyPreference);
     const onStateChange = vi.fn(() => { throw new Error("observer failed"); });
     const writer = new ConfirmedStarterModelPolicyPreferenceWriter({ remember, onStateChange });
     const scope = { machineId: "remote-a", cwd: "/repo" };
 
-    await expect(writer.write(scope, { ...oldSession, id: "session-a" })).resolves.toBeUndefined();
-    await expect(writer.write(scope, { ...oldSession, id: "session-b" })).resolves.toBeUndefined();
+    await expect(writer.write(scope, { ...oldSession, id: "session-a" }, saveContext)).resolves.toBeUndefined();
+    await expect(writer.write(scope, { ...oldSession, id: "session-b" }, saveContext)).resolves.toBeUndefined();
     await vi.waitFor(() => { expect(writer.snapshot(scope)).toEqual({ saving: false }); });
 
     expect(remember).toHaveBeenCalledTimes(2);
@@ -126,11 +130,11 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
 
   it("prunes successful idle scopes while retaining failed state", async () => {
     const failing = { machineId: "remote-a", cwd: "/failing" };
-    const inFlight = deferred<unknown>();
+    const inFlight = deferred<StarterModelPolicyPreference>();
     const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>((scope) => {
       if (scope.cwd === "/failing") return Promise.reject(new Error("disk full"));
       if (scope.cwd === "/in-flight") return inFlight.promise;
-      return Promise.resolve();
+      return Promise.resolve(fullStarterModelPolicyPreference);
     });
     const writer = new ConfirmedStarterModelPolicyPreferenceWriter({ remember });
 
@@ -138,22 +142,107 @@ describe("ConfirmedStarterModelPolicyPreferenceWriter", () => {
       await writer.write(
         { machineId: "remote-a", cwd: `/settled-${suffix}` },
         { ...oldSession, id: `session-${suffix}`, cwd: `/settled-${suffix}` },
+        saveContext,
       );
     }
-    await writer.write(failing, { ...oldSession, id: "failed-session", cwd: "/failing" });
+    await writer.write(failing, { ...oldSession, id: "failed-session", cwd: "/failing" }, saveContext);
     const pending = writer.write(
       { machineId: "remote-a", cwd: "/in-flight" },
       { ...oldSession, id: "pending-session", cwd: "/in-flight" },
+      saveContext,
     );
 
     await vi.waitFor(() => { expect(trackedScopeCount(writer)).toBe(2); });
     expect(writer.snapshot({ machineId: "remote-a", cwd: "/settled-a" })).toEqual({ saving: false });
     expect(writer.snapshot(failing)).toEqual({ saving: false, error: "Error: disk full" });
 
-    inFlight.resolve(undefined);
+    inFlight.resolve(fullStarterModelPolicyPreference);
     await pending;
     await vi.waitFor(() => { expect(trackedScopeCount(writer)).toBe(1); });
     expect(writer.snapshot(failing)).toEqual({ saving: false, error: "Error: disk full" });
+  });
+
+  it("reports each processed batch through onRemembered with its own context", async () => {
+    const first = deferred<StarterModelPolicyPreference>();
+    const second = deferred<StarterModelPolicyPreference>();
+    const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const remembered: { preference: StarterModelPolicyPreference; context: ConfirmedPreferenceWriteContext }[] = [];
+    const writer = new ConfirmedStarterModelPolicyPreferenceWriter({
+      remember,
+      onRemembered: (_scope, preference, context) => { remembered.push({ preference, context }); },
+    });
+    const scope = { machineId: "remote-a", cwd: "/repo" };
+    const creationContext: ConfirmedPreferenceWriteContext = {
+      reason: "creation",
+      requestedPolicy: fullStarterModelPolicyPreference,
+    };
+    const createdPreference: StarterModelPolicyPreference = {
+      mode: "exact",
+      exact: { model: { provider: "acme", id: "small" }, thinkingLevel: "minimal" },
+    };
+
+    const creationWrite = writer.write(scope, { ...oldSession, id: "session-a" }, creationContext);
+    const saveWrite = writer.write(scope, { ...oldSession, id: "session-b" }, { reason: "policy-save" });
+    first.resolve(createdPreference);
+    second.resolve(fullStarterModelPolicyPreference);
+    await Promise.all([creationWrite, saveWrite]);
+
+    expect(remembered).toEqual([
+      { preference: createdPreference, context: creationContext },
+      { preference: fullStarterModelPolicyPreference, context: { reason: "policy-save" } },
+    ]);
+  });
+
+  it("coalesces the newest context for a queued batch", async () => {
+    const first = deferred<StarterModelPolicyPreference>();
+    const queued = deferred<StarterModelPolicyPreference>();
+    const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(queued.promise);
+    const contexts: ConfirmedPreferenceWriteContext[] = [];
+    const writer = new ConfirmedStarterModelPolicyPreferenceWriter({
+      remember,
+      onRemembered: (_scope, _preference, context) => { contexts.push(context); },
+    });
+    const scope = { machineId: "remote-a", cwd: "/repo" };
+    const superseded: StarterModelPolicyPreference = {
+      mode: "exact",
+      exact: { model: { provider: "acme", id: "retired" }, thinkingLevel: "medium" },
+    };
+
+    const firstWrite = writer.write(scope, { ...oldSession, id: "session-a" }, {
+      reason: "creation",
+      requestedPolicy: fullStarterModelPolicyPreference,
+    });
+    void writer.write(scope, { ...oldSession, id: "session-b" }, {
+      reason: "creation",
+      requestedPolicy: superseded,
+    });
+    const newestWrite = writer.write(scope, { ...oldSession, id: "session-c" }, { reason: "policy-save" });    first.resolve(fullStarterModelPolicyPreference);
+    await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
+    queued.resolve(fullStarterModelPolicyPreference);
+    await Promise.all([firstWrite, newestWrite]);
+
+    expect(contexts).toEqual([
+      { reason: "creation", requestedPolicy: fullStarterModelPolicyPreference },
+      { reason: "policy-save" },
+    ]);
+  });
+
+  it("contains onRemembered observer throws", async () => {
+    const remember = vi.fn<ConfirmedStarterModelPolicyPreferenceWriterDependencies["remember"]>()
+      .mockResolvedValue(fullStarterModelPolicyPreference);
+    const onRemembered = vi.fn(() => { throw new Error("observer failed"); });
+    const writer = new ConfirmedStarterModelPolicyPreferenceWriter({ remember, onRemembered });
+    const scope = { machineId: "remote-a", cwd: "/repo" };
+
+    await expect(writer.write(scope, { ...oldSession, id: "session-a" }, saveContext)).resolves.toBeUndefined();
+    await expect(writer.write(scope, { ...oldSession, id: "session-b" }, saveContext)).resolves.toBeUndefined();
+    await vi.waitFor(() => { expect(writer.snapshot(scope)).toEqual({ saving: false }); });
+
+    expect(remember).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -209,12 +209,15 @@ describe("SessionController model policy state", () => {
     await controller.saveModelPolicy(optimistic);
 
     expect(onStarterModelPolicyConfirmed).toHaveBeenCalledWith({
+      reason: "policy-save",
       machineId: "remote",
       session: plusSession,
       policy: confirmedPolicy,
     });
     const event = onStarterModelPolicyConfirmed.mock.calls[0]?.[0];
-    if (event === undefined) throw new Error("Expected a confirmed starter policy event");
+    if (event?.reason !== "policy-save") {
+      throw new Error("Expected a confirmed starter policy save event");
+    }
     expect(event.policy).not.toBe(confirmedPolicy);
     expect(event.policy).not.toBe(optimistic);
     expect(event.policy.exact).not.toBe(confirmedPolicy.exact);
