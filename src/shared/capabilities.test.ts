@@ -295,4 +295,30 @@ describe("PI WEBUI capabilities", () => {
     expect(full.starterModelPolicyPreference && "exact" in full.starterModelPolicyPreference).toBe(true);
     expect(legacy.starterModelPolicyPreference && "exact" in legacy.starterModelPolicyPreference).toBe(false);
   });
+
+  it("requires web and session daemon support for the lightweight model policy fallback capability", () => {
+    const lightweightFallback = PI_WEBUI_CAPABILITIES.sessionsModelPolicyLightweightFallback;
+    expect(lightweightFallback).toBe("sessions.modelPolicyLightweightFallback");
+    expect(WEB_RUNTIME_CAPABILITIES).toContain(lightweightFallback);
+    expect(SESSIOND_RUNTIME_CAPABILITIES).toContain(lightweightFallback);
+    expect(parseKnownPiWebUiCapabilities([lightweightFallback, "future.capability"]))
+      .toEqual([lightweightFallback]);
+
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [lightweightFallback] },
+      sessiond: { available: false, capabilities: [] },
+    })).not.toContain(lightweightFallback);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: false, capabilities: [] },
+      sessiond: { available: true, capabilities: [lightweightFallback] },
+    })).not.toContain(lightweightFallback);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [lightweightFallback] },
+      sessiond: { available: true, capabilities: [] },
+    })).not.toContain(lightweightFallback);
+    expect(effectivePiWebUiCapabilities({
+      web: { available: true, capabilities: [lightweightFallback] },
+      sessiond: { available: true, capabilities: [lightweightFallback] },
+    })).toContain(lightweightFallback);
+  });
 });
