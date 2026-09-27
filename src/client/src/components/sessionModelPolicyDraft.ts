@@ -335,13 +335,13 @@ function exactSyntaxError(exact: ExactModelSelection): string | undefined {
     : "Choose a provider, model, and thinking level before starting";
 }
 
-function isSyntacticallyCompleteExactSelection(exact: ExactModelSelection): boolean {
+export function isSyntacticallyCompleteExactSelection(exact: ExactModelSelection): boolean {
   return isNonBlank(exact.model.provider)
     && isNonBlank(exact.model.id)
     && isNonBlank(exact.thinkingLevel);
 }
 
-function isCanonicalTier(tier: ModelTier | undefined): tier is ModelTier {
+export function isCanonicalTier(tier: ModelTier | undefined): tier is ModelTier {
   return tier !== undefined && MODEL_TIERS.includes(tier);
 }
 
