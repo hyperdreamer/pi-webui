@@ -39,7 +39,7 @@ import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspace
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
 import { StarterModelPolicyPreferenceWriter, type StarterModelPolicyPreferenceWriteScope } from "../controllers/starterModelPolicyPreferenceWriter";
-import { ConfirmedStarterModelPolicyPreferenceWriter } from "../controllers/confirmedStarterModelPolicyPreferenceWriter";
+import { ConfirmedStarterModelPolicyPreferenceWriter, type ConfirmedPreferenceWriteContext } from "../controllers/confirmedStarterModelPolicyPreferenceWriter";
 import { machineSessionKey } from "../machineKeys";
 import { sessionCleanupRequestKey, sessionCleanupUnavailableMessage } from "../sessionCleanupUi";
 import { selectedNotificationView } from "../sessionNotifications";
@@ -137,7 +137,7 @@ const MIN_RESIZABLE_CHAT_WIDTH_PX = 320;
 const PANEL_EDGE_COLUMNS_WIDTH_PX = 2;
 const DESKTOP_SIDE_BY_SIDE_MEDIA_QUERY = "(min-width: 1181px)";
 const MODEL_POLICY_EXACT_APPLY_DELAY_MS = 75;
-const CONFIRMED_STARTER_MODEL_POLICY_WARNING = "Could not remember this model policy; this session still uses it.";
+const CONFIRMED_STARTER_MODEL_POLICY_WARNING = "Could not remember this model policy for future sessions.";
 
 interface SessionCleanupDialogState {
   preview?: SessionCleanupPreviewResponse | undefined;
@@ -472,6 +472,9 @@ export class PiWebUiApp extends LitElement {
   });
   private readonly confirmedStarterModelPolicyPreferenceWriter = new ConfirmedStarterModelPolicyPreferenceWriter({
     remember: (scope, session) => sessionsApi.rememberCurrentModelPolicy(session, scope.machineId),
+    onRemembered: (scope, preference, context) => {
+      this.handleConfirmedStarterModelPolicyRemembered(scope, preference, context);
+    },
     onStateChange: (scope, snapshot) => {
       if (!this.starterModelPolicyPreferenceScopeMatchesCurrentSelection(scope)) return;
       if (this.confirmedStarterModelPolicyUiGeneration === this.starterModelPolicySelectionGeneration) {
@@ -1972,7 +1975,9 @@ export class PiWebUiApp extends LitElement {
       && this.state.selectedSession?.id === event.session.id
       && this.state.selectedSession.cwd === event.session.cwd
     ) {
-      this.starterModelPolicy = modelPolicyDraftFromPolicy(event.policy);
+      if (event.reason === "policy-save") {
+        this.starterModelPolicy = modelPolicyDraftFromPolicy(event.policy);
+      }
       this.starterModelPolicyPreferenceReadError = "";
       this.confirmedStarterModelPolicyUiScope = scope;
       this.confirmedStarterModelPolicyUiGeneration = this.starterModelPolicySelectionGeneration;
@@ -1989,7 +1994,31 @@ export class PiWebUiApp extends LitElement {
       this.confirmedStarterModelPolicyUiGeneration = undefined;
       this.requestUpdate();
     }
-    void this.confirmedStarterModelPolicyPreferenceWriter.write(scope, event.session);
+    void this.confirmedStarterModelPolicyPreferenceWriter.write(
+      scope,
+      event.session,
+      event.reason === "creation"
+        ? { reason: "creation", requestedPolicy: event.requestedPolicy }
+        : { reason: "policy-save" },
+    );
+  }
+
+  private handleConfirmedStarterModelPolicyRemembered(
+    scope: StarterModelPolicyPreferenceWriteScope,
+    preference: StarterModelPolicyPreference,
+    context: ConfirmedPreferenceWriteContext,
+  ): void {
+    if (context.reason === "policy-save") return;
+    if (!this.starterModelPolicyPreferenceScopeMatchesCurrentSelection(scope)) return;
+    const draft = this.starterModelPolicy;
+    if (draft === undefined) return;
+    if (!sameStarterModelPolicyDraft(draft, modelPolicyDraftFromPolicy(context.requestedPolicy))) return;
+    this.starterModelPolicy = modelPolicyDraftFromPolicy(preference);
+    // Ownership is claimed by the confirmation event for the current selection
+    // and dropped when a sibling session in this workspace confirms. A late
+    // remember result must not re-claim it: the writer is workspace-scoped, so
+    // the outcome it reports may belong to the sibling's confirmation.
+    this.requestUpdate();
   }
 
   private starterNoticeScope(): StarterNoticeScope | undefined {

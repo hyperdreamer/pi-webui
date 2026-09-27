@@ -1547,8 +1547,9 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     }));
     setModelTierCatalog(app, validCatalog(), "local");
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledOnce(); });
     expect(remember).toHaveBeenCalledWith(session, "local");
@@ -1652,12 +1653,13 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
       machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
     }));
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => {
       expect(templateText(renderApp(app))).toContain(
-        "Could not remember this model policy; this session still uses it.",
+        "Could not remember this model policy for future sessions.",
       );
     });
     expect(appState(app).error).toBe("");
@@ -1665,7 +1667,7 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
 
     expect(starterPlusModelPolicyInitializer(app)).toEqual(completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => {
       expect(remember).toHaveBeenCalledTimes(2);
@@ -1746,12 +1748,14 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
       machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
     }));
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: selectedSession, requestedPolicy: completeDefaultPolicy });
     confirmStarterPolicy(app, {
+      reason: "creation",
       machineId: "local",
       session: otherSession,
-      policy: {
+      requestedPolicy: {
         mode: "tiered",
         tier: "advanced",
         exact: { model: { ...advancedModelOption.model }, thinkingLevel: "high" },
@@ -1784,11 +1788,11 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     }));
     setModelTierCatalog(app, validCatalog(), "local");
 
-    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: selectedSession, requestedPolicy: completeDefaultPolicy });
     if (!Reflect.set(app, "starterModelPolicyPreferenceReadError", "current session diagnostic")) {
       throw new Error("Could not set the starter model policy diagnostic");
     }
-    confirmStarterPolicy(app, { machineId: "local", session: otherSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: otherSession, requestedPolicy: completeDefaultPolicy });
     selectedWrite.reject(new Error("selected session write failed"));
 
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
@@ -1801,6 +1805,44 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     });
     expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
       .toBe("current session diagnostic");
+  });
+
+  it("adopts the confirmed preference only when the draft is unchanged", async () => {
+    const app = createApp();
+    const session = plusCreatedSession();
+    const requestedPolicy: StarterModelPolicyPreference = {
+      mode: "tiered",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    };
+    const confirmedPreference: StarterModelPolicyPreference = {
+      mode: "exact",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-basic" }, thinkingLevel: "off" },
+    };
+    const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy").mockResolvedValue(confirmedPreference);
+    setAppState(app, activeState({
+      sessions: [session],
+      selectedSession: session,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+    setStarterModelPolicy(app, requestedPolicy);
+
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy });
+
+    await vi.waitFor(() => { expect(starterModelPolicy(app)).toEqual(confirmedPreference); });
+
+    const edited: SessionModelPolicy = {
+      mode: "exact",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+    };
+    setStarterModelPolicy(app, edited);
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy });
+
+    await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
+    await flush();
+    expect(starterModelPolicy(app)).toEqual(edited);
   });
 });
 

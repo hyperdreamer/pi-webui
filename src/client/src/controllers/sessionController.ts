@@ -67,11 +67,19 @@ export interface SelectedSessionReady {
   session: SessionInfo;
 }
 
-export interface StarterModelPolicyConfirmedEvent {
-  machineId: string;
-  session: SessionInfo;
-  policy: StarterModelPolicyPreference;
-}
+export type StarterModelPolicyConfirmedEvent =
+  | {
+      reason: "creation";
+      machineId: string;
+      session: SessionInfo;
+      requestedPolicy: StarterModelPolicyPreference;
+    }
+  | {
+      reason: "policy-save";
+      machineId: string;
+      session: SessionInfo;
+      policy: StarterModelPolicyPreference;
+    };
 
 export interface SessionControllerDependencies {
   api?: typeof defaultApi;
@@ -344,9 +352,10 @@ export class SessionController {
         && session.creationSource === "session-list-plus"
       ) {
         this.publishStarterModelPolicyConfirmed({
+          reason: "creation",
           machineId,
           session: { ...session },
-          policy: pending.request.initialModelPolicy,
+          requestedPolicy: pending.request.initialModelPolicy,
         });
       }
       return true;
@@ -1257,6 +1266,7 @@ export class SessionController {
           && response.session.modelPolicy?.blockedReason === undefined
         ) {
           this.publishStarterModelPolicyConfirmed({
+            reason: "policy-save",
             machineId,
             session: { ...sessionInfo },
             policy: cloneStarterModelPolicyPreference(response.policy),
