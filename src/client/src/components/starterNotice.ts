@@ -7,7 +7,7 @@
  * the composer, the model-policy pill, and the tier menu — the controls that
  * repair the condition being reported.
  */
-export type StarterNoticeKind = "policy-blocked" | "start-failed" | "defaults-failed";
+export type StarterNoticeKind = "policy-blocked" | "start-failed" | "defaults-failed" | "policy-fallback";
 
 /** The machine and workspace a notice belongs to. */
 export interface StarterNoticeScope {
@@ -43,6 +43,17 @@ export function starterFailureNotice(
   scope: StarterNoticeScope,
 ): StarterNotice {
   return { kind, message, scope };
+}
+
+/**
+ * A policy fallback describes a past creation event with no live source to
+ * re-read: the session already started on the substituted model.
+ */
+export function starterPolicyFallbackNotice(
+  message: string,
+  scope: StarterNoticeScope,
+): StarterNotice {
+  return { kind: "policy-fallback", message, scope };
 }
 
 /**

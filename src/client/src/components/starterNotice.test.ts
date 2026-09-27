@@ -4,6 +4,7 @@ import {
   starterFailureNotice,
   starterNoticeVisibleText,
   starterPolicyBlockedNotice,
+  starterPolicyFallbackNotice,
 } from "./starterNotice";
 
 const scope = { machineId: "local", workspaceId: "workspace-a" };
@@ -49,6 +50,28 @@ describe("starterNoticeVisibleText", () => {
 
   it("shows nothing when there is no notice", () => {
     expect(starterNoticeVisibleText(undefined, scope, "Choose a valid model tier")).toBeUndefined();
+  });
+});
+
+describe("starterPolicyFallbackNotice", () => {
+  it("captures the model text under its own kind", () => {
+    expect(starterPolicyFallbackNotice("Session started with the Lightweight utility model (openai/gpt-basic).", scope))
+      .toEqual({
+        kind: "policy-fallback",
+        message: "Session started with the Lightweight utility model (openai/gpt-basic).",
+        scope,
+      });
+  });
+
+  it("reads its captured message and ignores a live reason", () => {
+    const notice = starterPolicyFallbackNotice("Session started with the lightweight model.", scope);
+    expect(starterNoticeVisibleText(notice, scope, "Choose a valid model tier")).toBe("Session started with the lightweight model.");
+  });
+
+  it("is retained in scope and dropped out of scope", () => {
+    const notice = starterPolicyFallbackNotice("Session started with the lightweight model.", scope);
+    expect(shouldRetainStarterNotice(notice, scope, undefined)).toBe(true);
+    expect(shouldRetainStarterNotice(notice, otherWorkspace, undefined)).toBe(false);
   });
 });
 
