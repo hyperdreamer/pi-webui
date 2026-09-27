@@ -287,6 +287,9 @@ Custom providers can carry optional **TPM** (tokens per minute) and **RPM** (req
 - Utility calls never change the selected session model, its thinking level, or Pi's remembered default.
 - Version 1 remotes remain model-configurable but require an upgraded runtime for explicit thinking levels.
 - Settings target the selected machine. Existing sessions read saved changes on their next utility operation; remote editing requires the additive `settings.utilityModels` capability.
+- An unusable remembered `+` policy (its active model or tier cannot resolve) starts the session in Exact mode on `lightweight`; the substituted policy becomes the workspace's remembered starter policy, so the original model returns only when the user reselects it.
+- Keep `lightweight` configured and available: if it cannot resolve, `+` fails with the original resolution error plus the lightweight reason instead of starting.
+- Older clients show the substitution only as the session's model; current clients also warn before the start when they can evaluate the policy and show a notice naming the used model.
 
 ### Model tiers
 

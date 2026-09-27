@@ -744,6 +744,9 @@
                 <li>Utility calls never change the selected session model, its thinking level, or Pi's remembered default.</li>
                 <li>Version 1 remotes remain model-configurable but require an upgraded runtime for explicit thinking levels.</li>
                 <li>Settings target the selected machine. Existing sessions read saved changes on their next utility operation; remote editing requires the additive <code>settings.utilityModels</code> capability.</li>
+                <li>An unusable remembered <code>+</code> policy (its active model or tier cannot resolve) starts the session in Exact mode on <code>lightweight</code>; the substituted policy becomes the workspace's remembered starter policy, so the original model returns only when the user reselects it.</li>
+                <li>Keep <code>lightweight</code> configured and available: if it cannot resolve, <code>+</code> fails with the original resolution error plus the lightweight reason instead of starting.</li>
+                <li>Older clients show the substitution only as the session's model; current clients also warn before the start when they can evaluate the policy and show a notice naming the used model.</li>
               </ul>
             </section>
 
