@@ -111,6 +111,7 @@ export const PI_WEBUI_CAPABILITIES = {
   sessionsModelPolicyStarterSelection: "sessions.modelPolicyStarterSelection",
   sessionsReorder: "sessions.reorder",
   projectUsageStatistics: "project.usageStatistics",
+  sessionsModelPolicyLightweightFallback: "sessions.modelPolicyLightweightFallback",
 } as const;
 
 export type PiWebUiCapability = typeof PI_WEBUI_CAPABILITIES[keyof typeof PI_WEBUI_CAPABILITIES];
