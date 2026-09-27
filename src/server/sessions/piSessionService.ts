@@ -188,6 +188,7 @@ import {
   planSessionModelPolicyInitialization,
   planSessionModelPolicyUpdate,
   serializeSessionModelPolicy,
+  SessionModelPolicyResolutionError,
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
   type SessionModelPolicyInspection,
 } from "./sessionModelPolicy.js";
@@ -6085,14 +6086,14 @@ export class PiSessionService implements SessionRouteService {
         candidate.id === selection.model.id
     );
     const described = `${selection.model.provider}/${selection.model.id}`;
-    if (model === undefined) throw new Error(`Model not found: ${described}`);
+    if (model === undefined) throw new SessionModelPolicyResolutionError(`Model not found: ${described}`);
     if (!isKnownThinkingLevel(selection.thinkingLevel)) {
-      throw new Error(
+      throw new SessionModelPolicyResolutionError(
         `Unknown thinking level ${selection.thinkingLevel} for ${described}`
       );
     }
     if (!runtimeThinkingLevels(model).includes(selection.thinkingLevel)) {
-      throw new Error(
+      throw new SessionModelPolicyResolutionError(
         `Thinking level ${selection.thinkingLevel} is unsupported by ${described}`
       );
     }

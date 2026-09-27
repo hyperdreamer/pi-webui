@@ -17,6 +17,7 @@ import {
 } from "./sessionCreationSource.js";
 import {
   inspectSessionModelPolicy,
+  SessionModelPolicyResolutionError,
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
 } from "./sessionModelPolicy.js";
 import type { StarterPreferenceWrite } from "./starterModelPolicyPreferenceStore.js";
@@ -1539,14 +1540,33 @@ describe("PiSessionService model policy mutation", () => {
     await harness.service.status(ref());
     harness.calls.length = 0;
 
-    await expect(harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" }))
-      .rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    const rejection = harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" });
+    await expect(rejection).rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
 
     expect(harness.calls).toEqual([]);
     expect((await harness.service.status(ref())).modelPolicy).toMatchObject({
       mode: "exact",
       resolved: DEFAULT_SELECTION,
     });
+  });
+
+  it("rejects an unavailable exact policy with a typed resolution error", async () => {
+    const harness = createModelPolicyHarness({ branch: [exactEntry()] });
+    await harness.service.status(ref());
+    harness.calls.length = 0;
+
+    const rejection = harness.service.setModelPolicy(ref(), {
+      mode: "exact",
+      exact: {
+        model: { provider: "retired", id: "unavailable" },
+        thinkingLevel: "medium",
+      },
+    });
+
+    await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
+    expect(harness.calls).toEqual([]);
   });
 
   it("initializes an explicit Tiered root before session.created and before its first prompt", async () => {
@@ -1883,8 +1903,9 @@ describe("PiSessionService model policy mutation safety", () => {
     await harness.service.status(ref());
     harness.hub.sessionEvents.length = 0;
 
-    await expect(harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" }))
-      .rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    const rejection = harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" });
+    await expect(rejection).rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
 
     expect(harness.hub.sessionEvents).toEqual([]);
   });
