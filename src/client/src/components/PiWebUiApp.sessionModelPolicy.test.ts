@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type {
   ClientSessionModelPolicyStatus,
+  ExactModelSelection,
   MachineRuntime,
   ModelTier,
   ModelTierLadder,
@@ -21,9 +22,10 @@ import type {
 } from "../../../shared/apiTypes";
 import { api, modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
-import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
+import { SessionController, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
 import { findTemplateContaining, isTemplateResult, templateStrings, templateText, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
+import type { SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
 import type { StarterNotice } from "./starterNotice";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
@@ -157,6 +159,11 @@ const completeDefaultPolicy: StarterModelPolicyPreference = {
   mode: "tiered",
   tier: "standard",
   exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+};
+
+const LIGHTWEIGHT_SELECTION: ExactModelSelection = {
+  model: { provider: "openai", id: "gpt-basic" },
+  thinkingLevel: "off",
 };
 
 function activeSession(): SessionInfo {
@@ -2727,6 +2734,43 @@ describe("PiWebUiApp policy-blocked starter notice", () => {
     expect(text).toContain("Sessions could not be loaded.");
     expect(text).not.toContain("What would you like to build?");
   });
+
+  it("publishes a policy-fallback notice naming the used model", () => {
+    const app = createApp();
+    const session = plusCreatedSession();
+    setAppState(app, activeState({
+      sessions: [session],
+      selectedSession: session,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+
+    substitutionEvent(app, {
+      machineId: "local",
+      session: plusCreatedSession(),
+      requestedPolicy: completeDefaultPolicy,
+      confirmed: { mode: "exact", resolved: LIGHTWEIGHT_SELECTION },
+    });
+
+    const message = "Session started with the Lightweight utility model (openai/gpt-basic) because the remembered model was unavailable.";
+    expect(templateText(renderApp(app))).toContain(message);
+    expect(starterNotice(app)?.kind).toBe("policy-fallback");
+
+    // A session selection in the same workspace must not retire the notice.
+    setAppState(app, {
+      ...appState(app),
+      sessions: [session],
+      selectedSession: session,
+      status: activeStatus(exactPolicyStatus()),
+    });
+    expect(templateText(renderApp(app))).toContain(message);
+
+    // A starter edit retires it.
+    setStarterModelPolicyDraft(app, {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+    expect(starterNotice(app)).toBeUndefined();
+  });
 });
 
 // ── harness ─────────────────────────────────────────────────────────────────
@@ -2902,6 +2946,18 @@ function confirmStarterPolicy(app: PiWebUiApp, event: StarterModelPolicyConfirme
   Reflect.apply(method, app, [event]);
 }
 
+function substitutionEvent(app: PiWebUiApp, event: StarterModelPolicySubstitutionEvent): void {
+  const method: unknown = Reflect.get(app, "handleStarterModelPolicySubstitution");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.handleStarterModelPolicySubstitution is not callable");
+  Reflect.apply(method, app, [event]);
+}
+
+function setStarterModelPolicyDraft(app: PiWebUiApp, draft: SessionModelPolicyDraft): void {
+  const method: unknown = Reflect.get(app, "setStarterModelPolicyDraft");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.setStarterModelPolicyDraft is not callable");
+  Reflect.apply(method, app, [draft]);
+}
+
 function sessionController(app: PiWebUiApp): SessionController {
   const controller: unknown = Reflect.get(app, "sessions");
   if (!(controller instanceof SessionController)) throw new Error("PiWebUiApp session controller is unavailable");
@@ -3032,7 +3088,7 @@ function isStarterNotice(value: unknown): value is StarterNotice {
   if (typeof value !== "object" || value === null) return false;
   const kind: unknown = Reflect.get(value, "kind");
   const scope: unknown = Reflect.get(value, "scope");
-  if (kind !== "policy-blocked" && kind !== "start-failed" && kind !== "defaults-failed") return false;
+  if (kind !== "policy-blocked" && kind !== "start-failed" && kind !== "defaults-failed" && kind !== "policy-fallback") return false;
   if (typeof scope !== "object" || scope === null) return false;
   return typeof Reflect.get(scope, "machineId") === "string" && typeof Reflect.get(scope, "workspaceId") === "string";
 }

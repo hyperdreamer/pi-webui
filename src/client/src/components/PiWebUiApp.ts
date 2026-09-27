@@ -7,7 +7,7 @@ import { closesActionPaletteAfterRun } from "../actions";
 import type { SessionDefaultsResponse, SessionDefaultsUpdate, SessionDefaultsV2Response, StarterModelPolicyPreference } from "../api";
 import type { ClientSessionModelPolicyStatus, ExactModelSelection, ModelTier, ModelTierSettingsResponse, ProjectUsageResponse, SessionModelPolicyResponse, SessionModelPolicyUpdate, SessionStatus } from "../../../shared/apiTypes";
 import { completeUnownedStarterExactFromActiveTier, evaluateStarterModelPolicyDraft, isDraftReadyToApply, modelPolicyDraftFromPolicy, relinkStarterExactBranch, sameExactSelection, seedModelPolicyDraft, seedStarterModelPolicyDraft, selectDraftExact, selectDraftTier, sessionModelPolicyUpdateFromDraft, starterExactSelection, starterModelPolicyPreferenceFromDraft, updateDraftExactModel, updateDraftExactThinking, type SessionModelPolicyDraft, type StarterModelPolicyEvaluation } from "./sessionModelPolicyDraft";
-import { shouldRetainStarterNotice, starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
+import { shouldRetainStarterNotice, starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, starterPolicyFallbackNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
 import { starterStartDecision, type StarterStartDecision } from "./starterPolicyStartDecision";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
 import { initialAppState, type AppState } from "../appState";
@@ -26,7 +26,7 @@ import { ProjectCatalogController } from "../controllers/projectCatalogControlle
 import { RecentProjectController } from "../controllers/recentProjectController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
-import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
+import { SessionController, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
 import { HostSpeechController } from "../controllers/hostSpeechController";
 import { resolveAssistantSpeechSource } from "../hostSpeechText";
@@ -273,6 +273,7 @@ export class PiWebUiApp extends LitElement {
         this.promptEditor?.replaceText(text);
       },
       onStarterModelPolicyConfirmed: (event) => { this.handleStarterModelPolicyConfirmed(event); },
+      onStarterModelPolicySubstitution: (event) => { this.handleStarterModelPolicySubstitution(event); },
     },
   );
   private readonly workspaces = new WorkspaceController(
@@ -2001,6 +2002,15 @@ export class PiWebUiApp extends LitElement {
         ? { reason: "creation", requestedPolicy: event.requestedPolicy }
         : { reason: "policy-save" },
     );
+  }
+
+  private handleStarterModelPolicySubstitution(event: StarterModelPolicySubstitutionEvent): void {
+    const workspace = this.state.workspaces.find((candidate) => candidate.path === event.session.cwd);
+    if (workspace === undefined) return;
+    this.publishStarterNotice(starterPolicyFallbackNotice(
+      `Session started with the Lightweight utility model (${event.confirmed.resolved.model.provider}/${event.confirmed.resolved.model.id}) because the remembered model was unavailable.`,
+      { machineId: event.machineId, workspaceId: workspace.id },
+    ));
   }
 
   private handleConfirmedStarterModelPolicyRemembered(
