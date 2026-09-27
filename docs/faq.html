@@ -103,6 +103,7 @@
             <a href="#laptop-or-server">Laptop or server?</a>
             <a href="#plugins">Can I use local plugins?</a>
             <a href="#sessions-stop">Sessions stop unexpectedly</a>
+            <a href="#lightweight-model-session">Session started on the lightweight model</a>
             <a href="#speech-input">Dictation is unavailable, or speech input fails</a>
             <a href="#speech-input-privacy">Where does dictated audio go?</a>
             <a href="#logs">Where are logs?</a>
@@ -328,6 +329,18 @@
                 <pre id="session-logs"><code><span class="prompt">$</span> pi-webui status
 <span class="prompt">$</span> pi-webui logs</code></pre>
               </div>
+            </article>
+
+            <article id="lightweight-model-session" class="faq-item">
+              <h2>My session started on the lightweight model — how do I restore my model?</h2>
+              <p>
+                The remembered starter model for that workspace could not be resolved when the session started, so PI WEBUI
+                substituted the configured <code>lightweight</code> utility model and remembered that substitution as the
+                workspace's starter policy. It is not restored automatically. To get the original model back, open the
+                session's model policy, choose the intended Exact model and thinking level (or repair the tier ladder and
+                choose a tier), and reselect it for the next session. To fix or replace the fallback itself, use
+                <strong>Settings → Utility models</strong>.
+              </p>
             </article>
 
             <article id="speech-input" class="faq-item">
