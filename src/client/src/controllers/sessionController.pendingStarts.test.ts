@@ -360,14 +360,17 @@ describe("SessionController pending starts", () => {
 
     expect(onStarterModelPolicyConfirmed).toHaveBeenCalledTimes(1);
     const confirmation = onStarterModelPolicyConfirmed.mock.calls[0]?.[0];
-    if (confirmation === undefined) throw new Error("Expected a plus-start confirmation");
+    if (confirmation?.reason !== "creation") {
+      throw new Error("Expected a plus-start creation confirmation");
+    }
     expect(confirmation.machineId).toBe("local");
     expect(confirmation.session).toMatchObject({
       id: "new-session",
       creationSource: "session-list-plus",
     });
-    expect(confirmation.policy).toEqual(fullStarterModelPolicyPreference);
-    expect(confirmation.policy).toBe(requestedPolicy);
+    expect(confirmation.reason).toBe("creation");
+    expect(confirmation.requestedPolicy).toEqual(fullStarterModelPolicyPreference);
+    expect(confirmation.requestedPolicy).toBe(requestedPolicy);
   });
 
   it("queues a plus start's initial prompt until backend creation succeeds", async () => {
@@ -448,9 +451,10 @@ describe("SessionController pending starts", () => {
     await start;
 
     expect(onStarterModelPolicyConfirmed).toHaveBeenCalledWith({
+      reason: "creation",
       machineId: "local",
       session: started,
-      policy: fullStarterModelPolicyPreference,
+      requestedPolicy: fullStarterModelPolicyPreference,
     });
   });
 

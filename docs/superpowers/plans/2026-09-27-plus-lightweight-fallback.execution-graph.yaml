@@ -1,0 +1,457 @@
+schema_version: 1
+run_id: pm-run-20260927-021015-30213465
+epoch: 1
+source_plan:
+  path: docs/superpowers/plans/2026-09-27-plus-lightweight-fallback.md
+  sha256: 8a77c1dc3072cfdf3aba62af8d4a98f4c668fd85b82f3c49a95534ebcbd1d7b7
+  commit_oid: 253dc96e392bb1295858eb43589353d2c70ab377
+  task_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+  validator_exit: 0
+  validator_digest: 8a77c1dc3072cfdf3aba62af8d4a98f4c668fd85b82f3c49a95534ebcbd1d7b7
+lanes:
+- id: server-resolution
+  task_ids: [T1, T2, T3, T4, T5]
+  sequences: [1, 2, 3, 4, 5]
+- id: capability
+  task_ids: [T6]
+  sequences: [1]
+- id: client-decision
+  task_ids: [T7]
+  sequences: [1]
+- id: client-render
+  task_ids: [T8]
+  sequences: [1]
+- id: client-notice
+  task_ids: [T9]
+  sequences: [1]
+- id: client-app
+  task_ids: [T10, T11, T12]
+  sequences: [1, 2, 3]
+- id: docs-release
+  task_ids: [T13]
+  sequences: [1]
+tasks:
+- id: T1
+  plan_task: 1
+  title: Typed tier resolution errors
+  lane: server-resolution
+  sequence: 1
+  implementer_tier: fast
+  depends_on: []
+  ownership:
+  - src/server/sessions/modelTierRegistry.ts
+  - src/server/sessions/modelTierRegistry.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: tier-resolution-error
+      signature: 'TierResolutionError, an exported Error subclass with name === "TierResolutionError", thrown by every resolveTier failure and by createModelTierRegistry(...).resolve for configuration and defensive failures; messages are unchanged; validateLadder continues to catch and report { valid: false, reason } instead of throwing'
+      digest: a3bacf692309598701eae2a8b285153537331d7fa57fa3dc3ac35e43be06e1c5
+  validation:
+  - argv: [npm, test, --, --run, src/server/sessions/modelTierRegistry.test.ts]
+    mutates_git: false
+- id: T2
+  plan_task: 2
+  title: Typed session policy resolution errors
+  lane: server-resolution
+  sequence: 2
+  implementer_tier: fast
+  depends_on: [T1]
+  ownership:
+  - src/server/sessions/sessionModelPolicy.ts
+  - src/server/sessions/piSessionService.ts
+  - src/server/sessions/piSessionService.modelPolicy.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: session-model-policy-resolution-error
+      signature: 'SessionModelPolicyResolutionError, an exported Error subclass with name === "SessionModelPolicyResolutionError", thrown by PiSessionService.resolveAvailableExactSelection for its three validation arms: Model not found: ${provider}/${id}, Unknown thinking level ${level} for ${provider}/${id}, and Thinking level ${level} is unsupported by ${provider}/${id}; the leading await session.modelRuntime.refresh({ allowNetwork: false }) stays outside the typed arms and propagates untouched'
+      digest: 59976761386caa9fd30d5233246966b9fe75223be02057ad87973fff628b2fd0
+  validation:
+  - argv: [npm, test, --, --run, src/server/sessions/piSessionService.modelPolicy.test.ts]
+    mutates_git: false
+- id: T3
+  plan_task: 3
+  title: Utility resolver inspection diagnostics
+  lane: server-resolution
+  sequence: 3
+  implementer_tier: advanced
+  depends_on: [T2]
+  ownership:
+  - src/server/sessions/utilityModelResolver.ts
+  - src/server/sessions/utilityModelResolver.test.ts
+  - src/server/sessions/utilityModelExtension.test.ts
+  - src/server/sessions/piSessionService.promptQueue.test.ts
+  - src/server/sessions/piSessionService.rateLimits.test.ts
+  - src/server/speechInput/speechInputPolishingService.test.ts
+  - src/server/speechInput/speechInputPolishingService.rateLimits.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: utility-model-unavailable-reason
+      signature: UtilityModelUnavailableReason = "slot-unset" | "config-invalid" | "model-unavailable" | "thinking-level-unsupported" | "resolution-failed"
+      digest: b2596bbcaa0b10a65d237ba9bda2be6ce1e48c43bf0b4e2c52a5a71163c5d668
+    - name: utility-model-unavailable
+      signature: 'UtilityModelUnavailable = { reason: UtilityModelUnavailableReason; detail?: string }'
+      digest: 24f93a40c093032cf9d647ceb8f3bcb081f770437114b6682db0636a990b8ac5
+    - name: utility-model-inspection
+      signature: 'UtilityModelInspection<TModel> = { candidates: readonly ResolvedUtilityModel<TModel>[]; unavailable?: UtilityModelUnavailable }'
+      digest: a74ca499fabadc5706440f204b94e0814c9ff497c65b29e35fecf74473deb836
+    - name: utility-model-resolver-inspect
+      signature: 'UtilityModelResolver<TModel>.inspect(task): Promise<UtilityModelInspection<TModel>> (required)'
+      digest: f16a927d06cf5185261885fc67196ccd990ed716638370495da06647d53cc87e
+    - name: utility-model-configured-candidates
+      signature: configuredCandidates(task) still returning inspect(task).candidates
+      digest: 33e5310437189868d0532084c6b06bfef0e10dee608276006c40d8a8a6ceb711
+  validation:
+  - argv: [npm, test, --, --run, src/server/sessions/utilityModelResolver.test.ts, src/server/sessions/utilityModelExtension.test.ts, src/server/sessions/piSessionService.promptQueue.test.ts, src/server/sessions/piSessionService.rateLimits.test.ts, src/server/speechInput/speechInputPolishingService.test.ts, src/server/speechInput/speechInputPolishingService.rateLimits.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+- id: T4
+  plan_task: 4
+  title: Pure substituted-policy and error builders
+  lane: server-resolution
+  sequence: 4
+  implementer_tier: fast
+  depends_on: [T3]
+  ownership:
+  - src/server/sessions/sessionModelPolicyFallback.ts
+  - src/server/sessions/sessionModelPolicyFallback.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes:
+    - interface: utility-model-unavailable
+      from: T3
+      digest: 24f93a40c093032cf9d647ceb8f3bcb081f770437114b6682db0636a990b8ac5
+    produces:
+    - name: fallback-session-model-policy
+      signature: 'fallbackSessionModelPolicy(requested: SessionModelPolicy, candidate: { provider: string; id: string; thinkingLevel: string }): SessionModelPolicyPlan'
+      digest: 96d094b0f404e83d099e70e58e7729599323e0cc3c7b5af38673bbddfed6acaa
+    - name: initial-policy-unavailable-error
+      signature: 'initialPolicyUnavailableError(requested: SessionModelPolicy, cause: unknown, unavailable: UtilityModelUnavailable | undefined): Error (retains Error.cause)'
+      digest: 4fc84da1d79c1247a7e33e3735ab190ee976fb918a0274879a206bbaa80274ab
+  validation:
+  - argv: [npm, test, --, --run, src/server/sessions/sessionModelPolicyFallback.test.ts]
+    mutates_git: false
+- id: T5
+  plan_task: 5
+  title: Server resolve split and fallback orchestration
+  lane: server-resolution
+  sequence: 5
+  implementer_tier: capable
+  depends_on: [T4]
+  ownership:
+  - src/server/sessions/piSessionService.ts
+  - src/server/sessions/piSessionService.modelPolicy.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes:
+    - interface: tier-resolution-error
+      from: T1
+      digest: a3bacf692309598701eae2a8b285153537331d7fa57fa3dc3ac35e43be06e1c5
+    - interface: session-model-policy-resolution-error
+      from: T2
+      digest: 59976761386caa9fd30d5233246966b9fe75223be02057ad87973fff628b2fd0
+    - interface: utility-model-resolver-inspect
+      from: T3
+      digest: f16a927d06cf5185261885fc67196ccd990ed716638370495da06647d53cc87e
+    - interface: utility-model-unavailable
+      from: T3
+      digest: 24f93a40c093032cf9d647ceb8f3bcb081f770437114b6682db0636a990b8ac5
+    - interface: fallback-session-model-policy
+      from: T4
+      digest: 96d094b0f404e83d099e70e58e7729599323e0cc3c7b5af38673bbddfed6acaa
+    - interface: initial-policy-unavailable-error
+      from: T4
+      digest: 4fc84da1d79c1247a7e33e3735ab190ee976fb918a0274879a206bbaa80274ab
+    produces:
+    - name: resolve-initial-session-model-policy
+      signature: 'private resolveInitialSessionModelPolicy(session: PiAgentSession, requested: SessionModelPolicy): Promise<{ plan: SessionModelPolicyPlan; resolved: { model: AgentModel; selection: ExactModelSelection }; fallback?: { requestedPolicy: SessionModelPolicy; reason: string } }>'
+      digest: 2d79a5de1e9766b66c74d478cf5084c81a834323823f59218b3af53f83c2753d
+    - name: initialize-complete-session-model-policy-fallback-log
+      signature: initializeCompleteSessionModelPolicy consumes it, logs one info record on substitution with fields { sessionId, cwd, requestedPolicy, fallbackPolicy, reason } and message "session model policy fell back to the lightweight utility model", then applies the returned bound resolved through the unchanged post-resolution sequence
+      digest: 1fdc198265c426a4f04c82143a69264525f6d5c91f513e2bd547437232c27b8e
+  validation:
+  - argv: [npm, test, --, --run, src/server/sessions/piSessionService.modelPolicy.test.ts]
+    mutates_git: false
+  - argv: [npm, test, --, --run, src/server/sessions/sessionModelPolicyFallback.test.ts, src/server/sessions/modelTierRegistry.test.ts, src/server/sessions/utilityModelResolver.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/server/sessions/piSessionService.ts, src/server/sessions/piSessionService.modelPolicy.test.ts]
+    mutates_git: false
+- id: T6
+  plan_task: 6
+  title: Lightweight fallback capability
+  lane: capability
+  sequence: 1
+  implementer_tier: fast
+  depends_on: []
+  ownership:
+  - src/shared/apiTypes.ts
+  - src/shared/capabilities.ts
+  - src/shared/capabilities.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: sessions-model-policy-lightweight-fallback-capability
+      signature: PI_WEBUI_CAPABILITIES.sessionsModelPolicyLightweightFallback = "sessions.modelPolicyLightweightFallback", present in WEB_RUNTIME_CAPABILITIES and SESSIOND_RUNTIME_CAPABILITIES after sessionsModelPolicyStarterSelection, and in EFFECTIVE_CAPABILITY_REQUIREMENTS as ["web", "sessiond"]
+      digest: f98f9a286e0db4d2d8b7854554a9cf8943d5fa7499a898129dd665d0c90545e8
+  validation:
+  - argv: [npm, test, --, --run, src/shared/capabilities.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/shared/capabilities.ts]
+    mutates_git: false
+- id: T7
+  plan_task: 7
+  title: Starter policy structural predicate and start decision
+  lane: client-decision
+  sequence: 1
+  implementer_tier: standard
+  depends_on: []
+  ownership:
+  - src/client/src/components/starterPolicyStartDecision.ts
+  - src/client/src/components/sessionModelPolicyDraft.ts
+  - src/client/src/components/starterPolicyStartDecision.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: starter-policy-fallback-warning-clause
+      signature: STARTER_POLICY_FALLBACK_WARNING_CLAUSE = "The session may start with the Lightweight utility model."
+      digest: d5d3b71d4ac58960e21d3d0a8fab446233f8badc0aac8e61534b80ca99cdc4fa
+    - name: is-structurally-complete-starter-policy
+      signature: 'isStructurallyCompleteStarterPolicy(draft): boolean'
+      digest: d13597087c001b8b50832621174dba1dd8990705d2478b66d0deb4b6642c1cc2
+    - name: starter-model-policy-preference
+      signature: 'starterModelPolicyPreference(draft): StarterModelPolicyPreference (deep clone, throws "Cannot build a complete starter model policy from an incomplete draft")'
+      digest: 9dd5ea7a5bd7a27934c1fd31ec54079bc94734f3ab754ec9e01831ddfe2929f8
+    - name: starter-start-decision-type
+      signature: 'StarterStartDecision = { kind: "ready" } | { kind: "fallback"; requested: StarterModelPolicyPreference; warning?: string } | { kind: "blocked"; reason: string }'
+      digest: 0d0286724bfa244828e5b5197421145885b32cabfd5cd1488fc0a28df52b7880
+    - name: starter-start-decision
+      signature: 'starterStartDecision(input: { draft; catalog; fallbackSupported; catalogUnavailableReason }): StarterStartDecision | undefined'
+      digest: e879bf663a1a193cf514465d6498a6244bc11ba036cfd1b61e99ca3669da89f3
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/components/starterPolicyStartDecision.test.ts, src/client/src/components/sessionModelPolicyDraft.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+- id: T8
+  plan_task: 8
+  title: Untruncated warning rendering
+  lane: client-render
+  sequence: 1
+  implementer_tier: standard
+  depends_on: []
+  ownership:
+  - src/client/src/components/SessionModelPolicyControl.ts
+  - src/client/src/components/PromptEditor.ts
+  - src/client/src/components/SessionModelPolicyControl.test.ts
+  - src/client/src/components/PromptEditor.sessionConfiguration.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: session-model-policy-control-warning
+      signature: 'SessionModelPolicyControl.warning: string (property) rendering an always-present <span class="policy-warning" role="status"> line and suppressing .policy-diagnostic when the warning is non-blank'
+      digest: 795ebde8dfab4300321f0a6e06232471907c11919ea4ce3c0494975d6207916a
+    - name: prompt-editor-model-policy-warning
+      signature: 'PromptEditor.modelPolicyWarning: string forwarded to .warning on <session-model-policy-control>'
+      digest: e588684a76f77b4a7d5638c9a550dc3d7db19b7302428c3bca2fd9a07533c506
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/components/SessionModelPolicyControl.test.ts, src/client/src/components/PromptEditor.sessionConfiguration.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/client/src/components/SessionModelPolicyControl.ts, src/client/src/components/PromptEditor.ts]
+    mutates_git: false
+- id: T9
+  plan_task: 9
+  title: '`policy-fallback` starter notice kind'
+  lane: client-notice
+  sequence: 1
+  implementer_tier: fast
+  depends_on: []
+  ownership:
+  - src/client/src/components/starterNotice.ts
+  - src/client/src/components/starterNotice.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: starter-notice-policy-fallback-kind
+      signature: StarterNoticeKind includes "policy-fallback"
+      digest: d56d6258d756c6cd2da1aeb815cf1d8acc21fb7068e97d56d27366c933606cf5
+    - name: starter-policy-fallback-notice
+      signature: 'starterPolicyFallbackNotice(message: string, scope: StarterNoticeScope): StarterNotice returns { kind: "policy-fallback", message, scope }'
+      digest: 16e765125106d26fbf40ea543ba5f397a1ff5bdb7cb60f41c31e48ff3595b9e4
+    - name: starter-policy-fallback-retention
+      signature: starterNoticeVisibleText returns the captured message and ignores the live blocked reason; shouldRetainStarterNotice retains it in scope
+      digest: 8ff9d45e23c11557bb2ec85a578d1ec94bad163748e5f9cb667a478d411e2fed
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/components/starterNotice.test.ts]
+    mutates_git: false
+- id: T10
+  plan_task: 10
+  title: Starter projection, warning binding, and capability-gated start
+  lane: client-app
+  sequence: 1
+  implementer_tier: advanced
+  depends_on: [T6, T7, T8]
+  ownership:
+  - src/client/src/components/PiWebUiApp.ts
+  - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes:
+    - interface: sessions-model-policy-lightweight-fallback-capability
+      from: T6
+      digest: f98f9a286e0db4d2d8b7854554a9cf8943d5fa7499a898129dd665d0c90545e8
+    - interface: starter-start-decision-type
+      from: T7
+      digest: 0d0286724bfa244828e5b5197421145885b32cabfd5cd1488fc0a28df52b7880
+    - interface: starter-start-decision
+      from: T7
+      digest: e879bf663a1a193cf514465d6498a6244bc11ba036cfd1b61e99ca3669da89f3
+    - interface: prompt-editor-model-policy-warning
+      from: T8
+      digest: e588684a76f77b4a7d5638c9a550dc3d7db19b7302428c3bca2fd9a07533c506
+    produces:
+    - name: starter-model-policy-inputs
+      signature: starterModelPolicyInputs() returning { status, response, decision?, warning? } where a fallback decision omits status.blockedReason
+      digest: 2dc55adc2475aba21cd72591972179c405deb0eace1b7768445e7d5f58fdf39d
+    - name: starter-model-policy-blocks-start
+      signature: 'starterModelPolicyBlocksStart(): boolean'
+      digest: 279a91eea397dc9de444561079db7bfbb21fcaee280928427a3217f24d086bf2
+    - name: starter-model-policy-fallback-preference
+      signature: 'starterModelPolicyFallbackPreference(): StarterModelPolicyPreference | undefined'
+      digest: bc126c9c11719d95df75f0451f833cf15d4b0df35b357ec1d01f4bb4179c0dfd
+    - name: starter-model-policy-lightweight-fallback-supported
+      signature: 'private starterModelPolicyLightweightFallbackSupported(machineId?): boolean'
+      digest: 545e2393b06466294547d1823c14d8050d7072675b04f61deb9d7a5111df3b7b
+    - name: plus-start-fallback-dispatch
+      signature: both start paths dispatch the complete fallback preference
+      digest: ac823228061d0942c7d44923979d658afc043863fe394cd7db756c7b5d2b4fe0
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/client/src/components/PiWebUiApp.ts]
+    mutates_git: false
+- id: T11
+  plan_task: 11
+  title: Confirmed event union, write context, and guarded adoption
+  lane: client-app
+  sequence: 2
+  implementer_tier: advanced
+  depends_on: [T10]
+  ownership:
+  - src/client/src/controllers/sessionController.ts
+  - src/client/src/controllers/confirmedStarterModelPolicyPreferenceWriter.ts
+  - src/client/src/components/PiWebUiApp.ts
+  - src/client/src/controllers/confirmedStarterModelPolicyPreferenceWriter.test.ts
+  - src/client/src/controllers/sessionController.pendingStarts.test.ts
+  - src/client/src/controllers/sessionController.modelPolicy.test.ts
+  - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes: []
+    produces:
+    - name: starter-model-policy-confirmed-event
+      signature: StarterModelPolicyConfirmedEvent as a discriminated union on reason ("creation" with requestedPolicy, "policy-save" with policy)
+      digest: 9a766ee4d12073fc7452b96a047d6d280940a15d7a572f84476543d44f20dc65
+    - name: confirmed-preference-write-context
+      signature: ConfirmedPreferenceWriteContext
+      digest: 230a2b8efe920140f08f4a9d4dd3f0aacc004011b36a50caebcfac9d7dc644b8
+    - name: confirmed-writer-write
+      signature: 'ConfirmedStarterModelPolicyPreferenceWriter.write(scope, session, context): Promise<void> with onRemembered(scope, preference, context)'
+      digest: 8b4226c7f8b4494f124fd282499cf2ac6102a1067595e2e0baa87668f8c67fce
+    - name: confirmed-adoption
+      signature: immediate save-path adoption and draft-equality-guarded creation adoption
+      digest: e05faf8a160539a88927c7927ba2672f55a3c45aca4e91c9c3b859492fefe3be
+    - name: confirmed-write-failure-warning
+      signature: CONFIRMED_STARTER_MODEL_POLICY_WARNING = "Could not remember this model policy for future sessions."
+      digest: f52c9b9545be03a967607a5f28f0d78aa2231f56eb1c1f8f6aa2e4381efabf1d
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/controllers/confirmedStarterModelPolicyPreferenceWriter.test.ts, src/client/src/controllers/sessionController.pendingStarts.test.ts, src/client/src/controllers/sessionController.modelPolicy.test.ts, src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/client/src/controllers/sessionController.ts, src/client/src/controllers/confirmedStarterModelPolicyPreferenceWriter.ts, src/client/src/components/PiWebUiApp.ts]
+    mutates_git: false
+- id: T12
+  plan_task: 12
+  title: Status-derived substitution detection and notice
+  lane: client-app
+  sequence: 3
+  implementer_tier: advanced
+  depends_on: [T9, T11]
+  ownership:
+  - src/client/src/controllers/sessionController.ts
+  - src/client/src/components/PiWebUiApp.ts
+  - src/client/src/controllers/sessionController.starterPolicySubstitution.test.ts
+  - src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts
+  exclusive_resources: []
+  interfaces:
+    consumes:
+    - interface: starter-policy-fallback-notice
+      from: T9
+      digest: 16e765125106d26fbf40ea543ba5f397a1ff5bdb7cb60f41c31e48ff3595b9e4
+    produces:
+    - name: starter-model-policy-substitution-event
+      signature: 'SessionControllerDependencies.onStarterModelPolicySubstitution?: (event: StarterModelPolicySubstitutionEvent) => void where StarterModelPolicySubstitutionEvent = { machineId: string; session: SessionInfo; requestedPolicy: StarterModelPolicyPreference; confirmed: { mode: SessionModelPolicyMode; resolved: ExactModelSelection } }'
+      digest: 5ca263b9f8ebbf41c1da525d85a3d4946c65847ef6d576729b923e616ad5825d
+    - name: starter-policy-substitution-capture
+      signature: idempotent capture from both correlation points; one-shot comparison on the first applied status carrying modelPolicy
+      digest: 7f342833f3ef35e204057a3e64adf450e7b34c2c7bf489f7389d90b802f529b0
+  validation:
+  - argv: [npm, test, --, --run, src/client/src/controllers/sessionController.starterPolicySubstitution.test.ts, src/client/src/components/PiWebUiApp.sessionModelPolicy.test.ts]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false
+  - argv: [npx, eslint, src/client/src/controllers/sessionController.ts, src/client/src/components/PiWebUiApp.ts]
+    mutates_git: false
+- id: T13
+  plan_task: 13
+  title: Documentation and changeset
+  lane: docs-release
+  sequence: 1
+  implementer_tier: fast
+  depends_on: [T7, T9, T11]
+  ownership:
+  - docs/config.md
+  - docs/config.html
+  - docs/faq.html
+  - .changeset/plus-lightweight-fallback.md
+  exclusive_resources: []
+  interfaces:
+    consumes:
+    - interface: starter-policy-fallback-warning-clause
+      from: T7
+      digest: d5d3b71d4ac58960e21d3d0a8fab446233f8badc0aac8e61534b80ca99cdc4fa
+    - interface: starter-policy-fallback-notice
+      from: T9
+      digest: 16e765125106d26fbf40ea543ba5f397a1ff5bdb7cb60f41c31e48ff3595b9e4
+    - interface: confirmed-write-failure-warning
+      from: T11
+      digest: f52c9b9545be03a967607a5f28f0d78aa2231f56eb1c1f8f6aa2e4381efabf1d
+    produces:
+    - name: lightweight-fallback-docs
+      signature: synchronized docs/config.md and docs/config.html Utility models claims, a docs/faq.html troubleshooting entry with id lightweight-model-session, and one minor Changeset
+      digest: 3ffeb5beebb311fd28f0ead612fb424224c02a64e7070f015e780b4a19302ad4
+  validation:
+  - argv: [npm, run, lint]
+    mutates_git: false
+  - argv: [npx, knip]
+    mutates_git: false
+  - argv: [npm, run, typecheck]
+    mutates_git: false

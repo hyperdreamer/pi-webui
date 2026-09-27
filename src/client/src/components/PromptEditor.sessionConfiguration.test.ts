@@ -388,6 +388,39 @@ describe("PromptEditor session controls", () => {
     compact.click();
     expect(onCompact).not.toHaveBeenCalled();
   });
+
+  it("forwards the warning to the policy control", () => {
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(tieredPolicyStatus);
+    editor.modelPolicyWarning = "Policy warning";
+    editor.modelPolicyStatus = tieredPolicyStatus;
+
+    const control = renderedPolicyControl(renderCompactStatusElement(editor));
+    expect(control.warning).toBe("Policy warning");
+    expect(control.status).toBe(tieredPolicyStatus);
+
+    const blank = new PromptEditor();
+    blank.status = sessionStatus(tieredPolicyStatus);
+    expect(renderedPolicyControl(renderCompactStatusElement(blank)).warning).toBe("");
+  });
+
+  it("re-renders the policy control for a warning-only property change", async () => {
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(tieredPolicyStatus);
+    document.body.append(editor);
+    try {
+      await editor.updateComplete;
+      const control = mountedPolicyControl(editor);
+      expect(control.warning).toBe("");
+
+      editor.modelPolicyWarning = "Policy warning";
+      await editor.updateComplete;
+
+      expect(control.warning).toBe("Policy warning");
+    } finally {
+      editor.remove();
+    }
+  });
 });
 
 type RenderCompactStatus = (this: PromptEditor) => TemplateResult | null;
@@ -412,6 +445,7 @@ type RenderedPolicyControl = HTMLElement & {
   saving: boolean;
   editable: boolean;
   error: string;
+  warning: string;
   onSelectMode?: (mode: "exact" | "tiered") => void;
 };
 
@@ -435,10 +469,16 @@ function renderCompactStatusElement(editor: PromptEditor): HTMLElement {
   return controls;
 }
 
-function renderedPolicyControl(controls: HTMLElement): RenderedPolicyControl {
+function renderedPolicyControl(controls: ParentNode): RenderedPolicyControl {
   const control = controls.querySelector<RenderedPolicyControl>("session-model-policy-control");
   if (control === null) throw new Error("PromptEditor policy control did not render");
   return control;
+}
+
+function mountedPolicyControl(editor: PromptEditor): RenderedPolicyControl {
+  const root = editor.shadowRoot;
+  if (root === null) throw new Error("PromptEditor shadow root was unavailable");
+  return renderedPolicyControl(root);
 }
 
 function renderedTierMenu(controls: HTMLElement): HTMLElementTagNameMap["session-tier-menu"] {

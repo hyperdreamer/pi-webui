@@ -1,4 +1,5 @@
 import type { SessionInfo } from "../api";
+import type { StarterModelPolicyPreference } from "../../../shared/apiTypes";
 import type {
   StarterModelPolicyPreferenceWriteScope,
   StarterModelPolicyPreferenceWriteSnapshot,
@@ -9,11 +10,20 @@ export type {
   StarterModelPolicyPreferenceWriteSnapshot,
 } from "./starterModelPolicyPreferenceWriter";
 
+export type ConfirmedPreferenceWriteContext =
+  | { reason: "creation"; requestedPolicy: StarterModelPolicyPreference }
+  | { reason: "policy-save" };
+
 export interface ConfirmedStarterModelPolicyPreferenceWriterDependencies {
   remember(
     scope: StarterModelPolicyPreferenceWriteScope,
     session: SessionInfo,
-  ): Promise<unknown>;
+  ): Promise<StarterModelPolicyPreference>;
+  onRemembered?: (
+    scope: StarterModelPolicyPreferenceWriteScope,
+    preference: StarterModelPolicyPreference,
+    context: ConfirmedPreferenceWriteContext,
+  ) => void;
   onStateChange?: (
     scope: StarterModelPolicyPreferenceWriteScope,
     snapshot: StarterModelPolicyPreferenceWriteSnapshot,
@@ -22,6 +32,7 @@ export interface ConfirmedStarterModelPolicyPreferenceWriterDependencies {
 
 interface PendingConfirmedPreferenceWrite {
   session: SessionInfo;
+  context: ConfirmedPreferenceWriteContext;
   completions: (() => void)[];
 }
 
@@ -37,7 +48,11 @@ export class ConfirmedStarterModelPolicyPreferenceWriter {
 
   constructor(private readonly deps: ConfirmedStarterModelPolicyPreferenceWriterDependencies) {}
 
-  write(scope: StarterModelPolicyPreferenceWriteScope, session: SessionInfo): Promise<void> {
+  write(
+    scope: StarterModelPolicyPreferenceWriteScope,
+    session: SessionInfo,
+    context: ConfirmedPreferenceWriteContext,
+  ): Promise<void> {
     const state = this.stateFor(scope);
     let resolveCompletion: (() => void) | undefined;
     const completion = new Promise<void>((resolvePromise) => { resolveCompletion = resolvePromise; });
@@ -46,9 +61,10 @@ export class ConfirmedStarterModelPolicyPreferenceWriter {
     }
 
     if (state.pending === undefined) {
-      state.pending = { session: cloneSession(session), completions: [resolveCompletion] };
+      state.pending = { session: cloneSession(session), context: cloneContext(context), completions: [resolveCompletion] };
     } else {
       state.pending.session = cloneSession(session);
+      state.pending.context = cloneContext(context);
       state.pending.completions.push(resolveCompletion);
     }
     if (state.worker === undefined) this.startWorker(state);
@@ -92,8 +108,9 @@ export class ConfirmedStarterModelPolicyPreferenceWriter {
       const pending = state.pending;
       state.pending = undefined;
       try {
-        await this.deps.remember(cloneScope(state.scope), pending.session);
+        const remembered = await this.deps.remember(cloneScope(state.scope), pending.session);
         state.error = undefined;
+        this.reportRemembered(state, remembered, pending.context);
       } catch (error) {
         state.error = String(error);
       }
@@ -129,6 +146,18 @@ export class ConfirmedStarterModelPolicyPreferenceWriter {
       // State reporting must not interrupt confirmed preference persistence.
     }
   }
+
+  private reportRemembered(
+    state: ConfirmedPreferenceWriteState,
+    preference: StarterModelPolicyPreference,
+    context: ConfirmedPreferenceWriteContext,
+  ): void {
+    try {
+      this.deps.onRemembered?.(cloneScope(state.scope), preference, context);
+    } catch {
+      // Observation must not interrupt confirmed preference persistence.
+    }
+  }
 }
 
 function scopeKey(scope: StarterModelPolicyPreferenceWriteScope): string {
@@ -143,6 +172,23 @@ function cloneScope(
 
 function cloneSession(session: SessionInfo): SessionInfo {
   return { ...session };
+}
+
+function cloneContext(context: ConfirmedPreferenceWriteContext): ConfirmedPreferenceWriteContext {
+  return context.reason === "creation"
+    ? { reason: "creation", requestedPolicy: clonePreference(context.requestedPolicy) }
+    : { reason: "policy-save" };
+}
+
+function clonePreference(preference: StarterModelPolicyPreference): StarterModelPolicyPreference {
+  return {
+    mode: preference.mode,
+    exact: {
+      model: { ...preference.exact.model },
+      thinkingLevel: preference.exact.thinkingLevel,
+    },
+    ...(preference.tier === undefined ? {} : { tier: preference.tier }),
+  };
 }
 
 function snapshotFor(

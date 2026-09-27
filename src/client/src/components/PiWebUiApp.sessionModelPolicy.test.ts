@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type {
   ClientSessionModelPolicyStatus,
+  ExactModelSelection,
   MachineRuntime,
   ModelTier,
   ModelTierLadder,
@@ -21,9 +22,10 @@ import type {
 } from "../../../shared/apiTypes";
 import { api, modelTiersApi, sessionsApi, type Machine, type Project, type SessionDefaultsResponse, type SessionInfo, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
-import { SessionController, type StarterModelPolicyConfirmedEvent } from "../controllers/sessionController";
+import { SessionController, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
 import { findTemplateContaining, isTemplateResult, templateStrings, templateText, templateValueAfterMarker, templateValues } from "../templateInspection.testSupport";
 import { PiWebUiApp } from "./PiWebUiApp";
+import type { SessionModelPolicyDraft } from "./sessionModelPolicyDraft";
 import type { StarterNotice } from "./starterNotice";
 import type { ThinkingLevelOption } from "./thinkingLevelOptions";
 
@@ -186,6 +188,11 @@ const completeDefaultPolicy: StarterModelPolicyPreference = {
   exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
 };
 
+const LIGHTWEIGHT_SELECTION: ExactModelSelection = {
+  model: { provider: "openai", id: "gpt-basic" },
+  thinkingLevel: "off",
+};
+
 function activeSession(): SessionInfo {
   return {
     id: "session-a",
@@ -292,6 +299,29 @@ function fullPreferenceCapableStarterState(): AppState {
     },
   };
 }
+
+function lightweightFallbackStarterState(): AppState {
+  return {
+    ...starterState(),
+    machineRuntimes: {
+      local: machineRuntime([
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicy,
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicyDefaults,
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicyStarterSelection,
+        PI_WEBUI_CAPABILITIES.sessionsModelPolicyLightweightFallback,
+      ], "local"),
+    },
+  };
+}
+
+const lightweightFallbackUnavailableExact: SessionModelPolicy = {
+  mode: "exact",
+  exact: { model: { provider: "openai", id: "retired" }, thinkingLevel: "medium" },
+};
+const lightweightFallbackIncompleteExact: SessionModelPolicy = {
+  mode: "exact",
+  exact: { model: { provider: "", id: "" }, thinkingLevel: "" },
+};
 
 function activeState(overrides: Partial<AppState> = {}): AppState {
   const session = activeSession();
@@ -1823,8 +1853,9 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     }));
     setModelTierCatalog(app, validCatalog(), "local");
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledOnce(); });
     expect(remember).toHaveBeenCalledWith(session, "local");
@@ -1928,12 +1959,13 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
       machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
     }));
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => {
       expect(templateText(renderApp(app))).toContain(
-        "Could not remember this model policy; this session still uses it.",
+        "Could not remember this model policy for future sessions.",
       );
     });
     expect(appState(app).error).toBe("");
@@ -1941,7 +1973,7 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
 
     expect(starterPlusModelPolicyInitializer(app)).toEqual(completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy: completeDefaultPolicy });
 
     await vi.waitFor(() => {
       expect(remember).toHaveBeenCalledTimes(2);
@@ -2022,12 +2054,14 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
       machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
     }));
     setModelTierCatalog(app, validCatalog(), "local");
+    setStarterModelPolicy(app, completeDefaultPolicy);
 
-    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: selectedSession, requestedPolicy: completeDefaultPolicy });
     confirmStarterPolicy(app, {
+      reason: "creation",
       machineId: "local",
       session: otherSession,
-      policy: {
+      requestedPolicy: {
         mode: "tiered",
         tier: "advanced",
         exact: { model: { ...advancedModelOption.model }, thinkingLevel: "high" },
@@ -2060,11 +2094,11 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     }));
     setModelTierCatalog(app, validCatalog(), "local");
 
-    confirmStarterPolicy(app, { machineId: "local", session: selectedSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: selectedSession, requestedPolicy: completeDefaultPolicy });
     if (!Reflect.set(app, "starterModelPolicyPreferenceReadError", "current session diagnostic")) {
       throw new Error("Could not set the starter model policy diagnostic");
     }
-    confirmStarterPolicy(app, { machineId: "local", session: otherSession, policy: completeDefaultPolicy });
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session: otherSession, requestedPolicy: completeDefaultPolicy });
     selectedWrite.reject(new Error("selected session write failed"));
 
     await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
@@ -2077,6 +2111,44 @@ describe("PiWebUiApp confirmed starter policy writeback", () => {
     });
     expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyError="))
       .toBe("current session diagnostic");
+  });
+
+  it("adopts the confirmed preference only when the draft is unchanged", async () => {
+    const app = createApp();
+    const session = plusCreatedSession();
+    const requestedPolicy: StarterModelPolicyPreference = {
+      mode: "tiered",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    };
+    const confirmedPreference: StarterModelPolicyPreference = {
+      mode: "exact",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-basic" }, thinkingLevel: "off" },
+    };
+    const remember = vi.spyOn(sessionsApi, "rememberCurrentModelPolicy").mockResolvedValue(confirmedPreference);
+    setAppState(app, activeState({
+      sessions: [session],
+      selectedSession: session,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+    setStarterModelPolicy(app, requestedPolicy);
+
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy });
+
+    await vi.waitFor(() => { expect(starterModelPolicy(app)).toEqual(confirmedPreference); });
+
+    const edited: SessionModelPolicy = {
+      mode: "exact",
+      tier: "advanced",
+      exact: { model: { provider: "openai", id: "gpt-advanced" }, thinkingLevel: "high" },
+    };
+    setStarterModelPolicy(app, edited);
+    confirmStarterPolicy(app, { reason: "creation", machineId: "local", session, requestedPolicy });
+
+    await vi.waitFor(() => { expect(remember).toHaveBeenCalledTimes(2); });
+    await flush();
+    expect(starterModelPolicy(app)).toEqual(edited);
   });
 });
 
@@ -2409,6 +2481,178 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
 
     expect(startWithPrompt).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it("shows the contingent warning and keeps Start enabled when the remembered model is unavailable", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, lightweightFallbackUnavailableExact);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    const editor = promptEditorTemplate(app);
+    expect(templateValueAfterMarker(editor, ".modelPolicyWarning="))
+      .toBe("Selected provider/model is unavailable. The session may start with the Lightweight utility model.");
+    expect(templateValueAfterMarker(editor, ".sendDisabled=")).toBe(false);
+    expect(starterModelPolicyBlocksStart(app)).toBe(false);
+  });
+
+  it("renders no warning and starts server-authoritatively when the catalog is unavailable", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, completeDefaultPolicy);
+
+    expect(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyWarning=")).toBe("");
+    expect(starterModelPolicyBlocksStart(app)).toBe(false);
+
+    await startSessionAndOpenChat(app);
+
+    expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
+  });
+
+  it("starts a complete fallback policy without waiting for a never-settling catalog", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockReturnValue(deferred<ModelTierSettingsResponse>().promise);
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, completeDefaultPolicy);
+
+    const start = startSessionAndOpenChat(app);
+    await vi.waitFor(() => {
+      expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
+    });
+    await start;
+  });
+
+  it("starts the fallback preference from the prompt path", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockRejectedValue(new Error("catalog offline"));
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, completeDefaultPolicy);
+
+    startSessionPrompt(app, "hello");
+
+    expect(startPlus).toHaveBeenCalledWith(
+      "hello",
+      undefined,
+      undefined,
+      "inline",
+      completeDefaultPolicy,
+      expect.any(Function),
+    );
+  });
+
+  it("still blocks an incomplete draft with the fallback capability present", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    const startPlusWithPrompt = vi.spyOn(sessionController(app), "startPlusSessionWithPrompt").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, lightweightFallbackIncompleteExact);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(starterModelPolicyBlocksStart(app)).toBe(true);
+
+    await startSessionAndOpenChat(app);
+    startSessionPrompt(app, "do not start");
+
+    expect(start).not.toHaveBeenCalled();
+    expect(startPlus).not.toHaveBeenCalled();
+    expect(startWithPrompt).not.toHaveBeenCalled();
+    expect(startPlusWithPrompt).not.toHaveBeenCalled();
+    expect(templateText(renderApp(app)))
+      .toContain("Choose a provider, model, and thinking level before starting");
+  });
+
+  it("still blocks when the fallback capability is absent", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    setAppState(app, fullPreferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, lightweightFallbackUnavailableExact);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(starterModelPolicyBlocksStart(app)).toBe(true);
+    const status = policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus="));
+    expect(status.blockedReason).toBe("Selected provider/model is unavailable");
+  });
+
+  it("drops a retained policy-blocked notice in the fallback state", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults({
+      starterModelPolicyPreference: { mode: "tiered", tier: "advanced" },
+    }));
+    vi.spyOn(modelTiersApi, "settings")
+      .mockResolvedValue(invalidTierCatalog("advanced", "Advanced points to a missing model"));
+    vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+
+    await startSessionAndOpenChat(app);
+    expect(starterNotice(app)?.kind).toBe("policy-blocked");
+
+    // The fallback capability arrives on the selected machine while the
+    // remembered tier stays unusable, so the decision becomes fallback and the
+    // projected status drops `blockedReason`.
+    setAppState(app, lightweightFallbackStarterState());
+    runWillUpdate(app);
+
+    expect(starterNotice(app)).toBeUndefined();
+    expect(templateText(renderApp(app))).not.toContain("Choose a valid model tier before starting");
+  });
+
+  it("still refuses a legacy blocked start without the starter-selection capability", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaults").mockResolvedValue(starterDefaults());
+    vi.spyOn(modelTiersApi, "settings").mockResolvedValue(validCatalog());
+    const start = vi.spyOn(sessionController(app), "startSession").mockResolvedValue(false);
+    const startWithPrompt = vi.spyOn(sessionController(app), "startSessionWithPrompt")
+      .mockImplementation(promptStartFrom(Promise.resolve(false)));
+    stubComposerFocus(app);
+    setAppState(app, preferenceCapableStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, lightweightFallbackUnavailableExact);
+    setModelTierCatalog(app, validCatalog(), "local");
+
+    expect(policyStatus(templateValueAfterMarker(promptEditorTemplate(app), ".modelPolicyStatus=")).blockedReason)
+      .toBe("Choose a model and thinking level before starting");
+    expect(starterModelPolicyBlocksStart(app)).toBe(true);
+
+    await startSessionAndOpenChat(app);
+    startSessionPrompt(app, "do not start");
+
+    expect(start).not.toHaveBeenCalled();
+    expect(startWithPrompt).not.toHaveBeenCalled();
+    expect(templateText(renderApp(app))).toContain("Choose a model and thinking level before starting");
   });
 });
 
@@ -2807,6 +3051,43 @@ describe("PiWebUiApp policy-blocked starter notice", () => {
     expect(text).toContain("Sessions could not be loaded.");
     expect(text).not.toContain("What would you like to build?");
   });
+
+  it("publishes a policy-fallback notice naming the used model", () => {
+    const app = createApp();
+    const session = plusCreatedSession();
+    setAppState(app, activeState({
+      sessions: [session],
+      selectedSession: session,
+      machineRuntimes: fullPreferenceCapableStarterState().machineRuntimes,
+    }));
+
+    substitutionEvent(app, {
+      machineId: "local",
+      session: plusCreatedSession(),
+      requestedPolicy: completeDefaultPolicy,
+      confirmed: { mode: "exact", resolved: LIGHTWEIGHT_SELECTION },
+    });
+
+    const message = "Session started with the Lightweight utility model (openai/gpt-basic) because the remembered model was unavailable.";
+    expect(templateText(renderApp(app))).toContain(message);
+    expect(starterNotice(app)?.kind).toBe("policy-fallback");
+
+    // A session selection in the same workspace must not retire the notice.
+    setAppState(app, {
+      ...appState(app),
+      sessions: [session],
+      selectedSession: session,
+      status: activeStatus(exactPolicyStatus()),
+    });
+    expect(templateText(renderApp(app))).toContain(message);
+
+    // A starter edit retires it.
+    setStarterModelPolicyDraft(app, {
+      mode: "exact",
+      exact: { model: { provider: "openai", id: "gpt-default" }, thinkingLevel: "medium" },
+    });
+    expect(starterNotice(app)).toBeUndefined();
+  });
 });
 
 // ── harness ─────────────────────────────────────────────────────────────────
@@ -2982,6 +3263,18 @@ function confirmStarterPolicy(app: PiWebUiApp, event: StarterModelPolicyConfirme
   Reflect.apply(method, app, [event]);
 }
 
+function substitutionEvent(app: PiWebUiApp, event: StarterModelPolicySubstitutionEvent): void {
+  const method: unknown = Reflect.get(app, "handleStarterModelPolicySubstitution");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.handleStarterModelPolicySubstitution is not callable");
+  Reflect.apply(method, app, [event]);
+}
+
+function setStarterModelPolicyDraft(app: PiWebUiApp, draft: SessionModelPolicyDraft): void {
+  const method: unknown = Reflect.get(app, "setStarterModelPolicyDraft");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.setStarterModelPolicyDraft is not callable");
+  Reflect.apply(method, app, [draft]);
+}
+
 function sessionController(app: PiWebUiApp): SessionController {
   const controller: unknown = Reflect.get(app, "sessions");
   if (!(controller instanceof SessionController)) throw new Error("PiWebUiApp session controller is unavailable");
@@ -3096,6 +3389,14 @@ function startSessionAndOpenChat(app: PiWebUiApp): Promise<void> {
   return callAsyncAppMethod(app, "startSessionAndOpenChat", []);
 }
 
+function starterModelPolicyBlocksStart(app: PiWebUiApp): boolean {
+  const method: unknown = Reflect.get(app, "starterModelPolicyBlocksStart");
+  if (typeof method !== "function") throw new Error("PiWebUiApp.starterModelPolicyBlocksStart is not callable");
+  const value: unknown = Reflect.apply(method, app, []);
+  if (typeof value !== "boolean") throw new Error("PiWebUiApp.starterModelPolicyBlocksStart did not return a boolean");
+  return value;
+}
+
 function starterPlusModelPolicyInitializer(app: PiWebUiApp): StarterModelPolicyPreference | undefined {
   const method: unknown = Reflect.get(app, "starterPlusModelPolicyInitializer");
   if (typeof method !== "function") throw new Error("PiWebUiApp.starterPlusModelPolicyInitializer is not callable");
@@ -3122,7 +3423,7 @@ function isStarterNotice(value: unknown): value is StarterNotice {
   if (typeof value !== "object" || value === null) return false;
   const kind: unknown = Reflect.get(value, "kind");
   const scope: unknown = Reflect.get(value, "scope");
-  if (kind !== "policy-blocked" && kind !== "start-failed" && kind !== "defaults-failed") return false;
+  if (kind !== "policy-blocked" && kind !== "start-failed" && kind !== "defaults-failed" && kind !== "policy-fallback") return false;
   if (typeof scope !== "object" || scope === null) return false;
   return typeof Reflect.get(scope, "machineId") === "string" && typeof Reflect.get(scope, "workspaceId") === "string";
 }

@@ -235,6 +235,7 @@ describe("SpeechInputPolishingService", () => {
       },
     });
     const resolver: UtilityModelResolver<Model<Api>> = {
+      inspect: vi.fn(() => Promise.resolve({ candidates: [candidate(firstModel)] })),
       configuredCandidates: vi.fn(() => Promise.resolve([candidate(firstModel)])),
     };
     const service = createSpeechInputPolishingService({
@@ -274,6 +275,7 @@ function createHarness(
 ) {
   const configuredCandidates = vi.fn(() => Promise.resolve(candidates));
   const resolver: UtilityModelResolver<Model<Api>> = {
+    inspect: vi.fn(() => Promise.resolve({ candidates })),
     configuredCandidates,
   };
   const service = createSpeechInputPolishingService({

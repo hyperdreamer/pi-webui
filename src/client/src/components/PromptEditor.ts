@@ -66,6 +66,7 @@ export class PromptEditor extends LitElement {
   @property({ type: Boolean }) modelPolicyLoading = false;
   @property({ type: Boolean }) modelPolicySaving = false;
   @property() modelPolicyError = "";
+  @property() modelPolicyWarning = "";
   @property({ attribute: false }) availableThinkingLevels: readonly string[] = [];
   @property({ attribute: false }) speechInputSettings?: SpeechInputSettingsResponse;
   /** Injectable so tests and the app share one app-lifetime draft store. */
@@ -435,6 +436,7 @@ export class PromptEditor extends LitElement {
             .saving=${this.modelPolicySaving}
             .editable=${policyEditable}
             .error=${this.modelPolicyError}
+            .warning=${this.modelPolicyWarning}
             .onSelectMode=${this.onSelectPolicyMode === undefined ? undefined : (mode: "exact" | "tiered") => { if (!this.speechInputActive()) this.onSelectPolicyMode?.(mode); }}
           ></session-model-policy-control>
         `}
