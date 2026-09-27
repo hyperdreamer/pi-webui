@@ -404,14 +404,22 @@ describe("PromptEditor session controls", () => {
     expect(renderedPolicyControl(renderCompactStatusElement(blank)).warning).toBe("");
   });
 
-  it("re-renders for a warning-only property change", () => {
+  it("re-renders the policy control for a warning-only property change", async () => {
     const editor = new PromptEditor();
     editor.status = sessionStatus(tieredPolicyStatus);
+    document.body.append(editor);
+    try {
+      await editor.updateComplete;
+      const control = mountedPolicyControl(editor);
+      expect(control.warning).toBe("");
 
-    const changed: PropertyValues<PromptEditor> = new Map();
-    changed.set("modelPolicyWarning", "Policy warning");
+      editor.modelPolicyWarning = "Policy warning";
+      await editor.updateComplete;
 
-    expect(changeRequiresRender(editor, changed)).toBe(true);
+      expect(control.warning).toBe("Policy warning");
+    } finally {
+      editor.remove();
+    }
   });
 });
 
@@ -461,10 +469,16 @@ function renderCompactStatusElement(editor: PromptEditor): HTMLElement {
   return controls;
 }
 
-function renderedPolicyControl(controls: HTMLElement): RenderedPolicyControl {
+function renderedPolicyControl(controls: ParentNode): RenderedPolicyControl {
   const control = controls.querySelector<RenderedPolicyControl>("session-model-policy-control");
   if (control === null) throw new Error("PromptEditor policy control did not render");
   return control;
+}
+
+function mountedPolicyControl(editor: PromptEditor): RenderedPolicyControl {
+  const root = editor.shadowRoot;
+  if (root === null) throw new Error("PromptEditor shadow root was unavailable");
+  return renderedPolicyControl(root);
 }
 
 function renderedTierMenu(controls: HTMLElement): HTMLElementTagNameMap["session-tier-menu"] {

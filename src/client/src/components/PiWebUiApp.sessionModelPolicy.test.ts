@@ -2220,6 +2220,24 @@ describe("PiWebUiApp starter policy blocking and diagnostics", () => {
     expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
   });
 
+  it("starts a complete fallback policy without waiting for a never-settling catalog", async () => {
+    const app = createApp();
+    vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
+    vi.spyOn(modelTiersApi, "settings").mockReturnValue(deferred<ModelTierSettingsResponse>().promise);
+    const startPlus = vi.spyOn(sessionController(app), "startPlusSession").mockResolvedValue(false);
+    stubComposerFocus(app);
+    setAppState(app, lightweightFallbackStarterState());
+    await loadStarterSessionDefaults(app, mainWorkspace);
+    await flush();
+    setStarterModelPolicy(app, completeDefaultPolicy);
+
+    const start = startSessionAndOpenChat(app);
+    await vi.waitFor(() => {
+      expect(startPlus).toHaveBeenCalledWith(completeDefaultPolicy);
+    });
+    await start;
+  });
+
   it("starts the fallback preference from the prompt path", async () => {
     const app = createApp();
     vi.spyOn(sessionsApi, "sessionDefaultsV2").mockResolvedValue(starterDefaultsV2());
