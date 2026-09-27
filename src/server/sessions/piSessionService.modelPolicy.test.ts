@@ -958,6 +958,12 @@ describe("PiSessionService model policy lifecycle", () => {
       },
       "session model policy fell back to the lightweight utility model",
     );
+    expect(
+      harness.logger.info.mock.calls.filter(
+        ([, message]) =>
+          message === "session model policy fell back to the lightweight utility model",
+      ),
+    ).toHaveLength(1);
   });
 
   it("starts a plus root on the lightweight utility model when its active Tiered selection cannot resolve", async () => {
@@ -991,6 +997,12 @@ describe("PiSessionService model policy lifecycle", () => {
       expect.objectContaining({ reason: "tier advanced names unavailable model" }),
       "session model policy fell back to the lightweight utility model",
     );
+    expect(
+      harness.logger.info.mock.calls.filter(
+        ([, message]) =>
+          message === "session model policy fell back to the lightweight utility model",
+      ),
+    ).toHaveLength(1);
   });
 
   it("cleans up an unseen plus root when no lightweight candidate resolves for an Exact request", async () => {
@@ -1229,8 +1241,14 @@ describe("PiSessionService model policy lifecycle", () => {
   });
 
   it("does not attempt a second candidate when the first fails re-validation", async () => {
+    // The second candidate is the same lightweight tuple that the recast
+    // success test above starts with, so it would resolve. Only the first
+    // candidate is allowed to be tried, and its re-validation failure is final.
     const resolver = fallbackResolver({
-      candidates: [{ model: runtimeModel("openai", "gpt-retired"), thinkingLevel: "off" }],
+      candidates: [
+        { model: runtimeModel("openai", "gpt-retired"), thinkingLevel: "off" },
+        LIGHTWEIGHT_CANDIDATE,
+      ],
     });
     const harness = createModelPolicyHarness({ existing: false, utilityModelResolver: resolver });
 
@@ -1245,6 +1263,8 @@ describe("PiSessionService model policy lifecycle", () => {
     await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
     await expect(rejection).rejects.toThrow(/the lightweight model is not available to this session/u);
     expect(resolver.inspect).toHaveBeenCalledOnce();
+    expect(harness.calls).not.toContain("setModel:openai/gpt-basic");
+    expect(harness.service.activeCount()).toBe(0);
     expect(harness.fake.calls.abort).toBe(1);
     expect(harness.fake.calls.dispose).toBe(1);
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
