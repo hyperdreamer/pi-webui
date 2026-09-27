@@ -188,6 +188,121 @@ describe("utility model resolver", () => {
     expect(loadConfig).toHaveBeenCalledTimes(2);
     expect(getAvailableSnapshot).toHaveBeenCalledTimes(2);
   });
+
+  describe("inspect", () => {
+    it("reports candidates identically to configuredCandidates", async () => {
+      const { resolver } = createHarness({
+        utilityModels: { lightweight: { provider: "acme", id: "small" } },
+      });
+
+      const inspection = await resolver.inspect("lightweight");
+      expect(inspection.candidates).toEqual(
+        await resolver.configuredCandidates("lightweight"),
+      );
+    });
+
+    it("reports an unset slot", async () => {
+      const empty = createHarness({});
+      const emptyModels = createHarness({ utilityModels: {} });
+
+      await expect(empty.resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "slot-unset" },
+      });
+      await expect(emptyModels.resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "slot-unset" },
+      });
+    });
+
+    it("reports an invalid utility configuration with its detail", async () => {
+      const { resolver } = createHarness({
+        utilityModelsError: "utilityModels.lightweight.id is required",
+      });
+
+      await expect(resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: {
+          reason: "config-invalid",
+          detail: "utilityModels.lightweight.id is required",
+        },
+      });
+    });
+
+    it("reports a configured model missing from the catalog", async () => {
+      const { resolver } = createHarness({
+        utilityModels: { lightweight: { provider: "acme", id: "retired" } },
+      });
+
+      await expect(resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "model-unavailable", detail: "acme/retired" },
+      });
+    });
+
+    it("reports an explicitly configured level the model does not support", async () => {
+      const { resolver } = createHarness(
+        {
+          utilityModels: {
+            lightweight: { provider: "acme", id: "small", thinkingLevel: "max" },
+          },
+        },
+        { thinkingLevelsForModel: () => ["off", "minimal"] },
+      );
+
+      await expect(resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "thinking-level-unsupported", detail: "max" },
+      });
+    });
+
+    it("reports a resolution failure and logs it without throwing", async () => {
+      const error = new Error("catalog unavailable");
+      const logger = { info: vi.fn() };
+      const resolver = createUtilityModelResolver({
+        loadConfig: () => ({
+          utilityModels: { lightweight: { provider: "acme", id: "small" } },
+        }),
+        modelRuntime: {
+          refresh: () => Promise.reject(error),
+          getAvailableSnapshot: () => [lightweight],
+        },
+        thinkingLevelsForModel: () => supportedThinkingLevels,
+        logger,
+      });
+
+      await expect(resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "resolution-failed", detail: "catalog unavailable" },
+      });
+      expect(logger.info).toHaveBeenCalledWith(
+        { err: error, task: "lightweight" },
+        "utility model resolution failed",
+      );
+    });
+
+    it("reports a config load failure as resolution-failed", async () => {
+      const { resolver } = createHarness(
+        {},
+        { loadConfigError: new Error("config unavailable") },
+      );
+
+      await expect(resolver.inspect("lightweight")).resolves.toEqual({
+        candidates: [],
+        unavailable: { reason: "resolution-failed", detail: "config unavailable" },
+      });
+    });
+
+    it("omits unavailable when a candidate resolves", async () => {
+      const { resolver } = createHarness({
+        utilityModels: { lightweight: { provider: "acme", id: "small" } },
+      });
+
+      const inspection = await resolver.inspect("lightweight");
+      expect(inspection.candidates).toHaveLength(1);
+      expect(Object.hasOwn(inspection, "unavailable")).toBe(false);
+    });
+  });
 });
 
 describe("utility model fallback runner", () => {
@@ -208,6 +323,7 @@ describe("utility model fallback runner", () => {
       thinkingLevel: "minimal" as const,
     });
     const resolver: UtilityModelResolver<FakeModel> = {
+      inspect: vi.fn(() => Promise.resolve({ candidates: configured })),
       configuredCandidates: vi.fn(() => Promise.resolve(configured)),
     };
     const failure = new Error("off attempt failed");
@@ -261,6 +377,7 @@ describe("utility model fallback runner", () => {
       thinkingLevel: "minimal" as const,
     });
     const resolver: UtilityModelResolver<FakeModel> = {
+      inspect: vi.fn(() => Promise.resolve({ candidates: [configured] })),
       configuredCandidates: vi.fn(() => Promise.resolve([configured])),
     };
     const run = vi.fn(() => Promise.resolve(undefined));
