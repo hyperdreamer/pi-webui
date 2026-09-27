@@ -25,6 +25,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function utilityResolverFor(
+  candidates: readonly ResolvedUtilityModel<ReturnType<typeof testModel>>[],
+) {
+  return {
+    inspect: vi.fn().mockResolvedValue({ candidates }),
+    configuredCandidates: vi.fn().mockResolvedValue(candidates),
+  };
+}
+
 describe("PiSessionService prompt, queue, and auth warnings", () => {
   it("sends prompts to an injected runtime without touching the SDK runtime", async () => {
     const fake = fakeRuntime("prompt-session");
@@ -110,11 +119,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(hub, {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([
-          utilityCandidate(lightweightModel, "high"),
-        ]),
-      },
+      utilityModelResolver: utilityResolverFor([utilityCandidate(lightweightModel, "high")]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -143,11 +148,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([
-          utilityCandidate(lightweightModel, "high"),
-        ]),
-      },
+      utilityModelResolver: utilityResolverFor([utilityCandidate(lightweightModel, "high")]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("fallback-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -175,11 +176,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([
-          utilityCandidate(activeModel, "minimal"),
-        ]),
-      },
+      utilityModelResolver: utilityResolverFor([utilityCandidate(activeModel, "minimal")]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("deduplicated-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -210,11 +207,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([
-          utilityCandidate(activeModel, "high"),
-        ]),
-      },
+      utilityModelResolver: utilityResolverFor([utilityCandidate(activeModel, "high")]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("level-distinct-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -238,9 +231,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([]),
-      },
+      utilityModelResolver: utilityResolverFor([]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("active-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -261,9 +252,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([]),
-      },
+      utilityModelResolver: utilityResolverFor([]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("snapshot-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -301,9 +290,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
       logger,
-      utilityModelResolver: {
-        configuredCandidates: vi.fn().mockResolvedValue([]),
-      },
+      utilityModelResolver: utilityResolverFor([]),
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("failed-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -325,15 +312,13 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
   });
 
   it("names relay handoffs deterministically without resolving or calling a model", async () => {
-    const configuredCandidates = vi.fn(() => Promise.resolve([
-      utilityCandidate(testModel(), "minimal"),
-    ]));
+    const resolver = utilityResolverFor([utilityCandidate(testModel(), "minimal")]);
     const streamFn = vi.fn<StreamFn>(() => { throw new Error("title stream should not run"); });
     const fake = fakeRuntime("relay-name-session", { agent: { streamFunction: streamFn } });
     const service = new PiSessionService(new CapturingSessionEventHub(), {
       agentDir: TEST_AGENT_DIR,
       modelRuntime: testModelRuntime,
-      utilityModelResolver: { configuredCandidates },
+      utilityModelResolver: resolver,
       createAgentRuntime: runtimeCreator(fake.runtime),
       sessionManager: sessionGateway([sessionRecord("relay-name-session")]),
       heartbeatIntervalMs: 60_000,
@@ -345,7 +330,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     );
 
     expect(fake.session.sessionName).toBe("Relay utility-routing leg 2");
-    expect(configuredCandidates).not.toHaveBeenCalled();
+    expect(resolver.configuredCandidates).not.toHaveBeenCalled();
     expect(streamFn).not.toHaveBeenCalled();
     await service.dispose();
   });
@@ -357,9 +342,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const activeModel = modelRuntime.getModel(TEST_MODEL_PROVIDER, TEST_MODEL_ID);
     if (activeModel === undefined) throw new Error("Expected active model fixture");
     const utilityModel = { ...activeModel, id: "utility-lightweight" };
-    const configuredCandidates = vi.fn().mockResolvedValue([
-      utilityCandidate(utilityModel, "high"),
-    ]);
+    const resolver = utilityResolverFor([utilityCandidate(utilityModel, "high")]);
     const streamFunction = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Runtime factory summary"));
     const setModel = vi.fn(() => Promise.resolve());
     const setThinkingLevel = vi.fn();
@@ -388,7 +371,7 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     const runtimeFactory = createDefaultRuntimeFactory(
       modelRuntime,
       sessionGateway([]),
-      { configuredCandidates },
+      resolver,
       { info: vi.fn() },
       undefined,
       undefined,
@@ -452,8 +435,8 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     }
     expect(utilityResult.summary.summary).toContain("Runtime factory summary");
 
-    expect(configuredCandidates).toHaveBeenCalledOnce();
-    expect(configuredCandidates).toHaveBeenCalledWith("lightweight");
+    expect(resolver.configuredCandidates).toHaveBeenCalledOnce();
+    expect(resolver.configuredCandidates).toHaveBeenCalledWith("lightweight");
     expect(streamFunction).toHaveBeenCalledOnce();
     expect(streamFunction.mock.calls[0]?.[0]).toBe(utilityModel);
     expect(streamFunction.mock.calls[0]?.[2]).toMatchObject({ reasoning: "high" });

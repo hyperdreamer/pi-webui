@@ -13,6 +13,18 @@ export { MODEL_TIERS, type ModelTier, type ModelTierEntry, type ModelTierLadder,
  */
 
 
+/**
+ * A recognized tier-resolution failure. Everything else thrown while planning a
+ * policy is an infrastructure or programming error and must never trigger the
+ * lightweight fallback.
+ */
+export class TierResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TierResolutionError";
+  }
+}
+
 /** A tier resolved to something the runtime will accept. */
 export interface ResolvedTier {
   tier: ModelTier;
@@ -76,10 +88,10 @@ export function createModelTierRegistry<TModel extends { provider: string; id: s
     resolve(tier) {
       const config = deps.loadConfig();
       if (config.modelTiersError !== undefined) {
-        throw new Error(`model tier configuration is invalid: ${config.modelTiersError}`);
+        throw new TierResolutionError(`model tier configuration is invalid: ${config.modelTiersError}`);
       }
       if (config.modelTiers === undefined) {
-        throw new Error("model tier configuration is missing");
+        throw new TierResolutionError("model tier configuration is missing");
       }
       const models = deps.models();
       const resolved = resolveTier(tier, config.modelTiers, {
@@ -91,7 +103,7 @@ export function createModelTierRegistry<TModel extends { provider: string; id: s
         // This is defensive against a catalog changing between the resolution
         // lookup and the runtime handoff. It is still a terminal resolution
         // failure, never a neighbouring-tier substitution.
-        throw new Error(`tier ${tier} names unavailable model ${resolved.model.provider}/${resolved.model.id}`);
+        throw new TierResolutionError(`tier ${tier} names unavailable model ${resolved.model.provider}/${resolved.model.id}`);
       }
       return { tier: resolved.tier, model, thinkingLevel: resolved.thinkingLevel };
     },
@@ -129,25 +141,25 @@ export function resolveTier<TModel extends { provider: string; id: string }>(
   ladder: Partial<ModelTierLadder>,
   deps: TierResolutionDeps<TModel>,
 ): ResolvedTier {
-  if (!isModelTier(tier)) throw new Error(`unknown tier: ${tier}`);
+  if (!isModelTier(tier)) throw new TierResolutionError(`unknown tier: ${tier}`);
 
   const entry = ladder[tier];
-  if (entry === undefined) throw new Error(`tier ${tier} has no ladder entry`);
+  if (entry === undefined) throw new TierResolutionError(`tier ${tier} has no ladder entry`);
 
   const available = deps.models.find(
     (candidate) => candidate.provider === entry.model.provider && candidate.id === entry.model.id,
   );
   if (available === undefined) {
-    throw new Error(`tier ${tier} names unavailable model ${describeModel(entry.model)}`);
+    throw new TierResolutionError(`tier ${tier} names unavailable model ${describeModel(entry.model)}`);
   }
 
   if (!isKnownThinkingLevel(entry.thinkingLevel)) {
-    throw new Error(`tier ${tier} names unknown thinking level ${entry.thinkingLevel}`);
+    throw new TierResolutionError(`tier ${tier} names unknown thinking level ${entry.thinkingLevel}`);
   }
 
   const supported = deps.supportedThinkingLevels(available);
   if (!supported.includes(entry.thinkingLevel)) {
-    throw new Error(
+    throw new TierResolutionError(
       `tier ${tier} names thinking level ${entry.thinkingLevel}, unsupported by ${describeModel(entry.model)}`,
     );
   }

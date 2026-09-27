@@ -8,6 +8,18 @@ import {
 
 export const SESSION_MODEL_POLICY_CUSTOM_TYPE = "pi-webui.model-policy";
 
+/**
+ * A recognized session-scoped policy resolution failure: the exact target is
+ * structurally valid but cannot be bound to the current runtime catalog. Only
+ * these arm the lightweight fallback; a runtime refresh failure does not.
+ */
+export class SessionModelPolicyResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionModelPolicyResolutionError";
+  }
+}
+
 export type SessionModelPolicyInspection =
   | { kind: "legacy"; policy: SessionModelPolicy }
   | { kind: "persisted"; policy: SessionModelPolicy }

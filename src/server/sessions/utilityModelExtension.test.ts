@@ -468,7 +468,12 @@ function resolverFor(
   const configuredCandidates = vi.fn((task: "lightweight" | "context") =>
     Promise.resolve(candidates[task] ?? []),
   );
-  return { configuredCandidates };
+  return {
+    inspect: async (task: "lightweight" | "context") => ({
+      candidates: await configuredCandidates(task),
+    }),
+    configuredCandidates,
+  };
 }
 
 function resolvedCandidate(

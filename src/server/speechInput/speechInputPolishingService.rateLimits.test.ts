@@ -36,7 +36,14 @@ function polishedMessage(input: number) {
 }
 
 function candidateResolver() {
-  return { configuredCandidates: vi.fn().mockResolvedValue([{ model, thinkingLevel: "off", slot: "lightweight" }]) };
+  return {
+    inspect: vi.fn().mockResolvedValue({
+      candidates: [{ model, thinkingLevel: "off", slot: "lightweight" }],
+    }),
+    configuredCandidates: vi.fn().mockResolvedValue([
+      { model, thinkingLevel: "off", slot: "lightweight" },
+    ]),
+  };
 }
 
 describe("speech input polishing rate limit integration", () => {

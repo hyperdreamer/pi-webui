@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MODEL_TIERS, createModelTierRegistry, resolveTier, validateLadder, type ModelTierLadder, type ModelTierRegistryConfig, type TierResolutionDeps } from "./modelTierRegistry.js";
+import { MODEL_TIERS, TierResolutionError, createModelTierRegistry, resolveTier, validateLadder, type ModelTierLadder, type ModelTierRegistryConfig, type TierResolutionDeps } from "./modelTierRegistry.js";
 
 /**
  * Available models are the runtime's answer, not ours. These fixtures mirror the
@@ -184,5 +184,76 @@ describe("model tier registry", () => {
       const broken = ladder({ fast: { model: { provider: "acme", id: "small" }, thinkingLevel: "high" } });
       expect(() => resolveTier("fast", broken, deps)).toThrow(/high/u);
     });
+  });
+});
+
+describe("TierResolutionError", () => {
+  it("is thrown for every resolveTier failure", () => {
+    expect(() => resolveTier("turbo", ladder(), deps)).toThrow(TierResolutionError);
+
+    const incomplete: Partial<ModelTierLadder> = { ...ladder() };
+    delete incomplete.capable;
+    expect(() => resolveTier("capable", incomplete, deps)).toThrow(TierResolutionError);
+
+    expect(() => resolveTier(
+      "capable",
+      ladder({ capable: { model: { provider: "acme", id: "ghost" }, thinkingLevel: "high" } }),
+      deps,
+    )).toThrow(TierResolutionError);
+
+    expect(() => resolveTier(
+      "advanced",
+      ladder({ advanced: { model: { provider: "acme", id: "large" }, thinkingLevel: "turbo" } }),
+      deps,
+    )).toThrow(TierResolutionError);
+
+    expect(() => resolveTier(
+      "fast",
+      ladder({ fast: { model: { provider: "acme", id: "small" }, thinkingLevel: "high" } }),
+      deps,
+    )).toThrow(TierResolutionError);
+  });
+
+  it("is thrown for configuration failures", () => {
+    const invalid = createModelTierRegistry<AvailableModel>({
+      loadConfig: () => ({ modelTiersError: "bad ladder" }),
+      models: availableModels,
+      supportedThinkingLevels,
+    });
+    expect(() => invalid.resolve("economy")).toThrow(TierResolutionError);
+    expect(() => invalid.resolve("economy")).toThrow("model tier configuration is invalid: bad ladder");
+
+    const missing = createModelTierRegistry<AvailableModel>({
+      loadConfig: () => ({}),
+      models: availableModels,
+      supportedThinkingLevels,
+    });
+    expect(() => missing.resolve("economy")).toThrow(TierResolutionError);
+    expect(() => missing.resolve("economy")).toThrow("model tier configuration is missing");
+  });
+
+  it("is thrown for the defensive re-lookup after resolveTier", () => {
+    const models = availableModels();
+    const registry = createModelTierRegistry<AvailableModel>({
+      loadConfig: () => ({ modelTiers: ladder() }),
+      models: () => models,
+      supportedThinkingLevels: (model) => {
+        // Simulate the runtime catalog dropping the resolved model between
+        // resolveTier's ladder lookup and the registry's defensive re-lookup.
+        models.splice(0, models.length, ...availableModels().filter((candidate) => candidate.id !== "large"));
+        return supportedThinkingLevels(model);
+      },
+    });
+
+    expect(() => registry.resolve("advanced")).toThrow(TierResolutionError);
+    expect(() => registry.resolve("advanced")).toThrow("tier advanced names unavailable model acme/large");
+  });
+
+  it("keeps validateLadder reporting instead of throwing for a broken ladder", () => {
+    const incomplete: Partial<ModelTierLadder> = { ...ladder() };
+    delete incomplete.capable;
+
+    expect(() => validateLadder(incomplete, deps)).not.toThrow();
+    expect(validateLadder(incomplete, deps).valid).toBe(false);
   });
 });

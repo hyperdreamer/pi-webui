@@ -22,9 +22,27 @@ export interface ResolvedUtilityModel<TModel extends UtilityModelIdentity>
   slot: UtilityModelSlot;
 }
 
+export type UtilityModelUnavailableReason =
+  | "slot-unset"
+  | "config-invalid"
+  | "model-unavailable"
+  | "thinking-level-unsupported"
+  | "resolution-failed";
+
+export interface UtilityModelUnavailable {
+  reason: UtilityModelUnavailableReason;
+  detail?: string;
+}
+
+export interface UtilityModelInspection<TModel extends UtilityModelIdentity> {
+  candidates: readonly ResolvedUtilityModel<TModel>[];
+  unavailable?: UtilityModelUnavailable;
+}
+
 export interface UtilityModelResolver<
   TModel extends UtilityModelIdentity,
 > {
+  inspect(task: UtilityModelTask): Promise<UtilityModelInspection<TModel>>;
   configuredCandidates(
     task: UtilityModelTask,
   ): Promise<readonly ResolvedUtilityModel<TModel>[]>;
@@ -65,50 +83,89 @@ export function createUtilityModelResolver<
 >(
   deps: UtilityModelResolverDependencies<TModel>,
 ): UtilityModelResolver<TModel> {
-  return {
-    configuredCandidates: async (task) => {
-      try {
-        await deps.modelRuntime.refresh({ allowNetwork: false });
-        const config = deps.loadConfig();
-        if (
-          config.utilityModelsError !== undefined ||
-          config.utilityModels === undefined
-        ) {
-          return [];
-        }
-
-        const available = deps.modelRuntime.getAvailableSnapshot();
-        const candidates: ResolvedUtilityModel<TModel>[] = [];
-        const seen = new Set<string>();
-        for (const slot of taskSlots[task]) {
-          const reference = config.utilityModels[slot];
-          if (reference === undefined) continue;
-          const candidate = available.find(
-            (model) =>
-              model.provider === reference.provider && model.id === reference.id,
-          );
-          if (candidate === undefined) continue;
-          const thinkingLevel = effectiveThinkingLevel(
-            reference,
-            deps.thinkingLevelsForModel(candidate),
-          );
-          if (thinkingLevel === undefined) continue;
-          const resolved = { model: candidate, thinkingLevel, slot };
-          const key = attemptKey(resolved);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          candidates.push(resolved);
-        }
-        return candidates;
-      } catch (error) {
-        logNoThrow(
-          deps.logger,
-          { err: error, task },
-          "utility model resolution failed",
-        );
-        return [];
+  const inspect = async (
+    task: UtilityModelTask,
+  ): Promise<UtilityModelInspection<TModel>> => {
+    try {
+      await deps.modelRuntime.refresh({ allowNetwork: false });
+      const config = deps.loadConfig();
+      if (config.utilityModelsError !== undefined) {
+        return {
+          candidates: [],
+          unavailable: {
+            reason: "config-invalid",
+            detail: config.utilityModelsError,
+          },
+        };
       }
-    },
+      if (config.utilityModels === undefined) {
+        return { candidates: [], unavailable: { reason: "slot-unset" } };
+      }
+
+      const available = deps.modelRuntime.getAvailableSnapshot();
+      const candidates: ResolvedUtilityModel<TModel>[] = [];
+      const seen = new Set<string>();
+      let slotFailure: UtilityModelUnavailable | undefined;
+      for (const slot of taskSlots[task]) {
+        const reference = config.utilityModels[slot];
+        if (reference === undefined) {
+          slotFailure ??= { reason: "slot-unset" };
+          continue;
+        }
+        const candidate = available.find(
+          (model) =>
+            model.provider === reference.provider && model.id === reference.id,
+        );
+        if (candidate === undefined) {
+          slotFailure ??= {
+            reason: "model-unavailable",
+            detail: `${reference.provider}/${reference.id}`,
+          };
+          continue;
+        }
+        const thinkingLevel = effectiveThinkingLevel(
+          reference,
+          deps.thinkingLevelsForModel(candidate),
+        );
+        if (thinkingLevel === undefined) {
+          // `effectiveThinkingLevel` only returns undefined for an explicitly
+          // configured level the model does not support.
+          slotFailure ??= {
+            reason: "thinking-level-unsupported",
+            detail: reference.thinkingLevel ?? "",
+          };
+          continue;
+        }
+        const resolved = { model: candidate, thinkingLevel, slot };
+        const key = attemptKey(resolved);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(resolved);
+      }
+      if (candidates.length > 0) return { candidates };
+      return {
+        candidates: [],
+        unavailable: slotFailure ?? { reason: "resolution-failed" },
+      };
+    } catch (error) {
+      logNoThrow(
+        deps.logger,
+        { err: error, task },
+        "utility model resolution failed",
+      );
+      return {
+        candidates: [],
+        unavailable: {
+          reason: "resolution-failed",
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  };
+
+  return {
+    inspect,
+    configuredCandidates: async (task) => (await inspect(task)).candidates,
   };
 }
 

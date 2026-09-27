@@ -4,12 +4,20 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import type {
   ExactModelSelection,
   ModelTier,
+  SessionModelPolicy,
   StarterModelPolicyPreference,
 } from "../../shared/apiTypes.js";
-import { PiSessionService, type PiAgentSession, type PiSessionRuntime } from "./piSessionService.js";
+import {
+  PiSessionService,
+  type PiAgentSession,
+  type PiSessionLogger,
+  type PiSessionRuntime,
+  type PiSessionServiceDependencies,
+} from "./piSessionService.js";
 import {
   inspectSessionCreationRootEligibility,
   inspectSessionCreationSource,
@@ -17,10 +25,19 @@ import {
 } from "./sessionCreationSource.js";
 import {
   inspectSessionModelPolicy,
+  SessionModelPolicyResolutionError,
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
 } from "./sessionModelPolicy.js";
 import type { StarterPreferenceWrite } from "./starterModelPolicyPreferenceStore.js";
-import { runtimeThinkingLevels, type LadderValidation } from "./modelTierRegistry.js";
+import {
+  runtimeThinkingLevels,
+  TierResolutionError,
+  type LadderValidation,
+} from "./modelTierRegistry.js";
+import type {
+  ResolvedUtilityModel,
+  UtilityModelUnavailable,
+} from "./utilityModelResolver.js";
 import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
 import {
   CapturingSessionEventHub,
@@ -49,6 +66,52 @@ const ADVANCED_SELECTION: ExactModelSelection = {
   model: { provider: "openai", id: "gpt-advanced" },
   thinkingLevel: "high",
 };
+
+const LIGHTWEIGHT_SELECTION: ExactModelSelection = {
+  model: { provider: "openai", id: "gpt-basic" },
+  thinkingLevel: "off",
+};
+const LIGHTWEIGHT_CANDIDATE = {
+  model: runtimeModel("openai", "gpt-basic", false),
+  thinkingLevel: "off" as const,
+};
+
+const LIGHTWEIGHT_REASON_CASES: [string, UtilityModelUnavailable | undefined, string][] = [
+  ["undefined", undefined, "the lightweight model is not available to this session"],
+  ["slot-unset", { reason: "slot-unset" }, "no lightweight model is configured"],
+  ["config-invalid", { reason: "config-invalid", detail: "bad ladder" }, "the utility model configuration is invalid"],
+  ["model-unavailable", { reason: "model-unavailable", detail: "acme/retired" }, "its configured model is unavailable"],
+  ["thinking-level-unsupported", { reason: "thinking-level-unsupported", detail: "max" }, "its configured thinking level is unsupported"],
+  ["resolution-failed", { reason: "resolution-failed", detail: "catalog offline" }, "the lightweight model could not be resolved"],
+];
+
+type UtilityResolver = NonNullable<PiSessionServiceDependencies["utilityModelResolver"]>;
+type ResolverFake = UtilityResolver & {
+  inspect: Mock<UtilityResolver["inspect"]>;
+  configuredCandidates: Mock<UtilityResolver["configuredCandidates"]>;
+};
+
+function fallbackResolver(input: {
+  candidates?: readonly {
+    model: NonNullable<PiAgentSession["model"]>;
+    thinkingLevel: ThinkingLevel;
+  }[];
+  unavailable?: UtilityModelUnavailable;
+}): ResolverFake {
+  const candidates: readonly ResolvedUtilityModel<NonNullable<PiAgentSession["model"]>>[] =
+    (input.candidates ?? []).map((candidate) => ({
+      model: candidate.model,
+      thinkingLevel: candidate.thinkingLevel,
+      slot: "lightweight" as const,
+    }));
+  return {
+    inspect: vi.fn<UtilityResolver["inspect"]>().mockResolvedValue({
+      candidates,
+      ...(input.unavailable === undefined ? {} : { unavailable: input.unavailable }),
+    }),
+    configuredCandidates: vi.fn<UtilityResolver["configuredCandidates"]>().mockResolvedValue(candidates),
+  };
+}
 
 interface ModelPolicyHarnessOptions {
   branch?: readonly unknown[];
@@ -97,6 +160,13 @@ interface ModelPolicyHarnessOptions {
   preferenceStore?: {
     replace(cwd: string, write: StarterPreferenceWrite): Promise<void>;
   };
+  /** Injected utility resolver; defaults to an empty-candidate fake. */
+  utilityModelResolver?: NonNullable<PiSessionServiceDependencies["utilityModelResolver"]>;
+  /** Throw a plain Error from the tier stub instead of a TierResolutionError. */
+  plainTierError?: boolean;
+  /** Reject the next intercepted `refresh`, consulting the callback each time. */
+  failModelRuntimeRefresh?: () => Error | undefined;
+  logger?: PiSessionLogger;
 }
 
 const DEFAULT_SCOPED_MODELS = [
@@ -289,19 +359,24 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- pi's level set, narrowed for the stub session.
   const getAvailableThinkingLevels = vi.fn(() => supportedLevels(fake.session.model) as PiAgentSession["thinkingLevel"][]);
   const refreshHook = options.onModelRuntimeRefresh;
+  const failRefresh = options.failModelRuntimeRefresh;
   // Delegating wrapper: only `refresh` is intercepted, every other ModelRuntime
   // read still goes to the real runtime (bound to it, so pi's own internals keep
   // working).
-  const modelRuntime = refreshHook === undefined ? testModelRuntime : new Proxy(testModelRuntime, {
-    get(target, property, receiver): unknown {
-      if (property !== "refresh") return Reflect.get(target, property, receiver);
-      return async (...args: Parameters<typeof testModelRuntime.refresh>) => {
-        const result = await testModelRuntime.refresh(...args);
-        refreshHook();
-        return result;
-      };
-    },
-  });
+  const modelRuntime = (refreshHook === undefined && failRefresh === undefined)
+    ? testModelRuntime
+    : new Proxy(testModelRuntime, {
+        get(target, property, receiver): unknown {
+          if (property !== "refresh") return Reflect.get(target, property, receiver);
+          return async (...args: Parameters<typeof testModelRuntime.refresh>) => {
+            const failure = failRefresh?.();
+            if (failure !== undefined) throw failure;
+            const result = await testModelRuntime.refresh(...args);
+            refreshHook?.();
+            return result;
+          };
+        },
+      });
   const manager = fakeSessionManager(TEST_CWD, {
     getBranch,
     getEntries,
@@ -360,7 +435,12 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
   const resolve = vi.fn((tier: ModelTier) => {
     const model = scopedModels.find(({ model: candidate }) => candidate.provider === tierTarget.model.provider
       && candidate.id === tierTarget.model.id)?.model;
-    if (model === undefined) throw new Error(`tier ${tier} names unavailable model`);
+    if (model === undefined) {
+      if (options.plainTierError === true) {
+        throw new Error(`tier ${tier} names unavailable model`);
+      }
+      throw new TierResolutionError(`tier ${tier} names unavailable model`);
+    }
     return { tier, model, thinkingLevel: tierTarget.thinkingLevel };
   });
   const modelTierRegistry = { resolve, validate };
@@ -412,9 +492,23 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     rmSync(TEST_SESSION_FILE, { force: true });
     return Promise.resolve();
   });
+  const defaultUtilityModelResolver: UtilityResolver = {
+    inspect: () => Promise.resolve({ candidates: [], unavailable: { reason: "slot-unset" } }),
+    configuredCandidates: () => Promise.resolve([]),
+  };
+  const utilityModelResolver = options.utilityModelResolver ?? defaultUtilityModelResolver;
+  const loggerMock = vi.fn(
+    (details: Record<string, unknown>, message: string) => {
+      options.logger?.info(details, message);
+    }
+  );
+  const loggerProvider = { info: loggerMock };
+  const logger: PiSessionLogger = loggerProvider;
   const service = new PiSessionService(hub, {
     agentDir: TEST_AGENT_DIR,
     modelRuntime: testModelRuntime,
+    utilityModelResolver,
+    logger,
     createAgentRuntime: () => {
       const runtime = nextRuntime ?? fake.runtime;
       nextRuntime = undefined;
@@ -463,6 +557,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     fake,
     getBranch,
     hub,
+    logger: loggerProvider,
     manager,
     operations,
     prompt,
@@ -478,6 +573,7 @@ function createModelPolicyHarness(options: ModelPolicyHarnessOptions = {}) {
     settingsWrites: () => settingsState.writes,
     /** Hand a replacement runtime to the next reopen (`reload`) of this session. */
     useNextRuntime: (runtime: PiSessionRuntime) => { nextRuntime = runtime; },
+    utilityModelResolver,
     validate,
   };
 }
@@ -820,10 +916,105 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.validate).toHaveBeenCalledTimes(2);
   });
 
-  it("cleans up an unseen plus root when its active Exact selection is unavailable", async () => {
-    const harness = createModelPolicyHarness({ existing: false });
+  it("starts a plus root on the lightweight utility model when the active Exact selection is unavailable", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] }),
+    });
+    const requestedPolicy: SessionModelPolicy = {
+      mode: "exact",
+      exact: {
+        model: { provider: "retired", id: "unavailable" },
+        thinkingLevel: "medium",
+      },
+      tier: "standard",
+    };
 
-    await expect(harness.service.start(TEST_CWD, {
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: requestedPolicy,
+    });
+
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: LIGHTWEIGHT_SELECTION,
+      tier: "standard",
+    });
+    expect(harness.calls).toContain("setModel:openai/gpt-basic");
+    expect(harness.calls).toContain("setThinkingLevel:off");
+    expect(harness.calls).toContain(`appendCustomEntry:${SESSION_CREATION_SOURCE_CUSTOM_TYPE}`);
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(true);
+    expect(harness.service.activeCount()).toBe(1);
+    expect(harness.fake.calls.abort).toBe(0);
+    expect(harness.fake.calls.dispose).toBe(0);
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      {
+        sessionId: TEST_SESSION_ID,
+        cwd: TEST_CWD,
+        requestedPolicy,
+        fallbackPolicy: { mode: "exact", exact: LIGHTWEIGHT_SELECTION, tier: "standard" },
+        reason: "Model not found: retired/unavailable",
+      },
+      "session model policy fell back to the lightweight utility model",
+    );
+    expect(
+      harness.logger.info.mock.calls.filter(
+        ([, message]) =>
+          message === "session model policy fell back to the lightweight utility model",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("starts a plus root on the lightweight utility model when its active Tiered selection cannot resolve", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      tierTarget: {
+        model: { provider: "retired", id: "unavailable-tier-target" },
+        thinkingLevel: "high",
+      },
+      utilityModelResolver: fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] }),
+    });
+    const requestedPolicy: SessionModelPolicy = {
+      mode: "tiered",
+      exact: DEFAULT_SELECTION,
+      tier: "advanced",
+    };
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: requestedPolicy,
+    });
+
+    expect(harness.resolve).toHaveBeenCalledOnce();
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: LIGHTWEIGHT_SELECTION,
+      tier: "advanced",
+    });
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "tier advanced names unavailable model" }),
+      "session model policy fell back to the lightweight utility model",
+    );
+    expect(
+      harness.logger.info.mock.calls.filter(
+        ([, message]) =>
+          message === "session model policy fell back to the lightweight utility model",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("cleans up an unseen plus root when no lightweight candidate resolves for an Exact request", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: fallbackResolver({
+        candidates: [],
+        unavailable: { reason: "model-unavailable", detail: "retired/unavailable" },
+      }),
+    });
+
+    const rejection = harness.service.start(TEST_CWD, {
       creationSource: "session-list-plus",
       initialModelPolicy: {
         mode: "exact",
@@ -833,7 +1024,12 @@ describe("PiSessionService model policy lifecycle", () => {
         },
         tier: "standard",
       },
-    })).rejects.toThrow(/Model not found: retired\/unavailable/u);
+    });
+
+    await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
+    await expect(rejection).rejects.toThrow(/its configured model is unavailable \(retired\/unavailable\)/u);
+    await expect(rejection).rejects.toThrow(/utilityModels\.lightweight/u);
+    await expect(rejection).rejects.toThrow(/Settings → Utility models/u);
 
     expect(harness.calls).toEqual([]);
     expect(harness.service.activeCount()).toBe(0);
@@ -843,23 +1039,32 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
   });
 
-  it("cleans up an unseen plus root when its active Tiered selection cannot resolve", async () => {
+  it("cleans up an unseen plus root when no lightweight candidate resolves for a Tiered request", async () => {
     const harness = createModelPolicyHarness({
       existing: false,
       tierTarget: {
         model: { provider: "retired", id: "unavailable-tier-target" },
         thinkingLevel: "high",
       },
+      utilityModelResolver: fallbackResolver({
+        candidates: [],
+        unavailable: { reason: "slot-unset" },
+      }),
     });
 
-    await expect(harness.service.start(TEST_CWD, {
+    const rejection = harness.service.start(TEST_CWD, {
       creationSource: "session-list-plus",
       initialModelPolicy: {
         mode: "tiered",
         exact: DEFAULT_SELECTION,
         tier: "advanced",
       },
-    })).rejects.toThrow(/tier advanced names unavailable model/u);
+    });
+
+    await expect(rejection).rejects.toThrow(/tier advanced names unavailable model/u);
+    await expect(rejection).rejects.toThrow(/no lightweight model is configured/u);
+    await expect(rejection).rejects.toThrow(/utilityModels\.lightweight/u);
+    await expect(rejection).rejects.toThrow(/Settings → Utility models/u);
 
     expect(harness.resolve).toHaveBeenCalledOnce();
     expect(harness.calls).toEqual([]);
@@ -868,6 +1073,309 @@ describe("PiSessionService model policy lifecycle", () => {
     expect(harness.fake.calls.dispose).toBe(1);
     expect(harness.prompt).not.toHaveBeenCalled();
     expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("falls back when the precise Exact thinking level is unsupported", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] }),
+    });
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "openai", id: "gpt-basic" }, thinkingLevel: "minimal" },
+      },
+    });
+
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: LIGHTWEIGHT_SELECTION,
+    });
+  });
+
+  it("reports the lightweight slot reason for an unsupported-level request with no candidate", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: fallbackResolver({
+        candidates: [],
+        unavailable: { reason: "thinking-level-unsupported", detail: "max" },
+      }),
+    });
+
+    const rejection = harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "openai", id: "gpt-basic" }, thinkingLevel: "minimal" },
+      },
+    });
+
+    await expect(rejection).rejects.toThrow(/Thinking level minimal is unsupported by openai\/gpt-basic/u);
+    await expect(rejection).rejects.toThrow(/its configured thinking level is unsupported \(max\)/u);
+  });
+
+  it("omits the tier when a fallback requested policy had none", async () => {
+    const harness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] }),
+    });
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "retired", id: "unavailable" }, thinkingLevel: "medium" },
+      },
+    });
+
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: LIGHTWEIGHT_SELECTION,
+    });
+  });
+
+  it("does not fall back when the requested policy resolves", async () => {
+    const resolver = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const harness = createModelPolicyHarness({ existing: false, utilityModelResolver: resolver });
+
+    await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "exact", exact: DEFAULT_SELECTION },
+    });
+
+    expect(resolver.inspect).not.toHaveBeenCalled();
+    expect(harness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: DEFAULT_SELECTION,
+    });
+    expect(harness.logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "session model policy fell back to the lightweight utility model",
+    );
+  });
+
+  it("does not fall back on a plain tier error with a recognized message", async () => {
+    const resolver = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const harness = createModelPolicyHarness({
+      existing: false,
+      plainTierError: true,
+      tierTarget: {
+        model: { provider: "retired", id: "unavailable-tier-target" },
+        thinkingLevel: "high",
+      },
+      utilityModelResolver: resolver,
+    });
+
+    const rejection = harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "tiered", exact: DEFAULT_SELECTION, tier: "advanced" },
+    });
+
+    await expect(rejection).rejects.toThrow("tier advanced names unavailable model");
+    expect(resolver.inspect).not.toHaveBeenCalled();
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+  });
+
+  it("does not fall back when the model runtime refresh fails", async () => {
+    const refreshError = new Error("catalog refresh failed");
+    const resolver = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const harness = createModelPolicyHarness({
+      existing: false,
+      failModelRuntimeRefresh: () => refreshError,
+      utilityModelResolver: resolver,
+    });
+
+    const rejection = harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "retired", id: "unavailable" }, thinkingLevel: "medium" },
+      },
+    });
+
+    await expect(rejection).rejects.toBe(refreshError);
+    expect(resolver.inspect).not.toHaveBeenCalled();
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+  });
+
+  it("propagates a fallback re-validation refresh failure untouched", async () => {
+    const refreshError = new Error("fallback refresh failed");
+    let inspected = false;
+    const resolver = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    resolver.inspect.mockImplementation(() => {
+      inspected = true;
+      return Promise.resolve({
+        candidates: [{ ...LIGHTWEIGHT_CANDIDATE, slot: "lightweight" as const }],
+      });
+    });
+    const harness = createModelPolicyHarness({
+      existing: false,
+      failModelRuntimeRefresh: () => (inspected ? refreshError : undefined),
+      utilityModelResolver: resolver,
+    });
+
+    const rejection = harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "retired", id: "unavailable" }, thinkingLevel: "medium" },
+      },
+    });
+
+    let caught: unknown;
+    await rejection.catch((error: unknown) => { caught = error; });
+    expect(caught).toBe(refreshError);
+    expect(caught instanceof Error ? caught.message.includes("utilityModels.lightweight") : true).toBe(false);
+    expect(caught instanceof Error ? caught.cause : "sentinel").toBeUndefined();
+    expect(resolver.inspect).toHaveBeenCalledOnce();
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it("does not attempt a second candidate when the first fails re-validation", async () => {
+    // The second candidate is the same lightweight tuple that the recast
+    // success test above starts with, so it would resolve. Only the first
+    // candidate is allowed to be tried, and its re-validation failure is final.
+    const resolver = fallbackResolver({
+      candidates: [
+        { model: runtimeModel("openai", "gpt-retired"), thinkingLevel: "off" },
+        LIGHTWEIGHT_CANDIDATE,
+      ],
+    });
+    const harness = createModelPolicyHarness({ existing: false, utilityModelResolver: resolver });
+
+    const rejection = harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: {
+        mode: "exact",
+        exact: { model: { provider: "retired", id: "unavailable" }, thinkingLevel: "medium" },
+      },
+    });
+
+    await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
+    await expect(rejection).rejects.toThrow(/the lightweight model is not available to this session/u);
+    expect(resolver.inspect).toHaveBeenCalledOnce();
+    expect(harness.calls).not.toContain("setModel:openai/gpt-basic");
+    expect(harness.service.activeCount()).toBe(0);
+    expect(harness.fake.calls.abort).toBe(1);
+    expect(harness.fake.calls.dispose).toBe(1);
+    expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+  });
+
+  it.each(LIGHTWEIGHT_REASON_CASES)(
+    "fails explicitly with the %s lightweight reason",
+    async (_label, unavailable, clause) => {
+      const harness = createModelPolicyHarness({
+        existing: false,
+        utilityModelResolver: fallbackResolver({
+          candidates: [],
+          ...(unavailable === undefined ? {} : { unavailable }),
+        }),
+      });
+
+      const rejection = harness.service.start(TEST_CWD, {
+        creationSource: "session-list-plus",
+        initialModelPolicy: {
+          mode: "exact",
+          exact: { model: { provider: "retired", id: "unavailable" }, thinkingLevel: "medium" },
+        },
+      });
+
+      await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
+      await expect(rejection).rejects.toThrow(clause);
+      await expect(rejection).rejects.toThrow(/utilityModels\.lightweight/u);
+      await expect(rejection).rejects.toThrow(/Settings → Utility models/u);
+      expect(harness.fake.calls.abort).toBe(1);
+      expect(harness.fake.calls.dispose).toBe(1);
+      expect(harness.commitInitialEntries).not.toHaveBeenCalled();
+      expect(harness.hub.globalEvents.some((event) => event.type === "session.created")).toBe(false);
+    },
+  );
+
+  it("remembers the substituted policy", async () => {
+    const preferenceStore = { replace: vi.fn(() => Promise.resolve()) };
+    const harness = createModelPolicyHarness({
+      existing: false,
+      tierTarget: {
+        model: { provider: "retired", id: "unavailable-tier-target" },
+        thinkingLevel: "high",
+      },
+      utilityModelResolver: fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] }),
+      preferenceStore,
+    });
+
+    const created = await harness.service.start(TEST_CWD, {
+      creationSource: "session-list-plus",
+      initialModelPolicy: { mode: "tiered", exact: DEFAULT_SELECTION, tier: "advanced" },
+    });
+
+    await expect(harness.service.rememberCurrentModelPolicy(sessionRef(created.id, TEST_CWD)))
+      .resolves.toEqual({ mode: "exact", exact: LIGHTWEIGHT_SELECTION, tier: "advanced" });
+    expect(preferenceStore.replace).toHaveBeenCalledWith(TEST_CWD, {
+      kind: "full",
+      preference: { mode: "exact", exact: LIGHTWEIGHT_SELECTION, tier: "advanced" },
+    });
+  });
+
+  it("does not consult the fallback for a runtime-default or legacy start", async () => {
+    const runtimeDefault = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const runtimeDefaultHarness = createModelPolicyHarness({
+      existing: false,
+      utilityModelResolver: runtimeDefault,
+    });
+    await runtimeDefaultHarness.service.start(TEST_CWD);
+
+    expect(runtimeDefault.inspect).not.toHaveBeenCalled();
+    expect(runtimeDefaultHarness.appendCustomEntry).toHaveBeenCalledWith(SESSION_MODEL_POLICY_CUSTOM_TYPE, {
+      version: 1,
+      mode: "exact",
+      exact: DEFAULT_SELECTION,
+    });
+
+    const legacy = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const legacyHarness = createModelPolicyHarness({ existing: false, utilityModelResolver: legacy });
+    await legacyHarness.service.start(TEST_CWD, {
+      modelPolicy: { mode: "tiered", tier: "advanced" },
+    });
+
+    expect(legacy.inspect).not.toHaveBeenCalled();
+  });
+
+  it("does not consult the fallback for spawn-session or tracked-subsession roots", async () => {
+    const resolver = fallbackResolver({ candidates: [LIGHTWEIGHT_CANDIDATE] });
+    const spawned = createModelPolicyHarness({
+      existing: false,
+      spawnTargetCwd: "/workspace-feature",
+      utilityModelResolver: resolver,
+    });
+    const tracked = createModelPolicyHarness({
+      existing: false,
+      spawnTargetCwd: "/workspace-feature",
+      utilityModelResolver: resolver,
+    });
+
+    await spawned.service.spawnSession({
+      spawningCwd: TEST_CWD,
+      prompt: "continue",
+      cwd: "/workspace-feature",
+    });
+    await tracked.service.spawnSubsession({
+      spawningCwd: TEST_CWD,
+      parentSessionId: "parent-session",
+      parentSessionFile: undefined,
+      prompt: "continue tracked",
+      cwd: "/workspace-feature",
+    });
+
+    expect(resolver.inspect).not.toHaveBeenCalled();
   });
 
   it("cleans up an unseen plus root when full policy persistence fails", async () => {
@@ -1539,14 +2047,33 @@ describe("PiSessionService model policy mutation", () => {
     await harness.service.status(ref());
     harness.calls.length = 0;
 
-    await expect(harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" }))
-      .rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    const rejection = harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" });
+    await expect(rejection).rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
 
     expect(harness.calls).toEqual([]);
     expect((await harness.service.status(ref())).modelPolicy).toMatchObject({
       mode: "exact",
       resolved: DEFAULT_SELECTION,
     });
+  });
+
+  it("rejects an unavailable exact policy with a typed resolution error", async () => {
+    const harness = createModelPolicyHarness({ branch: [exactEntry()] });
+    await harness.service.status(ref());
+    harness.calls.length = 0;
+
+    const rejection = harness.service.setModelPolicy(ref(), {
+      mode: "exact",
+      exact: {
+        model: { provider: "retired", id: "unavailable" },
+        thinkingLevel: "medium",
+      },
+    });
+
+    await expect(rejection).rejects.toThrow(/Model not found: retired\/unavailable/u);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
+    expect(harness.calls).toEqual([]);
   });
 
   it("initializes an explicit Tiered root before session.created and before its first prompt", async () => {
@@ -1883,8 +2410,9 @@ describe("PiSessionService model policy mutation safety", () => {
     await harness.service.status(ref());
     harness.hub.sessionEvents.length = 0;
 
-    await expect(harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" }))
-      .rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    const rejection = harness.service.setModelPolicy(ref(), { mode: "tiered", tier: "advanced" });
+    await expect(rejection).rejects.toThrow(/unsupported by openai\/gpt-advanced/iu);
+    await expect(rejection).rejects.toBeInstanceOf(SessionModelPolicyResolutionError);
 
     expect(harness.hub.sessionEvents).toEqual([]);
   });

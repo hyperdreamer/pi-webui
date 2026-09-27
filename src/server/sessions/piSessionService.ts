@@ -170,6 +170,7 @@ import {
   createModelTierRegistry,
   isModelTier,
   runtimeThinkingLevels,
+  TierResolutionError,
   type LadderValidation,
   type ModelTierRegistry,
   type ModelTier,
@@ -188,9 +189,15 @@ import {
   planSessionModelPolicyInitialization,
   planSessionModelPolicyUpdate,
   serializeSessionModelPolicy,
+  SessionModelPolicyResolutionError,
   SESSION_MODEL_POLICY_CUSTOM_TYPE,
   type SessionModelPolicyInspection,
+  type SessionModelPolicyPlan,
 } from "./sessionModelPolicy.js";
+import {
+  fallbackSessionModelPolicy,
+  initialPolicyUnavailableError,
+} from "./sessionModelPolicyFallback.js";
 import {
   inspectSessionCreationRootEligibility,
   inspectSessionCreationSource,
@@ -5670,27 +5677,103 @@ export class PiSessionService implements SessionRouteService {
     );
   }
 
+  /**
+   * Resolve the requested complete policy, substituting the machine's
+   * configured lightweight utility tuple when — and only when — the active
+   * target fails with a recognized typed resolution error. A failure after the
+   * resolve phase is never fallback-eligible.
+   */
+  private async resolveInitialSessionModelPolicy(
+    session: PiAgentSession,
+    requested: SessionModelPolicy
+  ): Promise<{
+    plan: SessionModelPolicyPlan;
+    resolved: { model: AgentModel; selection: ExactModelSelection };
+    fallback?: { requestedPolicy: SessionModelPolicy; reason: string };
+  }> {
+    // One pre-plan refresh makes tier planning and exact validation read the
+    // same snapshot. A refresh failure propagates untouched.
+    await session.modelRuntime.refresh({ allowNetwork: false });
+    try {
+      const requestedPlan = planSessionModelPolicyInitialization(
+        requested,
+        (tier) => {
+          const resolved = this.modelTierRegistry.resolve(tier);
+          return {
+            model: { provider: resolved.model.provider, id: resolved.model.id },
+            thinkingLevel: resolved.thinkingLevel,
+          };
+        }
+      );
+      // Only the active target is checked against the current runtime catalog.
+      // The inactive branch remains remembered even when it is unavailable.
+      const resolved = await this.resolveAvailableExactSelection(
+        session,
+        requestedPlan.target
+      );
+      return { plan: requestedPlan, resolved };
+    } catch (error: unknown) {
+      if (
+        !(error instanceof TierResolutionError) &&
+        !(error instanceof SessionModelPolicyResolutionError)
+      ) {
+        throw error;
+      }
+      const inspection = await this.utilityModelResolver.inspect("lightweight");
+      const candidate = inspection.candidates[0];
+      if (candidate === undefined) {
+        throw initialPolicyUnavailableError(
+          requested,
+          error,
+          inspection.unavailable
+        );
+      }
+      const fallbackPlan = fallbackSessionModelPolicy(requested, {
+        provider: candidate.model.provider,
+        id: candidate.model.id,
+        thinkingLevel: candidate.thinkingLevel,
+      });
+      try {
+        const fallbackResolved = await this.resolveAvailableExactSelection(
+          session,
+          fallbackPlan.target
+        );
+        return {
+          plan: fallbackPlan,
+          resolved: fallbackResolved,
+          fallback: {
+            requestedPolicy: requested,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        };
+      } catch (fallbackError: unknown) {
+        if (!(fallbackError instanceof SessionModelPolicyResolutionError)) {
+          throw fallbackError;
+        }
+        throw initialPolicyUnavailableError(requested, error, undefined);
+      }
+    }
+  }
+
   private async initializeCompleteSessionModelPolicy(
     session: PiAgentSession,
     policy: SessionModelPolicy,
     source: SessionCreationSource
   ): Promise<CompleteModelPolicyInitialization> {
-    const plan = planSessionModelPolicyInitialization(
-      policy,
-      (tier) => {
-        const resolved = this.modelTierRegistry.resolve(tier);
-        return {
-          model: { provider: resolved.model.provider, id: resolved.model.id },
-          thinkingLevel: resolved.thinkingLevel,
-        };
-      }
-    );
-    // Only the active target is checked against the current runtime catalog.
-    // The inactive branch remains remembered even when it is unavailable.
-    const target = await this.resolveAvailableExactSelection(
-      session,
-      plan.target
-    );
+    const { plan, resolved, fallback } =
+      await this.resolveInitialSessionModelPolicy(session, policy);
+    if (fallback !== undefined) {
+      this.logger.info(
+        {
+          sessionId: session.sessionId,
+          cwd: session.sessionManager.getCwd(),
+          requestedPolicy: fallback.requestedPolicy,
+          fallbackPolicy: plan.policy,
+          reason: fallback.reason,
+        },
+        "session model policy fell back to the lightweight utility model"
+      );
+    }
     const settings = modelPolicySettingsPersistence(session.settingsManager);
     await settleModelPolicySettings(
       settings,
@@ -5709,7 +5792,7 @@ export class PiSessionService implements SessionRouteService {
         session,
         "initialize the session model policy",
         async () => {
-          await this.applyExactSelection(session, target);
+          await this.applyExactSelection(session, resolved);
           // Pi queues global default writes behind its setters and swallows their
           // storage failures, so prove durability before any transcript record
           // exists: everything after this point must be reversible.
@@ -6085,14 +6168,14 @@ export class PiSessionService implements SessionRouteService {
         candidate.id === selection.model.id
     );
     const described = `${selection.model.provider}/${selection.model.id}`;
-    if (model === undefined) throw new Error(`Model not found: ${described}`);
+    if (model === undefined) throw new SessionModelPolicyResolutionError(`Model not found: ${described}`);
     if (!isKnownThinkingLevel(selection.thinkingLevel)) {
-      throw new Error(
+      throw new SessionModelPolicyResolutionError(
         `Unknown thinking level ${selection.thinkingLevel} for ${described}`
       );
     }
     if (!runtimeThinkingLevels(model).includes(selection.thinkingLevel)) {
-      throw new Error(
+      throw new SessionModelPolicyResolutionError(
         `Thinking level ${selection.thinkingLevel} is unsupported by ${described}`
       );
     }
