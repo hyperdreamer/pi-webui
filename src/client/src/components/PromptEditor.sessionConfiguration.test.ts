@@ -388,6 +388,31 @@ describe("PromptEditor session controls", () => {
     compact.click();
     expect(onCompact).not.toHaveBeenCalled();
   });
+
+  it("forwards the warning to the policy control", () => {
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(tieredPolicyStatus);
+    editor.modelPolicyWarning = "Policy warning";
+    editor.modelPolicyStatus = tieredPolicyStatus;
+
+    const control = renderedPolicyControl(renderCompactStatusElement(editor));
+    expect(control.warning).toBe("Policy warning");
+    expect(control.status).toBe(tieredPolicyStatus);
+
+    const blank = new PromptEditor();
+    blank.status = sessionStatus(tieredPolicyStatus);
+    expect(renderedPolicyControl(renderCompactStatusElement(blank)).warning).toBe("");
+  });
+
+  it("re-renders for a warning-only property change", () => {
+    const editor = new PromptEditor();
+    editor.status = sessionStatus(tieredPolicyStatus);
+
+    const changed: PropertyValues<PromptEditor> = new Map();
+    changed.set("modelPolicyWarning", "Policy warning");
+
+    expect(changeRequiresRender(editor, changed)).toBe(true);
+  });
 });
 
 type RenderCompactStatus = (this: PromptEditor) => TemplateResult | null;
@@ -412,6 +437,7 @@ type RenderedPolicyControl = HTMLElement & {
   saving: boolean;
   editable: boolean;
   error: string;
+  warning: string;
   onSelectMode?: (mode: "exact" | "tiered") => void;
 };
 

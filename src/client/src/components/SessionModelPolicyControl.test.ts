@@ -231,6 +231,56 @@ describe("SessionModelPolicyControl closed trigger", () => {
     expect(title).toContain("no thinking level");
     expect(title).not.toContain("· off");
   });
+
+  it("renders an untruncated role=status warning instead of the compact diagnostic", async () => {
+    const warning = "Selected provider/model is unavailable. The session may start with the Lightweight utility model.";
+    const control = await mountControl((component) => {
+      component.status = {
+        ...exactStatus(),
+        blockedReason: "Selected provider/model is unavailable",
+      };
+      component.warning = warning;
+    });
+
+    const warningLine = shadowRoot(control).querySelector<HTMLElement>(".policy-warning");
+    if (warningLine === null) throw new Error("Expected the policy warning line");
+    expect(warningLine.getAttribute("role")).toBe("status");
+    expect(warningLine.textContent).toBe(warning);
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")).toBeNull();
+  });
+
+  it("suppresses the ladder diagnostic under a warning", async () => {
+    const warning = "Selected model tier is unavailable. The session may start with the Lightweight utility model.";
+    const control = await mountControl((component) => {
+      component.status = { ...tieredStatus(), ladderValid: false };
+      component.warning = warning;
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")).toBeNull();
+    expect(shadowRoot(control).querySelector<HTMLElement>(".policy-warning")?.textContent).toBe(warning);
+  });
+
+  it("keeps the compact diagnostic when there is no warning", async () => {
+    const control = await mountControl((component) => {
+      component.status = {
+        ...exactStatus(),
+        blockedReason: "Selected provider/model is unavailable",
+      };
+      component.warning = "";
+    });
+
+    expect(shadowRoot(control).querySelector(".policy-diagnostic")?.textContent)
+      .toBe("Selected provider/model is unavailable");
+    expect(shadowRoot(control).querySelector<HTMLElement>(".policy-warning")?.textContent).toBe("");
+  });
+
+  it("keeps the warning style rule untruncated", () => {
+    const rule = componentStyleRule(".policy-warning");
+
+    expect(rule.whiteSpace).toBe("normal");
+    expect(["", "initial"]).toContain(rule.textOverflow);
+    expect(rule.getPropertyValue("overflow")).not.toBe("hidden");
+  });
 });
 
 describe("mode menu", () => {

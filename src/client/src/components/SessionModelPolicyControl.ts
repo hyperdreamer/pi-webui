@@ -13,6 +13,7 @@ const LADDER_INVALID_MESSAGE = "Model tier ladder is invalid. Tiered mode stays 
 @customElement("session-model-policy-control")
 export class SessionModelPolicyControl extends LitElement {
   @property({ attribute: false }) status?: ClientSessionModelPolicyStatus;
+  @property() warning = "";
   @property({ attribute: false }) catalog?: ModelTierSettingsResponse;
   @property({ type: Boolean }) loading = false;
   @property({ type: Boolean }) saving = false;
@@ -41,7 +42,8 @@ export class SessionModelPolicyControl extends LitElement {
     const policyStatus = this.effectiveStatus();
     if (policyStatus === undefined) return nothing;
     const modeLabel = policyStatus.mode === "tiered" ? "Tiered" : "Exact";
-    const compactDiagnostic = this.compactDiagnostic(policyStatus);
+    const warningText = this.warning.trim() === "" ? undefined : this.warning;
+    const compactDiagnostic = warningText === undefined ? this.compactDiagnostic(policyStatus) : undefined;
     return html`
       <button
         type="button"
@@ -56,6 +58,7 @@ export class SessionModelPolicyControl extends LitElement {
         <span class="policy-chevron" aria-hidden="true">▾</span>
       </button>
       ${this.menuOpen ? this.renderModeMenu(policyStatus.mode) : null}
+      <span class="policy-warning" role="status">${warningText ?? ""}</span>
       ${compactDiagnostic === undefined ? null : html`<span class="policy-diagnostic" title=${compactDiagnostic}>${compactDiagnostic}</span>`}
     `;
   }
@@ -167,6 +170,7 @@ export class SessionModelPolicyControl extends LitElement {
     .policy-mode-item-label { min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.3; }
     .policy-mode-hint { min-width: 0; color: var(--pi-muted); font-size: 11px; line-height: 1.3; }
     .policy-mode-check { grid-column: 2; grid-row: 1 / span 2; width: 18px; color: var(--pi-accent); font-weight: 700; text-align: center; }
+    .policy-warning { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; color: var(--pi-muted); font-size: 11px; line-height: 1.3; }
     .policy-diagnostic { min-width: 0; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pi-danger); font-size: 11px; }
   `;
 }
