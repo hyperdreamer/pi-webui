@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.21.0
+
+### Minor Changes
+
+- 1c28db2: Start SESSIONS `+` sessions on the configured lightweight utility model when the remembered model policy cannot resolve, remember that substitution, and surface it with a pre-start warning when available plus a notice naming the model actually used.
+
+### Patch Changes
+
+- af7f327: Refresh the model policy catalog after saving models in Settings so a newly added model can be selected in the current session without reloading the page.
+
 ## 1.20.0
 
 ### Minor Changes
