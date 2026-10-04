@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createPiWebUiCustomToolDefinitions } from "./piSessionService.js";
 import { buildModelPolicyCapability } from "./modelPolicyCapability.js";
@@ -42,12 +42,14 @@ const subsessions: SubsessionToolDeps = {
   ),
 };
 
-function ctxFor(sessionId: string): ExtensionContext {
+function ctxFor(sessionId: string): ExtensionToolContext {
   // The tool reads only sessionManager.getSessionId.
   // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- test stub with the minimal surface the tool uses.
   return {
     sessionManager: { getSessionId: () => sessionId },
-  } as unknown as ExtensionContext;
+    tools: [],
+    executeTool: vi.fn(),
+  } as unknown as ExtensionToolContext;
 }
 
 /** Invokes the registered tool exactly as the runtime does. */

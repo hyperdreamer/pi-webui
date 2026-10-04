@@ -1,12 +1,12 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createSpawnSessionToolDefinition } from "./spawnSessionTool.js";
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- test stub with the minimal surface the tool reads.
-const ctx = {} as ExtensionContext;
+const ctx = { tools: [], executeTool: vi.fn() } as unknown as ExtensionToolContext;
 const dispatchModel = { provider: "anthropic", id: "claude-sonnet" };
 // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- test stub with the minimal surface the tool reads.
-const ctxWithModel = { model: dispatchModel } as ExtensionContext;
+const ctxWithModel = { model: dispatchModel, tools: [], executeTool: vi.fn() } as unknown as ExtensionToolContext;
 
 describe("createSpawnSessionToolDefinition", () => {
   it("passes the spawning cwd, explicit cwd, dispatching model, and prompt to spawn callback", async () => {
