@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.22.0
+
+### Minor Changes
+
+- 4366fef: Update supported Pi core and coding agent dependencies and peerDependencies to `1.0.2` series (`^1.0.2` and `>=1.0.2 <2`).
+
 ## 1.21.0
 
 ### Minor Changes
