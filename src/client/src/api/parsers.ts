@@ -1915,6 +1915,7 @@ function parsePiWebUiConfigValues(value: unknown): PiWebUiConfigValues {
     ...optionalField("maxUploadBytes", optionalNumber(record, "maxUploadBytes")),
     ...optionalField("agent", optionalAgent(record["agent"])),
     ...optionalField("tts", optionalTts(record["tts"])),
+    ...optionalField("sessiond", optionalSessiond(record["sessiond"])),
     ...optionalField("spawnSessions", optionalBoolean(record, "spawnSessions")),
     ...optionalField("subsessions", optionalBoolean(record, "subsessions")),
   };
@@ -1942,6 +1943,21 @@ function optionalTts(value: unknown): PiWebUiConfigValues["tts"] | undefined {
   return {
     ...optionalField("voice", voice),
     ...optionalField("rate", rate),
+  };
+}
+
+function optionalSessiond(value: unknown): PiWebUiConfigValues["sessiond"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEBUI sessiond field");
+  assertOnlyFields(value, ["host", "port", "url"], "PI WEBUI sessiond");
+  const host = optionalString(value, "host")?.trim();
+  const url = optionalString(value, "url")?.trim();
+  const port = optionalNumber(value, "port");
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("Invalid PI WEBUI sessiond port field");
+  return {
+    ...(host === undefined || host === "" ? {} : { host }),
+    ...(port === undefined ? {} : { port }),
+    ...(url === undefined || url === "" ? {} : { url }),
   };
 }
 
@@ -2017,6 +2033,7 @@ function parsePiWebUiConfigEnvOverrides(value: unknown): PiWebUiConfigEnvOverrid
     agentDir: optionalBoolean(record, "agentDir") ?? false,
     ...optionalAgentDirSource(record),
     agentSessionDir: optionalBoolean(record, "agentSessionDir") ?? false,
+    sessiondUrl: optionalBoolean(record, "sessiondUrl") ?? false,
   };
 }
 
@@ -2209,6 +2226,9 @@ function parsePiWebUiRuntimeComponent(value: unknown): PiWebUiRuntimeComponent {
   const activeAgentProfileValue = record["activeAgentProfile"];
   const activeAgentProfile = activeAgentProfileValue === undefined ? undefined : parseActiveAgentProfileDescriptor(activeAgentProfileValue);
   if (activeAgentProfileValue !== undefined && (component !== "sessiond" || activeAgentProfile === undefined)) throw new Error("Invalid active agent profile descriptor");
+  const sessiondListenerValue = record["sessiondListener"];
+  const sessiondListener = optionalSessiondListener(sessiondListenerValue);
+  if (sessiondListenerValue !== undefined && (component !== "sessiond" || sessiondListener === undefined)) throw new Error("Invalid session daemon listener descriptor");
   return {
     component,
     label: requireString(record, "label"),
@@ -2216,8 +2236,30 @@ function parsePiWebUiRuntimeComponent(value: unknown): PiWebUiRuntimeComponent {
     available: requireBoolean(record, "available"),
     capabilities: parsePiWebUiCapabilities(record["capabilities"]),
     ...optionalField("activeAgentProfile", activeAgentProfile),
+    ...optionalField("sessiondListener", sessiondListener),
     ...optionalField("error", optionalString(record, "error")),
   };
+}
+
+function optionalSessiondListener(value: unknown): PiWebUiRuntimeComponent["sessiondListener"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid session daemon listener descriptor");
+  const kind = value["kind"];
+  if (kind === "socket") {
+    assertOnlyFields(value, ["kind"], "session daemon listener descriptor");
+    return { kind: "socket" };
+  }
+  if (kind !== "tcp") throw new Error("Invalid session daemon listener descriptor");
+  assertOnlyFields(value, ["kind", "host", "port", "hostSource", "portSource"], "session daemon listener descriptor");
+  const host = value["host"];
+  const port = value["port"];
+  const hostSource = value["hostSource"];
+  const portSource = value["portSource"];
+  if (typeof host !== "string" || host === "") throw new Error("Invalid session daemon listener descriptor");
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid session daemon listener descriptor");
+  if (hostSource !== "env" && hostSource !== "config" && hostSource !== "default") throw new Error("Invalid session daemon listener descriptor");
+  if (portSource !== "env" && portSource !== "config") throw new Error("Invalid session daemon listener descriptor");
+  return { kind: "tcp", host, port, hostSource, portSource };
 }
 
 function parsePiWebUiComponentStatus(value: unknown): PiWebUiComponentStatus {
