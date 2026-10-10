@@ -1832,8 +1832,13 @@ describe("sessiond client parsers", () => {
     expect(parsed.components.sessiond.sessiondListener).toEqual(tcp);
     expect(parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ kind: "socket" })).components.sessiond.sessiondListener).toEqual({ kind: "socket" });
     expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, tls: true }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ kind: "socket", tls: true }))).toThrow("Invalid session daemon listener descriptor");
     expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, host: "" }))).toThrow("Invalid session daemon listener descriptor");
     expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, port: 0 }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, port: 65536 }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, port: 8810.5 }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, hostSource: "future" }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, portSource: "default" }))).toThrow("Invalid session daemon listener descriptor");
     expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener(tcp, "web"))).toThrow("Invalid session daemon listener descriptor");
   });
 
