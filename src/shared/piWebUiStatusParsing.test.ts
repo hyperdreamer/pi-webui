@@ -124,3 +124,44 @@ describe("PI WEBUI status parsing", () => {
     expect(parsed?.components.sessiond.installation).toEqual({ kind: "docker", path: "/workspace/pi-webui", dockerMode: "dev" });
   });
 });
+
+describe("session daemon listener descriptors", () => {
+  it("parses and freezes both descriptor forms for the sessiond component", () => {
+    const tcp = { kind: "tcp", host: "0.0.0.0", port: 8810, hostSource: "config", portSource: "config" };
+    const parsedTcp = parsePiWebUiRuntimeResponse(runtimeWithListener(tcp));
+
+    expect(parsedTcp?.components.sessiond.sessiondListener).toEqual(tcp);
+    expect(Object.isFrozen(parsedTcp?.components.sessiond.sessiondListener)).toBe(true);
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ kind: "socket" }))?.components.sessiond.sessiondListener).toEqual({ kind: "socket" });
+  });
+
+  it("drops a legacy omission", () => {
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener(undefined))?.components.sessiond.sessiondListener).toBeUndefined();
+  });
+
+  it("rejects malformed descriptors and web ownership", () => {
+    const tcp = { kind: "tcp", host: "0.0.0.0", port: 8810, hostSource: "config", portSource: "config" };
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, tls: true }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, hostSource: "future" }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, portSource: "default" }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, kind: "future" }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, host: "" }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, port: 0 }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, port: 65536 }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener(tcp, "web"))).toBeUndefined();
+  });
+});
+
+function runtimeWithListener(listener: unknown, owner: "web" | "sessiond" = "sessiond") {
+  const web = { component: "web" as const, label: "Web/UI", available: true, capabilities: [] };
+  const sessiond = { component: "sessiond" as const, label: "Session daemon", available: true, capabilities: [] };
+  return {
+    packageName: "@hyperdreamer/pi-webui",
+    generatedAt: "now",
+    components: {
+      web: owner === "web" ? { ...web, sessiondListener: listener } : web,
+      sessiond: owner === "sessiond" && listener !== undefined ? { ...sessiond, sessiondListener: listener } : sessiond,
+    },
+    capabilities: [],
+  };
+}
