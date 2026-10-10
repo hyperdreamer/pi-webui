@@ -200,6 +200,7 @@ export class SettingsDialog extends LitElement {
           .savedMessage=${this.savedMessage}
           .targetLabel=${settingsMachineTargetLabel(this.settingsTarget())}
           .activeAgentProfile=${this.machineRuntime?.components?.sessiond.activeAgentProfile}
+          .sessiondListener=${this.machineRuntime?.components?.sessiond.sessiondListener}
           .agentProfileSupport=${this.agentProfileSettingsSupport()}
           .onReload=${() => this.reloadSessiondState()}
           .onSave=${(config: PiWebUiConfigValues) => this.saveSessiondConfig(config)}
