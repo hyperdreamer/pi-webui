@@ -248,6 +248,18 @@ describe("session daemon panel listener block", () => {
     expect(rowBadges(panel, "Desired bind port")).toEqual([]);
   });
 
+  it("omits the environment badge for config-sourced values", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    const panel = await mountListenerPanel(
+      configResponse({ sessiond }, { sessiondUrl: false }, { sessiond }),
+      tcp("0.0.0.0", 8810, "config", "config"),
+    );
+
+    expect(rowBadges(panel, "Running bind address")).toEqual([]);
+    expect(rowBadges(panel, "Running bind port")).toEqual([]);
+    expect(rowBadges(panel, "Web/API dial target")).toEqual([]);
+  });
+
   it("renders and suppresses the dial-target coherence warning", async () => {
     const panel = await mountListenerPanel(configResponse({ sessiond: { port: 8810 } }));
     expect(listenerRoot(panel).textContent).toContain("Add sessiond.url or remove sessiond.port.");
