@@ -155,6 +155,9 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Agent profile state directory | `agent.dir` | `PI_WEBUI_AGENT_DIR` (`PI_CODING_AGENT_DIR` for Pi compatibility) | Global/session daemon | Not supported locally | Restart session daemon on that machine; affects auth, models, settings, sessions, Pi packages, and package-backed plugins |
 | Agent can spawn sessions | `spawnSessions` | `PI_WEBUI_SPAWN_SESSIONS` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
 | Tracked subsessions | `subsessions` | `PI_WEBUI_SUBSESSIONS` | Global/session daemon | Not supported locally; also requires `spawnSessions` | Restart session daemon on that machine |
+| Session daemon bind host | `sessiond.host` | `PI_WEBUI_SESSIOND_HOST` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
+| Session daemon bind port | `sessiond.port` | `PI_WEBUI_SESSIOND_PORT` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
+| Web/API to session daemon URL | `sessiond.url` | `PI_WEBUI_SESSIOND_URL` | Global/web/API | Not supported locally | Restart web/API |
 | Model tier routing ladder | `modelTiers` | — | Global | Not supported locally | Saved settings apply immediately on save; requires remote peer capability `settings.modelTiers` |
 | Utility model routing | `utilityModels` | — | Global | Not supported locally | Saved settings apply immediately on the next utility operation; requires remote peer capability `settings.utilityModels` |
 | Local gateway text to speech | `tts` | — | Global | Not supported locally | Next utterance after settings save; no service restart |
@@ -166,9 +169,6 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Global config file path | — | `PI_WEBUI_CONFIG` (`XDG_CONFIG_HOME` affects the default path) | Process/env | Selects the global config file; not a project config | Restart services/processes after changing env |
 | Managed data directory | — | `PI_WEBUI_DATA_DIR` | Process/env | Not supported locally | Restart web/API and session daemon |
 | Session daemon socket | — | `PI_WEBUI_SESSIOND_SOCKET` | Web/API + session daemon env | Not supported locally | Restart daemon and web/API; both must match |
-| Session daemon TCP port | — | `PI_WEBUI_SESSIOND_PORT` | Session daemon env | Not supported locally | Restart session daemon; set `PI_WEBUI_SESSIOND_URL` for web/API too |
-| Session daemon TCP host | — | `PI_WEBUI_SESSIOND_HOST` | Session daemon env | Not supported locally | Restart session daemon |
-| Web-to-daemon URL | — | `PI_WEBUI_SESSIOND_URL` | Web/API env | Not supported locally | Restart web/API |
 | Projects storage file | — | `PI_WEBUI_PROJECTS_FILE` | Web/API + session daemon env | Not supported locally | Restart services; advanced state override |
 | Remote machines storage file | — | `PI_WEBUI_MACHINES_FILE` | Web/API env | Not supported locally | Restart web/API; advanced state override |
 | Agent profile session storage directory | — | `PI_WEBUI_AGENT_SESSION_DIR` (`PI_CODING_AGENT_SESSION_DIR` for Pi compatibility) | Session daemon env | Not supported locally | Restart session daemon; env-only session storage override |
@@ -252,6 +252,28 @@ Environment variables take precedence over the config file. `PI_WEBUI_AGENT_COMM
 The session daemon resolves the persisted desired values plus its environment once at startup. That secret-free active profile stays fixed for the daemon lifetime. **Settings → Session daemon** saves command and directory together as desired configuration and shows whether the profile is active, needs a restart, or cannot be compared. Until the daemon restarts, sessions, Pi package operations, package-backed plugin discovery, status/install detection, and update planning continue to use the daemon-owned active profile; a web/API restart recovers that same active profile instead of applying the newly saved values.
 
 If the session daemon cannot report a valid active profile, profile-dependent package and plugin operations report unavailable instead of falling back to independently resolved config. A package-managed update command is shown only when PI WEBUI can preserve the active profile with a recognized, safe Pi companion CLI; otherwise the command is omitted. Remote profile editing likewise requires advertised support, and the gateway rejects a remote save if the target does not return the requested profile. Restart the session daemon on the selected machine to establish the next active profile.
+
+### Session daemon listener
+
+`sessiond` describes the two ends of one connection in the global config file. `sessiond.host` and `sessiond.port` configure the session daemon bind address; `sessiond.url` configures the web/API dial target. `sessiond.host` is inert without a port, and an absent `sessiond.port` still means the unix socket.
+
+```json
+{
+  "sessiond": {
+    "host": "0.0.0.0",
+    "port": 8810,
+    "url": "http://127.0.0.1:8810"
+  }
+}
+```
+
+`sessiond.host` and `sessiond.port` are read by the session daemon; `sessiond.url` is read by the web/API. Environment variables remain authoritative over the file for all three: `PI_WEBUI_SESSIOND_HOST`, `PI_WEBUI_SESSIOND_PORT`, and `PI_WEBUI_SESSIOND_URL`. An empty or whitespace-only string means absent on all three, so a file value still applies when its environment variable is blank. The daemon resolves its listener from the file subtree plus its own environment and reports the effective values with per-value provenance.
+
+**Settings → Session daemon** shows the desired bind address and port, the running listener, the web/API dial target, an `environment override` badge on each value the environment supplies, and the listener status: `✓ daemon in sync` when the running listener matches the file, an environment-override explanation when a differing value comes from the environment, `⚠ restart required` when a restart would apply the file, or no verdict while the daemon cannot report a listener. Exactly one of `sessiond.port`/`sessiond.url` present is a warning rather than an error: the panel names the missing half, and it suppresses a half that the owning process's environment actually resolves.
+
+A configured `sessiond.host` of `""` or whitespace now means absent, so the daemon binds `127.0.0.1` instead of the wildcard address. Set `sessiond.host` (or `PI_WEBUI_SESSIOND_HOST`) to `0.0.0.0` explicitly for a wildcard bind. A non-loopback bind needs a firewall, VPN, or authenticated reverse proxy that strictly controls the port.
+
+Both processes resolve transport at startup, so apply changes with a restart: `pi-webui-sessiond.service` on that machine for `sessiond.host`/`sessiond.port`, and the web/API for `sessiond.url`. Use `8810` as a safe `sessiond.port` choice; `vite.config.ts` reserves `8809` with `strictPort: true` for the dev client, so a machine running the dev client cannot use `8809` for the daemon.
 
 ### Models and skills
 

@@ -417,6 +417,30 @@
                       <td>Restart session daemon on that machine</td>
                     </tr>
                     <tr>
+                      <td>Session daemon bind host</td>
+                      <td><code>sessiond.host</code></td>
+                      <td><code>PI_WEBUI_SESSIOND_HOST</code></td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>Session daemon bind port</td>
+                      <td><code>sessiond.port</code></td>
+                      <td><code>PI_WEBUI_SESSIOND_PORT</code></td>
+                      <td>Global/session daemon</td>
+                      <td>Not supported locally</td>
+                      <td>Restart session daemon on that machine</td>
+                    </tr>
+                    <tr>
+                      <td>Web/API to session daemon URL</td>
+                      <td><code>sessiond.url</code></td>
+                      <td><code>PI_WEBUI_SESSIOND_URL</code></td>
+                      <td>Global/web/API</td>
+                      <td>Not supported locally</td>
+                      <td>Restart web/API</td>
+                    </tr>
+                    <tr>
                       <td>Model tier routing ladder</td>
                       <td><code>modelTiers</code></td>
                       <td>—</td>
@@ -496,30 +520,6 @@
                       <td>Web/API + session daemon env</td>
                       <td>Not supported locally</td>
                       <td>Restart daemon and web/API; both must match</td>
-                    </tr>
-                    <tr>
-                      <td>Session daemon TCP port</td>
-                      <td>—</td>
-                      <td><code>PI_WEBUI_SESSIOND_PORT</code></td>
-                      <td>Session daemon env</td>
-                      <td>Not supported locally</td>
-                      <td>Restart session daemon; set <code>PI_WEBUI_SESSIOND_URL</code> for web/API too</td>
-                    </tr>
-                    <tr>
-                      <td>Session daemon TCP host</td>
-                      <td>—</td>
-                      <td><code>PI_WEBUI_SESSIOND_HOST</code></td>
-                      <td>Session daemon env</td>
-                      <td>Not supported locally</td>
-                      <td>Restart session daemon</td>
-                    </tr>
-                    <tr>
-                      <td>Web-to-daemon URL</td>
-                      <td>—</td>
-                      <td><code>PI_WEBUI_SESSIOND_URL</code></td>
-                      <td>Web/API env</td>
-                      <td>Not supported locally</td>
-                      <td>Restart web/API</td>
                     </tr>
                     <tr>
                       <td>Projects storage file</td>
@@ -678,6 +678,60 @@
                 support, and the gateway rejects a remote save if the target does not return the requested profile.
                 Restart the session daemon on the selected machine to establish the next active profile.
               </div>
+            </section>
+
+            <section id="session-daemon-listener">
+              <h2>Session daemon listener</h2>
+              <p>
+                <code>sessiond</code> describes the two ends of one connection in the global config file.
+                <code>sessiond.host</code> and <code>sessiond.port</code> configure the session daemon bind address;
+                <code>sessiond.url</code> configures the web/API dial target. <code>sessiond.host</code> is inert without a
+                port, and an absent <code>sessiond.port</code> still means the unix socket.
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Session daemon listener</strong>
+                  <button class="copy-button" data-copy="#sessiond-listener">Copy</button>
+                </div>
+                <pre id="sessiond-listener"><code>{
+  "sessiond": {
+    "host": "0.0.0.0",
+    "port": 8810,
+    "url": "http://127.0.0.1:8810"
+  }
+}</code></pre>
+              </div>
+              <p>
+                <code>sessiond.host</code> and <code>sessiond.port</code> are read by the session daemon;
+                <code>sessiond.url</code> is read by the web/API. Environment variables remain authoritative over the file
+                for all three: <code>PI_WEBUI_SESSIOND_HOST</code>, <code>PI_WEBUI_SESSIOND_PORT</code>, and
+                <code>PI_WEBUI_SESSIOND_URL</code>. An empty or whitespace-only string means absent on all three, so a file
+                value still applies when its environment variable is blank. The daemon resolves its listener from the file
+                subtree plus its own environment and reports the effective values with per-value provenance.
+              </p>
+              <p>
+                <strong>Settings → Session daemon</strong> shows the desired bind address and port, the running listener,
+                the web/API dial target, an <code>environment override</code> badge on each value the environment supplies,
+                and the listener status: <code>✓ daemon in sync</code> when the running listener matches the file, an
+                environment-override explanation when a differing value comes from the environment,
+                <code>⚠ restart required</code> when a restart would apply the file, or no verdict while the daemon cannot
+                report a listener. Exactly one of <code>sessiond.port</code>/<code>sessiond.url</code> present is a warning
+                rather than an error: the panel names the missing half, and it suppresses a half that the owning process's
+                environment actually resolves.
+              </p>
+              <p>
+                A configured <code>sessiond.host</code> of <code>""</code> or whitespace now means absent, so the daemon
+                binds <code>127.0.0.1</code> instead of the wildcard address. Set <code>sessiond.host</code> (or
+                <code>PI_WEBUI_SESSIOND_HOST</code>) to <code>0.0.0.0</code> explicitly for a wildcard bind. A
+                non-loopback bind needs a firewall, VPN, or authenticated reverse proxy that strictly controls the port.
+              </p>
+              <p>
+                Both processes resolve transport at startup, so apply changes with a restart:
+                <code>pi-webui-sessiond.service</code> on that machine for <code>sessiond.host</code>/<code>sessiond.port</code>,
+                and the web/API for <code>sessiond.url</code>. Use <code>8810</code> as a safe <code>sessiond.port</code>
+                choice; <code>vite.config.ts</code> reserves <code>8809</code> with <code>strictPort: true</code> for the dev
+                client, so a machine running the dev client cannot use <code>8809</code> for the daemon.
+              </p>
             </section>
 
             <section id="models-and-skills">

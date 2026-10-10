@@ -214,6 +214,29 @@
                 NetBird/Tailscale/WireGuard/LAN address, and make sure that network policy limits access. Avoid
                 <code>0.0.0.0</code> unless a firewall, VPN, or authenticated reverse proxy strictly controls the port.
               </div>
+              <p>
+                To serve the session daemon over TCP on a remote machine, configure both ends in the machine's
+                <code>$PI_WEBUI_CONFIG</code> file so they cannot drift apart:
+              </p>
+              <div class="code-card">
+                <div class="copy-row">
+                  <strong>Session daemon listener</strong>
+                  <button class="copy-button" data-copy="#sessiond-listener">Copy</button>
+                </div>
+                <pre id="sessiond-listener"><code>{
+  "sessiond": {
+    "host": "0.0.0.0",
+    "port": 8810,
+    "url": "http://127.0.0.1:8810"
+  }
+}</code></pre>
+              </div>
+              <p>
+                Restart the session daemon and the web/API on that machine to apply the change. Use <code>8810</code>:
+                the dev client reserves <code>8809</code> with <code>strictPort: true</code>. See
+                <a href="config#session-daemon-listener">Session daemon listener</a> for ownership, precedence, and the
+                coherence rule.
+              </p>
             </section>
 
             <section id="reverse-proxy-prefix">
