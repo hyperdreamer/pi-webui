@@ -132,7 +132,9 @@ describe("session daemon listener descriptors", () => {
 
     expect(parsedTcp?.components.sessiond.sessiondListener).toEqual(tcp);
     expect(Object.isFrozen(parsedTcp?.components.sessiond.sessiondListener)).toBe(true);
-    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ kind: "socket" }))?.components.sessiond.sessiondListener).toEqual({ kind: "socket" });
+    const parsedSocket = parsePiWebUiRuntimeResponse(runtimeWithListener({ kind: "socket" }));
+    expect(parsedSocket?.components.sessiond.sessiondListener).toEqual({ kind: "socket" });
+    expect(Object.isFrozen(parsedSocket?.components.sessiond.sessiondListener)).toBe(true);
   });
 
   it("drops a legacy omission", () => {
@@ -142,6 +144,7 @@ describe("session daemon listener descriptors", () => {
   it("rejects malformed descriptors and web ownership", () => {
     const tcp = { kind: "tcp", host: "0.0.0.0", port: 8810, hostSource: "config", portSource: "config" };
     expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, tls: true }))).toBeUndefined();
+    expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ kind: "socket", tls: true }))).toBeUndefined();
     expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, hostSource: "future" }))).toBeUndefined();
     expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, portSource: "default" }))).toBeUndefined();
     expect(parsePiWebUiRuntimeResponse(runtimeWithListener({ ...tcp, kind: "future" }))).toBeUndefined();

@@ -164,6 +164,12 @@ describe("session daemon activation state", () => {
     expect(activationState(undefined, undefined)).toBe("unavailable");
   });
 
+  it("normalizes a whitespace-padded or blank file host before comparison", () => {
+    expect(activationState({ host: "  0.0.0.0  ", port: 8810 }, tcp("0.0.0.0", 8810, "config", "config"))).toBe("active");
+    expect(activationState({ host: "   ", port: 8810 }, tcp("127.0.0.1", 8810, "default", "config"))).toBe("active");
+    expect(activationState({ host: "  0.0.0.0  ", port: 8810 }, tcp("127.0.0.1", 8810, "config", "config"))).toBe("restart-required");
+  });
+
   it("scopes environment influence to the differing value only", () => {
     expect(activationState({ host: "0.0.0.0", port: 8810 }, tcp("127.0.0.1", 8810, "default", "env"))).toBe("restart-required");
     expect(activationState({ host: "0.0.0.0", port: 8810 }, tcp("0.0.0.0", 9000, "env", "config"))).toBe("restart-required");
