@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parsePiWebUiSessiondConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
 import { PiWebUiConfigMutationBusyError, createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
-import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiSessiondConfig } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
 import {
   WorkspaceTasksMoveConflictError,
@@ -170,8 +170,8 @@ export function mergeSelectedMachineConfig(current: PiWebUiConfigValues, patch: 
 export function selectedMachineConfigResponse(response: PiWebUiConfigResponse): PiWebUiConfigResponse {
   return {
     ...response,
-    config: pickSelectedMachineConfig(response.config),
-    effectiveConfig: pickSelectedMachineConfig(response.effectiveConfig),
+    config: projectSelectedMachineConfigValues(response.config),
+    effectiveConfig: projectSelectedMachineConfigValues(response.effectiveConfig),
   };
 }
 
@@ -180,11 +180,22 @@ export function parsePiWebUiConfigResponseBody(value: unknown, source = "PI WEBU
   return {
     path: requireResponseString(record, "path", source),
     exists: requireResponseBoolean(record, "exists", source),
-    config: parseConfigRequest(record["config"], "portable"),
-    effectiveConfig: parseConfigRequest(record["effectiveConfig"], "portable"),
+    config: parsePiWebUiConfigResponseValues(record["config"], "portable", source),
+    effectiveConfig: parsePiWebUiConfigResponseValues(record["effectiveConfig"], "portable", source),
     ...(record["modelTiersError"] === undefined ? {} : { modelTiersError: requireResponseString(record, "modelTiersError", source) }),
     envOverrides: parsePiWebUiConfigEnvOverridesResponse(record["envOverrides"], source),
   };
+}
+
+function parseReadOnlySessiondConfig(value: unknown, source: string): PiWebUiSessiondConfig {
+  // Read-side only. Sharing the file parser guarantees identical shapes and messages.
+  return parsePiWebUiSessiondConfig(value, source);
+}
+
+function parsePiWebUiConfigResponseValues(value: unknown, agentPathHost: AgentPathHost, source: string): PiWebUiConfigValues {
+  const parsed = parseConfigRequest(value, agentPathHost);
+  if (!isRecord(value) || value["sessiond"] === undefined) return parsed;
+  return { ...parsed, sessiond: parseReadOnlySessiondConfig(value["sessiond"], source) };
 }
 
 function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "current"): PiWebUiConfig {
@@ -242,6 +253,10 @@ function pickSelectedMachineConfig(config: PiWebUiConfigValues): PiWebUiConfig {
     ...(config.subsessions !== undefined ? { subsessions: config.subsessions } : {}),
     ...(config.agent !== undefined ? { agent: config.agent } : {}),
   };
+}
+
+function projectSelectedMachineConfigValues(config: PiWebUiConfigValues): PiWebUiConfigValues {
+  return { ...pickSelectedMachineConfig(config), ...(config.sessiond === undefined ? {} : { sessiond: config.sessiond }) };
 }
 
 function selectedMachineConfigErrorMessage(error: unknown): string {
@@ -319,6 +334,7 @@ function parsePiWebUiConfigEnvOverridesResponse(value: unknown, source: string):
     agentDir: optionalResponseBoolean(record, "agentDir", source) ?? false,
     ...optionalAgentDirSource(record, source),
     agentSessionDir: optionalResponseBoolean(record, "agentSessionDir", source) ?? false,
+    sessiondUrl: optionalResponseBoolean(record, "sessiondUrl", source) ?? false,
   };
 }
 
@@ -366,11 +382,16 @@ function piWebUiConfigEnvOverrides(env: NodeJS.ProcessEnv, config: PiWebUiConfig
     agentDir: hasAgentDirEnvOverride(env, command),
     ...(dirEnvSource === undefined ? {} : { agentDirSource: dirEnvSource }),
     agentSessionDir: hasAgentSessionDirEnvOverride(env, command),
+    sessiondUrl: isEnvSetAfterTrim(env["PI_WEBUI_SESSIOND_URL"]),
   };
 }
 
 function isEnvSet(value: string | undefined): boolean {
   return value !== undefined && value !== "";
+}
+
+function isEnvSetAfterTrim(value: string | undefined): boolean {
+  return value !== undefined && value.trim() !== "";
 }
 
 function isConfigValidationError(error: unknown): boolean {

@@ -180,6 +180,7 @@ export function resolveEffectivePiWebUiConfig(loaded: LoadedPiWebUiConfig, optio
   const port = env["PI_WEBUI_PORT"] ?? env["PORT"];
   const allowedHosts = env["PI_WEBUI_ALLOWED_HOSTS"];
   const maxUpload = env["PI_WEBUI_MAX_UPLOAD_BYTES"];
+  const sessiondUrl = env["PI_WEBUI_SESSIOND_URL"]?.trim();
   const agent = effectiveAgentConfig(env, loaded.config);
   return {
     ...loaded,
@@ -196,6 +197,7 @@ export function resolveEffectivePiWebUiConfig(loaded: LoadedPiWebUiConfig, optio
       // On by default, like spawnSessions; resolved here so the effective config is the single source of truth.
       subsessions: subsessionsEnabled(env, loaded.config),
       agent: { command: agent.command, dir: agent.dir },
+      ...(sessiondUrl !== undefined && sessiondUrl !== "" ? { sessiond: { ...loaded.config.sessiond, url: sessiondUrl } } : {}),
     },
   };
 }
