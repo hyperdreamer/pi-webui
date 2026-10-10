@@ -1,4 +1,4 @@
-import type { PiWebUiComponentStatus, PiWebUiInstallationInfo, PiWebUiRuntimeComponent, PiWebUiRuntimeResponse, PiWebUiVersionResponse } from "./apiTypes.js";
+import type { PiWebUiComponentStatus, PiWebUiInstallationInfo, PiWebUiRuntimeComponent, PiWebUiRuntimeResponse, PiWebUiSessiondListenerDescriptor, PiWebUiVersionResponse } from "./apiTypes.js";
 import { parseActiveAgentProfileDescriptor } from "./activeAgentProfile.js";
 import { parseKnownPiWebUiCapabilities } from "./capabilities.js";
 
@@ -27,6 +27,26 @@ export function parsePiWebUiRuntimeResponse(value: unknown): PiWebUiRuntimeRespo
   return { packageName, generatedAt, components: { web, sessiond }, capabilities };
 }
 
+export function parsePiWebUiSessiondListenerDescriptor(value: unknown): PiWebUiSessiondListenerDescriptor | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = value["kind"];
+  if (kind === "socket") {
+    if (Object.keys(value).some((key) => key !== "kind")) return undefined;
+    return Object.freeze({ kind: "socket" });
+  }
+  if (kind !== "tcp") return undefined;
+  if (Object.keys(value).some((key) => key !== "kind" && key !== "host" && key !== "port" && key !== "hostSource" && key !== "portSource")) return undefined;
+  const host = value["host"];
+  const port = value["port"];
+  const hostSource = value["hostSource"];
+  const portSource = value["portSource"];
+  if (typeof host !== "string" || host === "") return undefined;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  if (hostSource !== "env" && hostSource !== "config" && hostSource !== "default") return undefined;
+  if (portSource !== "env" && portSource !== "config") return undefined;
+  return Object.freeze({ kind: "tcp", host, port, hostSource, portSource });
+}
+
 export function parsePiWebUiRuntimeComponent(value: unknown): PiWebUiRuntimeComponent | undefined {
   if (!isRecord(value)) return undefined;
   const component = value["component"];
@@ -36,10 +56,13 @@ export function parsePiWebUiRuntimeComponent(value: unknown): PiWebUiRuntimeComp
   const capabilities = parseKnownPiWebUiCapabilities(value["capabilities"]);
   const activeAgentProfileValue = value["activeAgentProfile"];
   const activeAgentProfile = activeAgentProfileValue === undefined ? undefined : parseActiveAgentProfileDescriptor(activeAgentProfileValue);
+  const sessiondListenerValue = value["sessiondListener"];
+  const sessiondListener = sessiondListenerValue === undefined ? undefined : parsePiWebUiSessiondListenerDescriptor(sessiondListenerValue);
   const error = value["error"];
   if (component !== "web" && component !== "sessiond") return undefined;
   if (typeof label !== "string" || label === "" || typeof available !== "boolean" || capabilities === undefined) return undefined;
   if (activeAgentProfileValue !== undefined && (component !== "sessiond" || activeAgentProfile === undefined)) return undefined;
+  if (sessiondListenerValue !== undefined && (component !== "sessiond" || sessiondListener === undefined)) return undefined;
   return {
     component,
     label,
@@ -47,6 +70,7 @@ export function parsePiWebUiRuntimeComponent(value: unknown): PiWebUiRuntimeComp
     available,
     capabilities,
     ...(activeAgentProfile === undefined ? {} : { activeAgentProfile }),
+    ...(sessiondListener === undefined ? {} : { sessiondListener }),
     ...(typeof error === "string" ? { error } : {}),
   };
 }

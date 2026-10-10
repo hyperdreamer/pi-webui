@@ -198,6 +198,20 @@ describe("MachineService", () => {
     ]);
   });
 
+  it("retains the daemon listener descriptor for remote runtime snapshots", async () => {
+    const body = remoteRuntimeBody();
+    const requestJson = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({ statusCode: 200, headers: {}, body }));
+    const remoteService = new MachineService(new MachineStore(storePath), {
+      remoteClientFactory: () => fakeRemoteClient({ requestJson }),
+      now: () => new Date("2026-05-25T00:00:00.000Z"),
+    });
+    const machine = await remoteService.add({ name: "Remote", baseUrl: "https://remote.example.test" });
+
+    const runtime = await remoteService.runtime(machine.id);
+
+    expect(runtime?.components?.sessiond.sessiondListener).toEqual({ kind: "tcp", host: "127.0.0.1", port: 8810, hostSource: "config", portSource: "config" });
+  });
+
   it("caches remote runtime errors and clears them after remote updates", async () => {
     let now = new Date("2026-05-25T00:00:00.000Z");
     const body = remoteRuntimeBody();
@@ -271,6 +285,7 @@ function remoteRuntimeBody(): PiWebUiRuntimeResponse {
         runtimeVersion: "1.0.0",
         available: true,
         capabilities: [PI_WEBUI_CAPABILITIES.sessionsDeleteArchived],
+        sessiondListener: { kind: "tcp", host: "127.0.0.1", port: 8810, hostSource: "config", portSource: "config" },
       },
     },
     capabilities: [PI_WEBUI_CAPABILITIES.sessionsDeleteArchived, PI_WEBUI_CAPABILITIES.piPackagesManage],
