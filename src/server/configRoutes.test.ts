@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -288,6 +288,35 @@ describe("config routes", () => {
     expect(response.json<{ error: string }>().error).toContain("PI WEBUI selected-machine config spawnSessions must be a boolean");
     expect(service.update).not.toHaveBeenCalled();
   });
+
+  it("carries the read-only sessiond subtree on selected-machine reads", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    savedConfig = { ...fullConfig(), sessiond };
+
+    const response = await app.inject({ method: "GET", url: "/api/machines/local/config" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<PiWebUiConfigResponse>();
+    expect(body.config.sessiond).toEqual(sessiond);
+    expect(body.effectiveConfig.sessiond).toEqual(sessiond);
+    expect(body.config).not.toHaveProperty("host");
+    expect(body.config).not.toHaveProperty("port");
+    expect(body.config).not.toHaveProperty("shortcuts");
+    expect(body.config).not.toHaveProperty("tts");
+  });
+
+  it("rejects sessiond on the selected-machine write path", async () => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/machines/local/config",
+      payload: { config: { sessiond: { host: "0.0.0.0" } } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toContain("PI WEBUI selected-machine config key is not allowed: sessiond");
+    expect(service.update).not.toHaveBeenCalled();
+    expect(() => parseSelectedMachineConfigRequest({ sessiond: { host: "0.0.0.0" } })).toThrow("PI WEBUI selected-machine config key is not allowed: sessiond");
+  });
 });
 
 describe("sessiond environment override projection", () => {
@@ -298,6 +327,64 @@ describe("sessiond environment override projection", () => {
 
     expect(blank.envOverrides.sessiondUrl).toBe(false);
     expect(set.envOverrides.sessiondUrl).toBe(true);
+  });
+});
+
+describe("sessiond read projection and write-path closure", () => {
+  it("preserves sessiond in federation response bodies and rejects malformed subtrees", () => {
+    const sessiond = { host: "0.0.0.0", port: 8810 };
+    const body = {
+      path: "/tmp/pi-webui/config.json",
+      exists: true,
+      config: { sessiond },
+      effectiveConfig: { sessiond },
+      envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+    };
+
+    const parsed = parsePiWebUiConfigResponseBody(body);
+
+    expect(parsed.config.sessiond).toEqual(sessiond);
+    expect(parsed.effectiveConfig.sessiond).toEqual(sessiond);
+    expect(parsed.envOverrides.sessiondUrl).toBe(false);
+    expect(() => parsePiWebUiConfigResponseBody({ ...body, config: { sessiond: { port: 0 } } }))
+      .toThrow("PI WEBUI config sessiond.port must be an integer from 1 to 65535: PI WEBUI config response");
+    expect(() => parsePiWebUiConfigResponseBody({ ...body, config: { sessiond: { tls: true } } }))
+      .toThrow('PI WEBUI config sessiond contains unknown key "tls": PI WEBUI config response');
+  });
+
+  let writePathDir: string;
+  let writePathConfigPath: string;
+  let writePathDataDir: string;
+  let writePathApp: FastifyInstance | undefined;
+
+  beforeEach(() => {
+    writePathDir = mkdtempSync(join(tmpdir(), "pi-webui-config-write-path-test-"));
+    writePathConfigPath = join(writePathDir, "config.json");
+    writePathDataDir = join(writePathDir, "data");
+    mkdirSync(writePathDataDir, { recursive: true, mode: 0o700 });
+    writeFileSync(writePathConfigPath, `${JSON.stringify({ spawnSessions: false }, null, 2)}\n`, "utf8");
+  });
+
+  afterEach(async () => {
+    await writePathApp?.close();
+    writePathApp = undefined;
+    rmSync(writePathDir, { recursive: true, force: true });
+  });
+
+  it("ignores sessiond in a generic PUT /api/config body and preserves the file", async () => {
+    const env = { PI_WEBUI_CONFIG: writePathConfigPath, PI_WEBUI_DATA_DIR: writePathDataDir };
+    writePathApp = Fastify({ logger: false });
+    registerConfigRoutes(writePathApp, createFilePiWebUiConfigService({ env }));
+
+    const response = await writePathApp.inject({
+      method: "PUT",
+      url: "/api/config",
+      payload: { config: { sessiond: { host: "0.0.0.0" }, spawnSessions: true } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(readFileSync(writePathConfigPath, "utf8"))).not.toHaveProperty("sessiond");
+    expect(loadPiWebUiConfig({ env }).config.sessiond).toBeUndefined();
   });
 });
 
