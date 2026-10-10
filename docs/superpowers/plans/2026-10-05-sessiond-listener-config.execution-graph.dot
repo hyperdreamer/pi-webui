@@ -1,0 +1,77 @@
+digraph sessiond_listener_config {
+    rankdir=TB;
+    graph [label="sessiond-listener-config (epoch 1)", labelloc=t];
+    node [shape=box, style=rounded];
+
+    subgraph cluster_config_core {
+        label="lane: config-core";
+
+        T1 [label="T1: Shared sessiond types and config-file parser\ntier: Standard\nplan task 1"];
+        T2 [label="T2: Effective sessiond.url resolution and trim-aware override flag\ntier: Standard\nplan task 2"];
+        T3 [label="T3: Read/write config projection split\ntier: Advanced\nplan task 3"];
+    }
+
+    subgraph cluster_daemon_bind {
+        label="lane: daemon-bind";
+
+        T4 [label="T4: Session daemon listener resolution and startup wiring\ntier: Advanced\nplan task 4"];
+    }
+
+    subgraph cluster_connect {
+        label="lane: connect";
+
+        T5 [label="T5: Connect resolution and config-aware client\ntier: Advanced\nplan task 5"];
+    }
+
+    subgraph cluster_runtime_protocol {
+        label="lane: runtime-protocol";
+
+        T6 [label="T6: Strict runtime descriptor parser and machine runtime propagation\ntier: Standard\nplan task 6"];
+    }
+
+    subgraph cluster_client_parse {
+        label="lane: client-parse";
+
+        T7 [label="T7: Client config and runtime parsers\ntier: Standard\nplan task 7"];
+    }
+
+    subgraph cluster_client_helpers {
+        label="lane: client-helpers";
+
+        T8 [label="T8: Client listener helpers and barrel exports\ntier: Standard\nplan task 8"];
+    }
+
+    subgraph cluster_client_panel {
+        label="lane: client-panel";
+
+        T9 [label="T9: Session daemon panel listener block\ntier: Advanced\nplan task 9"];
+        T10 [label="T10: SettingsDialog listener binding\ntier: Fast\nplan task 10"];
+    }
+
+    subgraph cluster_docs_release {
+        label="lane: docs-release";
+
+        T11 [label="T11: Documentation and changeset\ntier: Standard\nplan task 11"];
+    }
+
+    T1 -> T2 [label="depends_on"];
+    T1 -> T3 [label="depends_on"];
+    T1 -> T4 [label="depends_on"];
+    T1 -> T6 [label="depends_on"];
+    T1 -> T7 [label="depends_on"];
+    T1 -> T8 [label="depends_on"];
+    T1 -> T9 [label="depends_on"];
+    T1 -> T11 [label="depends_on"];
+    T2 -> T3 [label="depends_on"];
+    T2 -> T5 [label="depends_on"];
+    T2 -> T11 [label="depends_on"];
+    T3 -> T11 [label="depends_on"];
+    T4 -> T5 [label="depends_on"];
+    T4 -> T11 [label="depends_on"];
+    T5 -> T11 [label="depends_on"];
+    T6 -> T11 [label="depends_on"];
+    T8 -> T9 [label="depends_on"];
+    T8 -> T11 [label="depends_on"];
+    T9 -> T10 [label="depends_on"];
+    T9 -> T11 [label="depends_on"];
+    T10 -> T11 [label="depends_on"];

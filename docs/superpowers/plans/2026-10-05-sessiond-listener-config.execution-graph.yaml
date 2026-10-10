@@ -1,0 +1,715 @@
+schema_version: 1
+run_id: pm-run-20261005-102112-3d1c044d
+epoch: 1
+source_plan:
+  path: docs/superpowers/plans/2026-10-05-sessiond-listener-config.md
+  sha256: 1191dd373888788a0d9298bdfb012363edd503092e57aa7bcef4d901056321dc
+  commit_oid: 71e0226a167df39abbb790457e50d64ccc013977
+  task_numbers:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+  validator_exit: 0
+  validator_digest: 1191dd373888788a0d9298bdfb012363edd503092e57aa7bcef4d901056321dc
+lanes:
+  - id: config-core
+    task_ids:
+      - T1
+      - T2
+      - T3
+    sequences:
+      - 1
+      - 2
+      - 3
+  - id: daemon-bind
+    task_ids:
+      - T4
+    sequences:
+      - 1
+  - id: connect
+    task_ids:
+      - T5
+    sequences:
+      - 1
+  - id: runtime-protocol
+    task_ids:
+      - T6
+    sequences:
+      - 1
+  - id: client-parse
+    task_ids:
+      - T7
+    sequences:
+      - 1
+  - id: client-helpers
+    task_ids:
+      - T8
+    sequences:
+      - 1
+  - id: client-panel
+    task_ids:
+      - T9
+      - T10
+    sequences:
+      - 1
+      - 2
+  - id: docs-release
+    task_ids:
+      - T11
+    sequences:
+      - 1
+tasks:
+  - id: T1
+    plan_task: 1
+    title: Shared sessiond types and config-file parser
+    lane: config-core
+    sequence: 1
+    implementer_tier: standard
+    depends_on: []
+    ownership:
+      - src/shared/apiTypes.ts
+      - src/config.ts
+      - src/config.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes: []
+      produces:
+        - name: pi-webui-sessiond-config
+          signature: "PiWebUiSessiondConfig { host?: string; port?: number; url?: string
+            }"
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - name: pi-webui-config-values-sessiond
+          signature: "PiWebUiConfigValues.sessiond?: PiWebUiSessiondConfig"
+          digest: ea9daf5aa356e236cf746fa55b806417edcf73f15df5f01ad0581c5a6c1b6624
+        - name: pi-webui-config-env-overrides-sessiond-url
+          signature: "PiWebUiConfigEnvOverrides.sessiondUrl?: boolean"
+          digest: 47e18409bd0a697305312112d22a989eac691ab3f49970fb7e95a04ff2143b6a
+        - name: pi-webui-sessiond-listener-source
+          signature: PiWebUiSessiondListenerSource = "env" | "config" | "default"
+          digest: 22b48864ba9f75795fedb72254086a3f9c270f55146fa0af7c7d5d0d5fa7fbb8
+        - name: pi-webui-sessiond-port-source
+          signature: PiWebUiSessiondPortSource = "env" | "config"
+          digest: c35c832ddc43525b04149bd513fae6732535c26459e1c38eddb7fbd46e57e395
+        - name: pi-webui-sessiond-listener-descriptor
+          signature: 'PiWebUiSessiondListenerDescriptor = { kind: "tcp"; host: string;
+            port: number; hostSource: PiWebUiSessiondListenerSource; portSource:
+            PiWebUiSessiondPortSource } | { kind: "socket" }'
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+        - name: pi-webui-runtime-component-sessiond-listener
+          signature: "PiWebUiRuntimeComponent.sessiondListener?:
+            PiWebUiSessiondListenerDescriptor"
+          digest: 7991651d073bda9892fb024986f1f4af32d3866aa0139747280a3d1b2da9938e
+        - name: parse-pi-webui-sessiond-config
+          signature: "parsePiWebUiSessiondConfig(value: unknown, path: string):
+            PiWebUiSessiondConfig"
+          digest: 7c09042602d17642d0c27f653d90919fcfda9f7e70a07e2b504ee442a419557f
+        - name: parse-port
+          signature: 'parsePort(value: unknown, key: string, path = "environment"):
+            number'
+          digest: 7ef8c0cb31dde9a194d11c829670e10df6465927b543089b8af724c81d39fd6a
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/config.test.ts
+        mutates_git: false
+  - id: T2
+    plan_task: 2
+    title: Effective sessiond.url resolution and trim-aware override flag
+    lane: config-core
+    sequence: 2
+    implementer_tier: standard
+    depends_on:
+      - T1
+    ownership:
+      - src/config.ts
+      - src/server/configRoutes.ts
+      - src/config.test.ts
+      - src/server/configRoutes.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-config
+          from: T1
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - interface: pi-webui-config-values-sessiond
+          from: T1
+          digest: ea9daf5aa356e236cf746fa55b806417edcf73f15df5f01ad0581c5a6c1b6624
+      produces:
+        - name: resolve-effective-pi-webui-config-sessiond-url
+          signature: resolveEffectivePiWebUiConfig(loaded, options) layers a non-blank
+            trimmed options.env.PI_WEBUI_SESSIOND_URL (defaulting to
+            process.env) over loaded.config.sessiond.url and adds nothing when
+            the environment value is absent or blank
+          digest: ca3d9ff3dd593702d4546d928508e81bde5fe2207b1d9ff0b6821b16361a973e
+        - name: pi-webui-config-env-overrides-sessiond-url-flag
+          signature: 'piWebUiConfigEnvOverrides(env, config) returns sessiondUrl:
+            isEnvSetAfterTrim(env["PI_WEBUI_SESSIOND_URL"])'
+          digest: 33d4d72f9bd80d1af39c6036bc317e141b6c649bda65bc268b9725c3e101c3b7
+        - name: is-env-set-after-trim
+          signature: "isEnvSetAfterTrim(value: string | undefined): boolean"
+          digest: 6bcb63606ef9ca0634e234ccf342c94067fb663bf6a2ccf7397a09a961a6fe8e
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/config.test.ts
+          - src/server/configRoutes.test.ts
+        mutates_git: false
+  - id: T3
+    plan_task: 3
+    title: Read/write config projection split
+    lane: config-core
+    sequence: 3
+    implementer_tier: advanced
+    depends_on:
+      - T1
+      - T2
+    ownership:
+      - src/server/app.testSupport.ts
+      - src/server/configRoutes.test.ts
+      - src/server/configRoutes.ts
+      - src/server/machines/machineProxyRoutes.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: parse-pi-webui-sessiond-config
+          from: T1
+          digest: 7c09042602d17642d0c27f653d90919fcfda9f7e70a07e2b504ee442a419557f
+        - interface: pi-webui-config-values-sessiond
+          from: T1
+          digest: ea9daf5aa356e236cf746fa55b806417edcf73f15df5f01ad0581c5a6c1b6624
+        - interface: pi-webui-config-env-overrides-sessiond-url
+          from: T1
+          digest: 47e18409bd0a697305312112d22a989eac691ab3f49970fb7e95a04ff2143b6a
+        - interface: pi-webui-config-env-overrides-sessiond-url-flag
+          from: T2
+          digest: 33d4d72f9bd80d1af39c6036bc317e141b6c649bda65bc268b9725c3e101c3b7
+        - interface: is-env-set-after-trim
+          from: T2
+          digest: 6bcb63606ef9ca0634e234ccf342c94067fb663bf6a2ccf7397a09a961a6fe8e
+      produces:
+        - name: selected-machine-config-response-sessiond-projection
+          signature: "selectedMachineConfigResponse(response: PiWebUiConfigResponse):
+            PiWebUiConfigResponse now projects config and effectiveConfig
+            through projectSelectedMachineConfigValues, which returns {
+            ...pickSelectedMachineConfig(config), ...(config.sessiond ===
+            undefined ? {} : { sessiond: config.sessiond }) }"
+          digest: 362efe69f5fde6f0125e015b4f50ccd56c802c6beb498874ecf7bc6ea320767a
+        - name: parse-pi-webui-config-response-body
+          signature: 'parsePiWebUiConfigResponseBody(value: unknown, source = "PI WEBUI
+            config response"): PiWebUiConfigResponse preserves sessiond in
+            config/effectiveConfig through module-private
+            parseReadOnlySessiondConfig'
+          digest: 4659a05873789887e70e0ab66f7903571030308e44dadcb2dfa2f449b45ea286
+        - name: parse-pi-webui-config-env-overrides-response
+          signature: 'parsePiWebUiConfigEnvOverridesResponse returns sessiondUrl:
+            optionalResponseBoolean(record, "sessiondUrl", source) ?? false'
+          digest: aafdfbebef0acf45b69c9806b21a6b77db5adf37e862e368ae835db3ced09ed2
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/server/configRoutes.test.ts
+          - src/server/machines/machineProxyRoutes.test.ts
+        mutates_git: false
+  - id: T4
+    plan_task: 4
+    title: Session daemon listener resolution and startup wiring
+    lane: daemon-bind
+    sequence: 1
+    implementer_tier: advanced
+    depends_on:
+      - T1
+    ownership:
+      - src/sessiond/listenerConfig.ts
+      - src/server/sessiond.ts
+      - src/sessiond/listenerConfig.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: parse-port
+          from: T1
+          digest: 7ef8c0cb31dde9a194d11c829670e10df6465927b543089b8af724c81d39fd6a
+        - interface: pi-webui-sessiond-config
+          from: T1
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - interface: pi-webui-sessiond-listener-descriptor
+          from: T1
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+      produces:
+        - name: sessiond-listener-config
+          signature: "sessiondListenerConfig(subtree: PiWebUiSessiondConfig | undefined,
+            env: NodeJS.ProcessEnv): PiWebUiSessiondListenerDescriptor"
+          digest: 79e77d40083dcbfc17be4f475a653db6d9b77a6b212ef2ccb6cc7536a3161264
+        - name: sessiond-listen-options
+          signature: "sessiondListenOptions(listener: PiWebUiSessiondListenerDescriptor,
+            socketPath: string): { port: number; host: string } | { path: string
+            }"
+          digest: 5db617dee87defcea96e93ee84ce79ada0b07075d535ca2de0226739abc2cc74
+        - name: daemon-runtime-component-sessiond-listener
+          signature: the daemon's createRuntime returns a frozen runtimeComponent whose
+            sessiondListener is the same descriptor that reaches app.listen
+          digest: aabd58fe64e42745f0f8bc56c8f24ae58794c1b20b78d8d5540c1e4ed574cb4a
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/sessiond/listenerConfig.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      - argv:
+          - npx
+          - eslint
+          - src/sessiond/listenerConfig.ts
+          - src/server/sessiond.ts
+        mutates_git: false
+  - id: T5
+    plan_task: 5
+    title: Connect resolution and config-aware client
+    lane: connect
+    sequence: 1
+    implementer_tier: advanced
+    depends_on:
+      - T2
+      - T3
+      - T4
+    ownership:
+      - src/sessiond/config.ts
+      - src/sessiond/sessionDaemonClient.ts
+      - src/sessiond/config.test.ts
+      - src/sessiond/sessionDaemonClient.test.ts
+      - src/server/piWebUiStatus.test.ts
+      - src/server/app.testSupport.ts
+      - src/server/app.piWebUiStatus.test.ts
+      - src/server/app.removedBrowserRoutes.test.ts
+      - src/server/app.agentConfig.test.ts
+      - src/server/app.speechInput.test.ts
+      - src/server/app.activeAgentProfile.test.ts
+      - src/server/app.projects.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: resolve-effective-pi-webui-config-sessiond-url
+          from: T2
+          digest: ca3d9ff3dd593702d4546d928508e81bde5fe2207b1d9ff0b6821b16361a973e
+        - interface: sessiond-listener-config
+          from: T4
+          digest: 79e77d40083dcbfc17be4f475a653db6d9b77a6b212ef2ccb6cc7536a3161264
+      produces:
+        - name: sessiond-http-url
+          signature: "sessiondHttpUrl(options: LoadOptions = {}): string | undefined"
+          digest: cefd6e3d0657d3c24a89fa72c2986fee5d661ed48c45b1a6a2bcc021bffeb53b
+        - name: validate-sessiond-http-url
+          signature: "validateSessiondHttpUrl(value: string, configPath: string): string"
+          digest: ef72114b2c15e7c81b7d5519b1d2b9775810f6d3a143af98c46dfa962166290c
+        - name: session-daemon-client-constructor
+          signature: "SessionDaemonClient gains constructor(options: LoadOptions = {}),
+            assigns private readonly baseUrl: string | undefined from
+            sessiondHttpUrl(options) and private readonly socketPath: string
+            from sessiondSocketPath() exactly once, and leaves
+            request/connectWebSocket bodies unchanged"
+          digest: 9d00cd67650df0cb7b39f3a53236e5cd202c31f767068480c2507aa4c0a00455
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/sessiond/config.test.ts
+          - src/sessiond/sessionDaemonClient.test.ts
+          - src/server/piWebUiStatus.test.ts
+          - src/server/app.piWebUiStatus.test.ts
+          - src/server/app.removedBrowserRoutes.test.ts
+          - src/server/app.agentConfig.test.ts
+          - src/server/app.speechInput.test.ts
+          - src/server/app.activeAgentProfile.test.ts
+          - src/server/app.projects.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      - argv:
+          - npx
+          - eslint
+          - src/sessiond/config.ts
+          - src/sessiond/sessionDaemonClient.ts
+        mutates_git: false
+  - id: T6
+    plan_task: 6
+    title: Strict runtime descriptor parser and machine runtime propagation
+    lane: runtime-protocol
+    sequence: 1
+    implementer_tier: standard
+    depends_on:
+      - T1
+    ownership:
+      - src/shared/piWebUiStatusParsing.ts
+      - src/shared/piWebUiStatusParsing.test.ts
+      - src/server/machines/machineService.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-listener-descriptor
+          from: T1
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+      produces:
+        - name: parse-pi-webui-sessiond-listener-descriptor
+          signature: "parsePiWebUiSessiondListenerDescriptor(value: unknown):
+            PiWebUiSessiondListenerDescriptor | undefined"
+          digest: 171ae5f3429434264edb46506b4f0a44d737ae5681b844dd16c82f162c25d68d
+        - name: parse-pi-webui-runtime-component-sessiond-listener
+          signature: parsePiWebUiRuntimeComponent includes sessiondListener only when
+            present and rejects the whole component (undefined) when the value
+            is malformed or attached to component !== "sessiond"
+          digest: 30e7eb6c6bf4fd192d453fc88f0d157aef81ce0583bcda4560adc90a6a0dc5b9
+        - name: machine-service-runtime-sessiond-listener
+          signature: MachineService.runtime preserves the descriptor
+          digest: 7ec43f541a6c5b6c3c67c414affdbe240f99ff1134b879636fdbde58170172eb
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/shared/piWebUiStatusParsing.test.ts
+          - src/server/machines/machineService.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+  - id: T7
+    plan_task: 7
+    title: Client config and runtime parsers
+    lane: client-parse
+    sequence: 1
+    implementer_tier: standard
+    depends_on:
+      - T1
+    ownership:
+      - src/client/src/api/parsers.ts
+      - src/client/src/api/parsers.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-config
+          from: T1
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - interface: pi-webui-config-values-sessiond
+          from: T1
+          digest: ea9daf5aa356e236cf746fa55b806417edcf73f15df5f01ad0581c5a6c1b6624
+        - interface: pi-webui-config-env-overrides-sessiond-url
+          from: T1
+          digest: 47e18409bd0a697305312112d22a989eac691ab3f49970fb7e95a04ff2143b6a
+        - interface: pi-webui-sessiond-listener-descriptor
+          from: T1
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+      produces:
+        - name: parse-client-pi-webui-config-values-sessiond
+          signature: parsePiWebUiConfigValues keeps an optional sessiond subtree ({host?,
+            port?, url?}; strings trimmed; blank-after-trim strings omitted; an
+            all-blank object kept as {}; unknown keys, wrong types, and ports
+            outside 1..65535 throw; URL form is not validated)
+          digest: 110f7b6d5d618d85d81bf564f456e87c3cb8c5ff0844ad044db96f03a1a341bb
+        - name: parse-client-pi-webui-config-env-overrides-sessiond-url
+          signature: 'parsePiWebUiConfigEnvOverrides returns sessiondUrl:
+            optionalBoolean(record, "sessiondUrl") ?? false'
+          digest: fbbf324ca1de86018be6446bf8d830da1bbc433509628e75e9db8a62cfe92e99
+        - name: parse-client-pi-webui-runtime-component-sessiond-listener
+          signature: parsePiWebUiRuntimeComponent throws Invalid session daemon listener
+            descriptor for a malformed descriptor or one attached to component
+            !== "sessiond", and omits the field when absent
+          digest: 3304c442816a7325f0ab46386a6c54ae129b21485fa871f647732a2c810f06b7
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/client/src/api/parsers.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      - argv:
+          - npx
+          - eslint
+          - src/client/src/api/parsers.ts
+        mutates_git: false
+  - id: T8
+    plan_task: 8
+    title: Client listener helpers and barrel exports
+    lane: client-helpers
+    sequence: 1
+    implementer_tier: standard
+    depends_on:
+      - T1
+    ownership:
+      - src/client/src/api.ts
+      - src/client/src/components/settings/settingsSessiondConfig.ts
+      - src/client/src/components/settings/settingsSessiondConfig.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-config
+          from: T1
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - interface: pi-webui-sessiond-listener-descriptor
+          from: T1
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+      produces:
+        - name: sessiond-activation-state
+          signature: SessiondActivationState = "active" | "overridden" |
+            "restart-required" | "unavailable"
+          digest: b3287099cc80d2f4a2da8bc958286b1701c6e2c77ba63901d644e41ea404069f
+        - name: sessiond-coherence-issue
+          signature: SessiondCoherenceIssue = "missing-dial-target" | "missing-bind-port"
+          digest: 2a86f89ecc369e349c7740f712bd25ba0aaca074a4c38f5422979a003b289036
+        - name: activation-state
+          signature: "activationState(fileSessiond: PiWebUiSessiondConfig | undefined,
+            listener: PiWebUiSessiondListenerDescriptor | undefined):
+            SessiondActivationState"
+          digest: cc432a3e5b59671ccb4d0cd88fe0811235fb5858d7b377860f41a5619897fe2f
+        - name: coherence-warning
+          signature: "coherenceWarning(fileSessiond: PiWebUiSessiondConfig | undefined,
+            sessiondUrlOverridden: boolean, listener:
+            PiWebUiSessiondListenerDescriptor | undefined):
+            SessiondCoherenceIssue | undefined"
+          digest: d7cab4ad8e322fecc6dddce134d6244bd3f81297585a2ac25046c25b83459f3a
+        - name: coherence-warning-message
+          signature: "coherenceWarningMessage(issue: SessiondCoherenceIssue): string"
+          digest: 79d3dd451f8112d37f9681ae01269cf8db8b032044f05475bf1093cd18324418
+        - name: merge-selected-machine-sessiond-config
+          signature: "mergeSelectedMachineSessiondConfig adds sessiondUrl:
+            selectedMachine.envOverrides.sessiondUrl ?? false while keeping its
+            signature and its config/effectiveConfig spread merge"
+          digest: 115d188c0ae5305ea5f788940bc3b6b2c39c75e404e212b1cef9eb71dc31c6f3
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/client/src/components/settings/settingsSessiondConfig.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      - argv:
+          - npx
+          - eslint
+          - src/client/src/api.ts
+          - src/client/src/components/settings/settingsSessiondConfig.ts
+        mutates_git: false
+  - id: T9
+    plan_task: 9
+    title: Session daemon panel listener block
+    lane: client-panel
+    sequence: 1
+    implementer_tier: advanced
+    depends_on:
+      - T1
+      - T8
+    ownership:
+      - src/client/src/components/settings/SettingsSessiondPanel.ts
+      - src/client/src/components/settings/SettingsSessiondPanel.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-listener-descriptor
+          from: T1
+          digest: 878346d40e6625737634c39ecb4664109aca0a11f2b459455cc712a2283d125c
+        - interface: sessiond-activation-state
+          from: T8
+          digest: b3287099cc80d2f4a2da8bc958286b1701c6e2c77ba63901d644e41ea404069f
+        - interface: activation-state
+          from: T8
+          digest: cc432a3e5b59671ccb4d0cd88fe0811235fb5858d7b377860f41a5619897fe2f
+        - interface: coherence-warning
+          from: T8
+          digest: d7cab4ad8e322fecc6dddce134d6244bd3f81297585a2ac25046c25b83459f3a
+        - interface: coherence-warning-message
+          from: T8
+          digest: 79d3dd451f8112d37f9681ae01269cf8db8b032044f05475bf1093cd18324418
+      produces:
+        - name: settings-sessiond-panel-listener-property
+          signature: "SettingsSessiondPanel.sessiondListener:
+            PiWebUiSessiondListenerDescriptor | undefined (@property({
+            attribute: false }))"
+          digest: 9acbaf94bc855e873d643d9a88d5a41bd84d761ac666989e02d18c9b4722ee1b
+        - name: settings-sessiond-panel-listener-card
+          signature: a read-only <section class="listener-card" aria-label="Session daemon
+            listener summary"> inside the config !== undefined branch with the
+            six pinned rows, per-value environment override badges, the verdict
+            label, and the recomputed coherence warning; no input, no draft
+            state, and no mutation
+          digest: 720a9fa8470aaff5d49d226239e472411389846330c290f1f22c4b940167346d
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/client/src/components/settings/SettingsSessiondPanel.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+      - argv:
+          - npx
+          - eslint
+          - src/client/src/components/settings/SettingsSessiondPanel.ts
+        mutates_git: false
+  - id: T10
+    plan_task: 10
+    title: SettingsDialog listener binding
+    lane: client-panel
+    sequence: 2
+    implementer_tier: fast
+    depends_on:
+      - T9
+    ownership:
+      - src/client/src/components/SettingsDialog.ts
+      - src/client/src/components/SettingsDialog.sessiond.test.ts
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: settings-sessiond-panel-listener-property
+          from: T9
+          digest: 9acbaf94bc855e873d643d9a88d5a41bd84d761ac666989e02d18c9b4722ee1b
+      produces:
+        - name: settings-dialog-sessiond-panel-listener-binding
+          signature: in renderActiveSection, the settings-sessiond-panel binding list
+            gains exactly
+            .sessiondListener=${this.machineRuntime?.components?.sessiond.sessiondListener}
+            immediately after .activeAgentProfile=${...}; no logic change
+          digest: 2110b220e20ea761e7440b6b97d5225a07bee5985e4184fef5254af26e0d25b4
+    validation:
+      - argv:
+          - npm
+          - test
+          - --
+          - --run
+          - src/client/src/components/SettingsDialog.sessiond.test.ts
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - typecheck
+        mutates_git: false
+  - id: T11
+    plan_task: 11
+    title: Documentation and changeset
+    lane: docs-release
+    sequence: 1
+    implementer_tier: standard
+    depends_on:
+      - T1
+      - T2
+      - T3
+      - T4
+      - T5
+      - T6
+      - T8
+      - T9
+      - T10
+    ownership:
+      - docs/config.md
+      - docs/config.html
+      - docs/install.html
+      - .changeset/sessiond-listener-config.md
+    exclusive_resources: []
+    interfaces:
+      consumes:
+        - interface: pi-webui-sessiond-config
+          from: T1
+          digest: 71e49a1636ed75650e6764326d2c724d99cd94be538ee574b6580ba11436bde3
+        - interface: resolve-effective-pi-webui-config-sessiond-url
+          from: T2
+          digest: ca3d9ff3dd593702d4546d928508e81bde5fe2207b1d9ff0b6821b16361a973e
+        - interface: parse-pi-webui-config-response-body
+          from: T3
+          digest: 4659a05873789887e70e0ab66f7903571030308e44dadcb2dfa2f449b45ea286
+        - interface: sessiond-listener-config
+          from: T4
+          digest: 79e77d40083dcbfc17be4f475a653db6d9b77a6b212ef2ccb6cc7536a3161264
+        - interface: sessiond-http-url
+          from: T5
+          digest: cefd6e3d0657d3c24a89fa72c2986fee5d661ed48c45b1a6a2bcc021bffeb53b
+        - interface: parse-pi-webui-sessiond-listener-descriptor
+          from: T6
+          digest: 171ae5f3429434264edb46506b4f0a44d737ae5681b844dd16c82f162c25d68d
+        - interface: activation-state
+          from: T8
+          digest: cc432a3e5b59671ccb4d0cd88fe0811235fb5858d7b377860f41a5619897fe2f
+        - interface: coherence-warning
+          from: T8
+          digest: d7cab4ad8e322fecc6dddce134d6244bd3f81297585a2ac25046c25b83459f3a
+        - interface: coherence-warning-message
+          from: T8
+          digest: 79d3dd451f8112d37f9681ae01269cf8db8b032044f05475bf1093cd18324418
+        - interface: settings-sessiond-panel-listener-property
+          from: T9
+          digest: 9acbaf94bc855e873d643d9a88d5a41bd84d761ac666989e02d18c9b4722ee1b
+        - interface: settings-sessiond-panel-listener-card
+          from: T9
+          digest: 720a9fa8470aaff5d49d226239e472411389846330c290f1f22c4b940167346d
+        - interface: settings-dialog-sessiond-panel-listener-binding
+          from: T10
+          digest: 2110b220e20ea761e7440b6b97d5225a07bee5985e4184fef5254af26e0d25b4
+      produces:
+        - name: sessiond-listener-docs
+          signature: synchronized docs/config.md and docs/config.html claims,
+            docs/install.html listener guidance, and one minor Changeset
+          digest: c8afb6e20bfea46fcdc7a84e0924047bbaccad6c213d99d7508b7da767d8dd58
+    validation:
+      - argv:
+          - npx
+          - changeset
+          - status
+        mutates_git: false
+      - argv:
+          - npm
+          - run
+          - verify
+        mutates_git: false
+ownership_amendments:
+  - at: 2026-10-09T13:36:05.764Z
+    lane: config-core
+    path: src/server/app.testSupport.ts
+    reason: Shared app test fixture is stale relative to config-core Task 2
+      production change; the repository pre-commit gate runs the affected suite,
+      so the lane cannot merge without it. The candidate-merge ownership check
+      rejected the unowned path.
+    serialization: T5 (lane connect) now depends on T3, so config-core and connect
+      cannot run concurrently while both own this path.
