@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Project, Workspace } from "./types.js";
-import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
+import { appTestContext, fakeSessionDaemon, registerAppTestHooks } from "./app.testSupport.js";
 import { buildApp } from "./app.js";
 import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
@@ -181,6 +181,7 @@ describe("buildApp project routes", () => {
 
     const app = await buildApp({
       projects: new ProjectService(new FailingKnownProjectStore(storePath)),
+      sessionDaemon: fakeSessionDaemon(),
       clientDist: false,
       logger: false,
     });

@@ -15,6 +15,7 @@ const originalDockerMode = process.env["PI_WEBUI_DOCKER_MODE"];
 const originalDockerInstallDir = process.env["PI_WEBUI_DOCKER_INSTALL_DIR"];
 const originalDockerDevRepoRoot = process.env["PI_WEBUI_DOCKER_DEV_REPO_ROOT"];
 const originalAgentDir = process.env["PI_WEBUI_AGENT_DIR"];
+const statusTestConfigPath = join(tmpdir(), `pi-webui-status-test-config-${String(process.pid)}.json`);
 
 afterEach(() => {
   restoreEnv("PI_WEBUI_SKIP_VERSION_CHECK", originalSkipVersionCheck);
@@ -368,7 +369,7 @@ function npmVersionResponse(version: string): Response {
 }
 
 function daemonWithComponent(component: PiWebUiComponentStatus): SessionDaemonClient {
-  const daemon = new SessionDaemonClient();
+  const daemon = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: statusTestConfigPath } });
   vi.spyOn(daemon, "request").mockResolvedValue({
     statusCode: 200,
     headers: { "content-type": "application/json" },
@@ -378,7 +379,7 @@ function daemonWithComponent(component: PiWebUiComponentStatus): SessionDaemonCl
 }
 
 function daemonWithRuntime(component: PiWebUiRuntimeComponent): SessionDaemonClient {
-  const daemon = new SessionDaemonClient();
+  const daemon = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: statusTestConfigPath } });
   vi.spyOn(daemon, "request").mockResolvedValue({
     statusCode: 200,
     headers: { "content-type": "application/json" },

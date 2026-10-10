@@ -1,6 +1,6 @@
 import http from "node:http";
 import { WebSocket } from "ws";
-import { isHostAbsoluteAgentDir, isSafeAgentCommandForHost } from "../config.js";
+import { isHostAbsoluteAgentDir, isSafeAgentCommandForHost, type LoadOptions } from "../config.js";
 import type { ActiveAgentProfileDescriptor } from "../shared/apiTypes.js";
 import { parsePiWebUiRuntimeComponent } from "../shared/piWebUiStatusParsing.js";
 import { sessiondHttpUrl, sessiondSocketPath } from "./config.js";
@@ -15,8 +15,13 @@ export interface SessionDaemonRequestClient {
 }
 
 export class SessionDaemonClient {
-  private readonly baseUrl = sessiondHttpUrl();
-  private readonly socketPath = sessiondSocketPath();
+  private readonly baseUrl: string | undefined;
+  private readonly socketPath: string;
+
+  constructor(options: LoadOptions = {}) {
+    this.baseUrl = sessiondHttpUrl(options);
+    this.socketPath = sessiondSocketPath();
+  }
 
   async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
     const payload = body === undefined ? undefined : JSON.stringify(body);
