@@ -324,9 +324,11 @@ describe("sessiond environment override projection", () => {
     const loaded = { path: "/tmp/pi-webui/config.json", exists: false, config: {} };
     const blank = piWebUiConfigResponseFromSnapshot({ loaded, speechInputRevision: "" }, { env: { PI_WEBUI_SESSIOND_URL: "   " } });
     const set = piWebUiConfigResponseFromSnapshot({ loaded, speechInputRevision: "" }, { env: { PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:8810" } });
+    const unset = piWebUiConfigResponseFromSnapshot({ loaded, speechInputRevision: "" }, { env: {} });
 
     expect(blank.envOverrides.sessiondUrl).toBe(false);
     expect(set.envOverrides.sessiondUrl).toBe(true);
+    expect(unset.envOverrides.sessiondUrl).toBe(false);
   });
 });
 
