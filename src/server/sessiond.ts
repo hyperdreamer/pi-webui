@@ -33,6 +33,7 @@ import { ProjectService } from "./projects/projectService.js";
 import { ProjectStore } from "./storage/projectStore.js";
 import { WorkspaceService } from "./workspaces/workspaceService.js";
 import { sessiondSocketPath } from "../sessiond/config.js";
+import { sessiondListenerConfig, sessiondListenOptions } from "../sessiond/listenerConfig.js";
 import { TerminalService } from "./terminals/terminalService.js";
 import { registerTerminalRoutes } from "./terminals/terminalRoutes.js";
 import { getPiWebUiRuntimeComponent } from "./piWebUiStatus.js";
@@ -71,6 +72,7 @@ await app.register(fastifyWebsocket);
 await runSessionDaemonStartup({
   logger: app.log,
   async createRuntime() {
+    const sessiondListener = sessiondListenerConfig(loadPiWebUiConfig({ env: daemonEnvironment }).config.sessiond, daemonEnvironment);
     const eventHub = new SessionEventHub();
     const notificationStore = new SessionNotificationStore();
     const unreadStore = new SessionUnreadStore({
@@ -183,8 +185,9 @@ await runSessionDaemonStartup({
     const runtimeComponent = Object.freeze({
       ...getPiWebUiRuntimeComponent("sessiond", SESSIOND_RUNTIME_CAPABILITIES),
       activeAgentProfile,
+      sessiondListener,
     });
-    return { eventHub, workspaceActivity, auth, models, rateLimits, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, speechInputPolishing };
+    return { eventHub, workspaceActivity, auth, models, rateLimits, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, unreadStore, activeAgentProfile, runtimeComponent, sessiondListener, speechInputPolishing };
   },
   registerRoutes({ eventHub, workspaceActivity, auth, models, skills, sessions, projectUsage, defaults, modelTiers, utilityModels, terminals, runtimeComponent, speechInputPolishing }) {
     registerWorkspaceActivityRoutes(app, workspaceActivity);
@@ -214,7 +217,7 @@ await runSessionDaemonStartup({
 
     app.get("/runtime", () => runtimeComponent);
   },
-  async listen({ auth, sessions, rateLimits, terminals, unreadStore }) {
+  async listen({ auth, sessions, rateLimits, terminals, unreadStore, sessiondListener }) {
     let shuttingDown = false;
     async function shutdown(signal: NodeJS.Signals): Promise<void> {
       if (shuttingDown) return;
@@ -239,17 +242,13 @@ await runSessionDaemonStartup({
     process.once("SIGINT", (signal) => { void shutdown(signal); });
     process.once("SIGTERM", (signal) => { void shutdown(signal); });
 
-    const portValue = daemonEnvironment["PI_WEBUI_SESSIOND_PORT"];
-    const port = portValue !== undefined && portValue !== "" ? Number(portValue) : undefined;
-    const host = daemonEnvironment["PI_WEBUI_SESSIOND_HOST"] ?? "127.0.0.1";
-
-    if (port !== undefined) {
-      await app.listen({ port, host });
+    if (sessiondListener.kind === "tcp") {
+      await app.listen(sessiondListenOptions(sessiondListener, ""));
     } else {
       const path = sessiondSocketPath();
       await mkdir(dirname(path), { recursive: true });
       await rm(path, { force: true });
-      await app.listen({ path });
+      await app.listen(sessiondListenOptions(sessiondListener, path));
       process.on("exit", () => void rm(path, { force: true }));
     }
   },
