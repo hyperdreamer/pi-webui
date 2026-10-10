@@ -305,7 +305,7 @@ describe("API parsers", () => {
       exists: true,
       config: { host: "0.0.0.0", port: 8808, allowedHosts: ["example.local"], shortcuts: { "core:view.chat": "mod+1", "core:session.stop": null }, plugins: { info: { enabled: false, settings: { compact: true } } }, pathAccess: { allowedPaths: ["/tmp"] }, uploads: { defaultFolder: "manual/uploads" }, maxUploadBytes: 1234, agent: { command: "agent-lab", dir: "~/agent-profiles/lab" } },
       effectiveConfig: { host: "127.0.0.1", port: 8808, allowedHosts: true, pathAccess: { allowedPaths: ["/tmp"] }, uploads: { defaultFolder: ".pi-webui/uploads" }, agent: { command: "agent-lab", dir: "/Users/dev/agent-profiles/lab" } },
-      envOverrides: { host: true, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: true, agentDirSource: "pi-compatibility", agentSessionDir: false },
+      envOverrides: { host: true, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: true, agentDirSource: "pi-compatibility", agentSessionDir: false, sessiondUrl: false },
     });
   });
 
@@ -1790,3 +1790,86 @@ describe("speech input settings parser", () => {
     }
   });
 });
+
+describe("sessiond client parsers", () => {
+  it("carries the sessiond subtree and defaults the override flag", () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    const parsed = parsePiWebUiConfigResponse({
+      path: "/tmp/pi-webui/config.json",
+      exists: true,
+      config: { sessiond },
+      effectiveConfig: { sessiond },
+      envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+    });
+
+    expect(parsed.config.sessiond).toEqual(sessiond);
+    expect(parsed.effectiveConfig.sessiond).toEqual(sessiond);
+    expect(parsed.envOverrides.sessiondUrl).toBe(false);
+  });
+
+  it("trims sessiond strings and omits blank ones", () => {
+    const parsed = parsePiWebUiConfigResponse(configResponseWithSessiond({ host: "  0.0.0.0  ", url: "   ", port: 8810 }));
+
+    expect(parsed.config.sessiond).toEqual({ host: "0.0.0.0", port: 8810 });
+  });
+
+  it("keeps an all-blank sessiond object as an empty object", () => {
+    const parsed = parsePiWebUiConfigResponse(configResponseWithSessiond({ host: "", url: "   " }));
+
+    expect(parsed.config.sessiond).toEqual({});
+  });
+
+  it("rejects malformed sessiond values", () => {
+    for (const sessiond of [[], { host: 1 }, { port: 0 }, { tls: true }]) {
+      expect(() => parsePiWebUiConfigResponse(configResponseWithSessiond(sessiond))).toThrow();
+    }
+  });
+
+  it("carries and validates sessiondListener in runtime responses", () => {
+    const tcp = { kind: "tcp", host: "0.0.0.0", port: 8810, hostSource: "config", portSource: "config" };
+    const parsed = parsePiWebUiRuntimeResponse(runtimeResponseWithListener(tcp));
+
+    expect(parsed.components.sessiond.sessiondListener).toEqual(tcp);
+    expect(parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ kind: "socket" })).components.sessiond.sessiondListener).toEqual({ kind: "socket" });
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, tls: true }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, host: "" }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener({ ...tcp, port: 0 }))).toThrow("Invalid session daemon listener descriptor");
+    expect(() => parsePiWebUiRuntimeResponse(runtimeResponseWithListener(tcp, "web"))).toThrow("Invalid session daemon listener descriptor");
+  });
+
+  it("retains sessiondListener in machine runtime snapshots", () => {
+    const tcp = { kind: "tcp", host: "127.0.0.1", port: 8810, hostSource: "default", portSource: "env" };
+    const components = {
+      web: { component: "web", label: "Web/UI", available: true, capabilities: [] },
+      sessiond: { component: "sessiond", label: "Session daemon", available: true, capabilities: [], sessiondListener: tcp },
+    };
+
+    const parsed = parseMachineRuntime({ machineId: "remote-a", ok: true, checkedAt: "now", components, capabilities: [] });
+
+    expect(parsed.components?.sessiond.sessiondListener).toEqual(tcp);
+  });
+});
+
+function configResponseWithSessiond(sessiond: unknown) {
+  return {
+    path: "/tmp/pi-webui/config.json",
+    exists: true,
+    config: { sessiond },
+    effectiveConfig: { sessiond },
+    envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false },
+  };
+}
+
+function runtimeResponseWithListener(listener: unknown, owner: "web" | "sessiond" = "sessiond") {
+  const web = { component: "web", label: "Web/UI", available: true, capabilities: [] };
+  const sessiond = { component: "sessiond", label: "Session daemon", available: true, capabilities: [] };
+  return {
+    packageName: "@hyperdreamer/pi-webui",
+    generatedAt: "now",
+    components: {
+      web: owner === "web" ? { ...web, sessiondListener: listener } : web,
+      sessiond: owner === "sessiond" ? { ...sessiond, sessiondListener: listener } : sessiond,
+    },
+    capabilities: [],
+  };
+}
