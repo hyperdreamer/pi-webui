@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type PiWebUiSpeechInputCloudConfig, type PiWebUiSpeechInputConfig, type SpeechInputProviderPreference, type TierModelRef, type UtilityModelBinding, type UtilityModelSettings } from "./shared/apiTypes.js";
+import { MODEL_TIERS, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type PiWebUiSessiondConfig, type PiWebUiSpeechInputCloudConfig, type PiWebUiSpeechInputConfig, type SpeechInputProviderPreference, type TierModelRef, type UtilityModelBinding, type UtilityModelSettings } from "./shared/apiTypes.js";
 import { isPiCompanionCommand, usesPiCodingAgentStateCompatibility } from "./shared/activeAgentProfile.js";
 import { isPiWebUiPluginId, piWebUiPluginIdPattern } from "./shared/pluginIds.js";
 import { isKnownThinkingLevel } from "./shared/thinkingLevels.js";
@@ -436,6 +436,7 @@ function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
     ...(config.agent !== undefined ? { agent: config.agent } : {}),
     ...(config.tts !== undefined ? { tts: config.tts } : {}),
     ...(config.speechInput !== undefined ? { speechInput: config.speechInput } : {}),
+    ...(config.sessiond !== undefined ? { sessiond: config.sessiond } : {}),
   };
 }
 
@@ -479,10 +480,36 @@ function parsePiWebUiConfig(value: Record<string, unknown>, path: string, option
       ...(value["agent"] !== undefined ? { agent: parseAgentConfig(value["agent"], path) } : {}),
       ...(value["tts"] !== undefined ? { tts: parseTtsConfig(value["tts"], path) } : {}),
       ...(value["speechInput"] !== undefined ? { speechInput: parseSpeechInputConfig(value["speechInput"], path) } : {}),
+      ...(value["sessiond"] !== undefined ? { sessiond: parsePiWebUiSessiondConfig(value["sessiond"], path) } : {}),
     },
     ...(modelTiersError === undefined ? {} : { modelTiersError }),
     ...(utilityModelsError === undefined ? {} : { utilityModelsError }),
   };
+}
+
+const SESSIOND_CONFIG_KEYS = new Set(["host", "port", "url"]);
+
+export function parsePiWebUiSessiondConfig(value: unknown, path: string): PiWebUiSessiondConfig {
+  if (!isRecord(value)) throw new Error(`PI WEBUI config sessiond must be an object: ${path}`);
+  for (const unknownKey of Object.keys(value)) {
+    if (!SESSIOND_CONFIG_KEYS.has(unknownKey)) throw new Error(`PI WEBUI config sessiond contains unknown key ${JSON.stringify(unknownKey)}: ${path}`);
+  }
+  const config: PiWebUiSessiondConfig = {};
+  const host = value["host"];
+  if (host !== undefined) {
+    if (typeof host !== "string") throw new Error(`PI WEBUI config sessiond.host must be a string: ${path}`);
+    const trimmed = host.trim();
+    if (trimmed !== "") config.host = trimmed;
+  }
+  const url = value["url"];
+  if (url !== undefined) {
+    if (typeof url !== "string") throw new Error(`PI WEBUI config sessiond.url must be a string: ${path}`);
+    const trimmed = url.trim();
+    if (trimmed !== "") config.url = trimmed;
+  }
+  const port = value["port"];
+  if (port !== undefined) config.port = parsePort(port, "sessiond.port", path);
+  return config;
 }
 
 function isModelTierConfigKey(value: string): value is ModelTier {
@@ -860,7 +887,7 @@ function isSafeAgentDirPath(value: string): boolean {
   return value !== "" && value === value.trim() && !hasControlCharacter(value);
 }
 
-function parsePort(value: unknown, key: string, path = "environment"): number {
+export function parsePort(value: unknown, key: string, path = "environment"): number {
   const port = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : NaN;
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`PI WEBUI config ${key} must be an integer from 1 to 65535: ${path}`);
   return port;

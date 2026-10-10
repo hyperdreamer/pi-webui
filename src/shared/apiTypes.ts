@@ -452,6 +452,12 @@ export interface HostSpeechStopResponse {
   stopped: boolean;
 }
 
+export interface PiWebUiSessiondConfig {
+  host?: string;
+  port?: number;
+  url?: string;
+}
+
 export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
@@ -481,6 +487,8 @@ export interface PiWebUiConfigValues {
   tts?: PiWebUiTtsConfig;
   /** Gateway speech-input settings; the credential source is write-only at the browser boundary. */
   speechInput?: PiWebUiSpeechInputConfig;
+  /** Session daemon listener configuration; environment variables remain authoritative. */
+  sessiond?: PiWebUiSessiondConfig;
 }
 
 export type PiWebUiPluginScope = "bundled" | "local" | "user" | "project";
@@ -699,6 +707,7 @@ export interface PiWebUiConfigEnvOverrides {
   /** The configured directory environment source, even when Pi compatibility is inactive for the desired command. */
   agentDirSource?: PiWebUiAgentDirEnvSource;
   agentSessionDir: boolean;
+  sessiondUrl?: boolean;
 }
 
 export interface PiWebUiConfigResponse {
@@ -1567,6 +1576,14 @@ export interface ActiveAgentProfileDescriptor {
   readonly sessionDirEnvKeys: readonly string[];
 }
 
+export type PiWebUiSessiondListenerSource = "env" | "config" | "default";
+/** A port has no default, so its source is narrower than the host's. */
+export type PiWebUiSessiondPortSource = "env" | "config";
+
+export type PiWebUiSessiondListenerDescriptor =
+  | { kind: "tcp"; host: string; port: number; hostSource: PiWebUiSessiondListenerSource; portSource: PiWebUiSessiondPortSource }
+  | { kind: "socket" };
+
 export interface PiWebUiRuntimeComponent {
   component: PiWebUiServiceComponent;
   label: string;
@@ -1575,6 +1592,8 @@ export interface PiWebUiRuntimeComponent {
   capabilities: PiWebUiCapability[];
   /** Present only for a session daemon that supports active-profile reporting. */
   activeAgentProfile?: ActiveAgentProfileDescriptor;
+  /** Present only for a session daemon that supports listener reporting. */
+  sessiondListener?: PiWebUiSessiondListenerDescriptor;
   error?: string;
 }
 

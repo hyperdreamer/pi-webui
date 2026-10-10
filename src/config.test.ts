@@ -948,3 +948,73 @@ function existsAt(path: string): boolean {
 function fileMode(path: string): number {
   return statSync(path).mode & 0o777;
 }
+
+describe("PI WEBUI sessiond config", () => {
+  it("accepts and normalizes the sessiond subtree", async () => {
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { host: "  0.0.0.0  ", port: "8810", url: "  http://127.0.0.1:8810  " } }, null, 2)}\n`, "utf8");
+
+    expect(loadPiWebUiConfig(testOptions()).config.sessiond).toEqual({ host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" });
+  });
+
+  it("omits empty-after-trim sessiond strings", async () => {
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { host: "   ", url: "", port: 8810 } }, null, 2)}\n`, "utf8");
+    const parsed = loadPiWebUiConfig(testOptions()).config.sessiond;
+
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { port: 8810 } }, null, 2)}\n`, "utf8");
+
+    expect(parsed).toEqual({ port: 8810 });
+    expect(parsed).toEqual(loadPiWebUiConfig(testOptions()).config.sessiond);
+  });
+
+  it("rejects malformed sessiond shapes with the pinned messages", async () => {
+    const cases: readonly { value: unknown; message: string }[] = [
+      { value: [], message: "PI WEBUI config sessiond must be an object" },
+      { value: "x", message: "PI WEBUI config sessiond must be an object" },
+      { value: { host: 1 }, message: "PI WEBUI config sessiond.host must be a string" },
+      { value: { url: 1 }, message: "PI WEBUI config sessiond.url must be a string" },
+      { value: { port: "abc" }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { port: "" }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { port: "   " }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { port: 0 }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { port: 65536 }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { port: 8810.5 }, message: "PI WEBUI config sessiond.port must be an integer from 1 to 65535" },
+      { value: { tls: true }, message: 'PI WEBUI config sessiond contains unknown key "tls"' },
+    ];
+    for (const testCase of cases) {
+      await writeFile(configPath, `${JSON.stringify({ sessiond: testCase.value }, null, 2)}\n`, "utf8");
+      expect(() => loadPiWebUiConfig(testOptions())).toThrow(`${testCase.message}: ${configPath}`);
+    }
+  });
+
+  it("does not apply URL-form validation at load time", async () => {
+    for (const url of ["127.0.0.1:8810", "ftp://host"]) {
+      await writeFile(configPath, `${JSON.stringify({ sessiond: { url } }, null, 2)}\n`, "utf8");
+      expect(loadPiWebUiConfig(testOptions()).config.sessiond).toEqual({ url });
+    }
+  });
+
+  it("round-trips sessiond through savePiWebUiConfig", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    const saved = savePiWebUiConfig({ sessiond }, testOptions());
+
+    expect(saved.config.sessiond).toEqual(sessiond);
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({ sessiond });
+  });
+
+  it("preserves sessiond when an unrelated save runs", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    await writeFile(configPath, `${JSON.stringify({ future: true, sessiond }, null, 2)}\n`, "utf8");
+
+    const saved = savePiWebUiConfig({ spawnSessions: true }, testOptions());
+
+    expect(saved.config.sessiond).toEqual(sessiond);
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({ sessiond });
+    expect(saved.config.spawnSessions).toBe(true);
+  });
+
+  it("keeps an absent sessiond absent", async () => {
+    await writeFile(configPath, `${JSON.stringify({ port: 8808 }, null, 2)}\n`, "utf8");
+
+    expect(loadPiWebUiConfig(testOptions()).config.sessiond).toBeUndefined();
+  });
+});
