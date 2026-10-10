@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TemplateResult } from "lit";
 import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { configApi, pluginsApi, type PiWebUiConfigResponse, type PiWebUiPluginsResponse } from "../api";
 import { SettingsDialog } from "./SettingsDialog";
@@ -196,4 +197,40 @@ describe("settings-dialog session daemon machine targeting", () => {
     expect(getDialogProperty(dialog, "sessiondError")).toBe("Failed to load session-daemon config from Lab Mac (remote machine): Could not reach Lab Mac for selected-machine settings. Check the machine connection and try again.");
     expect(getDialogProperty(dialog, "sessiondLoading")).toBe(false);
   });
+
+  it("binds the daemon listener descriptor into the session daemon panel", () => {
+    const listener = { kind: "tcp" as const, host: "0.0.0.0", port: 8810, hostSource: "config" as const, portSource: "config" as const };
+    const dialog = new SettingsDialog();
+    dialog.section = "sessiond";
+    dialog.machineRuntime = {
+      machineId: "local",
+      ok: true,
+      checkedAt: "now",
+      components: {
+        web: { component: "web", label: "Web/UI", available: true, capabilities: [] },
+        sessiond: { component: "sessiond", label: "Session daemon", available: true, capabilities: [], sessiondListener: listener },
+      },
+      capabilities: [],
+    };
+
+    expect(templateValueAfterMarker(renderActiveSection(dialog), ".sessiondListener=")).toEqual(listener);
+  });
 });
+
+function renderActiveSection(dialog: SettingsDialog): TemplateResult {
+  const render: unknown = Reflect.get(dialog, "renderActiveSection");
+  if (typeof render !== "function") throw new Error("SettingsDialog.renderActiveSection is not callable");
+  const result: unknown = Reflect.apply(render, dialog, []);
+  if (!isTemplateResult(result)) throw new Error("SettingsDialog.renderActiveSection did not return a template");
+  return result;
+}
+
+function isTemplateResult(value: unknown): value is TemplateResult {
+  return typeof value === "object" && value !== null && "strings" in value && "values" in value;
+}
+
+function templateValueAfterMarker(template: TemplateResult, marker: string): unknown {
+  const index = template.strings.findIndex((text) => text.includes(marker));
+  if (index === -1) throw new Error(`Template marker not found: ${marker}`);
+  return template.values[index];
+}

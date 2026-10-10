@@ -1,15 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
-import type { ActiveAgentProfileDescriptor, PiWebUiConfigResponse, PiWebUiConfigValues } from "../../api";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ActiveAgentProfileDescriptor, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiSessiondListenerDescriptor } from "../../api";
 import { SettingsSessiondPanel, sessiondDescription, sessiondPanelNotices, type SessiondPanelNoticeContext } from "./SettingsSessiondPanel";
 
-// This suite asserts the session-daemon panel's dynamic behavior through public
-// seams rather than by inspecting rendered Lit `TemplateResult` internals:
-// notice composition/ordering and the description string come from the exported
-// `sessiondPanelNotices`/`sessiondDescription` helpers, and profile-save and
-// draft-preservation behavior are observed via injected callbacks and public
-// state. Static labels and layout are intentionally not asserted here (no DOM
-// harness); per the testing-guide skill those are not verified by scraping
-// template internals.
+// Notice composition and description strings are asserted through the exported
+// pure seams; the listener block is asserted with a real jsdom shadow-DOM
+// harness because it is rendered, user-visible state. Static layout and styling
+// remain unasserted.
 
 describe("session daemon panel notices", () => {
   it("names the selected machine in the scope description and restart notice", () => {
@@ -147,12 +144,127 @@ function callPanelMethod(panel: SettingsSessiondPanel, methodName: string, ...ar
   return Reflect.apply(method, panel, args);
 }
 
-function configResponse(config: PiWebUiConfigValues): PiWebUiConfigResponse {
+function configResponse(
+  config: PiWebUiConfigValues,
+  overrides: Partial<PiWebUiConfigResponse["envOverrides"]> = {},
+  effectiveConfig: PiWebUiConfigValues = config,
+): PiWebUiConfigResponse {
   return {
     path: "/tmp/pi-webui/config.json",
     exists: true,
     config,
-    effectiveConfig: config,
-    envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false },
+    effectiveConfig,
+    envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false, ...overrides },
   };
 }
+
+describe("session daemon panel listener block", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  function tcp(host: string, port: number, hostSource: "env" | "config" | "default", portSource: "env" | "config"): PiWebUiSessiondListenerDescriptor {
+    return { kind: "tcp", host, port, hostSource, portSource };
+  }
+
+  async function mountListenerPanel(config: PiWebUiConfigResponse, listener?: PiWebUiSessiondListenerDescriptor): Promise<SettingsSessiondPanel> {
+    const panel = new SettingsSessiondPanel();
+    panel.configResponse = config;
+    if (listener !== undefined) panel.sessiondListener = listener;
+    document.body.append(panel);
+    await panel.updateComplete;
+    return panel;
+  }
+
+  function listenerRoot(panel: SettingsSessiondPanel): ShadowRoot {
+    const root = panel.shadowRoot;
+    if (root === null) throw new Error("Expected an open shadow root");
+    return root;
+  }
+
+  function listenerRows(panel: SettingsSessiondPanel): Element[] {
+    return [...listenerRoot(panel).querySelectorAll(".listener-card dl > div")];
+  }
+
+  function rowValue(panel: SettingsSessiondPanel, label: string): string | undefined {
+    for (const row of listenerRows(panel)) {
+      if (row.querySelector("dt")?.textContent === label) return row.querySelector("dd")?.textContent.trim();
+    }
+    return undefined;
+  }
+
+  function rowBadges(panel: SettingsSessiondPanel, label: string): string[] {
+    for (const row of listenerRows(panel)) {
+      if (row.querySelector("dt")?.textContent === label) {
+        return [...row.querySelectorAll(".override-badge")].map((badge) => badge.textContent);
+      }
+    }
+    return [];
+  }
+
+  it("renders the read-only listener rows", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" };
+    const panel = await mountListenerPanel(configResponse({ sessiond }, {}, { sessiond }), tcp("0.0.0.0", 8810, "config", "config"));
+    const text = listenerRoot(panel).textContent;
+
+    expect(text).toContain("Desired bind address");
+    expect(text).toContain("Running bind address");
+    expect(text).toContain("Web/API dial target");
+    expect(text).toContain("0.0.0.0");
+    expect(text).toContain("http://127.0.0.1:8810");
+    expect(text).toContain("✓ daemon in sync");
+    expect(rowValue(panel, "Running bind port")).toBe("8810");
+    expect(listenerRoot(panel).querySelectorAll(".listener-card input, .listener-card button")).toHaveLength(0);
+  });
+
+  it("renders each verdict and the unavailable state", async () => {
+    const sessiond = { host: "0.0.0.0", port: 8810 };
+    const overridden = await mountListenerPanel(configResponse({ sessiond }), tcp("127.0.0.1", 8810, "env", "config"));
+    expect(listenerRoot(overridden).textContent).toContain("one or more listener values come from the environment");
+
+    document.body.replaceChildren();
+    const restart = await mountListenerPanel(configResponse({ sessiond }), tcp("127.0.0.1", 9000, "config", "config"));
+    expect(listenerRoot(restart).textContent).toContain("⚠ restart required");
+
+    document.body.replaceChildren();
+    const unavailable = await mountListenerPanel(configResponse({ sessiond }));
+    expect(rowValue(unavailable, "Running bind address")).toBe("Unavailable");
+    expect(rowValue(unavailable, "Running bind port")).toBe("Unavailable");
+    expect(rowValue(unavailable, "Listener status")).toBe("");
+    expect(listenerRoot(unavailable).textContent).not.toContain("✓");
+  });
+
+  it("badges environment-sourced values only", async () => {
+    const sessiond = { url: "http://127.0.0.1:8810" };
+    const panel = await mountListenerPanel(
+      configResponse({ sessiond }, { sessiondUrl: true }, { sessiond }),
+      tcp("0.0.0.0", 8810, "env", "env"),
+    );
+
+    expect(rowBadges(panel, "Running bind address")).toEqual(["environment override"]);
+    expect(rowBadges(panel, "Running bind port")).toEqual(["environment override"]);
+    expect(rowBadges(panel, "Web/API dial target")).toEqual(["environment override"]);
+    expect(rowBadges(panel, "Desired bind address")).toEqual([]);
+    expect(rowBadges(panel, "Desired bind port")).toEqual([]);
+  });
+
+  it("renders and suppresses the dial-target coherence warning", async () => {
+    const panel = await mountListenerPanel(configResponse({ sessiond: { port: 8810 } }));
+    expect(listenerRoot(panel).textContent).toContain("Add sessiond.url or remove sessiond.port.");
+
+    panel.configResponse = configResponse({ sessiond: { port: 8810 } }, { sessiondUrl: true });
+    await panel.updateComplete;
+
+    expect(listenerRoot(panel).textContent).not.toContain("Add sessiond.url or remove sessiond.port.");
+  });
+
+  it("suppresses the bind half once the daemon reports an environment port", async () => {
+    const panel = await mountListenerPanel(configResponse({ sessiond: { url: "http://127.0.0.1:8810" } }));
+    expect(listenerRoot(panel).textContent).toContain("Add sessiond.port or remove sessiond.url.");
+
+    panel.sessiondListener = tcp("127.0.0.1", 8810, "config", "env");
+    await panel.updateComplete;
+
+    expect(listenerRoot(panel).textContent).not.toContain("Add sessiond.port or remove sessiond.url.");
+  });
+});
