@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
+import { fakeSessionDaemon } from "./app.testSupport.js";
 
 let closeApp: (() => Promise<void>) | undefined;
 let staticClientDist: string | undefined;
@@ -18,7 +19,7 @@ describe("buildApp", () => {
   it("returns normal API 404s for removed browser routes without replacing the client fallback", async () => {
     staticClientDist = await mkdtemp(join(tmpdir(), "pi-webui-client-"));
     await writeFile(join(staticClientDist, "index.html"), "<html><body>PI WEBUI client</body></html>");
-    const app = await buildApp({ clientDist: staticClientDist, logger: false });
+    const app = await buildApp({ clientDist: staticClientDist, sessionDaemon: fakeSessionDaemon(), logger: false });
     closeApp = () => app.close();
 
     const apiResponses = await Promise.all([

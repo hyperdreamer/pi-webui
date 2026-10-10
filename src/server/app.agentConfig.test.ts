@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ActiveAgentProfileDescriptor, PiWebUiStatusResponse, PiWebUiVersionResponse } from "../shared/apiTypes.js";
-import { appTestContext, createFakeSpeechInputSettingsService, fakeConfigService, registerAppTestHooks } from "./app.testSupport.js";
+import { appTestContext, createFakeSpeechInputSettingsService, fakeConfigService, fakeSessionDaemon, registerAppTestHooks } from "./app.testSupport.js";
 import { buildApp } from "./app.js";
 
 registerAppTestHooks();
@@ -76,6 +76,7 @@ describe("buildApp active agent profile", () => {
       config: fakeConfigService(),
       speechInputSettings: createFakeSpeechInputSettingsService(),
       piWebUiStatusCache: { get, refresh, invalidate },
+      sessionDaemon: fakeSessionDaemon(),
       clientDist: false,
       logger: false,
     });
@@ -98,6 +99,7 @@ describe("buildApp active agent profile", () => {
       config: fakeConfigService(),
       speechInputSettings: createFakeSpeechInputSettingsService(),
       piWebUiStatusCache: { get: () => Promise.resolve(statusResponse("cached")), refresh: () => Promise.resolve(statusResponse("refreshed")), invalidate },
+      sessionDaemon: fakeSessionDaemon(),
       clientDist: false,
       logger: false,
     });

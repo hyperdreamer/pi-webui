@@ -1,7 +1,11 @@
 import { rm } from "node:fs/promises";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { SessionDaemonClient } from "./sessionDaemonClient.js";
+
+const testConfigPath = join(tmpdir(), `pi-webui-sessiond-client-config-${String(process.pid)}-${String(Date.now())}.json`);
 
 const activeAgentProfile = {
   schemaVersion: 1,
@@ -13,7 +17,7 @@ const activeAgentProfile = {
 
 describe("SessionDaemonClient active agent profile protocol", () => {
   it("returns the validated immutable profile from the daemon runtime endpoint", async () => {
-    const client = new SessionDaemonClient();
+    const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
     const request = vi.spyOn(client, "request").mockResolvedValue(runtimeResponse(activeAgentProfile));
 
     const result = await client.getActiveAgentProfile();
@@ -27,12 +31,12 @@ describe("SessionDaemonClient active agent profile protocol", () => {
   });
 
   it("distinguishes invalid protocol responses from daemon unavailability", async () => {
-    const invalidClient = new SessionDaemonClient();
+    const invalidClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
     vi.spyOn(invalidClient, "request").mockResolvedValue(runtimeResponse({
       ...activeAgentProfile,
       token: "must-not-cross-the-protocol",
     }));
-    const unavailableClient = new SessionDaemonClient();
+    const unavailableClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
     vi.spyOn(unavailableClient, "request").mockRejectedValue(new Error("connect ECONNREFUSED"));
 
     await expect(invalidClient.getActiveAgentProfile()).resolves.toEqual({
@@ -46,7 +50,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects foreign-platform active state paths before local consumers use them", async () => {
-    const client = new SessionDaemonClient();
+    const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
     vi.spyOn(client, "request").mockResolvedValue(runtimeResponse({
       ...activeAgentProfile,
       dir: "C:\\agent-profiles\\acme",
@@ -59,7 +63,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
   });
 
   it("treats a legacy runtime response without a profile as invalid for profile-dependent work", async () => {
-    const client = new SessionDaemonClient();
+    const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
     vi.spyOn(client, "request").mockResolvedValue(runtimeResponse(undefined));
 
     await expect(client.getActiveAgentProfile()).resolves.toEqual({
@@ -75,7 +79,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     try {
-      const client = new SessionDaemonClient();
+      const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:43123" } });
       const controller = new AbortController();
 
       const request = client.request("POST", "/speech-input/polish", { text: "pending" }, controller.signal);
@@ -101,7 +105,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     const fetchMock = vi.fn(() => Promise.resolve(response));
     vi.stubGlobal("fetch", fetchMock);
     try {
-      const client = new SessionDaemonClient();
+      const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:43123" } });
       const controller = new AbortController();
       const pending = client.request("POST", "/speech-input/polish", { text: "pending" }, controller.signal);
       await new Promise<void>((resolve) => setImmediate(() => { resolve(); }));
@@ -126,7 +130,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     });
     await listenUnix(server, socketPath);
     try {
-      const client = new SessionDaemonClient();
+      const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
       await expect(client.request("POST", "/speech-input/polish", { text: "raw" })).resolves.toEqual(expect.objectContaining({
         statusCode: 200,
         body: JSON.stringify({ text: "polished" }),
@@ -148,7 +152,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     });
     await listenUnix(server, socketPath);
     try {
-      const client = new SessionDaemonClient();
+      const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
       const request = client.request("POST", "/speech-input/polish", { text: "pending" });
       await expect(Promise.race([
         request.then(() => "resolved", () => "rejected"),
@@ -173,7 +177,7 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     });
     await listenUnix(server, socketPath);
     try {
-      const client = new SessionDaemonClient();
+      const client = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath } });
       const controller = new AbortController();
       const pending = client.request("POST", "/speech-input/polish", { text: "pending" }, controller.signal);
       await waitFor(() => requestReceived);

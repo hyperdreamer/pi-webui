@@ -448,7 +448,7 @@ function fakePiPackagePluginsConfigService(): PiPackagePluginsConfigService {
   };
 }
 
-function fakeSessionDaemon(): SessionProxyDaemon {
+export function fakeSessionDaemon(): SessionProxyDaemon {
   return {
     request: (method, path, body) => {
       const captured = { method, path, ...(body === undefined ? {} : { body }) } satisfies CapturedSessionDaemonRequest;

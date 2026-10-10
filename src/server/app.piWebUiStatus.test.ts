@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PiWebUiStatusResponse } from "../shared/apiTypes.js";
 import { buildApp } from "./app.js";
+import { fakeSessionDaemon } from "./app.testSupport.js";
 
 describe("PI WEBUI status routes", () => {
   it("forces a fresh status load when refresh is requested", async () => {
     const get = vi.fn(() => Promise.resolve(status("cached")));
     const refresh = vi.fn(() => Promise.resolve(status("forced")));
     const invalidate = vi.fn();
-    const app = await buildApp({ piWebUiStatusCache: { get, refresh, invalidate }, clientDist: false, logger: false });
+    const app = await buildApp({ piWebUiStatusCache: { get, refresh, invalidate }, sessionDaemon: fakeSessionDaemon(), clientDist: false, logger: false });
 
     try {
       const cachedResponse = await app.inject({ method: "GET", url: "/api/pi-webui/status" });

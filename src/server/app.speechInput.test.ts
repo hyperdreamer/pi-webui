@@ -7,7 +7,7 @@ import type { PiWebUiConfigResponse, SpeechInputSettingsResponse } from "../shar
 import type { PiWebUiConfigMutationCoordinator } from "../configMutationCoordinator.js";
 import { buildApp, createGatewayConfigComposition, sharedConfigMutationCoordinator } from "./app.js";
 import { SPEECH_INPUT_TEST_REVISION } from "./speechInput/speechInputSettingsService.testSupport.js";
-import { appTestContext, registerAppTestHooks } from "./app.testSupport.js";
+import { appTestContext, fakeSessionDaemon, registerAppTestHooks } from "./app.testSupport.js";
 
 registerAppTestHooks();
 
@@ -179,6 +179,7 @@ describe("production gateway config composition shares one mutation authority", 
     const app = await buildApp({
       config: composition.config,
       configMutationCoordinator: composition.coordinator,
+      sessionDaemon: fakeSessionDaemon(),
       clientDist: false,
       logger: false,
     });
