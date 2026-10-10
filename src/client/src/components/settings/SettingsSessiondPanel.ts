@@ -1,11 +1,11 @@
 import { css, html, LitElement, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { ActiveAgentProfileDescriptor, PiWebUiConfigResponse, PiWebUiConfigValues } from "../../api";
+import type { ActiveAgentProfileDescriptor, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiSessiondListenerDescriptor } from "../../api";
 import "./SettingsPanelFrame";
 import type { SettingsNotice } from "./SettingsPanelFrame";
 import { agentProfileConfigPatchFromDraft, agentProfileDraftFromConfig, agentProfileDraftMatchesConfig, emptyAgentProfileConfigDraft, type AgentProfileConfigDraft } from "./settingsConfigDraft";
 import type { AgentProfileSettingsSupport } from "./settingsMachineTarget";
-import { agentDirFieldOverridden, agentProfileActivationState, spawnSessionsConfigPatch, subsessionsConfigPatch } from "./settingsSessiondConfig";
+import { activationState, agentDirFieldOverridden, agentProfileActivationState, coherenceWarning, coherenceWarningMessage, spawnSessionsConfigPatch, subsessionsConfigPatch, type SessiondActivationState } from "./settingsSessiondConfig";
 
 @customElement("settings-sessiond-panel")
 export class SettingsSessiondPanel extends LitElement {
@@ -16,6 +16,7 @@ export class SettingsSessiondPanel extends LitElement {
   @property() savedMessage = "";
   @property() targetLabel = "local (local gateway)";
   @property({ attribute: false }) activeAgentProfile: ActiveAgentProfileDescriptor | undefined;
+  @property({ attribute: false }) sessiondListener: PiWebUiSessiondListenerDescriptor | undefined;
   @property({ attribute: false }) agentProfileSupport: AgentProfileSettingsSupport = { state: "supported" };
   @property({ attribute: false }) onReload?: () => void | Promise<void>;
   @property({ attribute: false }) onSave?: (config: PiWebUiConfigValues) => void | Promise<void>;
@@ -54,6 +55,10 @@ export class SettingsSessiondPanel extends LitElement {
     const effectiveAgentDirOverridden = config?.envOverrides.agentDir === true;
     const effectiveAgent = config?.effectiveConfig.agent;
     const profileActivation = agentProfileActivationState(config, this.activeAgentProfile);
+    const fileSessiond = config?.config.sessiond;
+    const listener = this.sessiondListener;
+    const listenerActivation = activationState(fileSessiond, listener);
+    const coherenceIssue = coherenceWarning(fileSessiond, config?.envOverrides.sessiondUrl === true, listener);
     return html`
       <settings-panel-frame
         heading="Session daemon"
@@ -68,6 +73,45 @@ export class SettingsSessiondPanel extends LitElement {
             <span>Config file</span>
             <code>${config.path}</code>
           </div>
+          <section class="listener-card" aria-label="Session daemon listener summary">
+            <h3>Listener</h3>
+            <dl>
+              <div>
+                <dt>Desired bind address</dt>
+                <dd>${fileSessiond?.port === undefined ? "Unix socket" : (fileSessiond.host ?? "127.0.0.1")}</dd>
+              </div>
+              <div>
+                <dt>Desired bind port</dt>
+                <dd>${fileSessiond?.port === undefined ? "Unix socket" : String(fileSessiond.port)}</dd>
+              </div>
+              <div>
+                <dt>Running bind address</dt>
+                <dd>
+                  ${listener === undefined ? html`<span class="muted">Unavailable</span>` : listener.kind === "socket" ? "Unix socket" : listener.host}
+                  ${listener?.kind === "tcp" && listener.hostSource === "env" ? html`<span class="override-badge">environment override</span>` : null}
+                </dd>
+              </div>
+              <div>
+                <dt>Running bind port</dt>
+                <dd>
+                  ${listener === undefined ? html`<span class="muted">Unavailable</span>` : listener.kind === "socket" ? "Unix socket" : String(listener.port)}
+                  ${listener?.kind === "tcp" && listener.portSource === "env" ? html`<span class="override-badge">environment override</span>` : null}
+                </dd>
+              </div>
+              <div>
+                <dt>Web/API dial target</dt>
+                <dd>
+                  ${config.effectiveConfig.sessiond?.url ?? "Unix socket"}
+                  ${config.envOverrides.sessiondUrl === true ? html`<span class="override-badge">environment override</span>` : null}
+                </dd>
+              </div>
+              <div>
+                <dt>Listener status</dt>
+                <dd>${listenerActivationLabel(listenerActivation)}</dd>
+              </div>
+            </dl>
+            ${coherenceIssue === undefined ? null : html`<p class="listener-warning">${coherenceWarningMessage(coherenceIssue)}</p>`}
+          </section>
           <form class="profile-form" aria-label="Pi-compatible agent profile" @submit=${(event: Event) => { void this.saveAgentProfile(event); }}>
             ${profileEditingSupported ? null : html`<div class="profile-support-message">${this.agentProfileSupport.message ?? "Pi-compatible agent profile editing is unavailable for this machine."}</div>`}
             <label class="field">
@@ -203,7 +247,7 @@ export class SettingsSessiondPanel extends LitElement {
     button, input { font: inherit; }
     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
     button:disabled { opacity: .55; cursor: not-allowed; }
-    .loading-card, .config-path-card, .effective-card, .profile-support-message { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
+    .loading-card, .config-path-card, .effective-card, .listener-card, .profile-support-message { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
     .loading-card { color: var(--pi-muted); }
     .config-path-card { display: grid; gap: 5px; }
     .profile-form { display: grid; gap: 14px; }
@@ -236,13 +280,24 @@ export class SettingsSessiondPanel extends LitElement {
     .effective-card { display: grid; gap: 10px; }
     .effective-card dl { display: grid; gap: 8px; margin: 0; }
     .effective-card dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+    .listener-card { display: grid; gap: 10px; }
+    .listener-card dl { display: grid; gap: 8px; margin: 0; }
+    .listener-card dl > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+    .listener-warning { margin: 0; color: var(--pi-warning); line-height: 1.45; }
     dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
     .muted { color: var(--pi-muted); }
 
     @media (max-width: 760px) {
-      .effective-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+      .effective-card dl > div, .listener-card dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
     }
   `;
+}
+
+function listenerActivationLabel(state: SessiondActivationState): string | undefined {
+  if (state === "active") return "✓ daemon in sync";
+  if (state === "overridden") return "⚠ one or more listener values come from the environment, so the config file cannot take full effect until the environment changes";
+  if (state === "restart-required") return "⚠ restart required";
+  return undefined;
 }
 
 function profileActivationLabel(state: ReturnType<typeof agentProfileActivationState>): string | TemplateResult {
