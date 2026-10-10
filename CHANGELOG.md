@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.23.0
+
+### Minor Changes
+
+- b40ecd9: Update supported Pi core and coding agent dependencies and peerDependencies to `1.0.4` series (`^1.0.4` and `>=1.0.4 <2`).
+- bbf9178: Add a `sessiond` config-file section for the session daemon listener. `sessiond.host` and `sessiond.port` configure the daemon bind address and `sessiond.url` configures the web/API dial target; `PI_WEBUI_SESSIOND_HOST`, `PI_WEBUI_SESSIOND_PORT`, and `PI_WEBUI_SESSIOND_URL` still take precedence, and an absent port still means the unix socket. Settings shows the effective listener and whether the running daemon matches it.
+
+  Behavior change: an empty or whitespace-only session daemon host now means "absent" and binds `127.0.0.1` instead of the wildcard address. Set `sessiond.host` (or `PI_WEBUI_SESSIOND_HOST`) to `0.0.0.0` explicitly for a wildcard bind.
+
+### Patch Changes
+
+- ac49dc3: Update dependencies to remediate npm audit findings: Fastify and fast-uri security patches in the production tree, plus smol-toml, source-map-js, and Changesets CLI patches in the development tree.
+
 ## 1.22.0
 
 ### Minor Changes
