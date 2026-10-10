@@ -1018,3 +1018,26 @@ describe("PI WEBUI sessiond config", () => {
     expect(loadPiWebUiConfig(testOptions()).config.sessiond).toBeUndefined();
   });
 });
+
+describe("PI WEBUI sessiond effective config", () => {
+  it("layers only the url environment override over the file", async () => {
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { host: "0.0.0.0", port: 8810 } }, null, 2)}\n`, "utf8");
+    const options = { env: { PI_WEBUI_CONFIG: configPath, PI_WEBUI_SESSIOND_URL: " http://127.0.0.1:8810 " } };
+
+    expect(effectivePiWebUiConfig(options).config.sessiond).toEqual({ host: "0.0.0.0", port: 8810, url: "http://127.0.0.1:8810" });
+  });
+
+  it("treats a blank url environment value as absent", async () => {
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { host: "0.0.0.0", port: 8810 } }, null, 2)}\n`, "utf8");
+    for (const value of ["   ", ""]) {
+      expect(effectivePiWebUiConfig({ env: { PI_WEBUI_CONFIG: configPath, PI_WEBUI_SESSIOND_URL: value } }).config.sessiond).toEqual({ host: "0.0.0.0", port: 8810 });
+    }
+  });
+
+  it("does not layer the bind environment into the effective config", async () => {
+    await writeFile(configPath, `${JSON.stringify({ sessiond: { host: "0.0.0.0", port: 8810 } }, null, 2)}\n`, "utf8");
+    const options = { env: { PI_WEBUI_CONFIG: configPath, PI_WEBUI_SESSIOND_HOST: "1.2.3.4", PI_WEBUI_SESSIOND_PORT: "9999" } };
+
+    expect(effectivePiWebUiConfig(options).config.sessiond).toEqual({ host: "0.0.0.0", port: 8810 });
+  });
+});

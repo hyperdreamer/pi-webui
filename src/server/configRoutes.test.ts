@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadPiWebUiConfig } from "../config.js";
 import { PiWebUiConfigMutationBusyError } from "../configMutationCoordinator.js";
-import { createFilePiWebUiConfigService, parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
+import { createFilePiWebUiConfigService, parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, piWebUiConfigResponseFromSnapshot, redactSpeechInputConfigResponse, registerConfigRoutes, registerLocalMachineConfigRoutes, type PiWebUiConfigService } from "./configRoutes.js";
 import type { PiWebUiConfigResponse, PiWebUiSpeechInputConfig, PiWebUiConfigValues } from "../shared/apiTypes.js";
 import type { WorkspaceTasksMutationAuthorizer } from "./workspaceTasks/workspaceTasksErrors.js";
 import { WorkspaceTasksMoveRecoveryPendingError } from "./workspaceTasks/workspaceTasksMoveRegistry.js";
@@ -287,6 +287,17 @@ describe("config routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json<{ error: string }>().error).toContain("PI WEBUI selected-machine config spawnSessions must be a boolean");
     expect(service.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("sessiond environment override projection", () => {
+  it("uses a trim-aware sessiondUrl override flag", () => {
+    const loaded = { path: "/tmp/pi-webui/config.json", exists: false, config: {} };
+    const blank = piWebUiConfigResponseFromSnapshot({ loaded, speechInputRevision: "" }, { env: { PI_WEBUI_SESSIOND_URL: "   " } });
+    const set = piWebUiConfigResponseFromSnapshot({ loaded, speechInputRevision: "" }, { env: { PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:8810" } });
+
+    expect(blank.envOverrides.sessiondUrl).toBe(false);
+    expect(set.envOverrides.sessiondUrl).toBe(true);
   });
 });
 

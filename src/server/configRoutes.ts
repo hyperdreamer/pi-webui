@@ -366,11 +366,16 @@ function piWebUiConfigEnvOverrides(env: NodeJS.ProcessEnv, config: PiWebUiConfig
     agentDir: hasAgentDirEnvOverride(env, command),
     ...(dirEnvSource === undefined ? {} : { agentDirSource: dirEnvSource }),
     agentSessionDir: hasAgentSessionDirEnvOverride(env, command),
+    sessiondUrl: isEnvSetAfterTrim(env["PI_WEBUI_SESSIOND_URL"]),
   };
 }
 
 function isEnvSet(value: string | undefined): boolean {
   return value !== undefined && value !== "";
+}
+
+function isEnvSetAfterTrim(value: string | undefined): boolean {
+  return value !== undefined && value.trim() !== "";
 }
 
 function isConfigValidationError(error: unknown): boolean {
