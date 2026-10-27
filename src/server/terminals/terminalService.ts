@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
+import { ensurePtyHelperExecutable } from "./ptyHelperPermissions.js";
 import type { TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunStatus, TerminalUiEvent } from "../../shared/apiTypes.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
 import type { WorkspaceActivityService } from "../activity/workspaceActivityService.js";
@@ -152,6 +153,7 @@ export class TerminalService {
   continue(id: string): TerminalInfo {
     const record = this.require(id);
     if (!record.exited) return toInfo(record);
+    ensurePtyHelperExecutable();
     delete record.exitCode;
     delete record.commandRunId;
     record.exited = false;
@@ -192,6 +194,7 @@ export class TerminalService {
     const id = options.id ?? randomUUID();
     const createdAt = new Date().toISOString();
     const shell = process.env["SHELL"] ?? "/bin/bash";
+    ensurePtyHelperExecutable();
     const terminal = pty.spawn(shell, options.shellArgs, {
       name: "xterm-256color",
       cwd: options.cwd,
