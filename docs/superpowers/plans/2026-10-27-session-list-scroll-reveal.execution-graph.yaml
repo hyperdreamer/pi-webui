@@ -1,0 +1,92 @@
+schema_version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-10-27-session-list-scroll-reveal.md
+  sha256: 8d4bbdf639918f0f99f8a37ffe07562a97b199766492ff92b13d4ce4bd6f5b9d
+  commit_oid: 83aeda046395762faa0664f575be029ad3929db8
+  validated_at: 2026-10-27T20:31:00Z
+  parsed_tasks: [1, 2]
+source_context:
+  worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261027-023354-e634945b/integration
+  commit: 83aeda046395762faa0664f575be029ad3929db8
+target:
+  repository_root: /data/home/guest/Development/pi-webui
+  remote: origin
+  remote_url: git@github.com:hyperdreamer/pi-webui.git
+  branch: refs/heads/main
+  worktree: /data/home/guest/Development/pi-webui
+  base_commit: cc0093b7ec175f6f1b01ba66e572580ba0e2c2fd
+integration:
+  branch: refs/heads/pm/session-list-scroll-reveal/run-pm-run-20261027-023354-e634945b
+  worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261027-023354-e634945b/integration
+  base_commit: cc0093b7ec175f6f1b01ba66e572580ba0e2c2fd
+  current_commit: 83aeda046395762faa0664f575be029ad3929db8
+epoch: 1
+tasks:
+  - id: T-001
+    plan_task: 1
+    lane: session-list-reveal
+    sequence: 1
+    title: "Replace the unguarded reveal with the keyed decision"
+    depends_on: []
+    owns:
+      - src/client/src/components/SessionList.ts
+      - .changeset/*.md
+    exclusive_resources: []
+    produces:
+      - id: iface.selection-reveal-decision
+        signature: "src/client/src/components/SessionList.ts provides syncSelectedReveal(): void; revealPendingSelection(): void; selectedRowKey(session: SessionInfo): string (module-local)"
+        sha256: 5f5ebcc799c77cc8b56744f4b0b8cc56a128b6f6605bfd80cef6d5a5c91b28cc
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.selection-reveal-decision
+          signature: "src/client/src/components/SessionList.ts provides syncSelectedReveal(): void; revealPendingSelection(): void; selectedRowKey(session: SessionInfo): string (module-local)"
+          sha256: 5f5ebcc799c77cc8b56744f4b0b8cc56a128b6f6605bfd80cef6d5a5c91b28cc
+      consumes: []
+    validation:
+      - argv: ["npm", "run", "typecheck"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npx", "eslint", "src/client/src/components/SessionList.ts"]
+        cwd: lane
+        timeout_seconds: 180
+
+  - id: T-002
+    plan_task: 2
+    lane: session-list-reveal
+    sequence: 2
+    title: "Add the SessionList scroll reveal suite"
+    depends_on: [T-001]
+    owns:
+      - src/client/src/components/SessionList.scroll.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.selection-reveal-suite
+        signature: "src/client/src/components/SessionList.scroll.test.ts provides the thirteen-case reveal suite for the SessionList decision"
+        sha256: a18306f002c2228b8f79eb937c96359500c959eb0beaf2960f1db889360e4632
+    consumes:
+      - id: iface.selection-reveal-decision
+        signature: "src/client/src/components/SessionList.ts provides syncSelectedReveal(): void; revealPendingSelection(): void; selectedRowKey(session: SessionInfo): string (module-local)"
+        sha256: 5f5ebcc799c77cc8b56744f4b0b8cc56a128b6f6605bfd80cef6d5a5c91b28cc
+    interfaces:
+      produces:
+        - id: iface.selection-reveal-suite
+          signature: "src/client/src/components/SessionList.scroll.test.ts provides the thirteen-case reveal suite for the SessionList decision"
+          sha256: a18306f002c2228b8f79eb937c96359500c959eb0beaf2960f1db889360e4632
+      consumes:
+        - id: iface.selection-reveal-decision
+          signature: "src/client/src/components/SessionList.ts provides syncSelectedReveal(): void; revealPendingSelection(): void; selectedRowKey(session: SessionInfo): string (module-local)"
+          sha256: 5f5ebcc799c77cc8b56744f4b0b8cc56a128b6f6605bfd80cef6d5a5c91b28cc
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/SessionList.scroll.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "typecheck"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npx", "eslint", "src/client/src/components/SessionList.scroll.test.ts"]
+        cwd: lane
+        timeout_seconds: 180
+lanes:
+  - id: session-list-reveal
+    task_ids: [T-001, T-002]

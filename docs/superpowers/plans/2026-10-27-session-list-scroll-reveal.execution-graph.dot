@@ -1,0 +1,10 @@
+digraph execution_graph {
+  graph [rankdir=LR, label="session-list-scroll-reveal (epoch 1)", labelloc=t];
+  node [shape=box, style=rounded];
+  subgraph cluster_session_list_reveal {
+    label="session-list-reveal";
+    T-001 [label="T-001\nReplace the unguarded reveal with the keyed decision\nseq 1"];
+    T-002 [label="T-002\nAdd the SessionList scroll reveal suite\nseq 2"];
+  }
+  T-001 -> T-002;
+}
