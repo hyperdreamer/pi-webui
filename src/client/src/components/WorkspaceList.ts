@@ -28,6 +28,15 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   @state() private openMenuWorkspaceId: string | undefined;
   @state() private menuStyle = "";
 
+  private visibleSelectedWorkspaceId: string | undefined;
+  private pendingRevealWorkspaceId: string | undefined;
+  // An enclosing collapsed or compact navigation panel hides this list with CSS, which
+  // leaves the rows without layout. Scrolling then is a silent no-op, so the reveal is
+  // retried once the list has a size again instead of being consumed while hidden.
+  private readonly revealOnResize = typeof ResizeObserver === "undefined"
+    ? undefined
+    : new ResizeObserver(() => { this.revealPendingSelection(); });
+
   private readonly onDocumentClick = (event: Event) => {
     if (isClickWithinActionMenu(event, this.renderRoot)) return;
     this.openMenuWorkspaceId = undefined;
@@ -36,17 +45,31 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
   override connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener("click", this.onDocumentClick, true);
+    this.revealOnResize?.observe(this);
   }
 
   override disconnectedCallback(): void {
     document.removeEventListener("click", this.onDocumentClick, true);
+    this.revealOnResize?.disconnect();
     super.disconnectedCallback();
   }
 
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("workspaces") && this.openMenuWorkspaceId !== undefined && !this.workspaces.some((workspace) => workspace.id === this.openMenuWorkspaceId)) this.openMenuWorkspaceId = undefined;
     if (changed.has("collapsed") && this.collapsed) this.openMenuWorkspaceId = undefined;
-    if ((changed.has("selected") || changed.has("workspaces") || changed.has("collapsed")) && !this.collapsed) this.scrollSelectedIntoView();
+    // Refreshes replace workspace objects without changing the user's selection.
+    // Only reveal a newly selected or newly visible row, not every refreshed list.
+    if (!changed.has("selected") && !changed.has("workspaces") && !changed.has("collapsed")) return;
+    const visibleSelectedId = !this.collapsed && this.workspaces.some((workspace) => workspace.id === this.selected?.id)
+      ? this.selected?.id
+      : undefined;
+    if (visibleSelectedId === undefined) {
+      this.visibleSelectedWorkspaceId = undefined;
+      this.pendingRevealWorkspaceId = undefined;
+      return;
+    }
+    if (visibleSelectedId === this.visibleSelectedWorkspaceId) return;
+    this.pendingRevealWorkspaceId = this.revealSelectedWorkspace(visibleSelectedId) ? undefined : visibleSelectedId;
   }
 
   async focusSelectedOrFirst(): Promise<boolean> {
@@ -199,8 +222,22 @@ export class WorkspaceList extends LitElement implements KeyboardNavigableSectio
     });
   }
 
-  private scrollSelectedIntoView(): void {
-    this.renderRoot.querySelector<HTMLElement>(".action-row.selected")?.scrollIntoView({ block: "nearest" });
+  private revealSelectedWorkspace(workspaceId: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(".action-row.selected");
+    // A row inside a hidden navigation panel has no layout; scrolling it now would do
+    // nothing and the reveal would be lost for good, because a parent CSS change does
+    // not re-run this component's update cycle.
+    if (row === null || row.getClientRects().length === 0) return false;
+    row.scrollIntoView({ block: "nearest" });
+    this.visibleSelectedWorkspaceId = workspaceId;
+    return true;
+  }
+
+  private revealPendingSelection(): void {
+    const pendingId = this.pendingRevealWorkspaceId;
+    if (pendingId === undefined || this.collapsed || pendingId !== this.selected?.id) return;
+    if (!this.workspaces.some((workspace) => workspace.id === pendingId)) return;
+    if (this.revealSelectedWorkspace(pendingId)) this.pendingRevealWorkspaceId = undefined;
   }
 
   static override styles = listStyles;
