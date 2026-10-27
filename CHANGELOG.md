@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.28.2
+
+### Patch Changes
+
+- 12305b8: Repair missing execute permission on node-pty's macOS spawn helper before starting or continuing terminals, preventing terminal startup failures after installation. Report an actionable error when installation permissions prevent repair.
+- 36872f8: Preserve the workspace list scroll position during background refreshes while still revealing newly selected workspaces, selections that become visible after loading or expanding the list, and selections revealed once a collapsed or compact navigation panel becomes visible again.
+
 ## 1.28.1
 
 ### Patch Changes
