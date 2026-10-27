@@ -108,6 +108,14 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
 
   private sessionPointerDrag: SessionPointerDrag | undefined;
   private sessionReorderFrame: number | undefined;
+  private visibleSelectedRowKey: string | undefined;
+  private pendingRevealRowKey: string | undefined;
+  // An enclosing collapsed or compact navigation panel hides this list with CSS, which
+  // leaves the rows without layout. Scrolling then is a silent no-op, so the reveal is
+  // retried once the list has a size again instead of being consumed while hidden.
+  private readonly revealOnResize = typeof ResizeObserver === "undefined"
+    ? undefined
+    : new ResizeObserver(() => { this.revealPendingSelection(); });
 
   private readonly onDocumentClick = (event: Event) => {
     if (isClickWithinActionMenu(event, this.renderRoot)) return;
@@ -133,6 +141,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     document.addEventListener("pointerup", this.onDocumentPointerUp);
     document.addEventListener("pointercancel", this.onDocumentPointerCancel);
     document.addEventListener("keydown", this.onDocumentKeydown);
+    this.revealOnResize?.observe(this);
   }
 
   override disconnectedCallback(): void {
@@ -141,6 +150,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     document.removeEventListener("pointerup", this.onDocumentPointerUp);
     document.removeEventListener("pointercancel", this.onDocumentPointerCancel);
     document.removeEventListener("keydown", this.onDocumentKeydown);
+    this.revealOnResize?.disconnect();
     this.cancelSessionReorder();
     super.disconnectedCallback();
   }
@@ -173,10 +183,14 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     const previousSelected = changed.get("selected");
     if (changed.has("selected") && this.selected?.archived === true && (previousSelected?.id !== this.selected.id || previousSelected.archived !== true) && !this.archivedExpanded) {
       this.archivedExpanded = true;
-      void this.updateComplete.then(() => { this.scrollSelectedIntoView(); });
-      return;
+      // Expanding the archived section is a deliberate reveal of the selected row, which
+      // only becomes renderable in a later cycle. Clearing the record lets that cycle treat
+      // it as newly visible instead of skipping it as already shown.
+      this.visibleSelectedRowKey = undefined;
     }
-    if ((changed.has("selected") || changed.has("sessions") || changed.has("collapsed")) && !this.collapsed) this.scrollSelectedIntoView();
+    // Refreshes replace session objects without changing the user's selection.
+    // Only reveal a newly selected or newly visible row, not every refreshed list.
+    this.syncSelectedReveal();
   }
 
   async focusSelectedOrFirst(): Promise<boolean> {
@@ -1062,8 +1076,38 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     }
   }
 
-  private scrollSelectedIntoView(): void {
-    this.renderRoot.querySelector<HTMLElement>(".action-row.selected")?.scrollIntoView({ block: "nearest" });
+  private syncSelectedReveal(): void {
+    const rowKey = this.collapsed || this.selected === undefined ? undefined : selectedRowKey(this.selected);
+    if (rowKey === undefined) {
+      this.visibleSelectedRowKey = undefined;
+      this.pendingRevealRowKey = undefined;
+      return;
+    }
+    // Presence first: a row that is not rendered cannot be revealed, and clearing the record
+    // here is what lets the row be revealed when it renders again.
+    const row = this.renderRoot.querySelector<HTMLElement>(".action-row.selected");
+    if (row === null) {
+      this.visibleSelectedRowKey = undefined;
+      this.pendingRevealRowKey = undefined;
+      return;
+    }
+    if (rowKey === this.visibleSelectedRowKey) return;
+    // A row inside a hidden navigation panel has no layout; scrolling it now would do
+    // nothing and the reveal would be lost for good, because a parent CSS change does
+    // not re-run this component's update cycle.
+    if (row.getClientRects().length === 0) {
+      this.visibleSelectedRowKey = undefined;
+      this.pendingRevealRowKey = rowKey;
+      return;
+    }
+    row.scrollIntoView({ block: "nearest" });
+    this.visibleSelectedRowKey = rowKey;
+    this.pendingRevealRowKey = undefined;
+  }
+
+  private revealPendingSelection(): void {
+    if (this.pendingRevealRowKey === undefined) return;
+    this.syncSelectedReveal();
   }
 
   private renderSessionMetaPrefix(session: SessionInfo, status: SessionStatus | undefined, activity: SessionActivity | undefined) {
@@ -1211,6 +1255,14 @@ function selectableCurrentSessions(rows: readonly SessionRow[]): SessionInfo[] {
 
 function sessionSelectionScope(session: SessionInfo): SessionSelectionScope {
   return session.archived === true ? "archived" : "current";
+}
+
+// A row's identity for reveal purposes is its session plus the section it renders in: a
+// refresh replaces objects without moving the row, while archiving or restoring the
+// selected session keeps the id and relocates it. The NUL separator cannot occur in a
+// session id, so the id can never be confused with the section suffix.
+function selectedRowKey(session: SessionInfo): string {
+  return `${session.id}\u0000${sessionSelectionScope(session)}`;
 }
 
 function removeSessionIds(sessionIds: ReadonlySet<string>, removedIds: readonly string[]): ReadonlySet<string> {
