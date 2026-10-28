@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.28.3
+
+### Patch Changes
+
+- 039b23f: Update Fastify and its transitive `fast-uri` resolutions to patched releases, clearing a low-severity and a moderate-severity advisory from the production dependency tree.
+- 5dacec9: Prevent the session list from jumping back to the selected session during background refreshes while preserving reveals when the selected row appears or moves.
+
 ## 1.28.2
 
 ### Patch Changes
