@@ -2,7 +2,14 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { cleanSessionName, deterministicSessionName, fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
+import {
+  cleanSessionName,
+  deterministicSessionName,
+  fallbackSessionName,
+  generateShortSessionName,
+  isUsableSessionTitle,
+  normalizeSessionName,
+} from "./sessionNameGenerator.js";
 
 function fakeModel(): Model<Api> {
   return { id: "fake-model", name: "Fake Model", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 };
@@ -105,6 +112,43 @@ describe("sessionNameGenerator", () => {
 
   it("cleans model-generated titles", () => {
     expect(cleanSessionName('Title: "Fix Session Naming."\nextra')).toBe("Fix Session Naming");
+  });
+
+  it.each<[string, string | undefined]>([
+    ['Title: "Fix Session Naming."\nextra', "Fix Session Naming"],
+    ["  Session title: 'Fix\t login   bug.'  ", "Fix login bug"],
+    ["Fix login bug\nWe need a title", "Fix login bug"],
+    [" \nFix login bug", undefined],
+    ['Title: ""', undefined],
+    ["We need a session title", "We need a session title"],
+    ["x".repeat(61), "x".repeat(61)],
+  ])("normalizes labels quotes whitespace and the first line: %s", (input, expected) => {
+    expect(normalizeSessionName(input)).toBe(expected);
+  });
+
+  it("validates uncapped title structure", () => {
+    const cases: readonly (readonly [string, boolean])[] = [
+      ["", false], [" \t ", false], ["Login", true],
+      ["Fix flaky article bridge FTS retry test", true],
+      ["Fix flaky article bridge FTS retry test failures", true],
+      ["Fix flaky article bridge FTS retry test failures today", false],
+      ["No quotes please", false], ["Remove punctuation wrapper", false],
+      ["Create a 2-6 word title", false], ["Create a 2-6 words title", false],
+      ["The user wants login fixes", false], ["We need a session title", false],
+      ["Need to produce title", false], ["Need to infer title", false],
+      ["Need to craft title", false], ["Fix login because we need retries", false],
+      ["Fix login With,", false], ["Fix login within", true],
+      ["Fix login and!", false], ["Fix login by:;!?", false],
+      ["Fix login wIth", false], ["Fix login without", true],
+      ["x".repeat(61), true], ["界".repeat(61), true],
+      ["𠮷".repeat(61), true], ["Fix need to craft title", false],
+    ];
+    for (const [value, expected] of cases) {
+      expect(isUsableSessionTitle(value), value).toBe(expected);
+    }
+    for (const connector of ["and", "or", "for", "the", "a", "an", "to", "with", "of", "in", "on", "by"]) {
+      expect(isUsableSessionTitle(`Fix login ${connector}`), connector).toBe(false);
+    }
   });
 
   it("builds deterministic names for relay handoff prompts", () => {
