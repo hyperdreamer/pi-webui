@@ -346,7 +346,8 @@ it("generates a normalized title with reasoning off and a 256-token ceiling", as
     .resolves.toEqual({ ok: true, title: "Fix the bug" });
   expect(streamFn).toHaveBeenCalledOnce();
   expect(streamFn.mock.calls[0]?.[0]).toBe(model);
-  expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "off", maxTokens: 256 });
+  expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+  expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
 });
 it("rejects a length-limited completion", async () => {
   const streamFn = completedMessageStream(fakeAssistantMessage({
@@ -408,7 +409,6 @@ export async function generateShortSessionName<TApi extends Api>(
     }],
   };
   const stream = await streamFn(model, normalizeContext(context), {
-    reasoning: "off",
     maxTokens: 256,
     signal: AbortSignal.timeout(SESSION_NAME_TIMEOUT_MS),
   });
@@ -649,13 +649,14 @@ function completedTitleStream(modelId: string, text: string, patch: Partial<Assi
 }
 ```
 
-For the existing configured-`high` success case, change its name to `uses the configured lightweight model with thinking off without changing active title state` and replace its request-options assertion with the first line below. Keep its configured `high`, active `high`, exact model identity, generated name/event, no-`setModel`, and no-`setThinkingLevel` assertions.
+For the existing configured-`high` success case, change its name to `uses the configured lightweight model with reasoning disabled without changing active title state` and replace its request-options assertion with **both** of the first two lines below. Keep its configured `high`, active `high`, exact model identity, generated name/event, no-`setModel`, and no-`setThinkingLevel` assertions.
 
-For the existing distinct-model failed-stream case, change its name to `keeps stream-error fallback to a distinct active model`, replace the two-element reasoning assertion with the second line, and add the budget assertion. For the existing same-model/same-level success case, use the first options assertion. For the active-only and narrowed-snapshot success cases, add that same options assertion after their model-call checks.
+For the existing distinct-model failed-stream case, change its name to `keeps stream-error fallback to a distinct active model` and replace the two-element reasoning assertion with the last two lines below. For the existing same-model/same-level success case, use the first two lines. For the active-only and narrowed-snapshot success cases, add the first two lines after their model-call checks.
 
 ```ts
-expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "off", maxTokens: 256 });
-expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual(["off", "off"]);
+expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
+expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([undefined, undefined]);
 expect(streamFn.mock.calls.map(([, , options]) => options?.maxTokens)).toEqual([256, 256]);
 ```
 
@@ -678,7 +679,8 @@ it("deduplicates a rejecting same-model title fallback across thinking levels", 
     await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe("Please fix the login bug"); });
     expect(streamFn).toHaveBeenCalledOnce();
     expect(streamFn.mock.calls[0]?.[0]).toBe(activeModel);
-    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "off", maxTokens: 256 });
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+    expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
     expect(h.logger.info.mock.calls).toEqual([[
       { provider: activeModel.provider, modelId: activeModel.id, reason: "stream-error" },
       "utility title model rejected",
@@ -693,7 +695,7 @@ it("deduplicates a rejecting same-model title fallback across thinking levels", 
 - [ ] **Step 3: Add distinct completed-rejection and thrown-exception service cases.** These assert complete logger argument arrays, so extra fields, extra diagnostics, or conflating ordinary rejection with exceptions fail.
 
 ```ts
-it("falls back from a rejected lightweight title to the active model with thinking off", async () => {
+it("falls back from a rejected lightweight title to the active model with reasoning disabled", async () => {
   const activeModel = testModel();
   const lightweightModel = { ...activeModel, id: "utility-lightweight" };
   const streamFn = vi.fn<StreamFn>((model) => model === lightweightModel
@@ -705,7 +707,7 @@ it("falls back from a rejected lightweight title to the active model with thinki
     await h.service.prompt(sessionRef("rejected-name-session"), "Please fix the login bug");
     await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe("Active model title"); });
     expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
-    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual(["off", "off"]);
+    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([undefined, undefined]);
     expect(streamFn.mock.calls.map(([, , options]) => options?.maxTokens)).toEqual([256, 256]);
     expect(h.logger.info.mock.calls).toEqual([[
       { provider: lightweightModel.provider, modelId: lightweightModel.id, reason: "incomplete-stop" },
@@ -738,7 +740,7 @@ it("logs thrown attempt failures through the existing exception hook", async () 
       "utility title model failed",
     ]]);
     expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
-    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual(["off", "off"]);
+    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([undefined, undefined]);
     expect(streamFn.mock.calls.map(([, , options]) => options?.maxTokens)).toEqual([256, 256]);
   } finally {
     await h.service.dispose();
@@ -972,7 +974,7 @@ it.each([
         { role: "system", content: "Generate a concise title for a coding-agent chat session. Return only the title, with no quotes or punctuation wrapper.", timestamp: 0 },
         { role: "user", content: `Create a 2-6 word title for this request:\n\n${suffix}`, timestamp },
       ],
-    }, { reasoning: "off", maxTokens: 256, signal });
+    }, { maxTokens: 256, signal });
     expect(streamFn.mock.calls[0]?.[0]).toBe(model);
     expect(streamFn.mock.calls[0]?.[2]?.signal).toBe(signal);
     if (input.startsWith("𠮷")) {
@@ -1229,7 +1231,7 @@ it("logs every rejected title attempt including the last before fallback", async
     await h.service.prompt(sessionRef(id), "PM: Bug: Utility models for session naming doesn't work");
     await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe(expectedName); });
     expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
-    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual(["off", "off"]);
+    expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([undefined, undefined]);
     expect(streamFn.mock.calls.map(([, , options]) => options?.maxTokens)).toEqual([256, 256]);
     expect(h.logger.info.mock.calls).toEqual([
       [{ provider: lightweightModel.provider, modelId: lightweightModel.id, reason: "incomplete-stop" }, "utility title model rejected"],
@@ -1255,7 +1257,8 @@ it("accepts one same-model title attempt across thinking levels", async () => {
     await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe("Shared title"); });
     expect(streamFn).toHaveBeenCalledOnce();
     expect(streamFn.mock.calls[0]?.[0]).toBe(activeModel);
-    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ reasoning: "off", maxTokens: 256 });
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+    expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
     expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith("Shared title");
     expect(h.logger.info).not.toHaveBeenCalled();
   } finally {
@@ -1337,7 +1340,7 @@ it("does not attempt naming without a resolved session model", async () => {
 });
 ```
 
-- [ ] **Step 3: Pin deferred application and an existing name winning over a late title.** Add `type PiAgentSession` to the existing service import, then add these tests. Preserve the existing active late-title, archived no-write, outer bookkeeping-error, narrowed-model snapshot, and canonical relay tests with their original outcomes. Rename the existing active-only test to `uses only the active model when no utility candidate is configured`, retaining its new `off`/256 assertion from Task 5.
+- [ ] **Step 3: Pin deferred application and an existing name winning over a late title.** Add `type PiAgentSession` to the existing service import, then add these tests. Preserve the existing active late-title, archived no-write, outer bookkeeping-error, narrowed-model snapshot, and canonical relay tests with their original outcomes. Rename the existing active-only test to `uses only the active model when no utility candidate is configured`, retaining its new no-`reasoning`/256 assertion from Task 5.
 
 ```ts
 it("defers a generated title until tree navigation settles", async () => {
@@ -1496,7 +1499,7 @@ Expected: all commands exit 0. The broad command already includes typecheck, lin
 | Uncapped normalization; one/eight-word bounds; all whole-word echoes and exact final connectors | Task 1 helpers and Task 7 completed-result cases. |
 | 60 Unicode code points, cutoff whitespace inclusive, no punctuation stripping or ellipsis | Task 2 helper cases; Task 7 accepted unspaced/long-display cases. |
 | Three-argument API and exact discriminated union; ordered error/done/stop/content/empty/unusable/success decisions | Task 3 implementation; Task 7 all terminal/content/precedence/exception cases. |
-| Explicit off, 256 tokens, one supplied-model call, 10-second signal, exact prompts/timestamp and UTF-16 input truncation | Tasks 3 and 7, including the 2,001-supplementary-character input fixture. |
+| No `reasoning` option, 256 tokens, one supplied-model call, 10-second signal, exact prompts/timestamp and UTF-16 input truncation | Tasks 3 and 7, including the 2,001-supplementary-character input fixture. |
 | Final block concatenation without separators; positive thinking plus text; no delta/stored-result rescue | Task 3 no-done fixture and Task 7 final-text/thinking cases. |
 | Validate full text before shortening and never revalidate display text | Task 7 eleven-word and connector-ending display fixtures plus their independent killed mutations. |
 | Sixth optional normalizer; normalize every raw candidate before key/storage; first instance wins; frozen inputs unchanged | Task 4 tests and scoped loop change. |
@@ -1511,7 +1514,7 @@ Expected: all commands exit 0. The broad command already includes typecheck, lin
 | Branch summaries/compaction retain configured levels; context unchanged; polishing clamp unchanged | Omitted-seam resolver tests plus unchanged `utilityModelExtension.test.ts` and `speechInputPolishingService.test.ts`; runtime-factory `high` assertion preserved. |
 | One patch Changeset, no changelog/version/publishing edits, daemon restart handoff | This task. |
 
-Inspect only the approved production surfaces and six-file implementation/test scope plus the one Changeset. Keep `applyGeneratedSessionName`, `flushDeferredTreeNavigationWork`, relay helpers, resolver eligibility/refresh/slot selection, `attemptKey`, non-title utility consumers, and prompt-policy code byte-for-byte unchanged. Verify mutation probes restored the source and no temporary fixture/helper files survived. The only generator API call in production must have three arguments; title-only test option expectations must all use `off`/256 while the runtime-factory branch-summary expectation stays `high`.
+Inspect only the approved production surfaces and six-file implementation/test scope plus the one Changeset. Keep `applyGeneratedSessionName`, `flushDeferredTreeNavigationWork`, relay helpers, resolver eligibility/refresh/slot selection, `attemptKey`, non-title utility consumers, and prompt-policy code byte-for-byte unchanged. Verify mutation probes restored the source and no temporary fixture/helper files survived. The only generator API call in production must have three arguments; title-only test option expectations must assert absence of `reasoning` with `maxTokens: 256`, while the runtime-factory branch-summary expectation stays `high`.
 
 - [ ] **Step 4: Commit only the patch fragment.**
 

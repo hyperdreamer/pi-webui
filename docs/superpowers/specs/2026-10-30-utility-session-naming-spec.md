@@ -119,13 +119,14 @@ Each invocation of `generateShortSessionName` makes one call to the injected `st
 
 ```ts
 {
-  reasoning: "off",
   maxTokens: 256,
   signal: AbortSignal.timeout(SESSION_NAME_TIMEOUT_MS),
 }
 ```
 
-`SESSION_NAME_TIMEOUT_MS` remains `10_000`. Every candidate, including an active-model retry, receives an explicit `reasoning: "off"`; omission is not equivalent. There is no configured-level forwarding and no change to the runtime's per-model handling of `off`. The 256-token value is a ceiling, not a requested title length.
+`SESSION_NAME_TIMEOUT_MS` remains `10_000`. The options object contains **no `reasoning` property at all** on every attempt, including an active-model retry, and the configured utility level is never forwarded.
+
+Omitting the option is the runtime's encoding of "off", and it is the only encoding the SDK type permits: `pi-ai`'s `ThinkingLevel` is `"minimal" | "low" | "medium" | "high" | "xhigh" | "max"`, while `"off"` exists only in `ModelThinkingLevel`, which describes configuration rather than a request. `src/server/speechInput/speechInputPolishingService.ts:93-95` already encodes off by clamping and then omitting, and the implementation must follow that precedent. Omitting yields `reasoning.effort: "none"` for a reasoning model; passing the literal instead is a type error and, on at least one adapter, enables thinking with a 1024-token budget. The 256-token value is a ceiling, not a requested title length.
 
 Keep the current system prompt verbatim:
 
@@ -423,7 +424,7 @@ Request and completed-result cases:
 
 | Vitest case | Fixture and required assertions |
 | --- | --- |
-| `generates a normalized title with reasoning off and a 256-token ceiling` | Complete with `'Title: "Fix the bug"'`. Expect `{ ok: true, title: "Fix the bug" }`, one call, supplied model, and options containing explicit `reasoning: "off"` and `maxTokens: 256`. Replace the old `minimal`, explicit-`max`, and omitted-`off` request tests. |
+| `generates a normalized title with reasoning disabled and a 256-token ceiling` | Complete with `'Title: "Fix the bug"'`. Expect `{ ok: true, title: "Fix the bug" }`, one call, supplied model, `maxTokens: 256`, and `expect(options).not.toHaveProperty("reasoning")`. Replace the old `minimal`, explicit-`max`, and omitted-`off` request tests. |
 | `keeps the title timeout and input truncation unchanged` | Observe `AbortSignal.timeout(10_000)` through a restored spy and assert that its signal is passed to the stream. Assert the exact system/user prompts above, and assert that the single user message's `timestamp` equals the value captured from a `Date.now()` spy. Parameterize 4,000 and 4,001 `x` characters: the user suffix is respectively 4,000 `x` characters and 4,000 plus `…`. Add 2,001 `𠮷` code points (4,002 UTF-16 code units): the suffix must be exactly 2,000 complete code points followed by `…`, never 2,001 code points and never a dangling surrogate half. |
 | `uses final text blocks instead of partial deltas or thinking text` | Supply a misleading `text_delta`, then a `stop` final message with adjacent text blocks `"Fix"` and `"login bug"`. Expect `{ ok: true, title: "Fixlogin bug" }`. The adjacent blocks prove concatenation inserts no separator; a space-inserting implementation would produce `"Fix login bug"` and fail. |
 | `accepts thinking plus a usable text title` | A `stop` completion has `{ type: "thinking", thinking: "We need a session title" }` followed by `{ type: "text", text: "Fix login bug" }`. Expect `{ ok: true, title: "Fix login bug" }`. A reject-all-thinking implementation must fail this positive case. |
@@ -473,23 +474,23 @@ Keep the existing `fakeRuntime`/`runtimeCreator` service setup, injected `utilit
 
 | Vitest case | Fixture and required assertions |
 | --- | --- |
-| `uses the configured lightweight model with thinking off without changing active title state` | Adapt the existing configured-`high` success case. Expect only the lightweight model, `{ reasoning: "off", maxTokens: 256 }`, name `"Fix login bug"`, and its name event. Preserve active model/thinking state and the no-`setModel`/no-`setThinkingLevel` assertions. |
-| `falls back from a rejected lightweight title to the active model with thinking off` | Lightweight and active models differ. The first completed title has `stopReason: "length"`; the active completion is `"Active model title"` with `stop`. Expect those two models in order, reasoning `["off", "off"]`, both budgets 256, and the active title applied. |
-| `keeps stream-error fallback to a distinct active model` | Preserve the existing failed-stream-to-active route, now classifying its error event as an ordinary `stream-error` rejection. Both requests use `off`; the active title is applied. |
+| `uses the configured lightweight model with reasoning disabled without changing active title state` | Adapt the existing configured-`high` success case. Expect only the lightweight model, `maxTokens: 256` with no `reasoning` property, name `"Fix login bug"`, and its name event. Preserve active model/thinking state and the no-`setModel`/no-`setThinkingLevel` assertions. |
+| `falls back from a rejected lightweight title to the active model with reasoning disabled` | Lightweight and active models differ. The first completed title has `stopReason: "length"`; the active completion is `"Active model title"` with `stop`. Expect those two models in order, neither request carrying `reasoning`, both budgets 256, and the active title applied. |
+| `keeps stream-error fallback to a distinct active model` | Preserve the existing failed-stream-to-active route, now classifying its error event as an ordinary `stream-error` rejection. Neither request carries `reasoning`, both carry `maxTokens: 256`, and the active title is applied. |
 | `logs every rejected title attempt including the last before fallback` | For the PM request above, a distinct lightweight completion rejects as `incomplete-stop` and the active completion `"We need a session title"` rejects as `unusable`. After fallback settlement, assert exactly two `"utility title model rejected"` entries, in attempt order, each with exactly `{ provider, modelId, reason }`. Assert the final applied name is `"Bug: Utility models for session naming"` and no ordinary rejection is logged as `"utility title model failed"`. |
-| `deduplicates a same-model title fallback with the same thinking level` | Preserve the existing same-model success fixture, changing its request assertion from `minimal` to `off` and adding the 256-token ceiling. Expect one call and `"Shared title"`. |
-| `deduplicates a rejecting same-model title fallback across thinking levels` | Replace the current different-level/two-call fixture as specified below. Expect exactly one rejected request at `off`, followed by the exact first-request fallback. |
-| `accepts one same-model title attempt across thinking levels` | Companion positive case: configured candidate is the active model at `high`; active fallback is `minimal`; the first completion is `"Shared title"`. Expect one request at `off`, 256 tokens, and that generated title. |
+| `deduplicates a same-model title fallback with the same thinking level` | Preserve the existing same-model success fixture, replacing its `minimal` request assertion with `maxTokens: 256` plus `expect(options).not.toHaveProperty("reasoning")`. Expect one call and `"Shared title"`. |
+| `deduplicates a rejecting same-model title fallback across thinking levels` | Replace the current different-level/two-call fixture as specified below. Expect exactly one rejected request carrying no `reasoning` property and `maxTokens: 256`, followed by the exact first-request fallback. |
+| `accepts one same-model title attempt across thinking levels` | Companion positive case: configured candidate is the active model at `high`; active fallback is `minimal`; the first completion is `"Shared title"`. Expect one request with no `reasoning` property, 256 tokens, and that generated title. |
 | `applies the exact cleaned fallback when all distinct models reject` | Make lightweight and active attempts both reject for the PM request. Expect two calls, two rejection logs, the exact name `"Bug: Utility models for session naming"`, and the normal name publication. This may share the concrete fixture with the diagnostic case if every assertion remains present. |
 | `stays unnamed when every attempt rejects and the fallback is empty for %s` | Parameterize code-only `"```ts\nconst value = 1;\n```"`, marker-only `"PM:"`, and metadata-only `"Model tier: Worker\nRole: Implementer"`. Await both distinct rejected attempts and naming settlement. Expect no `setSessionName`, `sessionName` still `undefined`, and no `session.name` event. |
 | `does not attempt naming without a resolved session model` | Exercise the existing naming boundary with `session.model === undefined` and an otherwise eligible unnamed session. Expect no resolver call, no stream call, no name write/event, and no first-message fallback despite usable first-message text. See the boundary setup below. |
-| `uses only the active model when no utility candidate is configured` | Preserve the existing active-only success case, asserting explicit `off` and 256 tokens. |
+| `uses only the active model when no utility candidate is configured` | Preserve the existing active-only success case, asserting `maxTokens: 256` and no `reasoning` property. |
 | `uses the narrowed active-model snapshot for first-prompt title fallback` | Preserve the existing changing-getter fixture and successful `"Snapshot model title"`. The captured model must be used rather than rereading `session.model` for the active attempt. |
 | `logs thrown attempt failures through the existing exception hook` | A distinct utility model throws `Error("utility title failed")`; active succeeds. Assert one `"utility title model failed"` log with the existing fields, `thinkingLevel: "off"`, and `error: "utility title failed"`; the thrown attempt is not also logged as an ordinary rejection. |
 | `contains and logs failures from asynchronous title bookkeeping` | Retain the existing throwing-`setSessionName` case and exact `{ sessionId, error }`/`"failed to apply generated session name"` assertion. |
 | `preserves late-title lifecycle and relay behavior` | Retain the active late-title success, archived-session no-write, and deterministic relay-without-resolver/stream cases. Retain existing tree-navigation deferral coverage; do not bypass the guarded application path for any new result variant. |
 
-All four existing reasoning assertion sites that encode configured levels must change: the first configured-title assertion currently using `"high"`, the two-attempt array `["high", "minimal"]`, the same-level success assertion currently using `"minimal"`, and the different-level fixture's array `["high", "minimal"]`. Every title attempt now asserts `"off"`; utility level configuration and non-title assertions stay unchanged.
+All four existing reasoning assertion sites that encode configured levels must change: the first configured-title assertion currently using `"high"`, the two-attempt array `["high", "minimal"]`, the same-level success assertion currently using `"minimal"`, and the different-level fixture's array `["high", "minimal"]`. Every title attempt now asserts that `reasoning` is absent while `maxTokens` is 256; utility level configuration and non-title assertions stay unchanged.
 
 #### Discriminating same-model rejection fixture
 
@@ -510,10 +511,8 @@ Use the same model for configured and active identities, `utilityResolverFor([ut
 ```ts
 expect(streamFn).toHaveBeenCalledOnce();
 expect(streamFn.mock.calls[0]?.[0]).toBe(activeModel);
-expect(streamFn.mock.calls[0]?.[2]).toMatchObject({
-  reasoning: "off",
-  maxTokens: 256,
-});
+expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
 expect(fake.session.sessionName).toBe("Please fix the login bug");
 ```
 

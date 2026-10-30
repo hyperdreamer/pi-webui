@@ -23,7 +23,7 @@ Live provider probes reproduce the defect with the exact call the code makes
 | model (route) | cap | result |
 | --- | --- | --- |
 | `fallback/deepseek-v4.1-flash-1017` (configured lightweight, medium) | 24 | empty text — all 24 output tokens were reasoning |
-| same, `reasoning: "off"` | 24 | completed in 6 tokens: `Utility Session Naming Bug Check` |
+| same, reasoning disabled | 24 | completed in 6 tokens: `Utility Session Naming Bug Check` |
 | same | 128 | real title after 96 reasoning tokens |
 | `New-API/deepseek-flash` (active-model retry, minimal/off) | 24 | text **is** the reasoning: `We need answer only title 2-6 words…` |
 | `New-API/deepseek-flash` | 96 | real title; reasoning stays in its own channel |
@@ -77,16 +77,22 @@ guarantee.
 
 One title attempt is one model call with:
 
-- `reasoning: "off"` on every attempt, independent of the configured utility
-  thinking level, and
+- **no `reasoning` option at all**, on every attempt, independent of the configured
+  utility thinking level, and
 - `maxTokens: 256` (a ceiling; the verified happy path spends 6 tokens),
 - unchanged `SESSION_NAME_TIMEOUT_MS` (10s) and unchanged 4 000-character input
   truncation.
 
-`reasoning: "off"` is the runtime's existing "off" contract: `pi-ai` clamps it per
-model and sends `reasoning.effort: "none"` where the model supports a toggle. Models
-that ignore it (the one-api deepseek route) still work because of the larger ceiling
-and the acceptance rules below.
+Omitting the option is the runtime's encoding of "off". `pi-ai`'s request type
+`ThinkingLevel` is `"minimal" | "low" | "medium" | "high" | "xhigh" | "max"`; only
+`ModelThinkingLevel` (configuration) contains `"off"`, so passing the literal is a type
+error and, on at least one adapter, enables thinking with a 1024-token budget instead of
+disabling it. With the option omitted, a reasoning model resolves to
+`reasoning.effort: "none"`, which the verified configured model honours (6-token title).
+The repository's other utility consumers already encode off this way
+(`speechInputPolishingService.ts:93-95` clamps and then omits). Models that keep thinking
+anyway (the one-api deepseek route) still work because of the larger ceiling and the
+acceptance rules below.
 
 ### Unchanged consumers of utility thinking levels
 
@@ -125,7 +131,7 @@ validation failure.
 
 ### Attempt identity and deduplication
 
-Because every title attempt sends `reasoning: "off"`, the effective request identity
+Because every title attempt omits the `reasoning` option, the effective request identity
 is the model alone: `(provider, id)`. The existing resolver deduplicates on
 `(provider, id, thinkingLevel)`, which would otherwise issue two byte-identical
 requests — and consume two sequential timeout windows — when the configured
@@ -191,7 +197,7 @@ existing behaviour, now explicit rather than accidental.
 `src/server/sessions/sessionNameGenerator.ts` (pure, dependency-injected):
 
 - `generateShortSessionName(streamFn, model, firstMessage)` — thinking level is no
-  longer a parameter; always sends `reasoning: "off"` and `maxTokens: 256`. Returns
+  longer a parameter; always omits `reasoning` and sends `maxTokens: 256`. Returns
   `SessionNameGeneration`, a discriminated union:
   - `{ ok: true; title: string }`
   - `{ ok: false; reason: "stream-error" | "no-completion" | "incomplete-stop" | "non-text-content" | "empty" | "unusable" }`
@@ -239,7 +245,7 @@ existing behaviour, now explicit rather than accidental.
 Pure-helper tests (`sessionNameGenerator.test.ts`), faked `StreamFn` with
 `createAssistantMessageEventStream`:
 
-- `reasoning: "off"` and `maxTokens: 256` on the request for every call;
+- no `reasoning` option and `maxTokens: 256` on the request for every call;
 - `stopReason: "length"` → no title returned, with the truncation reason;
 - `stopReason` values `toolUse`, `deferred`, `aborted`, `error`, and `pending` →
   `incomplete-stop`, each covered so a non-answer terminal state cannot become a title;
@@ -275,8 +281,8 @@ Service tests (`piSessionService.promptQueue.test.ts`):
 - a session with no resolved model dispatches no title request and stays unnamed;
 - the **four** existing title assertions that encode the configured level
   (`reasoning: "high"` at `:132` and `:163-165`, `"minimal"` at `:192` and `:225-227`)
-  now assert `"off"` on every attempt, which is the intentional behaviour change from
-  commit `1033519`;
+  now assert that the request carries **no `reasoning` property** alongside
+  `maxTokens: 256`, which is the intentional behaviour change from commit `1033519`;
 - the current different-level fixture (`:194-205`, which fails its first attempt and
   succeeds on the second) is rewritten as the discriminating case: the configured
   candidate and the active fallback are the same model at different configured levels,
@@ -300,7 +306,7 @@ A `patch` changeset records the fix.
   feature already has; the threshold sits above every observed legitimate title.
 - **A short, well-formed reasoning sentence can pass every structural rule.** Accepted
   by design: the guarantee is over format, not semantics, and is stated as such.
-- **A model that ignores `reasoning: "off"` still spends tokens.** The 256 ceiling
+- **A model that ignores the omitted reasoning option still spends tokens.** The 256 ceiling
   covers the observed 96-token reasoning cost of the deepseek route.
 - **Provider-specific proxy leakage could take another shape.** The rules are
   deliberately structural (length, echo markers, trailing connector), not
