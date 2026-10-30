@@ -1,0 +1,235 @@
+schema_version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-10-30-utility-session-naming.md
+  sha256: 56a043c82668290aabd06a28cb64961401e6c9c96833775c6719e2f81d31fd24
+  commit_oid: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
+  validated_at: 2026-10-30T11:06:27Z
+  parsed_tasks: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+source_context:
+  worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261030-113042-4271be03/integration
+  commit: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
+target:
+  repository_root: /data/home/guest/Development/pi-webui
+  remote: origin
+  remote_url: git@github.com:hyperdreamer/pi-webui.git
+  branch: refs/heads/main
+  worktree: /data/home/guest/Development/pi-webui
+  base_commit: b317112321e5d61b91458a80affeebb10d3e59c1
+integration:
+  branch: refs/heads/pm/utility-session-naming/run-pm-run-20261030-113042-4271be03
+  worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261030-113042-4271be03/integration
+  base_commit: b317112321e5d61b91458a80affeebb10d3e59c1
+  current_commit: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
+epoch: 1
+tasks:
+  - id: T-001
+    plan_task: 1
+    lane: sdd
+    sequence: 1
+    title: "Separate uncapped normalization from title validation"
+    depends_on: []
+    owns:
+      - src/server/sessions/sessionNameGenerator.ts
+      - src/server/sessions/sessionNameGenerator.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.title-normalization
+        signature: "src/server/sessions/sessionNameGenerator.ts exports normalizeSessionName(value: string): string | undefined; isUsableSessionTitle(value: string): boolean"
+        sha256: 286b8c30eaf7fab54ec92ee72fb4c5005e4ff441865880a38a4b938060793f12
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.title-normalization
+          signature: "src/server/sessions/sessionNameGenerator.ts exports normalizeSessionName(value: string): string | undefined; isUsableSessionTitle(value: string): boolean"
+          sha256: 286b8c30eaf7fab54ec92ee72fb4c5005e4ff441865880a38a4b938060793f12
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-002
+    plan_task: 2
+    lane: sdd
+    sequence: 2
+    title: "Add code-point-safe display shortening and compose cleanup"
+    depends_on: [T-001]
+    owns:
+      - src/server/sessions/sessionNameGenerator.ts
+      - src/server/sessions/sessionNameGenerator.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.title-shortening
+        signature: "src/server/sessions/sessionNameGenerator.ts exports shortenSessionName(value: string): string; cleanSessionName(value: string): string | undefined"
+        sha256: eab32912a1cd68e95deb277ab23b3d1fe97bc26cb17efc20f6f3cff7bc8e21c4
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.title-shortening
+          signature: "src/server/sessions/sessionNameGenerator.ts exports shortenSessionName(value: string): string; cleanSessionName(value: string): string | undefined"
+          sha256: eab32912a1cd68e95deb277ab23b3d1fe97bc26cb17efc20f6f3cff7bc8e21c4
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-003
+    plan_task: 3
+    lane: sdd
+    sequence: 3
+    title: "Return discriminated results only from completed usable titles"
+    depends_on: [T-002]
+    owns:
+      - src/server/sessions/sessionNameGenerator.ts
+      - src/server/sessions/sessionNameGenerator.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.title-generation
+        signature: "src/server/sessions/sessionNameGenerator.ts exports type SessionNameGeneration = { ok: true; title: string } | { ok: false; reason: \"stream-error\" | \"no-completion\" | \"incomplete-stop\" | \"non-text-content\" | \"empty\" | \"unusable\" }; generateShortSessionName<TApi extends Api>(streamFn: StreamFn, model: Model<TApi>, firstMessage: string): Promise<SessionNameGeneration>"
+        sha256: 54c81e6b30947590ec5577823e4bac29b8657dde434436d2a80252a750d1b837
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.title-generation
+          signature: "src/server/sessions/sessionNameGenerator.ts exports type SessionNameGeneration = { ok: true; title: string } | { ok: false; reason: \"stream-error\" | \"no-completion\" | \"incomplete-stop\" | \"non-text-content\" | \"empty\" | \"unusable\" }; generateShortSessionName<TApi extends Api>(streamFn: StreamFn, model: Model<TApi>, firstMessage: string): Promise<SessionNameGeneration>"
+          sha256: 54c81e6b30947590ec5577823e4bac29b8657dde434436d2a80252a750d1b837
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-004
+    plan_task: 4
+    lane: sdd
+    sequence: 4
+    title: "Normalize utility attempts before deduplication through an opt-in seam"
+    depends_on: [T-003]
+    owns:
+      - src/server/sessions/utilityModelResolver.ts
+      - src/server/sessions/utilityModelResolver.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.attempt-normalizer
+        signature: "src/server/sessions/utilityModelResolver.ts exports runWithUtilityModelFallback<TModel, TResult>(resolver, task, activeAttempt, run, onFailure?, normalizeAttempt?: (attempt: UtilityModelAttempt<TModel>) => UtilityModelAttempt<TModel>)"
+        sha256: ed1d476d687939d6f582f544cca550859618e0c86a232de8a0e87d4193f159b2
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.attempt-normalizer
+          signature: "src/server/sessions/utilityModelResolver.ts exports runWithUtilityModelFallback<TModel, TResult>(resolver, task, activeAttempt, run, onFailure?, normalizeAttempt?: (attempt: UtilityModelAttempt<TModel>) => UtilityModelAttempt<TModel>)"
+          sha256: ed1d476d687939d6f582f544cca550859618e0c86a232de8a0e87d4193f159b2
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/utilityModelResolver.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-005
+    plan_task: 5
+    lane: sdd
+    sequence: 5
+    title: "Wire title results into the service with scoped normalization and diagnostics"
+    depends_on: [T-004]
+    owns:
+      - src/server/sessions/piSessionService.ts
+      - src/server/sessions/piSessionService.promptQueue.test.ts
+    exclusive_resources: []
+    produces: []
+    consumes: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/piSessionService.promptQueue.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-006
+    plan_task: 6
+    lane: sdd
+    sequence: 6
+    title: "Clean first-request scaffolding before the six-word fallback slice"
+    depends_on: [T-005]
+    owns:
+      - src/server/sessions/sessionNameGenerator.ts
+      - src/server/sessions/sessionNameGenerator.test.ts
+    exclusive_resources: []
+    produces:
+      - id: iface.fallback-scaffolding
+        signature: "src/server/sessions/sessionNameGenerator.ts exports fallbackSessionName(firstMessage: unknown): string | undefined stripping PM:/Project manager: markers, leading Model tier:/Role: metadata lines and a leading You are (the|an|a) clause before the six-word slice"
+        sha256: ffd51e87b039829d3974999350f70ee4e620d3bbadaa877b80f8070e9e8cf8bc
+    consumes: []
+    interfaces:
+      produces:
+        - id: iface.fallback-scaffolding
+          signature: "src/server/sessions/sessionNameGenerator.ts exports fallbackSessionName(firstMessage: unknown): string | undefined stripping PM:/Project manager: markers, leading Model tier:/Role: metadata lines and a leading You are (the|an|a) clause before the six-word slice"
+          sha256: ffd51e87b039829d3974999350f70ee4e620d3bbadaa877b80f8070e9e8cf8bc
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-007
+    plan_task: 7
+    lane: sdd
+    sequence: 7
+    title: "Complete and falsify the generator request and rejection matrix"
+    depends_on: [T-006]
+    owns:
+      - src/server/sessions/sessionNameGenerator.test.ts
+    exclusive_resources: []
+    produces: []
+    consumes: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-008
+    plan_task: 8
+    lane: sdd
+    sequence: 8
+    title: "Complete service exhaustion, no-model, and late-application coverage"
+    depends_on: [T-007]
+    owns:
+      - src/server/sessions/piSessionService.ts
+      - src/server/sessions/piSessionService.promptQueue.test.ts
+    exclusive_resources: []
+    produces: []
+    consumes: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/piSessionService.promptQueue.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-009
+    plan_task: 9
+    lane: sdd
+    sequence: 9
+    title: "Add the patch Changeset and record complete implementation acceptance"
+    depends_on: [T-008]
+    owns:
+      - .changeset/*.md
+    exclusive_resources: []
+    produces: []
+    consumes: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/sessionNameGenerator.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/utilityModelResolver.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "test", "--", "--run", "src/server/sessions/piSessionService.promptQueue.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "typecheck"]
+        cwd: lane
+        timeout_seconds: 600
+lanes:
+  - id: sdd
+    task_ids: [T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009]

@@ -1,0 +1,28 @@
+// Generated from the execution-graph manifest and the parsed source plan. Do not hand-edit.
+digraph execution_graph {
+  rankdir=LR;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10];
+  label="utility-session-naming  ·  epoch 1  ·  source plan 56a043c82668";
+  labelloc=t;
+  subgraph cluster_sdd {
+    label="lane sdd";
+    style=dashed;
+    T-001 [label="Task 1\nSeparate uncapped normalization from title validation\ntier: Standard"];
+    T-002 [label="Task 2\nAdd code-point-safe display shortening and compose cleanup\ntier: Standard"];
+    T-003 [label="Task 3\nReturn discriminated results only from completed usable titles\ntier: Advanced"];
+    T-004 [label="Task 4\nNormalize utility attempts before deduplication through an opt-in seam\ntier: Standard"];
+    T-005 [label="Task 5\nWire title results into the service with scoped normalization and diagnostics\ntier: Advanced"];
+    T-006 [label="Task 6\nClean first-request scaffolding before the six-word fallback slice\ntier: Standard"];
+    T-007 [label="Task 7\nComplete and falsify the generator request and rejection matrix\ntier: Standard"];
+    T-008 [label="Task 8\nComplete service exhaustion, no-model, and late-application coverage\ntier: Advanced"];
+    T-009 [label="Task 9\nAdd the patch Changeset and record complete implementation acceptance\ntier: Standard"];
+  }
+  T-001 -> T-002;
+  T-002 -> T-003;
+  T-003 -> T-004;
+  T-004 -> T-005;
+  T-005 -> T-006;
+  T-006 -> T-007;
+  T-007 -> T-008;
+  T-008 -> T-009;
+}
