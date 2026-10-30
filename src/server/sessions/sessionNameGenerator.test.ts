@@ -2,7 +2,15 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { cleanSessionName, deterministicSessionName, fallbackSessionName, generateShortSessionName } from "./sessionNameGenerator.js";
+import {
+  cleanSessionName,
+  deterministicSessionName,
+  fallbackSessionName,
+  generateShortSessionName,
+  isUsableSessionTitle,
+  normalizeSessionName,
+  shortenSessionName,
+} from "./sessionNameGenerator.js";
 
 function fakeModel(): Model<Api> {
   return { id: "fake-model", name: "Fake Model", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 };
@@ -103,8 +111,77 @@ describe("sessionNameGenerator", () => {
     expect(name).toBeUndefined();
   });
 
-  it("cleans model-generated titles", () => {
+  it("shortens at a word boundary", () => {
+    expect(shortenSessionName("Improve authentication reliability across distributed production environments"))
+      .toBe("Improve authentication reliability across distributed");
+  });
+
+  it("preserves punctuation adjacent to the shortening cut", () => {
+    expect(shortenSessionName("x".repeat(59) + "! suffix")).toBe("x".repeat(59) + "!");
+  });
+
+  it("preserves a full sixty-code-point prefix ending at a boundary", () => {
+    const expected = "Investigate strange session naming behavior across providers";
+    expect(Array.from(expected)).toHaveLength(60);
+    expect(shortenSessionName(`${expected} globally`)).toBe(expected);
+  });
+
+  it.each(["x", "界", "𠮷"])("caps an unspaced value at sixty code points: %s", (character) => {
+    const result = shortenSessionName(character.repeat(61));
+    expect(result).toBe(character.repeat(60));
+    expect(Array.from(result)).toHaveLength(60);
+    if (character === "𠮷") expect(result).toHaveLength(120);
+    expect(shortenSessionName("x".repeat(61) + " suffix")).toBe("x".repeat(60));
+  });
+
+  it("leaves a short display string unchanged", () => {
+    expect(shortenSessionName("")).toBe("");
+    expect(shortenSessionName("Fix login bug")).toBe("Fix login bug");
+  });
+
+  it("keeps cleanSessionName as normalization plus shortening", () => {
     expect(cleanSessionName('Title: "Fix Session Naming."\nextra')).toBe("Fix Session Naming");
+    expect(cleanSessionName("We need title")).toBe("We need title");
+    expect(cleanSessionName("Improve authentication reliability across distributed production environments"))
+      .toBe("Improve authentication reliability across distributed");
+    expect(cleanSessionName('Title: ""')).toBeUndefined();
+  });
+
+  it.each<[string, string | undefined]>([
+    ['Title: "Fix Session Naming."\nextra', "Fix Session Naming"],
+    ["  Session title: 'Fix\t login   bug.'  ", "Fix login bug"],
+    ["Fix login bug\nWe need a title", "Fix login bug"],
+    [" \nFix login bug", undefined],
+    ['Title: ""', undefined],
+    ["We need a session title", "We need a session title"],
+    ["x".repeat(61), "x".repeat(61)],
+  ])("normalizes labels quotes whitespace and the first line: %s", (input, expected) => {
+    expect(normalizeSessionName(input)).toBe(expected);
+  });
+
+  it("validates uncapped title structure", () => {
+    const cases: readonly (readonly [string, boolean])[] = [
+      ["", false], [" \t ", false], ["Login", true],
+      ["Fix flaky article bridge FTS retry test", true],
+      ["Fix flaky article bridge FTS retry test failures", true],
+      ["Fix flaky article bridge FTS retry test failures today", false],
+      ["No quotes please", false], ["Remove punctuation wrapper", false],
+      ["Create a 2-6 word title", false], ["Create a 2-6 words title", false],
+      ["The user wants login fixes", false], ["We need a session title", false],
+      ["Need to produce title", false], ["Need to infer title", false],
+      ["Need to craft title", false], ["Fix login because we need retries", false],
+      ["Fix login With,", false], ["Fix login within", true],
+      ["Fix login and!", false], ["Fix login by:;!?", false],
+      ["Fix login wIth", false], ["Fix login without", true],
+      ["x".repeat(61), true], ["界".repeat(61), true],
+      ["𠮷".repeat(61), true], ["Fix need to craft title", false],
+    ];
+    for (const [value, expected] of cases) {
+      expect(isUsableSessionTitle(value), value).toBe(expected);
+    }
+    for (const connector of ["and", "or", "for", "the", "a", "an", "to", "with", "of", "in", "on", "by"]) {
+      expect(isUsableSessionTitle(`Fix login ${connector}`), connector).toBe(false);
+    }
   });
 
   it("builds deterministic names for relay handoff prompts", () => {
