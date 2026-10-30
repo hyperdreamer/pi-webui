@@ -60,6 +60,12 @@ function streamThatErrors(): StreamFn {
   };
 }
 
+// Provider/proxy boundary: exercise a block tag the SDK union cannot represent.
+function externalContent(value: unknown): AssistantMessage["content"] {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+  return value as AssistantMessage["content"];
+}
+
 describe("sessionNameGenerator", () => {
   it("generates a normalized title with reasoning off and a 256-token ceiling", async () => {
     const model = fakeModel();
@@ -95,6 +101,192 @@ describe("sessionNameGenerator", () => {
   it("classifies an emitted stream error directly", async () => {
     await expect(generateShortSessionName(streamThatErrors(), fakeModel(), "Fix login"))
       .resolves.toEqual({ ok: false, reason: "stream-error" });
+  });
+
+  it.each([
+    ["x".repeat(4_000), "x".repeat(4_000)],
+    ["x".repeat(4_001), "x".repeat(4_000) + "…"],
+    ["𠮷".repeat(2_001), "𠮷".repeat(2_000) + "…"],
+  ])("keeps the title timeout and input truncation unchanged", async (input, suffix) => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const timestamp = 1_800_000_000_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(timestamp);
+    const model = fakeModel();
+    const streamFn = vi.fn<StreamFn>(streamThatCompletes("Fix login bug"));
+    try {
+      await expect(generateShortSessionName(streamFn, model, input))
+        .resolves.toEqual({ ok: true, title: "Fix login bug" });
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(10_000);
+      expect(streamFn).toHaveBeenCalledExactlyOnceWith(model, {
+        messages: [
+          { role: "system", content: "Generate a concise title for a coding-agent chat session. Return only the title, with no quotes or punctuation wrapper.", timestamp: 0 },
+          { role: "user", content: `Create a 2-6 word title for this request:\n\n${suffix}`, timestamp },
+        ],
+      }, { maxTokens: 256, signal });
+      expect(streamFn.mock.calls[0]?.[0]).toBe(model);
+      expect(streamFn.mock.calls[0]?.[2]?.signal).toBe(signal);
+      if (input.startsWith("𠮷")) {
+        expect(suffix).toBe("𠮷".repeat(2_000) + "…");
+        expect(Array.from(suffix)).toHaveLength(2_001);
+      }
+    } finally {
+      now.mockRestore();
+      timeout.mockRestore();
+    }
+  });
+
+  it("uses final text blocks instead of partial deltas or thinking text", async () => {
+    const message = fakeAssistantMessage({ content: [
+      { type: "thinking", thinking: "We need a session title" },
+      { type: "text", text: "Fix" }, { type: "text", text: "login bug" },
+    ] });
+    await expect(generateShortSessionName(completedMessageStream(message, "stop", "Wrong partial title"), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: true, title: "Fixlogin bug" });
+  });
+
+  it("accepts thinking plus a usable text title", async () => {
+    const message = fakeAssistantMessage({ content: [
+      { type: "thinking", thinking: "We need a session title" },
+      { type: "text", text: "Fix login bug" },
+    ] });
+    await expect(generateShortSessionName(completedMessageStream(message), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: true, title: "Fix login bug" });
+  });
+
+  it.each(["toolUse", "deferred", "aborted", "error", "pending"] as const)("rejects non-answer terminal reason %s", async (stopReason) => {
+    const message = fakeAssistantMessage({ stopReason, content: [{ type: "text", text: "Fix login bug" }] });
+    await expect(generateShortSessionName(completedMessageStream(message, "stop"), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "incomplete-stop" });
+  });
+
+  it("accepts message stop despite a non-stop done reason", async () => {
+    const message = fakeAssistantMessage({ stopReason: "stop", content: [{ type: "text", text: "Fix login bug" }] });
+    await expect(generateShortSessionName(completedMessageStream(message, "length"), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: true, title: "Fix login bug" });
+  });
+
+  it.each(["toolCall", "unknown"] as const)("rejects non-text content type %s", async (type) => {
+    const unexpected = type === "toolCall"
+      ? { type: "toolCall", id: "call-1", name: "lookup", arguments: {} }
+      : { type: "unknown" };
+    const message = fakeAssistantMessage({ content: externalContent([
+      { type: "text", text: "Fix login bug" }, unexpected,
+    ]) });
+    await expect(generateShortSessionName(completedMessageStream(message), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "non-text-content" });
+  });
+
+  it.each<{ content: AssistantMessage["content"] }>([
+    { content: [] },
+    { content: [{ type: "text", text: " \t " }] },
+    { content: [{ type: "text", text: 'Title: ""' }] },
+    { content: [{ type: "thinking", thinking: "We need a session title" }] },
+  ])("classifies blank and thinking-only completions as empty", async ({ content }) => {
+    await expect(generateShortSessionName(completedMessageStream(fakeAssistantMessage({ content })), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "empty" });
+  });
+
+  it("checks stop reason before tool content", async () => {
+    const message = fakeAssistantMessage({ stopReason: "toolUse", content: [
+      { type: "text", text: "Fix login bug" },
+      { type: "toolCall", id: "call-1", name: "lookup", arguments: {} },
+    ] });
+    await expect(generateShortSessionName(completedMessageStream(message), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "incomplete-stop" });
+  });
+
+  it("checks content types before empty text", async () => {
+    const message = fakeAssistantMessage({ content: [
+      { type: "toolCall", id: "call-1", name: "lookup", arguments: {} },
+      { type: "text", text: "   " },
+    ] });
+    await expect(generateShortSessionName(completedMessageStream(message), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "non-text-content" });
+  });
+
+  it("lets a thrown stream factory failure reach the caller", async () => {
+    const failure = new Error("factory failed");
+    const streamFn = vi.fn<StreamFn>(() => { throw failure; });
+    await expect(generateShortSessionName(streamFn, fakeModel(), "Fix login")).rejects.toBe(failure);
+  });
+
+  it("lets a thrown stream iteration failure reach the caller", async () => {
+    const failure = new Error("iteration failed");
+    const message = fakeAssistantMessage({ content: [{ type: "text", text: "Fix login bug" }] });
+    const stream = createAssistantMessageEventStream();
+    stream.end(message);
+    const iterator = vi.spyOn(stream, Symbol.asyncIterator).mockImplementation(async function* (): AsyncGenerator<AssistantMessageEvent> {
+      yield { type: "text_delta", contentIndex: 0, delta: "Fix login bug", partial: message };
+      await Promise.resolve();
+      throw failure;
+    });
+    try {
+      await expect(generateShortSessionName(() => stream, fakeModel(), "Fix login")).rejects.toBe(failure);
+    } finally {
+      iterator.mockRestore();
+    }
+  });
+
+  it("validates the entire title before shortening", async () => {
+    const title = "Investigate strange session naming behavior across providers before generating final answers";
+    expect(title.split(/\s+/)).toHaveLength(11);
+    expect(title.slice(0, 60)).toBe("Investigate strange session naming behavior across providers");
+    await expect(generateShortSessionName(streamThatCompletes(title), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: false, reason: "unusable" });
+  });
+
+  it.each([
+    "No quotes please", "Remove punctuation wrapper", "Create a 2-6 word title", "Create a 2-6 words title",
+    "The user wants login fixes", "We need a session title", "Need to produce title", "Need to infer title",
+    "Need to craft title", "Fix login because we need retries",
+  ])("rejects reasoning echo %s", async (title) => {
+    await expect(generateShortSessionName(streamThatCompletes(title), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: false, reason: "unusable" });
+  });
+
+  it.each<[number, string]>([
+    [1, "Login"], [7, "Fix flaky article bridge FTS retry test"],
+    [8, "Fix flaky article bridge FTS retry test failures"],
+  ])("accepts a legitimate %s-word title", async (count, title) => {
+    expect(title.split(/\s+/)).toHaveLength(count);
+    await expect(generateShortSessionName(streamThatCompletes(title), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: true, title });
+  });
+
+  it("rejects a nine-word title", async () => {
+    await expect(generateShortSessionName(streamThatCompletes("Fix flaky article bridge FTS retry test failures today"), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: false, reason: "unusable" });
+  });
+
+  it.each(["and", "or", "for", "the", "a", "an", "to", "with", "of", "in", "on", "by", "With,"])("rejects dangling connector %s", async (connector) => {
+    await expect(generateShortSessionName(streamThatCompletes(`Fix login ${connector}`), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: false, reason: "unusable" });
+  });
+
+  it("accepts a connector substring in a complete word", async () => {
+    await expect(generateShortSessionName(streamThatCompletes("Fix login within"), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: true, title: "Fix login within" });
+  });
+
+  it("shortens only after accepting a long legitimate title", async () => {
+    await expect(generateShortSessionName(streamThatCompletes("Improve authentication reliability across distributed production environments"), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: true, title: "Improve authentication reliability across distributed" });
+  });
+
+  it("never revalidates the shortened display value", async () => {
+    const title = "Investigate authentication failures across providers and document recovery";
+    expect(title.split(/\s+/)).toHaveLength(8);
+    await expect(generateShortSessionName(streamThatCompletes(title), fakeModel(), "Fix naming"))
+      .resolves.toEqual({ ok: true, title: "Investigate authentication failures across providers and" });
+  });
+
+  it.each(["x", "𠮷"])("accepts and caps a long unspaced title: %s", async (character) => {
+    const result = await generateShortSessionName(streamThatCompletes(character.repeat(61)), fakeModel(), "Fix naming");
+    expect(result).toEqual({ ok: true, title: character.repeat(60) });
+    if (!result.ok) throw new Error("Expected an accepted unspaced title");
+    expect(Array.from(result.title)).toHaveLength(60);
+    if (character === "𠮷") expect(result.title).toHaveLength(120);
   });
 
   it("shortens at a word boundary", () => {
