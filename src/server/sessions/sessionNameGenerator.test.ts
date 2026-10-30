@@ -185,17 +185,63 @@ describe("sessionNameGenerator", () => {
       .toBeUndefined();
   });
 
-  it("builds a concise fallback from the first request", () => {
-    expect(fallbackSessionName("Seems like auto name for sessions is not working, I still get the first message as a name."))
-      .toBe("Seems like auto name for sessions");
+  it.each([
+    ["PM: Bug: Utility models for session naming doesn't work", "Bug: Utility models for session naming"],
+    ["Project manager: Fix the flaky login retry tests", "Fix the flaky login retry tests"],
+    ["  pM :   Bug: Utility models for session naming doesn't work", "Bug: Utility models for session naming"],
+    ["  pRoJeCt MaNaGeR : Fix the flaky login retry tests", "Fix the flaky login retry tests"],
+  ])("strips a leading PM or project-manager marker from a fallback: %s", (input, expected) => {
+    expect(fallbackSessionName(input)).toBe(expected);
   });
 
-  it("ignores skill blocks in fallback names", () => {
+  it.each([
+    "Model tier: Worker\nRole: Implementer\nYou are the deterministic SDD lane runner for the f-worker lane of appio.",
+    "PM:\nModel tier: Worker\n\nRole: Implementer\nYou are the deterministic SDD lane runner for the f-worker lane of appio.",
+    "PM:\r\nModel tier: Worker\r\n\r\nRole: Implementer\r\nYou are the deterministic SDD lane runner for the f-worker lane of appio.",
+    "model TIER: Worker\r\n\r\nROLE: Implementer\r\nYou are the deterministic SDD lane runner for the f-worker lane of appio.",
+  ])("strips leading tier and role metadata before the fallback slice: %s", (input) => {
+    expect(fallbackSessionName(input)).toBe("deterministic SDD lane runner for the");
+  });
+
+  it.each([
+    ["You are the deterministic SDD lane runner for the f-worker lane of appio.", "deterministic SDD lane runner for the"],
+    ["You are an expert debugger for login failures", "expert debugger for login failures"],
+    ["You are a coding assistant fixing login failures", "coding assistant fixing login failures"],
+  ])("removes only the leading role introduction: %s", (input, expected) => {
+    expect(fallbackSessionName(input)).toBe(expected);
+  });
+
+  it("keeps metadata after substantive request text", () => {
+    expect(fallbackSessionName("Investigate failures\nRole: reviewer"))
+      .toBe("Investigate failures Role: reviewer");
+  });
+
+  it("preserves existing first-request and skill-block fallbacks", () => {
+    expect(fallbackSessionName("Seems like auto name for sessions is not working, I still get the first message as a name."))
+      .toBe("Seems like auto name for sessions");
     expect(fallbackSessionName('<skill name="x" location="/x">\nDo x\n</skill>\n\nCheck the UI now'))
       .toBe("Check the UI now");
   });
 
-  it("skips fallback names when the first request is missing", () => {
-    expect(fallbackSessionName(undefined)).toBeUndefined();
+  it.each([
+    "```ts\nconst value = 1;\n```", "PM:", "Project manager:",
+    "Model tier: Worker\nRole: Implementer",
+    '<skill name="x" location="/x">\nDo x\n</skill>', " \n\t ", "",
+  ])("returns no fallback for empty cleaned request %s", (input) => {
+    expect(fallbackSessionName(input)).toBeUndefined();
+  });
+
+  it("returns no fallback for non-string requests", () => {
+    for (const input of [undefined, null, 42, false, {}, []]) {
+      expect(fallbackSessionName(input)).toBeUndefined();
+    }
+  });
+
+  it("normalizes and shortens fallback text without model-title validation", () => {
+    expect(fallbackSessionName("You are the deterministic SDD lane runner for the f-worker lane of appio."))
+      .toBe("deterministic SDD lane runner for the");
+    expect(fallbackSessionName("We need a session title")).toBe("We need a session title");
+    expect(fallbackSessionName("x".repeat(61))).toBe("x".repeat(60));
+    expect(fallbackSessionName("𠮷".repeat(61))).toBe("𠮷".repeat(60));
   });
 });

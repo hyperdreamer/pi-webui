@@ -62,15 +62,24 @@ export async function generateShortSessionName<TApi extends Api>(
 
 export function fallbackSessionName(firstMessage: unknown): string | undefined {
   if (typeof firstMessage !== "string") return undefined;
-
-  return cleanSessionName(firstMessage
+  let request = firstMessage
     .replace(/<skill name="[^"]+" location="[^"]+">[\s\S]*?<\/skill>/g, "")
     .replace(/```[\s\S]*?```/g, " ")
+    .trimStart()
+    .replace(/^(?:PM|Project manager)\s*:\s*/i, "")
+    .trimStart();
+  const leadingMetadata = /^(?:Model tier|Role)\s*:[^\r\n]*(?:\r?\n|$)/i;
+  while (leadingMetadata.test(request)) {
+    request = request.replace(leadingMetadata, "").trimStart();
+  }
+  request = request.replace(/^You\s+are\s+(?:the|an|a)\b\s*/i, "");
+  const words = request
     .replace(/[`*_#[\](){}<>]/g, " ")
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, FALLBACK_SESSION_NAME_MAX_WORDS)
-    .join(" "));
+    .join(" ");
+  return cleanSessionName(words);
 }
 
 export function normalizeSessionName(value: string): string | undefined {
