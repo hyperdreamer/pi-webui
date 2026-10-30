@@ -12,7 +12,7 @@ import {
   type SessionBeforeTreeEvent,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultRuntimeFactory, PiSessionService } from "./piSessionService.js";
+import { createDefaultRuntimeFactory, PiSessionService, type PiAgentSession } from "./piSessionService.js";
 import { CapturingSessionEventHub, createTestModelRuntime, fakeAgentSessionServices, fakeRuntime, runtimeCreator, seedCredential, sessionGateway, sessionRecord, sessionRef, TEST_MODEL_ID, TEST_MODEL_PROVIDER, testModel, testModelRuntime, type RuntimeCreator } from "./piSessionService.testSupport.js";
 import type { ResolvedUtilityModel } from "./utilityModelResolver.js";
 
@@ -294,7 +294,129 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
     }
   });
 
-  it("uses only the active model for a first-prompt title when no utility model is configured", async () => {
+  it("logs every rejected title attempt including the last before fallback", async () => {
+    const id = "exhausted-name-session";
+    const activeModel = testModel();
+    const lightweightModel = { ...activeModel, id: "utility-lightweight" };
+    const streamFn = vi.fn<StreamFn>((model) => model === lightweightModel
+      ? completedTitleStream(model.id, "Fix login bug", { stopReason: "length" })
+      : completedTitleStream(model.id, "We need a session title"));
+    const h = titleServiceHarness(id, streamFn,
+      [utilityCandidate(lightweightModel, "high")], { model: activeModel });
+    const expectedName = "Bug: Utility models for session naming";
+    try {
+      await h.service.prompt(sessionRef(id), "PM: Bug: Utility models for session naming doesn't work");
+      await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe(expectedName); });
+      expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
+      expect(streamFn.mock.calls.map(([, , options]) => options?.reasoning)).toEqual([undefined, undefined]);
+      expect(streamFn.mock.calls.map(([, , options]) => options?.maxTokens)).toEqual([256, 256]);
+      expect(h.logger.info.mock.calls).toEqual([
+        [{ provider: lightweightModel.provider, modelId: lightweightModel.id, reason: "incomplete-stop" }, "utility title model rejected"],
+        [{ provider: activeModel.provider, modelId: activeModel.id, reason: "unusable" }, "utility title model rejected"],
+      ]);
+      expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith(expectedName);
+      const nameEvent = { type: "session.name", sessionId: id, name: expectedName };
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name").map(({ event }) => event)).toEqual([nameEvent]);
+      expect(h.hub.globalEvents.filter((event) => event.type === "session.name")).toEqual([nameEvent]);
+    } finally {
+      await h.service.dispose();
+    }
+  });
+
+  it("accepts one same-model title attempt across thinking levels", async () => {
+    const id = "same-model-success-session";
+    const activeModel = testModel();
+    const streamFn = vi.fn<StreamFn>((model) => completedTitleStream(model.id, "Shared title"));
+    const h = titleServiceHarness(id, streamFn,
+      [utilityCandidate(activeModel, "high")], { model: activeModel });
+    try {
+      await h.service.prompt(sessionRef(id), "Please fix the login bug");
+      await vi.waitFor(() => { expect(h.fake.session.sessionName).toBe("Shared title"); });
+      expect(streamFn).toHaveBeenCalledOnce();
+      expect(streamFn.mock.calls[0]?.[0]).toBe(activeModel);
+      expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
+      expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
+      expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith("Shared title");
+      expect(h.logger.info).not.toHaveBeenCalled();
+    } finally {
+      await h.service.dispose();
+    }
+  });
+
+  it.each([
+    "```ts\nconst value = 1;\n```", "PM:", "Model tier: Worker\nRole: Implementer",
+  ])("stays unnamed when every attempt rejects and the fallback is empty for %s", async (request) => {
+    const id = "empty-name-session";
+    const activeModel = testModel();
+    const lightweightModel = { ...activeModel, id: "utility-lightweight" };
+    const streamFn = vi.fn<StreamFn>((model) => model === lightweightModel
+      ? completedTitleStream(model.id, "Fix login bug", { stopReason: "length" })
+      : completedTitleStream(model.id, "We need a session title"));
+    const h = titleServiceHarness(id, streamFn,
+      [utilityCandidate(lightweightModel, "high")], { model: activeModel });
+    try {
+      await h.service.prompt(sessionRef(id), request);
+      await vi.waitFor(() => {
+        expect(streamFn).toHaveBeenCalledTimes(2);
+        expect(h.logger.info).toHaveBeenCalledTimes(2);
+      });
+      await flushPendingMicrotasks();
+      expect(h.fake.session.sessionName).toBeUndefined();
+      expect(h.nameWrites).not.toHaveBeenCalled();
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name")).toEqual([]);
+      expect(h.hub.globalEvents.filter((event) => event.type === "session.name")).toEqual([]);
+      expect(streamFn.mock.calls.map(([model]) => model)).toEqual([lightweightModel, activeModel]);
+      expect(h.logger.info.mock.calls).toEqual([
+        [{ provider: lightweightModel.provider, modelId: lightweightModel.id, reason: "incomplete-stop" }, "utility title model rejected"],
+        [{ provider: activeModel.provider, modelId: activeModel.id, reason: "unusable" }, "utility title model rejected"],
+      ]);
+    } finally {
+      await h.service.dispose();
+    }
+  });
+
+  it("does not attempt naming without a resolved session model", async () => {
+    const id = "no-model-name-session";
+    const activeModel = testModel();
+    const lightweightModel = { ...activeModel, id: "utility-lightweight" };
+    const streamFn = vi.fn<StreamFn>(() => { throw new Error("title stream should not run"); });
+    const h = titleServiceHarness(id, streamFn,
+      [utilityCandidate(lightweightModel, "high")], { model: activeModel });
+    try {
+      await h.service.status(sessionRef(id));
+      h.fake.session.model = undefined;
+      // The no-model return and relay precedence both sit before the public prompt
+      // path, so the private naming entry point is the tested seam.
+      // eslint-disable-next-line @typescript-eslint/dot-notation -- the private naming entry point is the boundary this test pins.
+      h.service["maybeGenerateSessionName"](h.fake.session, "Please fix the login bug");
+      await flushPendingMicrotasks();
+      expect(h.resolver.inspect).not.toHaveBeenCalled();
+      expect(h.resolver.configuredCandidates).not.toHaveBeenCalled();
+      expect(streamFn).not.toHaveBeenCalled();
+      expect(h.nameWrites).not.toHaveBeenCalled();
+      expect(h.fake.session.sessionName).toBeUndefined();
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name")).toEqual([]);
+      expect(h.hub.globalEvents.filter((event) => event.type === "session.name")).toEqual([]);
+      expect(h.logger.info).not.toHaveBeenCalled();
+
+      // Companion call proves canonical relay precedence over the no-model return.
+      // eslint-disable-next-line @typescript-eslint/dot-notation -- same private naming boundary as above.
+      h.service["maybeGenerateSessionName"](h.fake.session,
+        'Relay "handoff-check" leg 2 begins now.\n\nYou are the next runner.');
+      expect(h.fake.session.sessionName).toBe("Relay handoff-check leg 2");
+      expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith("Relay handoff-check leg 2");
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name").map(({ event }) => event))
+        .toEqual([{ type: "session.name", sessionId: id, name: "Relay handoff-check leg 2" }]);
+      expect(h.resolver.configuredCandidates).not.toHaveBeenCalled();
+      expect(h.resolver.inspect).not.toHaveBeenCalled();
+      expect(streamFn).not.toHaveBeenCalled();
+    } finally {
+      h.fake.session.model = activeModel;
+      await h.service.dispose();
+    }
+  });
+
+  it("uses only the active model when no utility candidate is configured", async () => {
     const activeModel = testModel();
     const streamFn = vi.fn<StreamFn>((streamModel) => completedTitleStream(streamModel.id, "Active model title"));
     const fake = fakeRuntime("active-name-session", { model: activeModel, agent: { streamFunction: streamFn } });
@@ -408,6 +530,62 @@ describe("PiSessionService prompt, queue, and auth warnings", () => {
 
     expect(fake.session.sessionName).toBe("Deferred title");
     await service.dispose();
+  });
+
+  it("defers a generated title until tree navigation settles", async () => {
+    const id = "tree-deferred-title-session";
+    const activeModel = testModel();
+    const title = deferredTitleStream(activeModel.id);
+    const navigation = deferred<{ cancelled: boolean }>();
+    const navigateTree = vi.fn<NonNullable<PiAgentSession["navigateTree"]>>(() => navigation.promise);
+    const streamFn = vi.fn<StreamFn>(() => title.stream);
+    const h = titleServiceHarness(id, streamFn, [], { model: activeModel, navigateTree });
+    let navigating: Promise<unknown> | undefined;
+    try {
+      await h.service.prompt(sessionRef(id), "Please fix the login bug");
+      await vi.waitFor(() => { expect(streamFn).toHaveBeenCalledOnce(); });
+      await flushPendingMicrotasks();
+      navigating = h.service.navigateTree(sessionRef(id), {
+        targetId: "target-1", expectedLeafId: "leaf-1", summary: { mode: "none" },
+      });
+      await vi.waitFor(() => { expect(navigateTree).toHaveBeenCalledOnce(); });
+      title.complete("Deferred title");
+      await flushPendingMicrotasks();
+      expect(h.nameWrites).not.toHaveBeenCalled();
+      expect(h.fake.session.sessionName).toBeUndefined();
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name")).toEqual([]);
+      navigation.resolve({ cancelled: false });
+      await navigating;
+      expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith("Deferred title");
+      expect(h.fake.session.sessionName).toBe("Deferred title");
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name").map(({ event }) => event))
+        .toEqual([{ type: "session.name", sessionId: id, name: "Deferred title" }]);
+    } finally {
+      navigation.resolve({ cancelled: false });
+      if (navigating !== undefined) await navigating;
+      await h.service.dispose();
+    }
+  });
+
+  it("preserves an existing name set while title generation is pending", async () => {
+    const id = "manual-late-title-session";
+    const activeModel = testModel();
+    const title = deferredTitleStream(activeModel.id);
+    const streamFn = vi.fn<StreamFn>(() => title.stream);
+    const h = titleServiceHarness(id, streamFn, [], { model: activeModel });
+    try {
+      await h.service.prompt(sessionRef(id), "Please fix the login bug");
+      await vi.waitFor(() => { expect(streamFn).toHaveBeenCalledOnce(); });
+      h.fake.session.setSessionName("Manual name");
+      title.complete("Deferred title");
+      await flushPendingMicrotasks();
+      expect(h.fake.session.sessionName).toBe("Manual name");
+      expect(h.nameWrites).toHaveBeenCalledExactlyOnceWith("Manual name");
+      expect(h.hub.sessionEvents.filter(({ event }) => event.type === "session.name")).toEqual([]);
+      expect(h.hub.globalEvents.filter((event) => event.type === "session.name")).toEqual([]);
+    } finally {
+      await h.service.dispose();
+    }
   });
 
   it("does not apply a late generated title to an archived session", async () => {
