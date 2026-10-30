@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.28.4
+
+### Patch Changes
+
+- Override the transitive `undici` dependency of the Pi development tooling to a patched release, clearing eight advisories from the development dependency tree. The production dependency tree and the published package are unaffected.
+- 119a997: Fix automatic session titles by rejecting incomplete or unusable model output and cleaning fallback names.
+
 ## 1.28.3
 
 ### Patch Changes
