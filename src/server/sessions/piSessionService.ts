@@ -5230,13 +5230,23 @@ export class PiSessionService implements SessionRouteService {
       this.utilityModelResolver,
       "lightweight",
       { model, thinkingLevel: "minimal" },
-      (attempt) =>
-        generateShortSessionName(
+      async (attempt) => {
+        const result = await generateShortSessionName(
           session.agent.streamFunction,
           attempt.model,
-          firstMessage,
-          attempt.thinkingLevel,
-        ),
+          firstMessage
+        );
+        if (result.ok) return result;
+        this.logger.info(
+          {
+            provider: attempt.model.provider,
+            modelId: attempt.model.id,
+            reason: result.reason,
+          },
+          "utility title model rejected"
+        );
+        return undefined;
+      },
       (attempt, error) => {
         this.logger.info(
           {
@@ -5247,12 +5257,13 @@ export class PiSessionService implements SessionRouteService {
           },
           "utility title model failed"
         );
-      }
+      },
+      (attempt) => ({ ...attempt, thinkingLevel: "off" })
     )
-      .then((name) => {
+      .then((result) => {
         this.applyGeneratedSessionName(
           session,
-          name ?? fallbackSessionName(firstMessage)
+          result?.title ?? fallbackSessionName(firstMessage)
         );
       })
       .catch((error: unknown) => {

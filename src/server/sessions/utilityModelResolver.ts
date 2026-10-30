@@ -194,15 +194,20 @@ export async function runWithUtilityModelFallback<
     attempt: UtilityModelAttempt<TModel>,
   ) => Promise<TResult | undefined> | TResult | undefined,
   onFailure?: (attempt: UtilityModelAttempt<TModel>, error: unknown) => void,
+  normalizeAttempt?: (
+    attempt: UtilityModelAttempt<TModel>,
+  ) => UtilityModelAttempt<TModel>,
 ): Promise<TResult | undefined> {
   const configured = await resolver.configuredCandidates(task);
   const candidates: UtilityModelAttempt<TModel>[] = [];
   const seen = new Set<string>();
 
-  for (const attempt of [
+  for (const rawAttempt of [
     ...configured,
     ...(activeAttempt === undefined ? [] : [activeAttempt]),
   ]) {
+    const attempt =
+      normalizeAttempt === undefined ? rawAttempt : normalizeAttempt(rawAttempt);
     const key = attemptKey(attempt);
     if (seen.has(key)) continue;
     seen.add(key);

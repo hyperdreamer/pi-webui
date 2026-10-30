@@ -1,6 +1,5 @@
 import { normalizeContext, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { ThinkingLevel } from "../../shared/thinkingLevels.js";
 
 const SESSION_NAME_TIMEOUT_MS = 10_000;
 const SESSION_NAME_MAX_INPUT_CHARS = 4_000;
@@ -14,12 +13,24 @@ export function deterministicSessionName(firstMessage: unknown): string | undefi
   return relayHandoffSessionName(firstMessage.trimStart());
 }
 
+export type SessionNameGeneration =
+  | { ok: true; title: string }
+  | {
+      ok: false;
+      reason:
+        | "stream-error"
+        | "no-completion"
+        | "incomplete-stop"
+        | "non-text-content"
+        | "empty"
+        | "unusable";
+    };
+
 export async function generateShortSessionName<TApi extends Api>(
   streamFn: StreamFn,
   model: Model<TApi>,
   firstMessage: string,
-  thinkingLevel: ThinkingLevel = "minimal",
-): Promise<string | undefined> {
+): Promise<SessionNameGeneration> {
   const context = {
     systemPrompt: "Generate a concise title for a coding-agent chat session. Return only the title, with no quotes or punctuation wrapper.",
     messages: [{
@@ -28,38 +39,47 @@ export async function generateShortSessionName<TApi extends Api>(
       timestamp: Date.now(),
     }],
   };
-  const stream = await streamFn(
-    model,
-    normalizeContext(context),
-    {
-      maxTokens: 24,
-      ...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
-      signal: AbortSignal.timeout(SESSION_NAME_TIMEOUT_MS),
-    },
-  );
+  const stream = await streamFn(model, normalizeContext(context), {
+    maxTokens: 256,
+    signal: AbortSignal.timeout(SESSION_NAME_TIMEOUT_MS),
+  });
 
-  let streamedText = "";
   let finalMessage: AssistantMessage | undefined;
   for await (const event of stream) {
-    if (event.type === "text_delta") streamedText += event.delta;
+    if (event.type === "error") return { ok: false, reason: "stream-error" };
     if (event.type === "done") finalMessage = event.message;
-    if (event.type === "error") return undefined;
   }
-
-  return cleanSessionName(finalMessage === undefined ? streamedText : textFromAssistant(finalMessage));
+  if (finalMessage === undefined) return { ok: false, reason: "no-completion" };
+  if (finalMessage.stopReason !== "stop") return { ok: false, reason: "incomplete-stop" };
+  if (finalMessage.content.some((block) => block.type !== "text" && block.type !== "thinking")) {
+    return { ok: false, reason: "non-text-content" };
+  }
+  const normalized = normalizeSessionName(textFromAssistant(finalMessage));
+  if (normalized === undefined) return { ok: false, reason: "empty" };
+  if (!isUsableSessionTitle(normalized)) return { ok: false, reason: "unusable" };
+  return { ok: true, title: shortenSessionName(normalized) };
 }
 
 export function fallbackSessionName(firstMessage: unknown): string | undefined {
   if (typeof firstMessage !== "string") return undefined;
-
-  return cleanSessionName(firstMessage
+  let request = firstMessage
     .replace(/<skill name="[^"]+" location="[^"]+">[\s\S]*?<\/skill>/g, "")
     .replace(/```[\s\S]*?```/g, " ")
+    .trimStart()
+    .replace(/^(?:PM|Project manager)\s*:\s*/i, "")
+    .trimStart();
+  const leadingMetadata = /^(?:Model tier|Role)\s*:[^\r\n]*(?:\r?\n|$)/i;
+  while (leadingMetadata.test(request)) {
+    request = request.replace(leadingMetadata, "").trimStart();
+  }
+  request = request.replace(/^You\s+are\s+(?:the|an|a)\b\s*/i, "");
+  const words = request
     .replace(/[`*_#[\](){}<>]/g, " ")
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, FALLBACK_SESSION_NAME_MAX_WORDS)
-    .join(" "));
+    .join(" ");
+  return cleanSessionName(words);
 }
 
 export function normalizeSessionName(value: string): string | undefined {

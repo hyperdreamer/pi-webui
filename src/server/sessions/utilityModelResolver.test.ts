@@ -475,6 +475,77 @@ describe("utility model fallback runner", () => {
       thinkingLevel: "minimal",
     });
   });
+
+  it("normalizes every candidate before identity and execution", async () => {
+    const configured = Object.freeze({
+      model: Object.freeze({ ...lightweight }), thinkingLevel: "high" as const,
+      slot: "lightweight" as const,
+    });
+    const active = Object.freeze({
+      model: Object.freeze({ ...lightweight, name: "Active alias" }), thinkingLevel: "minimal" as const,
+    });
+    const candidates = Object.freeze([configured]);
+    const resolver: UtilityModelResolver<FakeModel> = {
+      inspect: vi.fn(() => Promise.resolve({ candidates, sessionModelOnly: false })),
+      configuredCandidates: vi.fn(() => Promise.resolve(candidates)),
+    };
+    const normalizeAttempt = vi.fn((attempt: UtilityModelAttempt<FakeModel>): UtilityModelAttempt<FakeModel> => ({
+      ...attempt, thinkingLevel: "off",
+    }));
+    const run = vi.fn<(attempt: UtilityModelAttempt<FakeModel>) => string | undefined>(() => undefined);
+    await expect(runWithUtilityModelFallback(
+      resolver, "lightweight", active, run, undefined, normalizeAttempt,
+    )).resolves.toBeUndefined();
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- assertion target is the resolver's own mock, never invoked via `this`.
+    expect(resolver.configuredCandidates).toHaveBeenCalledExactlyOnceWith("lightweight");
+    expect(normalizeAttempt).toHaveBeenCalledTimes(2);
+    expect(normalizeAttempt.mock.calls[0]?.[0]).toBe(configured);
+    expect(normalizeAttempt.mock.calls[1]?.[0]).toBe(active);
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0]).toBe(normalizeAttempt.mock.results[0]?.value);
+    expect(run.mock.calls[0]?.[0]).not.toBe(configured);
+    expect(run.mock.calls[0]?.[0].model).toBe(configured.model);
+    expect(run.mock.calls[0]?.[0].thinkingLevel).toBe("off");
+    expect(configured).toEqual({ model: lightweight, thinkingLevel: "high", slot: "lightweight" });
+    expect(active).toEqual({ model: { ...lightweight, name: "Active alias" }, thinkingLevel: "minimal" });
+  });
+
+  it("passes normalized attempts to exception diagnostics and preserves distinct identities", async () => {
+    const first = Object.freeze({ model: Object.freeze({ ...lightweight }), thinkingLevel: "high" as const, slot: "lightweight" as const });
+    const otherProvider = Object.freeze({ model: Object.freeze({ ...lightweight, provider: "other" }), thinkingLevel: "low" as const, slot: "context" as const });
+    const active = Object.freeze({ model: Object.freeze({ ...context }), thinkingLevel: "minimal" as const });
+    const candidates = Object.freeze([first, otherProvider]);
+    const resolver: UtilityModelResolver<FakeModel> = {
+      inspect: vi.fn(() => Promise.resolve({ candidates, sessionModelOnly: false })),
+      configuredCandidates: vi.fn(() => Promise.resolve(candidates)),
+    };
+    const normalizeAttempt = vi.fn((attempt: UtilityModelAttempt<FakeModel>): UtilityModelAttempt<FakeModel> => ({
+      ...attempt, thinkingLevel: "off",
+    }));
+    const failure = new Error("normalized attempt failed");
+    const run = vi.fn<(attempt: UtilityModelAttempt<FakeModel>) => string | undefined>()
+      .mockImplementationOnce(() => { throw failure; })
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce("active result");
+    const onFailure = vi.fn();
+
+    await expect(runWithUtilityModelFallback(
+      resolver, "context", active, run, onFailure, normalizeAttempt,
+    )).resolves.toBe("active result");
+    expect(normalizeAttempt).toHaveBeenCalledTimes(3);
+    expect(run.mock.calls.map(([attempt]) => [attempt.model.provider, attempt.model.id, attempt.thinkingLevel]))
+      .toEqual([["acme", "small", "off"], ["other", "small", "off"], ["acme", "large", "off"]]);
+    expect(run.mock.calls[0]?.[0].model).toBe(first.model);
+    expect(run.mock.calls[1]?.[0].model).toBe(otherProvider.model);
+    expect(run.mock.calls[2]?.[0].model).toBe(active.model);
+    expect(onFailure).toHaveBeenCalledOnce();
+    expect(onFailure).toHaveBeenCalledWith(run.mock.calls[0]?.[0], failure);
+    expect(onFailure.mock.calls[0]?.[0]).toBe(run.mock.calls[0]?.[0]);
+    expect(first.thinkingLevel).toBe("high");
+    expect(otherProvider.thinkingLevel).toBe("low");
+    expect(active.thinkingLevel).toBe("minimal");
+  });
 });
 
 interface ResolverConfig {
