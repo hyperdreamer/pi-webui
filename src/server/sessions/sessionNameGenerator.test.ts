@@ -9,6 +9,7 @@ import {
   generateShortSessionName,
   isUsableSessionTitle,
   normalizeSessionName,
+  shortenSessionName,
 } from "./sessionNameGenerator.js";
 
 function fakeModel(): Model<Api> {
@@ -110,8 +111,40 @@ describe("sessionNameGenerator", () => {
     expect(name).toBeUndefined();
   });
 
-  it("cleans model-generated titles", () => {
+  it("shortens at a word boundary", () => {
+    expect(shortenSessionName("Improve authentication reliability across distributed production environments"))
+      .toBe("Improve authentication reliability across distributed");
+  });
+
+  it("preserves punctuation adjacent to the shortening cut", () => {
+    expect(shortenSessionName("x".repeat(59) + "! suffix")).toBe("x".repeat(59) + "!");
+  });
+
+  it("preserves a full sixty-code-point prefix ending at a boundary", () => {
+    const expected = "Investigate strange session naming behavior across providers";
+    expect(Array.from(expected)).toHaveLength(60);
+    expect(shortenSessionName(`${expected} globally`)).toBe(expected);
+  });
+
+  it.each(["x", "界", "𠮷"])("caps an unspaced value at sixty code points: %s", (character) => {
+    const result = shortenSessionName(character.repeat(61));
+    expect(result).toBe(character.repeat(60));
+    expect(Array.from(result)).toHaveLength(60);
+    if (character === "𠮷") expect(result).toHaveLength(120);
+    expect(shortenSessionName("x".repeat(61) + " suffix")).toBe("x".repeat(60));
+  });
+
+  it("leaves a short display string unchanged", () => {
+    expect(shortenSessionName("")).toBe("");
+    expect(shortenSessionName("Fix login bug")).toBe("Fix login bug");
+  });
+
+  it("keeps cleanSessionName as normalization plus shortening", () => {
     expect(cleanSessionName('Title: "Fix Session Naming."\nextra')).toBe("Fix Session Naming");
+    expect(cleanSessionName("We need title")).toBe("We need title");
+    expect(cleanSessionName("Improve authentication reliability across distributed production environments"))
+      .toBe("Improve authentication reliability across distributed");
+    expect(cleanSessionName('Title: ""')).toBeUndefined();
   });
 
   it.each<[string, string | undefined]>([

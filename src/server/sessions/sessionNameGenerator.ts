@@ -83,15 +83,22 @@ export function isUsableSessionTitle(value: string): boolean {
   return !/^(?:and|or|for|the|a|an|to|with|of|in|on|by)$/i.test(lastWord);
 }
 
+export function shortenSessionName(value: string): string {
+  const points = Array.from(value);
+  if (points.length <= SESSION_NAME_MAX_LENGTH) return value;
+  let cut = SESSION_NAME_MAX_LENGTH;
+  for (let index = SESSION_NAME_MAX_LENGTH; index > 0; index -= 1) {
+    if (/\s/u.test(points[index] ?? "")) {
+      cut = index;
+      break;
+    }
+  }
+  return points.slice(0, cut).join("").trimEnd();
+}
+
 export function cleanSessionName(value: string): string | undefined {
-  const title = (value.split("\n", 1)[0] ?? "")
-    .replace(/^\s*(title|session title)\s*:\s*/i, "")
-    .replace(/^\s*["'`]+|["'`.]+\s*$/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, SESSION_NAME_MAX_LENGTH)
-    .trim();
-  return title === "" ? undefined : title;
+  const normalized = normalizeSessionName(value);
+  return normalized === undefined ? undefined : shortenSessionName(normalized);
 }
 
 function relayHandoffSessionName(firstMessage: string): string | undefined {
