@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEvent, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
@@ -30,14 +30,24 @@ function fakeAssistantMessage(overrides: Partial<AssistantMessage> = {}): Assist
   };
 }
 
-function streamThatCompletes(text: string): StreamFn {
+function completedMessageStream(
+  message: AssistantMessage,
+  doneReason: Extract<AssistantMessageEvent, { type: "done" }>["reason"] = "stop",
+  delta?: string,
+): StreamFn {
   return () => {
     const stream = createAssistantMessageEventStream();
-    const message = fakeAssistantMessage({ content: [{ type: "text", text }] });
-    stream.push({ type: "done", reason: "stop", message });
+    if (delta !== undefined) {
+      stream.push({ type: "text_delta", contentIndex: 0, delta, partial: message });
+    }
+    stream.push({ type: "done", reason: doneReason, message });
     stream.end(message);
     return stream;
   };
+}
+
+function streamThatCompletes(text: string): StreamFn {
+  return completedMessageStream(fakeAssistantMessage({ content: [{ type: "text", text }] }));
 }
 
 function streamThatErrors(): StreamFn {
@@ -51,64 +61,40 @@ function streamThatErrors(): StreamFn {
 }
 
 describe("sessionNameGenerator", () => {
-  it("generates a session name by calling the injected streamFn", async () => {
-    const stream = streamThatCompletes('Title: "Fix the bug"');
-    const streamFn = vi.fn<StreamFn>((model, context, options) =>
-      stream(model, context, options),
-    );
-
-    const name = await generateShortSessionName(streamFn, fakeModel(), "Please fix the login bug");
-
-    expect(name).toBe("Fix the bug");
+  it("generates a normalized title with reasoning off and a 256-token ceiling", async () => {
+    const model = fakeModel();
+    const streamFn = vi.fn<StreamFn>(streamThatCompletes('Title: "Fix the bug"'));
+    await expect(generateShortSessionName(streamFn, model, "Please fix the login bug"))
+      .resolves.toEqual({ ok: true, title: "Fix the bug" });
     expect(streamFn).toHaveBeenCalledOnce();
-    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({
-      maxTokens: 24,
-      reasoning: "minimal",
-    });
-  });
-
-  it("sends an explicit max thinking level with a title request", async () => {
-    const stream = streamThatCompletes("Fix the bug");
-    const streamFn = vi.fn<StreamFn>((model, context, options) =>
-      stream(model, context, options),
-    );
-
-    await generateShortSessionName(
-      streamFn,
-      fakeModel(),
-      "Please fix the login bug",
-      "max",
-    );
-
-    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({
-      maxTokens: 24,
-      reasoning: "max",
-    });
-  });
-
-  it("omits reasoning from an off title request", async () => {
-    const stream = streamThatCompletes("Fix the bug");
-    const streamFn = vi.fn<StreamFn>((model, context, options) =>
-      stream(model, context, options),
-    );
-
-    await generateShortSessionName(
-      streamFn,
-      fakeModel(),
-      "Please fix the login bug",
-      "off",
-    );
-
-    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 24 });
+    expect(streamFn.mock.calls[0]?.[0]).toBe(model);
+    expect(streamFn.mock.calls[0]?.[2]).toMatchObject({ maxTokens: 256 });
     expect(streamFn.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
   });
 
-  it("returns undefined when the stream reports an error", async () => {
-    const streamFn = streamThatErrors();
+  it("rejects a length-limited completion", async () => {
+    const streamFn = completedMessageStream(fakeAssistantMessage({
+      stopReason: "length", content: [{ type: "text", text: "Fix login bug" }],
+    }), "length");
+    await expect(generateShortSessionName(streamFn, fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "incomplete-stop" });
+  });
 
-    const name = await generateShortSessionName(streamFn, fakeModel(), "Please fix the login bug");
+  it("rejects a stream that ends without done despite text deltas", async () => {
+    const message = fakeAssistantMessage({ content: [{ type: "text", text: "Fix login bug" }] });
+    const streamFn: StreamFn = () => {
+      const stream = createAssistantMessageEventStream();
+      stream.push({ type: "text_delta", contentIndex: 0, delta: "Fix login bug", partial: message });
+      stream.end(message);
+      return stream;
+    };
+    await expect(generateShortSessionName(streamFn, fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "no-completion" });
+  });
 
-    expect(name).toBeUndefined();
+  it("classifies an emitted stream error directly", async () => {
+    await expect(generateShortSessionName(streamThatErrors(), fakeModel(), "Fix login"))
+      .resolves.toEqual({ ok: false, reason: "stream-error" });
   });
 
   it("shortens at a word boundary", () => {
