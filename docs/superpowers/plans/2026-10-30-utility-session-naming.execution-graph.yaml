@@ -1,13 +1,13 @@
 schema_version: 1
 source_plan:
   path: docs/superpowers/plans/2026-10-30-utility-session-naming.md
-  sha256: 56a043c82668290aabd06a28cb64961401e6c9c96833775c6719e2f81d31fd24
-  commit_oid: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
-  validated_at: 2026-10-30T11:06:27Z
+  sha256: f8cb7fb7a109537d495a456ad964d56571a2a5a31583a3f83be6eb45983bcd87
+  commit_oid: c759210b29979bfb51c7826388d79a4807c3f7e2
+  validated_at: 2026-10-30T12:48:23Z
   parsed_tasks: [1, 2, 3, 4, 5, 6, 7, 8, 9]
 source_context:
   worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261030-113042-4271be03/integration
-  commit: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
+  commit: c759210b29979bfb51c7826388d79a4807c3f7e2
 target:
   repository_root: /data/home/guest/Development/pi-webui
   remote: origin
@@ -19,7 +19,7 @@ integration:
   branch: refs/heads/pm/utility-session-naming/run-pm-run-20261030-113042-4271be03
   worktree: /data/home/henry-arch/.local/state/pi/project-manager/worktrees/4074842dc9aaf003446194e3e1d1201d34aca2f4bd236012ec3be919dd6e7164/pm-run-20261030-113042-4271be03/integration
   base_commit: b317112321e5d61b91458a80affeebb10d3e59c1
-  current_commit: 2e07daa45a7a3392dcbd11c16e22519f1576c7a1
+  current_commit: c759210b29979bfb51c7826388d79a4807c3f7e2
 epoch: 1
 tasks:
   - id: T-001
