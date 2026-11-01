@@ -44,8 +44,8 @@ export class CancellableLoadScope {
 
 /** Marker for a load abandoned because its selection was superseded. */
 export class LoadCancelledError extends Error {
-  constructor() {
-    super("Load cancelled because the selection changed");
+  constructor(message = "Load cancelled because the selection changed") {
+    super(message);
     this.name = "LoadCancelledError";
   }
 }
