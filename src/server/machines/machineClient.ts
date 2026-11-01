@@ -84,7 +84,7 @@ export class RemoteMachineClient implements MachineClient {
   async requestJson(method: string, path: string, body?: unknown, options: MachineRequestOptions = {}): Promise<MachineJsonResponse> {
     const { response, cancellation } = await this.fetchResponse(method, path, body, options);
     try {
-      const text = await cancellation.untilBodySettles(response.text());
+      const text = await cancellation.readBody(response, () => response.text());
       const parsed: unknown = text === "" ? undefined : JSON.parse(text);
       return {
         statusCode: response.status,
@@ -122,7 +122,12 @@ export class RemoteMachineClient implements MachineClient {
       // The client deadline only covers the wait for headers; body transfer is unbounded.
       cancellation.headersArrived();
       const failure = cancellation.failure();
-      if (failure !== undefined) throw failure;
+      if (failure !== undefined) {
+        // Cancellation already won, so nobody will read this body; release it before
+        // propagating the owned reason.
+        await discardResponseBody(response, failure);
+        throw failure;
+      }
       return { response, cancellation };
     } catch (error) {
       // A request that already owns a failure keeps that reason instead of a mapped one.
@@ -209,10 +214,20 @@ class RemoteRequestCancellation {
     return undefined;
   }
 
-  /** Rejects as soon as the caller aborts, even while the response body streams in. */
-  async untilBodySettles<T>(work: Promise<T>): Promise<T> {
+  /**
+   * Reads a response body while the caller can still cancel. A cancellation that
+   * already won releases the body instead of starting a doomed read.
+   */
+  async readBody<T>(response: Response, read: () => Promise<T>): Promise<T> {
     const settled = this.failure();
-    if (settled !== undefined) throw settled;
+    if (settled !== undefined) {
+      await discardResponseBody(response, settled);
+      throw settled;
+    }
+    const work = read();
+    // Keep the read observed even when the race below is lost, so a body rejection
+    // can never surface as unhandled.
+    void work.catch(() => undefined);
     let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_resolve, reject) => {
       onAbort = (): void => { reject(this.failure() ?? new Error(REMOTE_REQUEST_TIMEOUT_MESSAGE)); };
@@ -344,10 +359,18 @@ function readableFromWebResponseBody(body: Response["body"]): Readable {
 }
 
 function mapRemoteFetchFailure(error: unknown): RemoteMachineRequestError {
-  if (isAbortError(error)) return new RemoteMachineRequestError(REMOTE_REQUEST_TIMEOUT_MESSAGE, 504);
+  // Only the request's own recorded deadline maps to 504; every other rejection,
+  // including an unowned AbortError, keeps its diagnostic as a 502.
   return new RemoteMachineRequestError(error instanceof Error ? error.message : String(error), 502);
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+/** Releases a response body nobody will read, observing any rejection from cleanup. */
+async function discardResponseBody(response: Response, reason: Error): Promise<void> {
+  const body = response.body;
+  if (body === null) return;
+  try {
+    await body.cancel(reason);
+  } catch {
+    // The body already settled or is locked by another reader.
+  }
 }

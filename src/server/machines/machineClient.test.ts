@@ -160,6 +160,67 @@ describe("RemoteMachineClient request deadlines", () => {
     const networkPending = client.request("GET", "/sessions");
     fetchImpl.rejectLatest(new Error("connection refused"));
     await expect(networkPending).rejects.toMatchObject({ statusCode: 502, message: "connection refused" });
+
+    // A transport abort nobody in this client owns is not this client's deadline.
+    const unownedPending = client.request("GET", "/sessions");
+    fetchImpl.rejectLatest(new DOMException("transport aborted independently", "AbortError"));
+    await expect(unownedPending).rejects.toMatchObject({ statusCode: 502, message: "transport aborted independently" });
+  });
+
+  it("stops before reading a JSON body when the caller already cancelled", async () => {
+    const body = deferredTextBody();
+    const caller = new AbortController();
+    const fetchImpl = new DeferredFetch();
+    const client = new RemoteMachineClient(remoteMachine(), fetchImpl.fetchImpl);
+    const pending = client.requestJson("GET", "/config", undefined, { signal: caller.signal });
+
+    // The abort lands after the client's header continuation but before requestJson
+    // starts consuming the body, so the body read must never begin.
+    fetchImpl.resolveHeaders(body.response);
+    await Promise.resolve();
+    const reason = new Error("cancel before read");
+    caller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(body.textStarted).toBe(false);
+    expect(body.cancelled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("disposes a response body that arrives after cancellation already won", async () => {
+    const body = deferredReadableBody();
+    const caller = new AbortController();
+    let deliver: ((response: Response) => void) | undefined;
+    // This fetch ignores the abort signal, so headers can land after cancellation.
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { deliver = resolve; }));
+    const client = new RemoteMachineClient(remoteMachine(5_000), fetchImpl);
+    const pending = client.request("GET", "/sessions", undefined, { signal: caller.signal });
+
+    const reason = new Error("caller stopped");
+    caller.abort(reason);
+    deliver?.(body.response);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(body.cancelled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("keeps the caller reason when a late response body refuses cleanup", async () => {
+    const body = deferredReadableBody(200, { rejectCancel: true });
+    const caller = new AbortController();
+    let deliver: ((response: Response) => void) | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { deliver = resolve; }));
+    const client = new RemoteMachineClient(remoteMachine(), fetchImpl);
+    const pending = client.request("GET", "/sessions", undefined, { signal: caller.signal });
+
+    const reason = new Error("caller stopped");
+    caller.abort(reason);
+    deliver?.(body.response);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(body.cancelled).toBe(true);
   });
 
   it("keeps requestJson caller cancellation until body completion", async () => {
@@ -257,12 +318,15 @@ function settleDeferredBodies(): void {
   for (const cleanup of deferredBodyCleanups.splice(0)) cleanup();
 }
 
-function deferredReadableBody(status = 200) {
+function deferredReadableBody(status = 200, options: { rejectCancel?: boolean } = {}) {
   const state: { controller?: ReadableStreamDefaultController<Uint8Array> } = {};
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) { state.controller = controller; },
-    cancel() { cancelled = true; },
+    cancel() {
+      cancelled = true;
+      if (options.rejectCancel === true) throw new Error("body cleanup refused");
+    },
   });
   const settle = (): void => {
     try {
@@ -283,8 +347,10 @@ function deferredReadableBody(status = 200) {
 
 function deferredTextBody() {
   const state: { controller?: ReadableStreamDefaultController<Uint8Array> } = {};
+  let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) { state.controller = controller; },
+    cancel() { cancelled = true; },
   });
   const response = new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
   let textStarted = false;
@@ -304,6 +370,7 @@ function deferredTextBody() {
   return {
     response,
     get textStarted() { return textStarted; },
+    get cancelled() { return cancelled; },
     write(text: string) {
       state.controller?.enqueue(new TextEncoder().encode(text));
       settle();
