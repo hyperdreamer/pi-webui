@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { piWebUiDataDir } from "../../config.js";
+import { validateMachineRequestTimeoutMs } from "../../shared/machineRequestTimeout.js";
 
 export interface StoredMachine {
   id: string;
@@ -10,6 +11,7 @@ export interface StoredMachine {
   baseUrl: string;
   token?: string;
   headers?: Record<string, string>;
+  requestTimeoutMs?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,7 +39,8 @@ export class MachineStore {
     return (await this.read()).machines;
   }
 
-  async add(input: { name: string; baseUrl: string; token?: string; headers?: Record<string, string> }): Promise<StoredMachine> {
+  async add(input: { name: string; baseUrl: string; token?: string; headers?: Record<string, string>; requestTimeoutMs?: number }): Promise<StoredMachine> {
+    const requestTimeoutMs = optionalRequestTimeout(input);
     const data = await this.read();
     const now = new Date().toISOString();
     const machine: StoredMachine = {
@@ -47,6 +50,7 @@ export class MachineStore {
       baseUrl: input.baseUrl,
       ...(input.token === undefined ? {} : { token: input.token }),
       ...(input.headers === undefined ? {} : { headers: input.headers }),
+      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
       createdAt: now,
       updatedAt: now,
     };
@@ -55,13 +59,19 @@ export class MachineStore {
     return machine;
   }
 
-  async update(id: string, patch: Partial<Pick<StoredMachine, "name" | "baseUrl" | "token" | "headers">>): Promise<StoredMachine | undefined> {
+  async update(id: string, patch: Partial<Pick<StoredMachine, "name" | "baseUrl" | "token" | "headers" | "requestTimeoutMs">>): Promise<StoredMachine | undefined> {
+    const requestTimeoutMs = optionalRequestTimeout(patch);
     const data = await this.read();
     const index = data.machines.findIndex((machine) => machine.id === id);
     if (index < 0) return undefined;
     const current = data.machines[index];
     if (current === undefined) return undefined;
-    const next: StoredMachine = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    const next: StoredMachine = {
+      ...current,
+      ...patch,
+      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+      updatedAt: new Date().toISOString(),
+    };
     data.machines[index] = next;
     await this.write(data);
     return next;
@@ -110,7 +120,13 @@ function parseStoredMachine(value: unknown): StoredMachine {
   if (typeof id !== "string" || typeof name !== "string" || kind !== "remote" || typeof baseUrl !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string") throw new Error("Invalid machine");
   const token = optionalString(value["token"], "token");
   const headers = optionalStringRecord(value["headers"], "headers");
-  return { id, name, kind, baseUrl, createdAt, updatedAt, ...(token === undefined ? {} : { token }), ...(headers === undefined ? {} : { headers }) };
+  const requestTimeoutMs = optionalRequestTimeout(value);
+  return { id, name, kind, baseUrl, createdAt, updatedAt, ...(token === undefined ? {} : { token }), ...(headers === undefined ? {} : { headers }), ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }) };
+}
+
+function optionalRequestTimeout(record: { requestTimeoutMs?: unknown }): number | undefined {
+  if (!Object.hasOwn(record, "requestTimeoutMs")) return undefined;
+  return validateMachineRequestTimeoutMs(record.requestTimeoutMs);
 }
 
 function optionalString(value: unknown, key: string): string | undefined {
