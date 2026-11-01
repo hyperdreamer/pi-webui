@@ -1,7 +1,7 @@
 source_plan:
   path: "docs/superpowers/plans/2026-11-01-remote-http-timeout-resilience.md"
-  sha256: "b4551453a087b0f825cedb635e103a7ff599a59ec732fe3974e3404921ab051c"
-  commit_oid: "1218f6e228752fc4e8501c7a35289402d82ff09c"
+  sha256: "144cce97db95aa3ba3b75871814fcf19b73ae0b3e1cfb429d9dd04e45bc7a385"
+  commit_oid: "24c78bfe3e3d165017dc524b1a0d94e6f64f4b6e"
   task_count: 11
 tasks:
   - id: T-001
@@ -149,7 +149,7 @@ tasks:
     lane: "selection-retry"
     sequence: 1
     depends_on: [T-006]
-    owns: ["src/client/src/appState.ts", "src/client/src/controllers/workspaceController.ts", "src/client/src/controllers/workspaceController.test.ts", "src/client/src/controllers/workspaceController.cancellation.test.ts", "src/client/src/controllers/sessionController.ts", "src/client/src/controllers/sessionController.refresh.test.ts"]
+    owns: ["src/client/src/appState.ts", "src/client/src/controllers/workspaceController.ts", "src/client/src/controllers/workspaceController.test.ts", "src/client/src/controllers/workspaceController.cancellation.test.ts", "src/client/src/controllers/workspaceController.sessionLists.test.ts", "src/client/src/controllers/sessionController.ts", "src/client/src/controllers/sessionController.refresh.test.ts"]
     exclusive_resources: []
     interfaces:
       produces: [I8]
@@ -159,6 +159,9 @@ tasks:
         cwd: "."
         timeout_seconds: 900
       - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/workspaceController.cancellation.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/workspaceController.sessionLists.test.ts"]
         cwd: "."
         timeout_seconds: 900
       - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/sessionController.refresh.test.ts"]
