@@ -1512,6 +1512,46 @@ describe("WorkspaceController session list operation ownership", () => {
     expect(fixture.state.sessionListFailure).toBeUndefined();
     expect(fixture.state.sessionListLoad).toBeUndefined();
   });
+
+  // Ownership also scopes the success publication: a same-workspace selection
+  // that opens its own read while a retry's rows are being applied owns the
+  // loading indicator, so the retry's completion must leave it alone.
+  it("keeps a newer selection's loading state when a superseded retry applies rows", async () => {
+    const applyGate = deferred<undefined>();
+    const fixture = createSessionListHarness(remoteLabMachine, { applyGate: applyGate.promise });
+    const failing = fixture.controller.selectWorkspace(remoteWorkspace);
+    fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await failing;
+    expect(fixture.state.sessionListFailure).toMatchObject({ kind: "timeout" });
+
+    const retry = fixture.controller.retrySessionList();
+    expect(fixture.reads).toHaveLength(2);
+    fixture.reads[1]?.resolve([remoteSession]);
+
+    // The retry has applied its rows and is suspended inside that application.
+    await vi.waitFor(() => {
+      expect(fixture.recording.applyCalls).toEqual([
+        { cwd: remoteWorkspace.path, machineId: "remote-lab", preserveSelection: true },
+      ]);
+    });
+
+    const reselection = fixture.controller.selectWorkspace(remoteWorkspace);
+    expect(fixture.reads).toHaveLength(3);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "selection" });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+
+    applyGate.resolve(undefined);
+    await retry;
+
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "selection" });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+
+    fixture.reads[2]?.resolve([]);
+    await reselection;
+
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(false);
+  });
 });
 
 type WorkspaceApi = NonNullable<WorkspaceControllerDependencies["api"]>;
@@ -1675,7 +1715,7 @@ interface RecordedApplyCall {
 
 function createSessionListHarness(
   machine: Machine | undefined,
-  input: { state?: Partial<AppState>; now?: () => number } = {},
+  input: { state?: Partial<AppState>; now?: () => number; applyGate?: Promise<void> } = {},
 ) {
   const state: AppState = {
     ...initialAppState(),
@@ -1704,7 +1744,7 @@ function createSessionListHarness(
     {
       applyRefreshedSessionLists: (lists, machineId, options) => {
         for (const list of lists) applyCalls.push({ cwd: list.cwd, machineId, preserveSelection: options?.preserveSelection });
-        return Promise.resolve();
+        return input.applyGate ?? Promise.resolve();
       },
       clearActiveSession: () => { streamCalls.push("clear"); },
       preferredSession: () => undefined,

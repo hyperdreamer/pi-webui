@@ -294,6 +294,11 @@ export class WorkspaceController {
         { preserveSelection: true },
       );
       applied = true;
+      // Ownership is rechecked after the awaited application. A newer read of
+      // the same scope, such as a same-workspace reselection, can be admitted
+      // while these rows are applied, and it owns the loading indicator its own
+      // read opened. Publishing success here would clear it early.
+      if (!this.ownsSessionListOperation(operation)) return;
       this.setState({ isLoadingSessions: false });
     } catch (error) {
       if (isLoadCancellation(error)) return;
