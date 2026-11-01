@@ -223,6 +223,76 @@ describe("RemoteMachineClient request deadlines", () => {
     expect(body.cancelled).toBe(true);
   });
 
+  it("propagates the owned reason at late headers without waiting for body cleanup", async () => {
+    const body = deferredReadableBody(200, { pendingCancel: true });
+    const caller = new AbortController();
+    let deliver: ((response: Response) => void) | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { deliver = resolve; }));
+    const client = new RemoteMachineClient(remoteMachine(5_000), fetchImpl);
+    const pending = client.request("GET", "/sessions", undefined, { signal: caller.signal });
+    const outcome = observeSettlement(pending);
+
+    const reason = new Error("caller stopped");
+    caller.abort(reason);
+    deliver?.(body.response);
+
+    await flushPromises();
+
+    // Cleanup is only started; it may stay pending forever behind a tee'd sibling.
+    expect(outcome.value()).toStrictEqual({ status: "rejected", value: reason });
+    expect(body.cancelled).toBe(true);
+    expect(body.cancelSettled).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("propagates the owned reason at the JSON handoff without waiting for body cleanup", async () => {
+    const body = deferredTextBody({ pendingCancel: true });
+    const caller = new AbortController();
+    const fetchImpl = new DeferredFetch();
+    const client = new RemoteMachineClient(remoteMachine(), fetchImpl.fetchImpl);
+    const pending = client.requestJson("GET", "/config", undefined, { signal: caller.signal });
+    const outcome = observeSettlement(pending);
+
+    fetchImpl.resolveHeaders(body.response);
+    await Promise.resolve();
+    const reason = new Error("cancel before read");
+    caller.abort(reason);
+
+    await flushPromises();
+
+    expect(outcome.value()).toStrictEqual({ status: "rejected", value: reason });
+    expect(body.textStarted).toBe(false);
+    expect(body.cancelled).toBe(true);
+    expect(body.cancelSettled).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+  });
+
+  it("propagates the owned reason for a native cloned response with an unfinished sibling", async () => {
+    const source = new Response(new ReadableStream<Uint8Array>(), { status: 200 });
+    const sibling = source.clone();
+    const caller = new AbortController();
+    let deliver: ((response: Response) => void) | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { deliver = resolve; }));
+    const client = new RemoteMachineClient(remoteMachine(), fetchImpl);
+    const pending = client.request("GET", "/sessions", undefined, { signal: caller.signal });
+    const outcome = observeSettlement(pending);
+
+    const reason = new Error("caller stopped");
+    caller.abort(reason);
+    deliver?.(source);
+
+    await flushPromises();
+
+    // A tee branch's cancel resolves only once its sibling cancels too.
+    expect(outcome.value()).toStrictEqual({ status: "rejected", value: reason });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+
+    await sibling.body?.cancel();
+  });
+
   it("keeps requestJson caller cancellation until body completion", async () => {
     const body = deferredTextBody();
     const caller = new AbortController();
@@ -318,14 +388,30 @@ function settleDeferredBodies(): void {
   for (const cleanup of deferredBodyCleanups.splice(0)) cleanup();
 }
 
-function deferredReadableBody(status = 200, options: { rejectCancel?: boolean } = {}) {
-  const state: { controller?: ReadableStreamDefaultController<Uint8Array> } = {};
+interface DeferredBodyOptions {
+  rejectCancel?: boolean;
+  /** Leaves the source cancel promise pending until test cleanup releases it. */
+  pendingCancel?: boolean;
+}
+
+function deferredReadableBody(status = 200, options: DeferredBodyOptions = {}) {
+  const state: { controller?: ReadableStreamDefaultController<Uint8Array>; releaseCancel?: () => void } = {};
   let cancelled = false;
+  let cancelSettled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) { state.controller = controller; },
     cancel() {
       cancelled = true;
+      if (options.pendingCancel === true) {
+        return new Promise<void>((resolve) => {
+          state.releaseCancel = () => {
+            cancelSettled = true;
+            resolve();
+          };
+        });
+      }
       if (options.rejectCancel === true) throw new Error("body cleanup refused");
+      return undefined;
     },
   });
   const settle = (): void => {
@@ -334,23 +420,37 @@ function deferredReadableBody(status = 200, options: { rejectCancel?: boolean } 
     } catch {
       // The stream already settled or was cancelled.
     }
+    state.releaseCancel?.();
   };
   deferredBodyCleanups.push(settle);
   return {
     response: new Response(stream, { status, headers: { "content-type": "application/octet-stream" } }),
     get cancelled() { return cancelled; },
+    get cancelSettled() { return cancelSettled; },
     fail(error: Error) {
       state.controller?.error(error);
     },
   };
 }
 
-function deferredTextBody() {
-  const state: { controller?: ReadableStreamDefaultController<Uint8Array> } = {};
+function deferredTextBody(options: DeferredBodyOptions = {}) {
+  const state: { controller?: ReadableStreamDefaultController<Uint8Array>; releaseCancel?: () => void } = {};
   let cancelled = false;
+  let cancelSettled = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) { state.controller = controller; },
-    cancel() { cancelled = true; },
+    cancel() {
+      cancelled = true;
+      if (options.pendingCancel === true) {
+        return new Promise<void>((resolve) => {
+          state.releaseCancel = () => {
+            cancelSettled = true;
+            resolve();
+          };
+        });
+      }
+      return undefined;
+    },
   });
   const response = new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
   let textStarted = false;
@@ -365,12 +465,14 @@ function deferredTextBody() {
     } catch {
       // The stream already settled or was cancelled.
     }
+    state.releaseCancel?.();
   };
   deferredBodyCleanups.push(settle);
   return {
     response,
     get textStarted() { return textStarted; },
     get cancelled() { return cancelled; },
+    get cancelSettled() { return cancelSettled; },
     write(text: string) {
       state.controller?.enqueue(new TextEncoder().encode(text));
       settle();
@@ -380,6 +482,21 @@ function deferredTextBody() {
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => { setImmediate(resolve); });
+}
+
+interface Settlement {
+  status: "fulfilled" | "rejected";
+  value: unknown;
+}
+
+/** Records a promise's outcome without awaiting it, so a hang stays observable. */
+function observeSettlement<T>(promise: Promise<T>): { value: () => Settlement | undefined } {
+  let settlement: Settlement | undefined;
+  void promise.then(
+    (value) => { settlement = { status: "fulfilled", value }; },
+    (error: unknown) => { settlement = { status: "rejected", value: error }; },
+  );
+  return { value: () => settlement };
 }
 
 function onceStreamError(stream: NodeJS.ReadableStream): Promise<unknown> {

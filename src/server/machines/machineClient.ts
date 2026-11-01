@@ -123,9 +123,9 @@ export class RemoteMachineClient implements MachineClient {
       cancellation.headersArrived();
       const failure = cancellation.failure();
       if (failure !== undefined) {
-        // Cancellation already won, so nobody will read this body; release it before
-        // propagating the owned reason.
-        await discardResponseBody(response, failure);
+        // Cancellation already won, so nobody will read this body. Cleanup is only
+        // started here: the reason below is already owned and must not wait for it.
+        discardResponseBody(response, failure);
         throw failure;
       }
       return { response, cancellation };
@@ -221,7 +221,7 @@ class RemoteRequestCancellation {
   async readBody<T>(response: Response, read: () => Promise<T>): Promise<T> {
     const settled = this.failure();
     if (settled !== undefined) {
-      await discardResponseBody(response, settled);
+      discardResponseBody(response, settled);
       throw settled;
     }
     const work = read();
@@ -364,12 +364,17 @@ function mapRemoteFetchFailure(error: unknown): RemoteMachineRequestError {
   return new RemoteMachineRequestError(error instanceof Error ? error.message : String(error), 502);
 }
 
-/** Releases a response body nobody will read, observing any rejection from cleanup. */
-async function discardResponseBody(response: Response, reason: Error): Promise<void> {
+/**
+ * Starts releasing a response body nobody will read and observes its eventual
+ * rejection, without reporting completion. A tee'd or slow source can keep the
+ * cancel promise pending indefinitely, so propagation of the reason this request
+ * already owns must never depend on it.
+ */
+function discardResponseBody(response: Response, reason: Error): void {
   const body = response.body;
   if (body === null) return;
   try {
-    await body.cancel(reason);
+    void body.cancel(reason).catch(() => undefined);
   } catch {
     // The body already settled or is locked by another reader.
   }
