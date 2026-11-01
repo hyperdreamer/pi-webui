@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import type { FastifyReply } from "fastify";
@@ -211,6 +212,15 @@ describe("buildApp PI WEBUI plugin routes", () => {
     expect(manifest.options()?.signal?.aborted).toBe(true);
     expect(observer.writes).toEqual([]);
     expect(observer.raw.listenerCount("finish")).toBe(0);
+  });
+
+  it("propagates invalid machine registry errors from manifest lookup", async () => {
+    await writeFile(`${appTestContext.tempDir}/machines.json`, JSON.stringify({ machines: "invalid" }), "utf8");
+
+    const response = await appTestContext.app.inject({ method: "GET", url: "/api/machines/remote-a/pi-webui-plugins/manifest.json" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toContain("Invalid machine file");
   });
 
   it("accepts manifest-relative and legacy plugin-root-relative modules while dropping unsafe remote modules", async () => {

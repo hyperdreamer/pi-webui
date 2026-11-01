@@ -48,14 +48,33 @@ export async function proxyMachinePluginManifest(
   // The manifest is a remote read, so the browser's reply owns its cancellation.
   // Its separate budget stays as it is: this route never widens to the machine one.
   const disconnect = createReplyDisconnectScope(reply);
-  const read = await readRemotePluginManifest(machines, machineId, disconnect.signal);
-  // The manifest is fully buffered, so the signal has no work left to cancel.
-  disconnect.dispose();
+  const isDisconnected = (): boolean => disconnect.signal.aborted;
+  let read: RemotePluginManifestRead;
+  try {
+    let client: MachineClient | undefined;
+    try {
+      client = await machines.remoteClient(machineId);
+    } catch (error) {
+      // Preserve Fastify's original error handling for registry/lookup failures,
+      // while still suppressing work that raced with a disconnected reply.
+      if (isDisconnected()) return await reply;
+      throw error;
+    }
+    if (client === undefined) {
+      if (isDisconnected()) return await reply;
+      return await reply.code(404).send({ error: "Machine not found" });
+    }
+    if (isDisconnected()) return await reply;
 
-  // A disconnected client is not a gateway failure, and nobody is left to answer it.
-  if (disconnect.signal.aborted) return reply;
+    read = await readRemotePluginManifest(client, machineId, disconnect.signal);
+    // A disconnected client is not a gateway failure, and nobody is left to answer it.
+    if (isDisconnected()) return await reply;
+  } finally {
+    // The manifest is fully buffered, so the signal has no work left to cancel.
+    disconnect.dispose();
+  }
+
   switch (read.outcome) {
-    case "machine-not-found": return reply.code(404).send({ error: "Machine not found" });
     case "upstream": return reply.code(read.statusCode).send(read.body);
     case "manifest": return read.manifest;
     case "failed": return sendGatewayError(reply, machineId, read.error);
@@ -63,20 +82,16 @@ export async function proxyMachinePluginManifest(
 }
 
 type RemotePluginManifestRead =
-  | { readonly outcome: "machine-not-found" }
   | { readonly outcome: "upstream"; readonly statusCode: number; readonly body: unknown }
   | { readonly outcome: "manifest"; readonly manifest: RemotePluginManifest }
   | { readonly outcome: "failed"; readonly error: unknown };
 
 async function readRemotePluginManifest(
-  machines: MachinePluginProxyMachines,
+  client: MachineClient,
   machineId: string,
   signal: AbortSignal,
 ): Promise<RemotePluginManifestRead> {
   try {
-    const client = await machines.remoteClient(machineId);
-    if (client === undefined) return { outcome: "machine-not-found" };
-
     const response = await client.requestJson("GET", "/pi-webui-plugins/manifest.json", undefined, {
       timeoutMs: MACHINE_PLUGIN_MANIFEST_TIMEOUT_MS,
       signal,
