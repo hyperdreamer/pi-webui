@@ -3,7 +3,7 @@ import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import { SESSION_EXTENSION_ENTRY_LIMIT, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SESSION_ONLY } from "../../../shared/apiTypes";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES } from "../../../shared/speechInputAudio";
-import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseSpeechInputSettingsResponse, parseSpeechInputTranscribeResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionExtensionEntries, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
+import { parseAuthProvidersResponse, parseCommandResult, parseFileContentResponse, parseFileSuggestion, parseGitStatusResponse, parseHostSpeechStatus, parseHostSpeechStopResponse, parseHostSpeechTerminalResult, parseLearnedSkillsSnapshotResponse, parseMachine, parseMachineRuntime, parseMemorySnapshotResponse, parseMessagePage, parseModelTierSettingsResponse, parseSpeechInputSettingsResponse, parseSpeechInputTranscribeResponse, parseUtilityModelSettingsResponse, parseOAuthFlowState, parsePiPackageMutationResponse, parsePiPackagesResponse, parsePiWebUiConfigResponse, parsePiWebUiPluginsResponse, parsePiWebUiRuntimeResponse, parsePiWebUiStatusResponse, parseSessionBulkArchiveResponse, parseSessionBulkDeleteArchivedResponse, parseSessionCleanupExecuteResponse, parseSessionCleanupPreviewResponse, parseSessionDefaultsResponse, parseSessionDefaultsV2Response, parseSessionInfo, parseSessionMessageForkResult, parseSessionModelPolicyResponse, parseSessionReorderResponse, parseSessionNotificationInboxEvent, parseSessionNotificationInboxSnapshot, parseSessionStatus, parseSessionStreamSnapshot, parseSessionExtensionEntries, parseSessionSystemPrompt, parseSessionTreeNavigateResult, parseSessionTreeSnapshot, parseSessionUnreadCatalogSnapshot, parseSessionUnreadEvent, parseSlashCommand, parseSystemInfoResponse, parseSystemMetricsResponse, parseTerminalCommandRun, parseTerminalInfo, parseWorkspace, parseWorkspaceActivityResponse } from "./parsers";
 
 describe("session extension entries parser", () => {
   const entry = (id: string) => ({ customType: "task-plan", data: { revision: 1 }, entryId: id, timestamp: "2026-01-01T00:00:00.000Z" });
@@ -2015,3 +2015,29 @@ function runtimeResponseWithListener(listener: unknown, owner: "web" | "sessiond
     capabilities: [],
   };
 }
+
+describe("machine parser", () => {
+  const remoteMachineJson = {
+    id: "remote-lab",
+    name: "Remote Lab",
+    kind: "remote",
+    baseUrl: "https://lab.example.test",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("parses optional machine patience additively and rejects malformed presence", () => {
+    expect(parseMachine({ ...remoteMachineJson, requestTimeoutMs: 5_000 })).toHaveProperty("requestTimeoutMs", 5_000);
+    expect(parseMachine(remoteMachineJson)).not.toHaveProperty("requestTimeoutMs");
+    expect(() => parseMachine({ ...remoteMachineJson, requestTimeoutMs: undefined, extra: true })).toThrow();
+    expect(() => parseMachine({ ...remoteMachineJson, requestTimeoutMs: 180_001 })).toThrow();
+    expect(parseMachine({ ...remoteMachineJson, extra: "accepted" })).toMatchObject({ id: "remote-lab" });
+  });
+
+  it.each([null, "120000", true, 5_000.5, Number.NaN, Number.POSITIVE_INFINITY, 4_999, 0, {}])(
+    "rejects malformed requestTimeoutMs %s",
+    (requestTimeoutMs) => {
+      expect(() => parseMachine({ ...remoteMachineJson, requestTimeoutMs })).toThrow();
+    },
+  );
+});

@@ -3,7 +3,7 @@ import { PI_WEBUI_CAPABILITIES } from "../../../shared/capabilities";
 import type { HostSpeechSpeakRequest, ModelTierLadder, PiWebUiConfigValues, SpeechInputSettingsUpdate, StarterModelPolicyPreference, TerminalCommandRun, UtilityModelSettingsUpdate, Workspace } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SESSION_ONLY } from "../../../shared/apiTypes";
 import { SPEECH_INPUT_MAX_TRANSCRIPT_BYTES, type SpeechInputAudioMimeType } from "../../../shared/speechInputAudio";
-import { api, configApi, filesApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, speechInputApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
+import { api, configApi, filesApi, gitApi, learnedSkillsApi, machinesApi, memoryApi, modelTiersApi, modelsConfigApi, piPackagesApi, piWebUiApi, pluginsApi, projectsApi, sessionsApi, skillsConfigApi, speechInputApi, terminalsApi, ttsApi, utilityModelsApi, workspacesApi } from "./clients";
 import { HttpRequestError } from "./http";
 
 const workspace: Workspace = {
@@ -50,6 +50,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("host speech API", () => {
@@ -1420,6 +1421,59 @@ describe("workspace file write API", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url] = fetchCall(fetchMock, 0);
     expect(url).toContain("api/machines/remote%20a/");
+  });
+});
+
+describe("machine API", () => {
+  const remoteMachineJson = {
+    id: "remote-lab",
+    name: "Remote Lab",
+    kind: "remote",
+    baseUrl: "https://lab.example.test",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("patches a machine through an encoded application relative path", async () => {
+    vi.stubEnv("BASE_URL", "./");
+    vi.stubGlobal("document", { baseURI: "https://pi.example.test/nested/pi-webui/" });
+    const fetchMock = stubJsonFetch(remoteMachineJson);
+
+    await expect(machinesApi.updateMachine("lab/with space", { name: "Remote Lab", requestTimeoutMs: 90_000 }))
+      .resolves.toEqual(remoteMachineJson);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchCall(fetchMock, 0);
+    expect(url).toBe("https://pi.example.test/nested/pi-webui/api/machines/lab%2Fwith%20space");
+    expect(init).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({ name: "Remote Lab", requestTimeoutMs: 90_000 }),
+    });
+  });
+
+  it("forwards one read signal and session response start without installing deadlines", async () => {
+    const signal = new AbortController().signal;
+    const onResponse = vi.fn();
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const fetchMock = stubSequenceFetch([
+      jsonResponse([]),
+      jsonResponse({ kind: "unavailable" }),
+      jsonResponse({ kind: "unavailable" }),
+      jsonResponse({ isGitRepo: true, hash: "abc123", files: [] }),
+      jsonResponse({ path: "file.ts", staged: false, hash: "abc123", diff: "", truncated: false }),
+    ]);
+
+    await sessionsApi.sessions("/repo", "remote-lab", signal, onResponse);
+    await memoryApi.snapshot("/repo", "remote-lab", signal);
+    await learnedSkillsApi.snapshot("/repo", "remote-lab", signal);
+    await gitApi.gitStatus("project 1", "workspace 1", "remote-lab", signal);
+    await gitApi.gitDiff("project 1", "workspace 1", { path: "file.ts" }, "remote-lab", signal);
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock.mock.calls.every((call) => call[1]?.signal === signal)).toBe(true);
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(onResponse.mock.calls[0]?.[0]).toBeInstanceOf(Response);
+    expect(timeoutSpy).not.toHaveBeenCalled();
   });
 });
 

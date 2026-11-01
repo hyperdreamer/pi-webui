@@ -6,6 +6,7 @@ import type { ClientSessionModelPolicyStatus, ExactModelSelection, SessionModelP
 import type { SpeechInputSettings, SpeechInputSettingsResponse, SpeechInputTranscribeResponse } from "../../../shared/apiTypes";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
+import { validateMachineRequestTimeoutMs } from "../../../shared/machineRequestTimeout";
 import type { SkillInfo, SkillInstallInfo, SkillInstallScope, SkillMutationResponse, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillUpdateResponse, SkillUpdateResult, SkillUpdateState } from "../../../shared/apiTypes";
 import { MODEL_TIERS, RECENT_PROJECT_LIMIT, UTILITY_MODEL_SLOTS } from "../../../shared/apiTypes";
 import { UTILITY_MODEL_SESSION_ONLY } from "../../../shared/apiTypes";
@@ -215,12 +216,15 @@ export function parseMachinesResponse(value: unknown): Machine[] {
   return arrayOf(parseMachine)(record["machines"]);
 }
 
-export function parseMachine(value: unknown): Machine {
+export function parseMachine(value: unknown): Machine & { requestTimeoutMs?: number } {
   const record = requireRecord(value);
   const kind = requireMachineKind(record, "kind");
   const baseUrl = optionalString(record, "baseUrl");
   const status = optionalMachineStatus(record, "status");
   const statusMessage = optionalString(record, "statusMessage");
+  const requestTimeoutMs = Object.hasOwn(record, "requestTimeoutMs")
+    ? validateMachineRequestTimeoutMs(record["requestTimeoutMs"])
+    : undefined;
   return {
     id: requireString(record, "id"),
     name: requireString(record, "name"),
@@ -230,6 +234,7 @@ export function parseMachine(value: unknown): Machine {
     updatedAt: requireString(record, "updatedAt"),
     ...(status === undefined ? {} : { status }),
     ...(statusMessage === undefined ? {} : { statusMessage }),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   };
 }
 

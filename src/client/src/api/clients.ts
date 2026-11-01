@@ -1,4 +1,4 @@
-import type { DeleteWorkspaceFileResponse, FileSuggestion, HostSpeechSpeakRequest, HostSpeechStatus, HostSpeechStopResponse, HostSpeechTerminalResult, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, ModelsConfigSaveResponse, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
+import type { DeleteWorkspaceFileResponse, FileSuggestion, HostSpeechSpeakRequest, HostSpeechStatus, HostSpeechStopResponse, HostSpeechTerminalResult, Machine, MachineCreateRequest, MachineUpdateRequest, ModelConnectionTestRequest, ModelDiscoveryRequest, ModelsConfigDocument, ModelsConfigSaveResponse, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebUiConfigValues, PromptAttachment, ProjectUsageCountRequest, ProjectUsageCountResponse, ProjectUsageRequest, ProjectUsageResponse, RecentProjectEntry, RunTerminalCommandInput, SessionBulkMutationRef, SessionCleanupRequest, SessionNotificationDismissThrough, SessionRef, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, TerminalCommandRun, TerminalCommandRunFilter, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import type { PiPackagePluginMutationRequest, PiPackagePluginsResponse } from "../../../shared/apiTypes";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { SessionReorderRequest } from "../../../shared/apiTypes";
@@ -13,7 +13,7 @@ import type { MemorySnapshotResponse } from "../../../shared/apiTypes";
 import type { LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
 import type { SkillCheckRequest, SkillInstallRequest, SkillMutationResponse, SkillSearchRequest, SkillSearchResponse, SkillsCheckResponse, SkillsResponse, SkillToggleRequest, SkillUpdateRequest, SkillUpdateResponse } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
-import { request, requestJson } from "./http";
+import { request, requestJson, type ResponseStarted } from "./http";
 import { modelsConfigErrorFromBody } from "./modelsConfigError";
 import {
   arrayOf,
@@ -223,7 +223,8 @@ function parseSpeechInputPolishResponse(value: unknown): string {
 }
 export const machinesApi = {
   machines: () => request("api/machines", parseMachinesResponse),
-  addMachine: (input: { name: string; baseUrl: string; token?: string }) => request("api/machines", parseMachine, { method: "POST", body: JSON.stringify(input) }),
+  addMachine: (input: MachineCreateRequest) => request("api/machines", parseMachine, { method: "POST", body: JSON.stringify(input) }),
+  updateMachine: (machineId: string, patch: MachineUpdateRequest): Promise<Machine> => request(`api/machines/${encodeURIComponent(machineId)}`, parseMachine, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteMachine: (machineId: string) => request(`api/machines/${encodeURIComponent(machineId)}`, (value) => value, { method: "DELETE" }),
   health: (machineId: string) => request(`api/machines/${encodeURIComponent(machineId)}/health`, parseMachineHealth),
   runtime: (machineId: string, refresh = false) => request(`api/machines/${encodeURIComponent(machineId)}/runtime${refresh ? "?refresh=1" : ""}`, parseMachineRuntime, refresh ? { cache: "no-store" } : {}),
@@ -235,7 +236,7 @@ function memorySnapshotPath(projectPath: string, machineId = "local"): string {
 }
 
 export const memoryApi = {
-  snapshot: (projectPath: string, machineId = "local"): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse, { cache: "no-store" }),
+  snapshot: (projectPath: string, machineId = "local", signal?: AbortSignal): Promise<MemorySnapshotResponse> => request(memorySnapshotPath(projectPath, machineId), parseMemorySnapshotResponse, { cache: "no-store", ...(signal === undefined ? {} : { signal }) }),
 };
 
 function learnedSkillsSnapshotPath(projectPath: string, machineId = "local"): string {
@@ -244,7 +245,7 @@ function learnedSkillsSnapshotPath(projectPath: string, machineId = "local"): st
 }
 
 export const learnedSkillsApi = {
-  snapshot: (projectPath: string, machineId = "local"): Promise<LearnedSkillsSnapshotResponse> => request(learnedSkillsSnapshotPath(projectPath, machineId), parseLearnedSkillsSnapshotResponse, { cache: "no-store" }),
+  snapshot: (projectPath: string, machineId = "local", signal?: AbortSignal): Promise<LearnedSkillsSnapshotResponse> => request(learnedSkillsSnapshotPath(projectPath, machineId), parseLearnedSkillsSnapshotResponse, { cache: "no-store", ...(signal === undefined ? {} : { signal }) }),
 };
 
 function configPath(machineId?: string): string {
@@ -450,7 +451,7 @@ export const workspacesApi = {
 };
 
 export const sessionsApi = {
-  sessions: (cwd: string, machineId = "local", signal?: AbortSignal) => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo), abortable(signal)),
+  sessions: (cwd: string, machineId = "local", signal?: AbortSignal, onResponse?: ResponseStarted) => request(`${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`, arrayOf(parseSessionInfo), abortable(signal), onResponse),
   reorder: (session: SessionRef, input: SessionReorderRequest, machineId = "local") => request(sessionPath(session, "reorder", machineId), parseSessionReorderResponse, {
     method: "POST",
     body: JSON.stringify(input),
@@ -614,8 +615,8 @@ export const filesApi = {
 };
 
 export const gitApi = {
-  gitStatus: (projectId: string, workspaceId: string, machineId = "local") => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/git/status`, parseGitStatusResponse),
-  gitDiff: (projectId: string, workspaceId: string, options?: { path?: string; staged?: boolean }, machineId = "local") => request(machineGitDiffPath(machineId, projectId, workspaceId, options), parseGitDiffResponse),
+  gitStatus: (projectId: string, workspaceId: string, machineId = "local", signal?: AbortSignal) => request(`${machinePrefix(machineId)}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/git/status`, parseGitStatusResponse, abortable(signal)),
+  gitDiff: (projectId: string, workspaceId: string, options?: { path?: string; staged?: boolean }, machineId = "local", signal?: AbortSignal) => request(machineGitDiffPath(machineId, projectId, workspaceId, options), parseGitDiffResponse, abortable(signal)),
 };
 
 export const api = {
