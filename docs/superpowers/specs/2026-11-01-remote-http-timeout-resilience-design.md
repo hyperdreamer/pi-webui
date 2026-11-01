@@ -1,7 +1,7 @@
 # Remote HTTP Timeout Resilience Design
 
 **Date:** 2026-11-01
-**Status:** approved design (revision 2, after review round 1), awaiting implementation plan
+**Status:** approved design (revision 3, after review round 2), awaiting implementation plan
 
 ## Background
 
@@ -156,7 +156,10 @@ Rules: exactly one record at a time; it is replaced only by a newer read in the
 same scope; it is cleared on success, on failure (replaced by the failure record),
 and on selection change. The notice renders only for `owner` values a human
 initiated (`selection`, `retry`) — a catalog fallback stays silent, as it does
-today.
+today. The guards that already distinguish successive reads
+(`isCurrentWorkspaceSessionRequest` and the catalog guards) also govern these
+publications and the cleanup, so a superseded read can neither advance the phase
+nor clear a newer record.
 
 ### 4. Background abandonment and disconnect cancellation
 
@@ -190,8 +193,18 @@ disconnects:
   passes it through; `RemoteMachineClient` combines it with its own deadline.
 - The session-daemon proxy on the receiving side is a separate gateway; it gains
   the same treatment for its own hop, so cancellation chains where both ends are
-  current. Where the far gateway is older, its work continues to its own ceiling —
-  documented, not engineered around.
+  current.
+
+**What cancellation does and does not bound.** Disconnect propagation cancels
+this gateway's HTTP request, its socket, and its buffering of the upstream body.
+It does not cancel work the far side has already started: the daemon's session
+enumeration runs without a signal (`sessionRoutes.ts` calls `sessions.list(cwd)`,
+and `PiSessionService.list` awaits enumeration and store snapshots
+uncancellably). An older gateway may therefore continue awaiting and buffering
+its untimed daemon call after this gateway disconnects — and so may a current
+gateway, because the daemon call is not cancellable today. The guarantee this
+design makes is about transport, connections, and gateway buffering, not about the
+daemon's enumeration. (Review round 2, findings 2-residual and N2.)
 
 **Sites.** The exact call sites are pinned by the specification after inspecting
 each one. Current candidates, all of which pass no signal today:
@@ -223,12 +236,18 @@ is `selection` or `retry`.
 | done | — | the rows |
 
 The clock ticks once a second only while a load is in flight, shows elapsed from
-`startedAt`, and shows the budget captured in the load record. The transition from
-`waiting` to `receiving` comes from the transport reporting that the response has
-begun, which the API layer reports through a small optional callback rather than
-by inspecting the response twice. (Review round 1, finding 3: without this the
-notice would promise a two-minute deadline that stops applying the moment the far
-side answers.)
+`startedAt`, and shows the budget captured in the load record.
+
+The `waiting` → `receiving` transition must mark the exact moment the gateway's
+budget stops applying, which is when the upstream response headers arrive.
+Fastify's `reply.send(stream)` withholds headers until the first body chunk, so
+the streaming proxy path must forward and flush the upstream status and safe
+headers *before* piping the body: the browser has to be able to enter `receiving`
+before any body byte arrives. Without that, the countdown would keep running after
+its budget had already stopped applying. (Review round 2, findings 3-residual and
+N1.) The transport reports the transition through a small optional callback
+invoked when the response begins, before the body read, without inspecting or
+consuming the response twice.
 
 ### 6. Failure attribution and retry
 
@@ -243,14 +262,17 @@ sessionListFailure?: {
 }
 ```
 
-**No banner suppression.** The failure above owns its own display in the
-session-list section; `state.error` is not written by this read at all. That is
-simpler than suppression and removes the case where an unrelated later error is
-hidden behind a stale typed failure. Existing rules that key off `state.error`
-keep their present meaning, and `shouldShowSessionStartScreen` additionally
-requires that no typed session-list failure is present, so a failed load does not
-present a start screen that claims the workspace is empty. (Review round 1,
-findings 4 and 5.)
+**No banner suppression.** These two failures own their display in the
+session-list section, and for these two the read does not write `state.error` at
+all. That removes the case where an unrelated later error hides behind a stale
+typed failure, without changing any other reporting path: an unreachable machine
+(DNS, refused), a deleted machine, or any local-machine failure keeps publishing
+through `state.error` exactly as it does today, and cancellations stay silent.
+Existing rules that key off `state.error` keep their present meaning, and
+`shouldShowSessionStartScreen` additionally requires that no typed session-list
+failure is present, so a failed load does not present a start screen that claims
+the workspace is empty. (Review round 1, findings 4 and 5; narrowed after review
+round 2, finding N3.)
 
 **Try again** calls a dedicated `retrySessionList()` that re-reads only the
 session list for the current *(machine, project, workspace)* scope under the same
@@ -325,6 +347,10 @@ this part is genuinely new surface:
    abandoned refresh releases its upstream work too.
 7. **Retry storms.** **Try again** is a user action, not a timer; no automatic
    retry exists, so repeated slow loads cannot self-amplify.
+8. **Daemon enumeration is not cancellable.** A disconnected or superseded load
+   stops the transport and the buffering, but enumeration the daemon has already
+   begun runs to completion. This bounds the benefit of cancellation and is stated
+   as a limitation rather than engineered around.
 
 ## Test strategy
 
@@ -350,11 +376,15 @@ By layer, narrowest first:
 7. **Session-list notice:** appears only after 5 s, only for a remote machine,
    only for a human-initiated load; shows elapsed against the machine budget;
    switches to "receiving" when the response begins; stops on completion,
-   failure, and selection change.
+   failure, and selection change. One case is a delayed *first* body chunk: the
+   proxy must have flushed the upstream headers so the notice enters `receiving`
+   before any body byte arrives. Delaying body completion alone does not test
+   this.
 8. **Failure display:** the timeout failure renders in the session-list section
-   with both actions; `state.error` is untouched; the start screen stays hidden
-   while a typed failure is present; a subsequent unrelated error displays
-   normally.
+   with both actions; `state.error` is untouched for it; an unreachable-machine
+   or local-machine failure still appears in the existing banner; the start
+   screen stays hidden while a typed failure is present; a subsequent unrelated
+   error displays normally.
 9. **Retry:** re-reads only the session list, keeps the selected session, respects
    supersession, and shows its own failure when a session is open.
 10. **Background bow-out:** a deadline abort is classified as cancellation and
