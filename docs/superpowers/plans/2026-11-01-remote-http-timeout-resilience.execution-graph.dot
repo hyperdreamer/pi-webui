@@ -1,0 +1,61 @@
+digraph pm_execution_graph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  subgraph cluster_background_reconciliation {
+    label="background-reconciliation";
+    T_008 [label="Task 8: Bound Background Reconciliation by Intent\nCapable"];
+  }
+  subgraph cluster_browser_transport {
+    label="browser-transport";
+    T_006 [label="Task 6: Add Browser Transport Phases and Background Reads\nCapable"];
+  }
+  subgraph cluster_daemon_cancellation {
+    label="daemon-cancellation";
+    T_005 [label="Task 5: Propagate Session-List Cancellation to the Daemon Hop\nAdvanced"];
+  }
+  subgraph cluster_docs_release {
+    label="docs-release";
+    T_011 [label="Task 11: Document Operational Limits and Release Notes\nStandard"];
+  }
+  subgraph cluster_machine_edit_and_app {
+    label="machine-edit-and-app";
+    T_010 [label="Task 10: Add Machine Editing and Wire the App\nCapable"];
+  }
+  subgraph cluster_machine_registry {
+    label="machine-registry";
+    T_002 [label="Task 2: Persist and Validate Machine Patience\nCapable"];
+  }
+  subgraph cluster_proxy_streaming {
+    label="proxy-streaming";
+    T_004 [label="Task 4: Provide Reply and Plugin Disconnect Ownership\nCapable"];
+  }
+  subgraph cluster_remote_client {
+    label="remote-client";
+    T_003 [label="Task 3: Enforce Remote Header Deadlines\nCapable"];
+  }
+  subgraph cluster_selection_retry {
+    label="selection-retry";
+    T_007 [label="Task 7: Add Selection Provenance and List-Only Retry\nCapable"];
+  }
+  subgraph cluster_session_list_notice {
+    label="session-list-notice";
+    T_009 [label="Task 9: Render Session-List Load Feedback\nAdvanced"];
+  }
+  subgraph cluster_shared_machine_contract {
+    label="shared-machine-contract";
+    T_001 [label="Task 1: Establish Shared Timeout Contracts\nStandard"];
+  }
+  T_001 -> T_002;
+  T_002 -> T_003;
+  T_003 -> T_004;
+  T_004 -> T_005;
+  T_001 -> T_006;
+  T_006 -> T_007;
+  T_006 -> T_008;
+  T_007 -> T_008;
+  T_007 -> T_009;
+  T_006 -> T_010;
+  T_007 -> T_010;
+  T_009 -> T_010;
+  T_010 -> T_011;
+}

@@ -1,0 +1,445 @@
+source_plan:
+  path: "docs/superpowers/plans/2026-11-01-remote-http-timeout-resilience.md"
+  sha256: "b4551453a087b0f825cedb635e103a7ff599a59ec732fe3974e3404921ab051c"
+  commit_oid: "1218f6e228752fc4e8501c7a35289402d82ff09c"
+  task_count: 11
+tasks:
+  - id: T-001
+    plan_task: 1
+    title: "Establish Shared Timeout Contracts"
+    tier: "standard"
+    lane: "shared-machine-contract"
+    sequence: 1
+    depends_on: []
+    owns: ["src/shared/machineRequestTimeout.ts", "src/shared/machineRequestTimeout.test.ts", "src/shared/apiTypes.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I1, I2, I3]
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/shared/machineRequestTimeout.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-002
+    plan_task: 2
+    title: "Persist and Validate Machine Patience"
+    tier: "capable"
+    lane: "machine-registry"
+    sequence: 1
+    depends_on: [T-001]
+    owns: ["src/server/machines/machineStore.ts", "src/server/machines/machineStore.test.ts", "src/server/machines/machineService.ts", "src/server/machines/machineService.test.ts", "src/server/machines/machineRoutes.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I4]
+      consumes: [I1, I2, I3]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/machines/machineStore.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/server/machines/machineService.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-003
+    plan_task: 3
+    title: "Enforce Remote Header Deadlines"
+    tier: "capable"
+    lane: "remote-client"
+    sequence: 1
+    depends_on: [T-002]
+    owns: ["src/server/machines/machineClient.ts", "src/server/machines/machineClient.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I5]
+      consumes: [I1, I4]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/machines/machineClient.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-004
+    plan_task: 4
+    title: "Provide Reply and Plugin Disconnect Ownership"
+    tier: "capable"
+    lane: "proxy-streaming"
+    sequence: 1
+    depends_on: [T-003]
+    owns: ["src/shared/federatedRoutes.ts", "src/server/http/replyDisconnect.ts", "src/server/http/replyDisconnect.test.ts", "src/server/machines/machinePluginProxyRoutes.ts", "src/server/app.plugins.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I6]
+      consumes: [I1, I5]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/http/replyDisconnect.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/server/app.plugins.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-005
+    plan_task: 5
+    title: "Propagate Session-List Cancellation to the Daemon Hop"
+    tier: "advanced"
+    lane: "daemon-cancellation"
+    sequence: 1
+    depends_on: [T-004]
+    owns: ["src/server/machines/machineProxyRoutes.ts", "src/server/machines/machineProxyRoutes.test.ts", "src/server/sessiond/sessionProxyRoutes.ts", "src/server/sessiond/sessionProxyRoutes.test.ts", "src/sessiond/sessionDaemonClient.ts", "src/sessiond/sessionDaemonClient.test.ts", "src/server/app.compression.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: []
+      consumes: [I5, I6]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/machines/machineProxyRoutes.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/server/sessiond/sessionProxyRoutes.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/sessiond/sessionDaemonClient.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/server/app.compression.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-006
+    plan_task: 6
+    title: "Add Browser Transport Phases and Background Reads"
+    tier: "capable"
+    lane: "browser-transport"
+    sequence: 1
+    depends_on: [T-001]
+    owns: ["src/client/src/api/http.ts", "src/client/src/api/http.test.ts", "src/client/src/api/clients.ts", "src/client/src/api/clients.test.ts", "src/client/src/api/parsers.ts", "src/client/src/api/parsers.test.ts", "src/client/src/controllers/cancellableLoadScope.ts", "src/client/src/controllers/backgroundRead.ts", "src/client/src/controllers/backgroundRead.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I7, I9]
+      consumes: [I1, I3]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/http.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/clients.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/parsers.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/backgroundRead.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-007
+    plan_task: 7
+    title: "Add Selection Provenance and List-Only Retry"
+    tier: "capable"
+    lane: "selection-retry"
+    sequence: 1
+    depends_on: [T-006]
+    owns: ["src/client/src/appState.ts", "src/client/src/controllers/workspaceController.ts", "src/client/src/controllers/workspaceController.test.ts", "src/client/src/controllers/workspaceController.cancellation.test.ts", "src/client/src/controllers/sessionController.ts", "src/client/src/controllers/sessionController.refresh.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I8]
+      consumes: [I7]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/workspaceController.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/workspaceController.cancellation.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/sessionController.refresh.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-008
+    plan_task: 8
+    title: "Bound Background Reconciliation by Intent"
+    tier: "capable"
+    lane: "background-reconciliation"
+    sequence: 1
+    depends_on: [T-006, T-007]
+    owns: ["src/client/src/controllers/projectCatalogController.ts", "src/client/src/controllers/projectCatalogController.test.ts", "src/client/src/controllers/projectActivityOwnershipCoordinator.ts", "src/client/src/controllers/projectActivityOwnershipCoordinator.test.ts", "src/client/src/controllers/gitController.ts", "src/client/src/controllers/gitController.test.ts", "src/client/src/controllers/memoryController.ts", "src/client/src/controllers/memoryController.test.ts", "src/client/src/controllers/learnedSkillsController.ts", "src/client/src/controllers/learnedSkillsController.test.ts", "src/client/src/components/GitUpdateManagerPanel.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: []
+      consumes: [I7]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/projectCatalogController.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/projectActivityOwnershipCoordinator.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/gitController.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/memoryController.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/learnedSkillsController.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-009
+    plan_task: 9
+    title: "Render Session-List Load Feedback"
+    tier: "advanced"
+    lane: "session-list-notice"
+    sequence: 1
+    depends_on: [T-007]
+    owns: ["src/client/src/components/SessionListLoadNotice.ts", "src/client/src/components/SessionListLoadNotice.test.ts", "src/client/src/components/SessionList.ts", "src/client/src/components/SessionList.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: [I10]
+      consumes: [I1, I8]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/SessionListLoadNotice.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/SessionList.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-010
+    plan_task: 10
+    title: "Add Machine Editing and Wire the App"
+    tier: "capable"
+    lane: "machine-edit-and-app"
+    sequence: 1
+    depends_on: [T-006, T-007, T-009]
+    owns: ["src/client/src/controllers/machineController.ts", "src/client/src/components/MachineDialog.ts", "src/client/src/components/MachineDialog.test.ts", "src/client/src/components/MachineList.ts", "src/client/src/components/MachineList.test.ts", "src/client/src/components/MachineSwitcher.ts", "src/client/src/components/MachineSwitcher.test.ts", "src/client/src/components/appShell/AppNavigationPanel.ts", "src/client/src/components/PiWebUiApp.ts", "src/client/src/components/PiWebUiApp.remoteTimeout.test.ts"]
+    exclusive_resources: []
+    interfaces:
+      produces: []
+      consumes: [I2, I8, I9, I10]
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/MachineDialog.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/MachineList.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/MachineSwitcher.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/PiWebUiApp.remoteTimeout.test.ts"]
+        cwd: "."
+        timeout_seconds: 900
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+  - id: T-011
+    plan_task: 11
+    title: "Document Operational Limits and Release Notes"
+    tier: "standard"
+    lane: "docs-release"
+    sequence: 1
+    depends_on: [T-010]
+    owns: ["docs/machines.html", "docs/config.md", "docs/config.html", ".changeset/remote-http-timeout-resilience.md"]
+    exclusive_resources: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["git", "diff", "--check"]
+        cwd: "."
+        timeout_seconds: 300
+      - argv: ["npm", "run", "typecheck"]
+        cwd: "."
+        timeout_seconds: 900
+lanes:
+  - id: "background-reconciliation"
+    task_ids: [T-008]
+  - id: "browser-transport"
+    task_ids: [T-006]
+  - id: "daemon-cancellation"
+    task_ids: [T-005]
+  - id: "docs-release"
+    task_ids: [T-011]
+  - id: "machine-edit-and-app"
+    task_ids: [T-010]
+  - id: "machine-registry"
+    task_ids: [T-002]
+  - id: "proxy-streaming"
+    task_ids: [T-004]
+  - id: "remote-client"
+    task_ids: [T-003]
+  - id: "selection-retry"
+    task_ids: [T-007]
+  - id: "session-list-notice"
+    task_ids: [T-009]
+  - id: "shared-machine-contract"
+    task_ids: [T-001]
+interfaces:
+  - id: I1
+    signature: "src/shared/machineRequestTimeout.ts: DEFAULT_REMOTE_REQUEST_TIMEOUT_MS=120000, MIN_REMOTE_REQUEST_TIMEOUT_MS=5000, MAX_REMOTE_REQUEST_TIMEOUT_MS=180000, REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS=20000"
+    sha256: "62193ee75847c09eecf12d9d0b93b25954871f51a0965560464e63fa90f48ba9"
+    producer: T-001
+    consumers: [T-002, T-003, T-004, T-006, T-009]
+  - id: I2
+    signature: "src/shared/machineRequestTimeout.ts: validateMachineRequestTimeoutMs(value: unknown): number; effectiveMachineRequestTimeoutMs(machine: { requestTimeoutMs?: number }): number"
+    sha256: "e49ca29197ff993aeb986447f3223cd774d23fdbee77217881d5d42ce5765195"
+    producer: T-001
+    consumers: [T-002, T-010]
+  - id: I3
+    signature: "src/shared/apiTypes.ts: MachineCreateRequest { name?, baseUrl?, token?, headers?, requestTimeoutMs?: number }; MachineUpdateRequest = Partial<MachineCreateRequest>"
+    sha256: "c34b9990f2e3b85375c8b3c6dc1faacd6db135786b0cb4ffd8695095c2297559"
+    producer: T-001
+    consumers: [T-002, T-006]
+  - id: I4
+    signature: "src/server/machines/machineStore.ts: StoredMachine.requestTimeoutMs?: number"
+    sha256: "74cbaf35d10e03f7eebe89608e3ce7a52d693648ccf14d3c7b6c5e5656ef4192"
+    producer: T-002
+    consumers: [T-003]
+  - id: I5
+    signature: "src/server/machines/machineClient.ts: MachineRequestOptions { timeoutMs?: number; contentType?: string; signal?: AbortSignal }"
+    sha256: "05f636f21835d87e42f5cc24a46e55eaa442bbb899db1a6bb4fece539c27a617"
+    producer: T-003
+    consumers: [T-004, T-005]
+  - id: I6
+    signature: "src/server/http/replyDisconnect.ts: ReplyDisconnectScope { readonly signal: AbortSignal; dispose(): void }; createReplyDisconnectScope(reply: FastifyReply): ReplyDisconnectScope"
+    sha256: "8c2a46afac521a64047e67426ddb5c2a3ff35394bcb2cbfd6b4477d79fec3376"
+    producer: T-004
+    consumers: [T-005]
+  - id: I7
+    signature: "src/client/src/controllers/backgroundRead.ts: type ReadIntent = 'background' | 'foreground'; runBackgroundRead<T>(machineId: string, read: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T>"
+    sha256: "16431c3f9cc36da5421dbe803d7990b94fa15b81cf3078596cceb1930236c6ae"
+    producer: T-006
+    consumers: [T-007, T-008]
+  - id: I8
+    signature: "src/client/src/controllers/workspaceController.ts: SessionListLoad, SessionListFailure; retrySessionList(): Promise<void>"
+    sha256: "01a394989b56afaccef6a06972800115aa3c99ba27b6da9aa4c3c3a3790d5a69"
+    producer: T-007
+    consumers: [T-009, T-010]
+  - id: I9
+    signature: "src/client/src/api/clients.ts: machinesApi.updateMachine(machineId: string, patch: MachineUpdateRequest): Promise<Machine>"
+    sha256: "b52dc448a3b214abb560291952a613e0b870e6407c7d516603ee3a8385f98775"
+    producer: T-006
+    consumers: [T-010]
+  - id: I10
+    signature: "src/client/src/components/SessionListLoadNotice.ts: SessionListLoadNotice { machine?, load?, failure?, onRetry?, onRaiseLimit?, now? }"
+    sha256: "a98f6635a2e55e5737d54471e50ee9e9247e3447e2103338eb600ab9dafa990c"
+    producer: T-009
+    consumers: [T-010]
+produces:
+  - id: I1
+    signature: "src/shared/machineRequestTimeout.ts: DEFAULT_REMOTE_REQUEST_TIMEOUT_MS=120000, MIN_REMOTE_REQUEST_TIMEOUT_MS=5000, MAX_REMOTE_REQUEST_TIMEOUT_MS=180000, REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS=20000"
+    sha256: "62193ee75847c09eecf12d9d0b93b25954871f51a0965560464e63fa90f48ba9"
+    producer: T-001
+    consumers: [T-002, T-003, T-004, T-006, T-009]
+  - id: I2
+    signature: "src/shared/machineRequestTimeout.ts: validateMachineRequestTimeoutMs(value: unknown): number; effectiveMachineRequestTimeoutMs(machine: { requestTimeoutMs?: number }): number"
+    sha256: "e49ca29197ff993aeb986447f3223cd774d23fdbee77217881d5d42ce5765195"
+    producer: T-001
+    consumers: [T-002, T-010]
+  - id: I3
+    signature: "src/shared/apiTypes.ts: MachineCreateRequest { name?, baseUrl?, token?, headers?, requestTimeoutMs?: number }; MachineUpdateRequest = Partial<MachineCreateRequest>"
+    sha256: "c34b9990f2e3b85375c8b3c6dc1faacd6db135786b0cb4ffd8695095c2297559"
+    producer: T-001
+    consumers: [T-002, T-006]
+  - id: I4
+    signature: "src/server/machines/machineStore.ts: StoredMachine.requestTimeoutMs?: number"
+    sha256: "74cbaf35d10e03f7eebe89608e3ce7a52d693648ccf14d3c7b6c5e5656ef4192"
+    producer: T-002
+    consumers: [T-003]
+  - id: I5
+    signature: "src/server/machines/machineClient.ts: MachineRequestOptions { timeoutMs?: number; contentType?: string; signal?: AbortSignal }"
+    sha256: "05f636f21835d87e42f5cc24a46e55eaa442bbb899db1a6bb4fece539c27a617"
+    producer: T-003
+    consumers: [T-004, T-005]
+  - id: I6
+    signature: "src/server/http/replyDisconnect.ts: ReplyDisconnectScope { readonly signal: AbortSignal; dispose(): void }; createReplyDisconnectScope(reply: FastifyReply): ReplyDisconnectScope"
+    sha256: "8c2a46afac521a64047e67426ddb5c2a3ff35394bcb2cbfd6b4477d79fec3376"
+    producer: T-004
+    consumers: [T-005]
+  - id: I7
+    signature: "src/client/src/controllers/backgroundRead.ts: type ReadIntent = 'background' | 'foreground'; runBackgroundRead<T>(machineId: string, read: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T>"
+    sha256: "16431c3f9cc36da5421dbe803d7990b94fa15b81cf3078596cceb1930236c6ae"
+    producer: T-006
+    consumers: [T-007, T-008]
+  - id: I8
+    signature: "src/client/src/controllers/workspaceController.ts: SessionListLoad, SessionListFailure; retrySessionList(): Promise<void>"
+    sha256: "01a394989b56afaccef6a06972800115aa3c99ba27b6da9aa4c3c3a3790d5a69"
+    producer: T-007
+    consumers: [T-009, T-010]
+  - id: I9
+    signature: "src/client/src/api/clients.ts: machinesApi.updateMachine(machineId: string, patch: MachineUpdateRequest): Promise<Machine>"
+    sha256: "b52dc448a3b214abb560291952a613e0b870e6407c7d516603ee3a8385f98775"
+    producer: T-006
+    consumers: [T-010]
+  - id: I10
+    signature: "src/client/src/components/SessionListLoadNotice.ts: SessionListLoadNotice { machine?, load?, failure?, onRetry?, onRaiseLimit?, now? }"
+    sha256: "a98f6635a2e55e5737d54471e50ee9e9247e3447e2103338eb600ab9dafa990c"
+    producer: T-009
+    consumers: [T-010]
+consumes:
+  - id: I1
+    signature: "src/shared/machineRequestTimeout.ts: DEFAULT_REMOTE_REQUEST_TIMEOUT_MS=120000, MIN_REMOTE_REQUEST_TIMEOUT_MS=5000, MAX_REMOTE_REQUEST_TIMEOUT_MS=180000, REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS=20000"
+    sha256: "62193ee75847c09eecf12d9d0b93b25954871f51a0965560464e63fa90f48ba9"
+    producer: T-001
+    consumers: [T-002, T-003, T-004, T-006, T-009]
+  - id: I2
+    signature: "src/shared/machineRequestTimeout.ts: validateMachineRequestTimeoutMs(value: unknown): number; effectiveMachineRequestTimeoutMs(machine: { requestTimeoutMs?: number }): number"
+    sha256: "e49ca29197ff993aeb986447f3223cd774d23fdbee77217881d5d42ce5765195"
+    producer: T-001
+    consumers: [T-002, T-010]
+  - id: I3
+    signature: "src/shared/apiTypes.ts: MachineCreateRequest { name?, baseUrl?, token?, headers?, requestTimeoutMs?: number }; MachineUpdateRequest = Partial<MachineCreateRequest>"
+    sha256: "c34b9990f2e3b85375c8b3c6dc1faacd6db135786b0cb4ffd8695095c2297559"
+    producer: T-001
+    consumers: [T-002, T-006]
+  - id: I4
+    signature: "src/server/machines/machineStore.ts: StoredMachine.requestTimeoutMs?: number"
+    sha256: "74cbaf35d10e03f7eebe89608e3ce7a52d693648ccf14d3c7b6c5e5656ef4192"
+    producer: T-002
+    consumers: [T-003]
+  - id: I5
+    signature: "src/server/machines/machineClient.ts: MachineRequestOptions { timeoutMs?: number; contentType?: string; signal?: AbortSignal }"
+    sha256: "05f636f21835d87e42f5cc24a46e55eaa442bbb899db1a6bb4fece539c27a617"
+    producer: T-003
+    consumers: [T-004, T-005]
+  - id: I6
+    signature: "src/server/http/replyDisconnect.ts: ReplyDisconnectScope { readonly signal: AbortSignal; dispose(): void }; createReplyDisconnectScope(reply: FastifyReply): ReplyDisconnectScope"
+    sha256: "8c2a46afac521a64047e67426ddb5c2a3ff35394bcb2cbfd6b4477d79fec3376"
+    producer: T-004
+    consumers: [T-005]
+  - id: I7
+    signature: "src/client/src/controllers/backgroundRead.ts: type ReadIntent = 'background' | 'foreground'; runBackgroundRead<T>(machineId: string, read: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T>"
+    sha256: "16431c3f9cc36da5421dbe803d7990b94fa15b81cf3078596cceb1930236c6ae"
+    producer: T-006
+    consumers: [T-007, T-008]
+  - id: I8
+    signature: "src/client/src/controllers/workspaceController.ts: SessionListLoad, SessionListFailure; retrySessionList(): Promise<void>"
+    sha256: "01a394989b56afaccef6a06972800115aa3c99ba27b6da9aa4c3c3a3790d5a69"
+    producer: T-007
+    consumers: [T-009, T-010]
+  - id: I9
+    signature: "src/client/src/api/clients.ts: machinesApi.updateMachine(machineId: string, patch: MachineUpdateRequest): Promise<Machine>"
+    sha256: "b52dc448a3b214abb560291952a613e0b870e6407c7d516603ee3a8385f98775"
+    producer: T-006
+    consumers: [T-010]
+  - id: I10
+    signature: "src/client/src/components/SessionListLoadNotice.ts: SessionListLoadNotice { machine?, load?, failure?, onRetry?, onRaiseLimit?, now? }"
+    sha256: "a98f6635a2e55e5737d54471e50ee9e9247e3447e2103338eb600ab9dafa990c"
+    producer: T-009
+    consumers: [T-010]
