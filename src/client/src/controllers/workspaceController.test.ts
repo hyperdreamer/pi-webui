@@ -1352,6 +1352,168 @@ describe("WorkspaceController session list provenance", () => {
   });
 });
 
+describe("WorkspaceController session list operation ownership", () => {
+  // A superseded selection still rejects, but the retry that replaced it owns
+  // every record: the old read must not fall through to the generic banner.
+  it("keeps a superseded selection's failure out of the generic error channel", async () => {
+    const fixture = createSessionListHarness(remoteLabMachine);
+    const superseded = fixture.controller.selectWorkspace(remoteWorkspace);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "selection" });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+
+    const retry = fixture.controller.retrySessionList();
+    expect(fixture.reads).toHaveLength(2);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry" });
+
+    fixture.reads[0]?.reject(new HttpRequestError("old selection timeout", 504));
+    await superseded;
+
+    expect(fixture.state.error).toBe("");
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry" });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+
+    fixture.reads[1]?.resolve([remoteSession]);
+    await retry;
+
+    expect(fixture.state.error).toBe("");
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(false);
+    expect(fixture.recording.applyCalls).toEqual([
+      { cwd: remoteWorkspace.path, machineId: "remote-lab", preserveSelection: true },
+    ]);
+  });
+
+  // A retry is a foreground read like any other: a non-typed rejection is an
+  // ordinary error, not a silently swallowed one.
+  it("publishes an ordinary retry failure through the generic error channel", async () => {
+    const fixture = createSessionListHarness(remoteLabMachine);
+    const failing = fixture.controller.selectWorkspace(remoteWorkspace);
+    fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await failing;
+    expect(fixture.state.sessionListFailure).toMatchObject({ kind: "timeout" });
+
+    const retry = fixture.controller.retrySessionList();
+    fixture.reads[1]?.reject(new HttpRequestError("bad gateway", 502));
+    await retry;
+
+    expect(fixture.state.error).toContain("bad gateway");
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(false);
+  });
+
+  it("publishes an untyped retry failure and keeps a cancelled retry silent", async () => {
+    const fixture = createSessionListHarness(remoteLabMachine);
+    const failing = fixture.controller.selectWorkspace(remoteWorkspace);
+    fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await failing;
+
+    const retry = fixture.controller.retrySessionList();
+    fixture.reads[1]?.reject(new Error("network down"));
+    await retry;
+
+    expect(fixture.state.error).toContain("network down");
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(false);
+
+    const silent = createSessionListHarness(remoteLabMachine);
+    const failed = silent.controller.selectWorkspace(remoteWorkspace);
+    silent.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await failed;
+    const previousFailure = silent.state.sessionListFailure;
+    expect(previousFailure).toMatchObject({ kind: "timeout" });
+
+    const cancelled = silent.controller.retrySessionList();
+    silent.reads[1]?.reject(new LoadCancelledError("retry cancelled"));
+    await cancelled;
+
+    expect(silent.state.error).toBe("");
+    expect(silent.state.sessionListFailure).toEqual(previousFailure);
+    expect(silent.state.sessionListLoad).toBeUndefined();
+  });
+
+  // A dirty cwd that leaves the catalog while the selection stays can never be
+  // read, so the pass must drop it, settle its caller, and stop rescheduling.
+  it("drops dirty cwds that leave the catalog and stops scheduling", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createSessionListHarness(remoteLabMachine, { state: { selectedWorkspace: remoteWorkspace } });
+      let settled = false;
+      const dropped = fixture.controller
+        .refreshSessionLists([remoteSiblingWorkspace.path], "remote-lab", "foreground")
+        .then(() => { settled = true; });
+
+      await fixture.controller.reconcileProjectCatalog({
+        machineId: "remote-lab",
+        project: remoteProject,
+        workspaces: [remoteWorkspace],
+      });
+      expect(fixture.state.workspaces.map((candidate) => candidate.path)).toEqual([remoteWorkspace.path]);
+
+      await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
+
+      expect(settled).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(fixture.reads).toHaveLength(0);
+      await dropped;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Reselecting the same workspace is a new selection generation: a retry
+  // admitted for the previous generation must not answer for the new one.
+  it("does not share a retry operation across a same-workspace reselection", async () => {
+    const fixture = createSessionListHarness(remoteLabMachine, {
+      state: {
+        workspaces: [remoteWorkspace],
+        workspacesByProjectId: { [remoteProject.id]: [remoteWorkspace] },
+      },
+    });
+    const selection = fixture.controller.selectWorkspace(remoteWorkspace);
+    fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await selection;
+    expect(fixture.state.sessionListFailure).toMatchObject({ kind: "timeout" });
+
+    const retryA = fixture.controller.retrySessionList();
+    expect(fixture.reads).toHaveLength(2);
+
+    const reselection = fixture.controller.selectWorkspace(remoteWorkspace);
+    expect(fixture.reads).toHaveLength(3);
+    expect(fixture.reads[1]?.signal?.aborted).toBe(true);
+
+    const retryB = fixture.controller.retrySessionList();
+    let retryBSettled = false;
+    void retryB.then(() => { retryBSettled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fixture.reads).toHaveLength(4);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry" });
+    expect(retryBSettled).toBe(false);
+
+    // The superseded retry's continuation must not clear the newer record.
+    await retryA;
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry" });
+    void fixture.controller.retrySessionList();
+    expect(fixture.reads).toHaveLength(4);
+
+    fixture.reads[3]?.resolve([{ ...remoteSession, archived: true }]);
+    await retryB;
+    expect(retryBSettled).toBe(true);
+
+    fixture.reads[2]?.resolve([]);
+    await reselection;
+    await Promise.allSettled([selection, retryA]);
+
+    expect(fixture.state.error).toBe("");
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+  });
+});
+
 type WorkspaceApi = NonNullable<WorkspaceControllerDependencies["api"]>;
 type ListSessions = WorkspaceApi["sessions"];
 type ListWorkspaces = WorkspaceApi["workspaces"];

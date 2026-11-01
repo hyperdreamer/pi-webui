@@ -69,6 +69,24 @@ interface SessionListRefreshCall {
   resolve: () => void;
 }
 
+/**
+ * What happened to a typed-failure publication attempt.
+ *
+ * `stale` is distinct from `unclassified` on purpose: a superseded operation
+ * must publish nothing at all — not a typed record and not the generic error
+ * banner the ordinary channel would otherwise write — because the operation
+ * that replaced it owns this scope's records.
+ */
+type SessionListFailurePublication = "published" | "unclassified" | "stale";
+
+/** One admitted list-only retry that its selection generation still owns. */
+interface ActiveSessionListRetry {
+  readonly key: string;
+  readonly token: number;
+  readonly supersession: AbortSignal | undefined;
+  promise: Promise<void>;
+}
+
 /** One remote selected-list read, with everything its guards and records need. */
 interface SessionListReadOperation {
   readonly token: number;
@@ -140,7 +158,7 @@ export class WorkspaceController {
   private nextSessionListOperationToken = 0;
   /** The only operation allowed to publish provenance or failures right now. */
   private activeSessionListOperation = 0;
-  private activeSessionListRetry: { key: string; promise: Promise<void> } | undefined;
+  private activeSessionListRetry: ActiveSessionListRetry | undefined;
   private disposed = false;
 
   constructor(
@@ -226,20 +244,11 @@ export class WorkspaceController {
     const machineId = selectedMachineId(state);
     const request = this.projectSessionsRequest;
     if (!this.isSessionListRetryTargetCurrent(workspace, machineId, request)) return;
-    const retryKey = JSON.stringify([machineId, project.id, project.path, workspace.id, workspace.path]);
+    // The selection generation is part of the sharing key: reselecting the same
+    // workspace opens a new generation whose retry must not answer for this one.
+    const retryKey = JSON.stringify([machineId, project.id, project.path, workspace.id, workspace.path, request]);
     const active = this.activeSessionListRetry;
-    if (active?.key === retryKey) return active.promise;
-    const promise = this.runSessionListRetry(workspace, machineId, request, retryKey);
-    this.activeSessionListRetry = { key: retryKey, promise };
-    return promise;
-  }
-
-  private async runSessionListRetry(
-    workspace: Workspace,
-    machineId: string,
-    request: number,
-    retryKey: string,
-  ): Promise<void> {
+    if (active?.key === retryKey && this.isActiveSessionListRetryCurrent(active)) return active.promise;
     const isTargetCurrent = (): boolean => this.isSessionListRetryTargetCurrent(workspace, machineId, request);
     const operation = this.beginSessionListRead({
       owner: "retry",
@@ -248,6 +257,31 @@ export class WorkspaceController {
       supersession: this.selectionLoad.signal,
       isTargetCurrent,
     });
+    const retry: ActiveSessionListRetry = {
+      key: retryKey,
+      token: operation.token,
+      supersession: operation.supersession,
+      promise: Promise.resolve(),
+    };
+    this.activeSessionListRetry = retry;
+    retry.promise = this.runSessionListRetry(retry, operation, workspace, machineId);
+    return retry.promise;
+  }
+
+  /** Share only with the selection generation and operation that admitted the retry. */
+  private isActiveSessionListRetryCurrent(retry: ActiveSessionListRetry): boolean {
+    return !this.disposed
+      && retry.token === this.activeSessionListOperation
+      && retry.supersession?.aborted !== true;
+  }
+
+  private async runSessionListRetry(
+    retry: ActiveSessionListRetry,
+    operation: SessionListReadOperation,
+    workspace: Workspace,
+    machineId: string,
+  ): Promise<void> {
+    const isTargetCurrent = operation.isTargetCurrent;
     let applied = false;
     try {
       // The catalog may have dropped the workspace between admission and the read.
@@ -260,13 +294,21 @@ export class WorkspaceController {
         { preserveSelection: true },
       );
       applied = true;
+      this.setState({ isLoadingSessions: false });
     } catch (error) {
       if (isLoadCancellation(error)) return;
       if (!isTargetCurrent()) return;
-      this.publishSessionListFailure(operation, error);
+      const publication = this.publishSessionListFailure(operation, error);
+      // A read that already lost its operation identity publishes nothing.
+      if (publication === "stale") return;
+      this.setState({
+        // The retry's own outcome replaces the notice for the load it retried.
+        ...(publication === "unclassified" ? { error: String(error), sessionListFailure: undefined } : {}),
+        isLoadingSessions: false,
+      });
     } finally {
       this.finishSessionListOperation(operation, { clearFailure: applied });
-      if (this.activeSessionListRetry?.key === retryKey) this.activeSessionListRetry = undefined;
+      if (this.activeSessionListRetry === retry) this.activeSessionListRetry = undefined;
     }
   }
 
@@ -303,9 +345,16 @@ export class WorkspaceController {
     const claimed = new Map<string, ReadIntent>();
     const relevant = this.relevantSessionCwds();
     for (const [cwd, intent] of scope.dirty) {
-      if (relevant.has(cwd)) claimed.set(cwd, intent);
+      if (!relevant.has(cwd)) {
+        // A cwd the catalog no longer shows can never be read. Dropping it here
+        // (instead of only deleting claimed entries) settles its callers and
+        // stops the pass from rescheduling forever over work that cannot run.
+        scope.dirty.delete(cwd);
+        continue;
+      }
+      claimed.set(cwd, intent);
+      scope.dirty.delete(cwd);
     }
-    for (const cwd of claimed.keys()) scope.dirty.delete(cwd);
     try {
       if (claimed.size > 0) {
         const revisions = new Map<string, number>();
@@ -577,15 +626,20 @@ export class WorkspaceController {
       }
       // A bounded remote wait that expired, or a body that stopped mid-transfer,
       // is a typed list failure with its own notice — never a generic state error.
-      if (this.publishSessionListFailure(operation, error)) {
+      const publication = this.publishSessionListFailure(operation, error);
+      if (publication === "published") {
         this.setState({ isLoadingSessions: false });
         return;
       }
-      if (catalogFallback === undefined) {
-        this.setState({ error: String(error), isLoadingSessions: false });
+      // A catalog fallback owns its own recovery channel, including its failure.
+      if (catalogFallback !== undefined) {
+        this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
         return;
       }
-      this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+      // An operation a newer read replaced publishes nothing: that read owns the
+      // records and the loading indicator this one opened.
+      if (publication === "stale") return;
+      this.setState({ error: String(error), isLoadingSessions: false });
     } finally {
       this.finishSessionListOperation(operation, { clearFailure: listed });
       const pending = this.pendingSessionListRefresh;
@@ -681,12 +735,16 @@ export class WorkspaceController {
     });
   }
 
-  private isSessionListOperationCurrent(operation: SessionListReadOperation, signal?: AbortSignal): boolean {
+  /** The operation that currently owns this scope's records, provenance, and errors. */
+  private ownsSessionListOperation(operation: SessionListReadOperation): boolean {
     return !this.disposed
       && operation.token === this.activeSessionListOperation
       && operation.supersession?.aborted !== true
-      && signal?.aborted !== true
       && operation.isTargetCurrent();
+  }
+
+  private isSessionListOperationCurrent(operation: SessionListReadOperation, signal?: AbortSignal): boolean {
+    return this.ownsSessionListOperation(operation) && signal?.aborted !== true;
   }
 
   private finishSessionListOperation(operation: SessionListReadOperation, options: { clearFailure?: boolean } = {}): void {
@@ -699,10 +757,15 @@ export class WorkspaceController {
   }
 
   /** Publish a typed list failure instead of a generic error, when it is one. */
-  private publishSessionListFailure(operation: SessionListReadOperation, error: unknown): boolean {
+  private publishSessionListFailure(
+    operation: SessionListReadOperation,
+    error: unknown,
+  ): SessionListFailurePublication {
+    // Ownership comes first so a superseded operation cannot publish through the
+    // generic channel just because its error was not typed.
+    if (!this.ownsSessionListOperation(operation)) return "stale";
     const kind = classifySessionListFailure(error);
-    if (kind === undefined || !this.publishesSessionListProvenance(operation)) return false;
-    if (!this.isSessionListOperationCurrent(operation)) return false;
+    if (kind === undefined || !this.publishesSessionListProvenance(operation)) return "unclassified";
     this.setState({
       sessionListLoad: undefined,
       sessionListFailure: {
@@ -717,7 +780,7 @@ export class WorkspaceController {
         budgetMs: operation.budgetMs,
       },
     });
-    return true;
+    return "published";
   }
 
   private isSessionListRetryTargetCurrent(workspace: Workspace, machineId: string, request: number): boolean {
