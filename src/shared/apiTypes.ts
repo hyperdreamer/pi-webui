@@ -128,6 +128,16 @@ export interface Machine {
   statusMessage?: string;
 }
 
+export interface MachineCreateRequest {
+  name?: string;
+  baseUrl?: string;
+  token?: string;
+  headers?: Record<string, string>;
+  requestTimeoutMs?: number;
+}
+
+export type MachineUpdateRequest = Partial<MachineCreateRequest>;
+
 export interface MachineHealth {
   machineId: string;
   ok: boolean;
