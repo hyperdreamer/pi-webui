@@ -14,7 +14,7 @@ registerAppTestHooks();
 const TASK_ROUTE_SPECS = [
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
   { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
-  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move", timeoutMs: 30_000 },
+  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move" },
   { method: "GET", path: "/workspace-tasks/global" },
   { method: "PUT", path: "/workspace-tasks/global" },
 ];
@@ -170,7 +170,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(responses.map((response) => response.statusCode)).toEqual([200, 200, 200, 200, 200]);
     expect(request).toHaveBeenNthCalledWith(1, "GET", workspacePath, undefined);
     expect(request).toHaveBeenNthCalledWith(2, "PUT", workspacePath, REPLACE_TASKS_REQUEST);
-    expect(request).toHaveBeenNthCalledWith(3, "POST", `${workspacePath}/move`, MOVE_TASKS_REQUEST, { timeoutMs: 30_000 });
+    expect(request).toHaveBeenNthCalledWith(3, "POST", `${workspacePath}/move`, MOVE_TASKS_REQUEST);
     expect(request).toHaveBeenNthCalledWith(4, "GET", "/api/workspace-tasks/global", undefined);
     expect(request).toHaveBeenNthCalledWith(5, "PUT", "/api/workspace-tasks/global", REPLACE_TASKS_REQUEST);
     expect(request).toHaveBeenCalledTimes(5);
@@ -285,7 +285,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("uses the move-only 30 second timeout and maps a remote timeout to 504", async () => {
+  it("lets the stored machine budget govern a task move and maps a remote timeout to 504", async () => {
     const request = vi.fn<MachineClient["request"]>(() => Promise.reject(new RemoteMachineRequestError("timed out", 504)));
     const machineId = await addRemoteMachine(request);
 
@@ -301,7 +301,6 @@ describe("buildApp remote machine proxy routes", () => {
       "POST",
       "/api/projects/project-1/workspaces/workspace-1/workspace-tasks/move",
       MOVE_TASKS_REQUEST,
-      { timeoutMs: 30_000 },
     );
   });
 
