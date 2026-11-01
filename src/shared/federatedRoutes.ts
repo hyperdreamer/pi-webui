@@ -11,12 +11,10 @@ export interface FederatedHttpRouteSpec {
   timeoutMs?: number;
 }
 
-export const WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS = 30_000;
-
 export const WORKSPACE_TASKS_FEDERATED_HTTP_ROUTES = [
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
   { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
-  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move", timeoutMs: WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS },
+  { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks/move" },
   { method: "GET", path: "/workspace-tasks/global" },
   { method: "PUT", path: "/workspace-tasks/global" },
 ] as const satisfies readonly FederatedHttpRouteSpec[];

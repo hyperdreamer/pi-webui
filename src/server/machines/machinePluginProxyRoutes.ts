@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { machineScopedPluginId, parseMachineScopedPluginId, type MachineScopedPluginIdParts } from "../../shared/machinePluginIds.js";
 import { isPiWebUiPluginId } from "../../shared/pluginIds.js";
+import { createReplyDisconnectScope } from "../http/replyDisconnect.js";
 import { RemoteMachineRequestError, type MachineClient } from "./machineClient.js";
 import { MachineService } from "./machineService.js";
 
@@ -33,21 +34,76 @@ const SAFE_RESPONSE_HEADERS = new Set([
 ]);
 
 export function registerMachinePluginProxyRoutes(app: FastifyInstance, machines: MachinePluginProxyMachines = new MachineService()): void {
-  app.get<{ Params: { machineId: string } }>("/api/machines/:machineId/pi-webui-plugins/manifest.json", async (request, reply) => {
-    if (request.params.machineId === "local") return { plugins: [] };
+  app.get<{ Params: { machineId: string } }>("/api/machines/:machineId/pi-webui-plugins/manifest.json", async (request, reply) =>
+    proxyMachinePluginManifest(machines, request.params.machineId, reply));
+}
 
-    const client = await machines.remoteClient(request.params.machineId);
-    if (client === undefined) return reply.code(404).send({ error: "Machine not found" });
+export async function proxyMachinePluginManifest(
+  machines: MachinePluginProxyMachines,
+  machineId: string,
+  reply: FastifyReply,
+): Promise<FastifyReply | RemotePluginManifest> {
+  if (machineId === "local") return { plugins: [] };
 
+  // The manifest is a remote read, so the browser's reply owns its cancellation.
+  // Its separate budget stays as it is: this route never widens to the machine one.
+  const disconnect = createReplyDisconnectScope(reply);
+  const isDisconnected = (): boolean => disconnect.signal.aborted;
+  let read: RemotePluginManifestRead;
+  try {
+    let client: MachineClient | undefined;
     try {
-      const response = await client.requestJson("GET", "/pi-webui-plugins/manifest.json", undefined, { timeoutMs: MACHINE_PLUGIN_MANIFEST_TIMEOUT_MS });
-      if (response.statusCode === 404) return { plugins: [] };
-      if (response.statusCode < 200 || response.statusCode >= 300) return await reply.code(response.statusCode).send(response.body);
-      return rewriteRemotePluginManifest(request.params.machineId, parseRemoteManifest(response.body));
+      client = await machines.remoteClient(machineId);
     } catch (error) {
-      return sendGatewayError(reply, request.params.machineId, error);
+      // Preserve Fastify's original error handling for registry/lookup failures,
+      // while still suppressing work that raced with a disconnected reply.
+      if (isDisconnected()) return await reply;
+      throw error;
     }
-  });
+    if (client === undefined) {
+      if (isDisconnected()) return await reply;
+      return await reply.code(404).send({ error: "Machine not found" });
+    }
+    if (isDisconnected()) return await reply;
+
+    read = await readRemotePluginManifest(client, machineId, disconnect.signal);
+    // A disconnected client is not a gateway failure, and nobody is left to answer it.
+    if (isDisconnected()) return await reply;
+  } finally {
+    // The manifest is fully buffered, so the signal has no work left to cancel.
+    disconnect.dispose();
+  }
+
+  switch (read.outcome) {
+    case "upstream": return reply.code(read.statusCode).send(read.body);
+    case "manifest": return read.manifest;
+    case "failed": return sendGatewayError(reply, machineId, read.error);
+  }
+}
+
+type RemotePluginManifestRead =
+  | { readonly outcome: "upstream"; readonly statusCode: number; readonly body: unknown }
+  | { readonly outcome: "manifest"; readonly manifest: RemotePluginManifest }
+  | { readonly outcome: "failed"; readonly error: unknown };
+
+async function readRemotePluginManifest(
+  client: MachineClient,
+  machineId: string,
+  signal: AbortSignal,
+): Promise<RemotePluginManifestRead> {
+  try {
+    const response = await client.requestJson("GET", "/pi-webui-plugins/manifest.json", undefined, {
+      timeoutMs: MACHINE_PLUGIN_MANIFEST_TIMEOUT_MS,
+      signal,
+    });
+    if (response.statusCode === 404) return { outcome: "manifest", manifest: { plugins: [] } };
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return { outcome: "upstream", statusCode: response.statusCode, body: response.body };
+    }
+    return { outcome: "manifest", manifest: rewriteRemotePluginManifest(machineId, parseRemoteManifest(response.body)) };
+  } catch (error) {
+    return { outcome: "failed", error };
+  }
 }
 
 export async function proxyMachinePluginAsset(machines: MachinePluginProxyMachines, scopedPluginId: string, assetPath: string, requestUrl: string, reply: FastifyReply): Promise<boolean> {
