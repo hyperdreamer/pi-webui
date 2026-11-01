@@ -5,6 +5,10 @@ import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.te
 
 registerAppTestHooks();
 
+// `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
 const cwd = "/workspace/skills-project";
 const encodedCwd = encodeURIComponent(cwd);
 const toggle = { cwd, filePath: "/workspace/skills-project/.pi/skills/testing/SKILL.md", disableModelInvocation: true };
@@ -55,7 +59,7 @@ describe("buildApp Skills configuration routes", () => {
 
     expect([list.statusCode, toggled.statusCode, searched.statusCode, installed.statusCode, checked.statusCode, updated.statusCode]).toEqual([200, 200, 200, 200, 200, 200]);
     expect(SKILLS_OPERATION_PROXY_TIMEOUT_MS).toBe(5 * 60_000);
-    expect(request).toHaveBeenNthCalledWith(1, "GET", `/api/skills?cwd=${encodedCwd}`, undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", `/api/skills?cwd=${encodedCwd}`, undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(2, "PATCH", "/api/skills", toggle);
     expect(request).toHaveBeenNthCalledWith(3, "POST", "/api/skills/search", search, { timeoutMs: SKILLS_OPERATION_PROXY_TIMEOUT_MS });
     expect(request).toHaveBeenNthCalledWith(4, "POST", "/api/skills/install", install, { timeoutMs: SKILLS_OPERATION_PROXY_TIMEOUT_MS });

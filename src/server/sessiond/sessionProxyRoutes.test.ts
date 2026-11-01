@@ -1,9 +1,10 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
+import { EventEmitter } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModelsConfigErrorResponse, ModelsConfigLimitsStatusResponse } from "../../shared/apiTypes.js";
-import { registerSessionProxyRoutes } from "./sessionProxyRoutes";
+import { proxySessionDaemonRequest, registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessionProxyRoutes";
 
 let app: FastifyInstance;
 let daemon: FakeSessionDaemon;
@@ -342,6 +343,146 @@ interface FakeSessionDaemonResponse {
   statusCode: number;
   headers: Record<string, string>;
   body: string;
+}
+
+describe("receiving gateway session-list cancellation", () => {
+  it("forwards disconnect cancellation only to the remote session list read", async () => {
+    const pending = pendingSessionDaemon();
+    const listReply = makeObservedReply();
+    const list = proxySessionDaemonRequest(pending.daemon, "/api", { method: "GET", url: "/sessions?cwd=%2Frepo" }, listReply.reply);
+
+    expect(pending.calls[0]?.method).toBe("GET");
+    expect(pending.calls[0]?.path).toBe("/sessions?cwd=%2Frepo");
+    expect(pending.calls[0]?.body).toBeUndefined();
+    expect(pending.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+
+    listReply.raw.emit("close");
+
+    await expect(list).resolves.toBe(listReply.reply);
+    expect(pending.calls[0]?.signal?.aborted).toBe(true);
+    expect(listReply.writes).toEqual([]);
+
+    const unsignalled: { prefix?: string; request: { method: string; url: string; body?: unknown } }[] = [
+      { prefix: "/api/machines/local", request: { method: "GET", url: "/api/machines/local/sessions?cwd=%2Frepo" } },
+      { request: { method: "GET", url: "/sessions" } },
+      { request: { method: "GET", url: "/sessions?cwd=" } },
+      { request: { method: "GET", url: "/sessions/unread?cwd=%2Frepo" } },
+      { request: { method: "GET", url: "/sessiond/health" } },
+      { request: { method: "GET", url: "/activity" } },
+      { request: { method: "POST", url: "/sessions/%2Frepo/notifications/dismiss", body: { cwd: "/repo", notificationId: "notice-1" } } },
+    ];
+    for (const entry of unsignalled) {
+      const reply = makeObservedReply();
+      pending.calls.length = 0;
+      const run = proxySessionDaemonRequest(pending.daemon, entry.prefix ?? "/api", entry.request, reply.reply);
+      expect(pending.calls[0]?.signal).toBeUndefined();
+      pending.calls[0]?.resolve(okDaemonResponse("{\"ok\":true}"));
+      await expect(run).resolves.toBe(reply.reply);
+    }
+  });
+
+  it("does not turn a cancelled list transport into a daemon error response", async () => {
+    const pending = pendingSessionDaemon();
+    const reply = makeObservedReply({ destroyed: true, writableFinished: false });
+
+    const run = proxySessionDaemonRequest(pending.daemon, "/api", { method: "GET", url: "/sessions?cwd=%2Frepo" }, reply.reply);
+    reply.raw.emit("close");
+
+    await expect(run).resolves.toBe(reply.reply);
+    expect(pending.calls[0]?.signal?.aborted).toBe(true);
+    expect(reply.writes).toEqual([]);
+  });
+
+  it("cancelling a list does not cancel an accepted notification mutation", async () => {
+    const pending = pendingSessionDaemon();
+    const listReply = makeObservedReply();
+    const mutationReply = makeObservedReply();
+    const list = proxySessionDaemonRequest(pending.daemon, "/api", { method: "GET", url: "/sessions?cwd=%2Frepo" }, listReply.reply);
+    const mutation = proxySessionDaemonRequest(pending.daemon, "/api", {
+      method: "POST",
+      url: "/sessions/%2Frepo/notifications/dismiss",
+      body: { cwd: "/repo", notificationId: "notice-1" },
+    }, mutationReply.reply);
+    const mutationCall = pending.calls[1];
+
+    listReply.raw.emit("close");
+    expect(mutationCall?.signal).toBeUndefined();
+    mutationCall?.resolve(okDaemonResponse("{\"dismissed\":true}"));
+
+    await expect(mutation).resolves.toBe(mutationReply.reply);
+    expect(mutationCall?.signal).toBeUndefined();
+    expect(mutationReply.writes).toHaveLength(1);
+    await expect(list).resolves.toBe(listReply.reply);
+  });
+});
+
+interface ObservedReply {
+  readonly reply: FastifyReply;
+  readonly raw: EventEmitter & { writableFinished: boolean; destroyed: boolean };
+  readonly writes: { statusCode: number | undefined; body: unknown }[];
+}
+
+function makeObservedReply(options: { destroyed?: boolean; writableFinished?: boolean } = {}): ObservedReply {
+  const emitter = new EventEmitter();
+  const raw = Object.assign(emitter, {
+    writableFinished: options.writableFinished ?? false,
+    destroyed: options.destroyed ?? false,
+  });
+  const writes: { statusCode: number | undefined; body: unknown }[] = [];
+  let statusCode: number | undefined;
+  const reply = {
+    raw,
+    code(status: number) {
+      statusCode = status;
+      return reply;
+    },
+    header() {
+      return reply;
+    },
+    send(body?: unknown) {
+      writes.push({ statusCode, body });
+      raw.writableFinished = true;
+      return reply;
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- the outgoing ServerResponse only needs the flags and events this proxy observes.
+  return { reply: reply as unknown as FastifyReply, raw, writes };
+}
+
+interface PendingDaemonCall {
+  readonly method: string;
+  readonly path: string;
+  readonly body: unknown;
+  readonly signal: AbortSignal | undefined;
+  resolve(response: FakeSessionDaemonResponse): void;
+  reject(error: Error): void;
+}
+
+/** Daemon whose every request stays pending until the test settles it. */
+function pendingSessionDaemon(): { daemon: SessionProxyDaemon; calls: PendingDaemonCall[] } {
+  const calls: PendingDaemonCall[] = [];
+  return {
+    calls,
+    daemon: {
+      request: (method, path, body, signal) => new Promise<FakeSessionDaemonResponse>((resolve, reject) => {
+        calls.push({ method, path, body, signal, resolve, reject });
+        if (signal?.aborted === true) {
+          reject(signalReason(signal));
+          return;
+        }
+        signal?.addEventListener("abort", () => { reject(signalReason(signal)); }, { once: true });
+      }),
+      connectWebSocket: () => { throw new Error("WebSocket is not used by these tests"); },
+    },
+  };
+}
+
+function okDaemonResponse(body: string): FakeSessionDaemonResponse {
+  return { statusCode: 200, headers: { "content-type": "application/json" }, body };
+}
+
+function signalReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
 }
 
 class FakeSessionDaemon {

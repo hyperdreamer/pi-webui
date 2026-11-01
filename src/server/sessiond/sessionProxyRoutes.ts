@@ -1,11 +1,18 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { WebSocket, type RawData } from "ws";
 import { SessionDaemonClient } from "../../sessiond/sessionDaemonClient.js";
+import { createReplyDisconnectScope } from "../http/replyDisconnect.js";
 import { SlowConsumerGuard } from "../realtime/slowConsumerGuard.js";
 
 export interface SessionProxyDaemon {
   request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ statusCode: number; headers: Record<string, string>; body: string }>;
   connectWebSocket(path: string): WebSocket;
+}
+
+export interface SessionProxyRequest {
+  method: string;
+  url: string;
+  body?: unknown;
 }
 
 const FORWARDED_RESPONSE_HEADERS = [
@@ -17,21 +24,7 @@ const FORWARDED_RESPONSE_HEADERS = [
 ] as const;
 
 export function registerSessionProxyRoutes(app: FastifyInstance, daemon: SessionProxyDaemon = new SessionDaemonClient(), prefix = "/api"): void {
-  const proxy = async (request: { method: string; url: string; body?: unknown }, reply: FastifyReply) => {
-    try {
-      const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body);
-      reply.code(upstream.statusCode);
-      forwardResponseHeaders(reply, upstream.headers);
-      if (upstream.body === "") return await reply.send();
-      const body = isJsonContentType(upstream.headers["content-type"])
-        ? parseJson(upstream.body)
-        : upstream.body;
-      return await reply.send(body);
-    } catch (error) {
-      requestFailed(reply, error);
-      return undefined;
-    }
-  };
+  const proxy = (request: SessionProxyRequest, reply: FastifyReply) => proxySessionDaemonRequest(daemon, prefix, request, reply);
 
   app.get(`${prefix}/sessiond/health`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/health` }, reply));
   app.get(`${prefix}/sessiond/runtime`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/runtime` }, reply));
@@ -62,6 +55,53 @@ export function registerSessionProxyRoutes(app: FastifyInstance, daemon: Session
   app.all(`${prefix}/skills/*`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/sessions`, (request, reply) => proxy(request, reply));
   app.all(`${prefix}/sessions/*`, (request, reply) => proxy(request, reply));
+}
+
+/**
+ * Forwards one browser request to the session daemon. Only the receiving gateway's
+ * own session-list read (exact `/sessions` with a nonempty `cwd`) takes the
+ * browser's lifecycle signal, so a dropped browser stops the daemon transport and
+ * its buffering without touching accepted mutations or daemon enumeration.
+ */
+export async function proxySessionDaemonRequest(
+  daemon: SessionProxyDaemon,
+  prefix: string,
+  request: SessionProxyRequest,
+  reply: FastifyReply,
+): Promise<FastifyReply | undefined> {
+  const disconnect = isRemoteSessionListRead(prefix, request) ? createReplyDisconnectScope(reply) : undefined;
+  const signal = disconnect?.signal;
+  try {
+    const upstream = await daemon.request(request.method, stripPrefix(request.url, prefix), request.body, signal);
+    if (isDisconnected(signal, reply)) return await reply;
+    reply.code(upstream.statusCode);
+    forwardResponseHeaders(reply, upstream.headers);
+    if (upstream.body === "") return await reply.send();
+    const body = isJsonContentType(upstream.headers["content-type"])
+      ? parseJson(upstream.body)
+      : upstream.body;
+    return await reply.send(body);
+  } catch (error) {
+    // A disconnected browser is not a gateway failure, and nobody is left to answer it.
+    if (isDisconnected(signal, reply)) return await reply;
+    requestFailed(reply, error);
+    return undefined;
+  } finally {
+    // The daemon body is fully buffered by now, so the signal has no work left.
+    disconnect?.dispose();
+  }
+}
+
+function isRemoteSessionListRead(prefix: string, request: SessionProxyRequest): boolean {
+  if (prefix !== "/api" || request.method !== "GET") return false;
+  const target = new URL(stripPrefix(request.url, prefix), "http://sessiond.invalid");
+  if (target.pathname !== "/sessions") return false;
+  const cwd = target.searchParams.get("cwd");
+  return cwd !== null && cwd !== "";
+}
+
+function isDisconnected(signal: AbortSignal | undefined, reply: FastifyReply): boolean {
+  return signal?.aborted === true || reply.raw.destroyed;
 }
 
 function stripPrefix(url: string, prefix: string): string {

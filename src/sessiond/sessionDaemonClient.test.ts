@@ -1,4 +1,5 @@
 import { rm } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +166,49 @@ describe("SessionDaemonClient active agent profile protocol", () => {
   });
 
 
+  it("aborts HTTP and Unix daemon transports while leaving enumeration independent", async () => {
+    const controller = new AbortController();
+    const httpSignals: (AbortSignal | undefined)[] = [];
+    const fetchMock = vi.fn((_input: URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal ?? undefined;
+      httpSignals.push(signal);
+      if (signal?.aborted === true) {
+        reject(signalReason(signal));
+        return;
+      }
+      signal?.addEventListener("abort", () => { reject(signalReason(signal)); }, { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    // The Unix transport is stubbed, so this test never opens a socket.
+    const unixRequest = fakeClientRequest();
+    const requestSpy = vi.spyOn(http, "request").mockImplementation(() => unixRequest.request);
+    try {
+      vi.stubEnv("PI_WEBUI_SESSIOND_URL", "http://127.0.0.1:43123");
+      const httpClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:43123" } });
+      const httpPending = httpClient.request("GET", "/sessions?cwd=%2Frepo", undefined, controller.signal);
+
+      vi.stubEnv("PI_WEBUI_SESSIOND_URL", "");
+      const unixClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "" } });
+      const unixPending = unixClient.request("GET", "/sessions?cwd=%2Frepo", undefined, controller.signal);
+      expect(requestSpy).toHaveBeenCalledTimes(1);
+
+      // Daemon enumeration is not this transport's work, so it keeps running.
+      const enumeration = deferredEnumeration();
+      controller.abort(new Error("browser disconnected"));
+
+      await expect(httpPending).rejects.toThrow("browser disconnected");
+      await expect(unixPending).rejects.toThrow("browser disconnected");
+      expect(httpSignals[0]?.aborted).toBe(true);
+      expect(unixRequest.request.destroyed).toBe(true);
+      enumeration.resolve([]);
+      await expect(enumeration.promise).resolves.toEqual([]);
+    } finally {
+      requestSpy.mockRestore();
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.skipIf(process.platform === "win32")("destroys a pending Unix request and rejects on explicit abort", async () => {
     const socketPath = `/tmp/pi-webui-sessiond-client-abort-${String(process.pid)}-${String(Date.now())}.sock`;
     vi.stubEnv("PI_WEBUI_SESSIOND_URL", "");
@@ -210,6 +254,36 @@ async function closeUnix(server: http.Server, socketPath: string): Promise<void>
     });
   });
   await rm(socketPath, { force: true });
+}
+
+interface FakeClientRequest {
+  readonly request: http.ClientRequest & { destroyed: boolean };
+}
+
+/** Stands in for `http.request` so an aborted Unix transport is observable without a socket. */
+function fakeClientRequest(): FakeClientRequest {
+  const emitter = new EventEmitter();
+  const request = Object.assign(emitter, {
+    destroyed: false,
+    write: () => true,
+    end: () => undefined,
+    destroy: () => {
+      request.destroyed = true;
+      return request;
+    },
+  });
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- the stub only needs the ClientRequest surface the transport touches.
+  return { request: request as unknown as http.ClientRequest & { destroyed: boolean } };
+}
+
+function signalReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
+}
+
+function deferredEnumeration(): { promise: Promise<string[]>; resolve(rows: string[]): void } {
+  let resolve: (rows: string[]) => void = () => undefined;
+  const promise = new Promise<string[]>((next) => { resolve = next; });
+  return { promise, resolve: (rows) => { resolve(rows); } };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

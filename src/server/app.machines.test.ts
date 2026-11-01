@@ -7,6 +7,10 @@ import { appTestContext, configFromMachineConfigWriteBody, fakeRemoteClient, ful
 
 registerAppTestHooks();
 
+// `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
 describe("buildApp machine routes", () => {
   it("lists synthesized local machine through the HTTP contract", async () => {
     const response = await appTestContext.app.inject({ method: "GET", url: "/api/machines" });
@@ -145,7 +149,7 @@ describe("buildApp machine routes", () => {
       config: selectedMachinePiWebUiConfig(),
       effectiveConfig: selectedMachinePiWebUiConfig(),
     });
-    expect(requestJson).toHaveBeenCalledWith("GET", "/api/machines/local/config");
+    expect(requestJson).toHaveBeenCalledWith("GET", "/api/machines/local/config", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("forwards only the validated remote selected-machine patch to the target local config route", async () => {

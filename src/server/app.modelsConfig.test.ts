@@ -4,6 +4,10 @@ import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.te
 
 registerAppTestHooks();
 
+// `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
 describe("buildApp models configuration routes", () => {
   it("forwards local models configuration reads, saves, and connection tests to the session daemon", async () => {
     const config = {
@@ -64,7 +68,7 @@ describe("buildApp models configuration routes", () => {
     expect(save.json()).toEqual({ method: "PUT", path: "/api/models-config", body: config });
     expect(test.json()).toEqual({ method: "POST", path: "/api/models-config/test", body: testInput });
     expect(discover.json()).toEqual({ method: "POST", path: "/api/models-config/discover", body: discoveryInput });
-    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/models-config", undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/models-config", undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(2, "PUT", "/api/models-config", config);
     expect(request).toHaveBeenNthCalledWith(3, "POST", "/api/models-config/test", testInput);
     expect(request).toHaveBeenNthCalledWith(4, "POST", "/api/models-config/discover", discoveryInput);

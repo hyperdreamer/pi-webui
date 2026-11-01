@@ -10,6 +10,10 @@ import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.te
 
 registerAppTestHooks();
 
+// `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
 const MOVE_TASK_REQUEST = {
   operationId: "00000000-0000-4000-8000-000000000001",
   intent: "start",
@@ -158,7 +162,7 @@ describe("buildApp PI WEBUI plugin routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["set-cookie"]).toBeUndefined();
     expect(response.json()).toEqual({ plugins: [{ id: "remote-tools", module: "/pi-webui-plugins/remote-tools/plugin.js", source: "local", scope: "local", machineSpecific: false, enabled: false }] });
-    expect(request).toHaveBeenCalledWith("GET", "/api/plugins", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/plugins", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("rewrites existing root-style remote plugin manifests and proxies their assets", async () => {
