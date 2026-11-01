@@ -6,7 +6,7 @@
 
 ## Background
 
-A remote session-list read goes through the browser, this gateway's machine proxy, `RemoteMachineClient`, the remote gateway's session proxy, and the remote daemon. The machine proxy forwards the machine-scoped URL through `remoteApiPath` (`src/server/machines/machineProxyRoutes.ts:39`); the receiving session proxy strips its prefix and awaits the daemon's complete body (`src/server/sessiond/sessionProxyRoutes.ts:19`). The daemon's list operation awaits enumeration, archives, and metadata before constructing its response (`src/server/sessions/piSessionService.ts:1772`).
+A remote session-list read goes through the browser, this gateway's machine proxy, `RemoteMachineClient`, the remote gateway's session proxy, and the remote daemon. The machine proxy forwards the machine-scoped URL through `remoteApiPath` (defined at `src/server/machines/machineProxyRoutes.ts:135`, called at `:50`); the receiving session proxy strips its prefix and awaits the daemon's complete body (`src/server/sessiond/sessionProxyRoutes.ts:19`). The daemon's list operation awaits enumeration, archives, and metadata before constructing its response (`src/server/sessions/piSessionService.ts:1772`).
 
 The current remote fallback is 30,000 ms, and `fetchResponse` clears its timer as soon as `fetch` resolves with headers (`src/server/machines/machineClient.ts:28`, `:84`). The receiving gateway buffers the daemon response before answering, so daemon processing and that buffering count against the outward gateway's header deadline. Transfer after the remote gateway's headers does not (`src/server/sessiond/sessionProxyRoutes.ts:22`, `src/server/machines/machineClient.ts:67`). This specification preserves that boundary while raising and exposing the machine budget.
 
@@ -154,7 +154,7 @@ A per-call override is not constrained to the machine setting's 180-second maxim
 
 The four operation constants and their route assignments already exist (`src/shared/federatedRoutes.ts:3`, `:45`, `:51`, `:53`, `:127`). Remove `WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS` and the move route's `timeoutMs` property (`src/shared/federatedRoutes.ts:14`, `:19`). Keep all other operation overrides as listed. Route handlers must not substitute the 120-second default into `options.timeoutMs`, since that would mask a stored machine value.
 
-The plugin manifest has a separate 10-second budget outside this federated table (`src/server/machines/machinePluginProxyRoutes.ts:23`, `:43`). Preserve it. This work does not change WebSocket lifetimes, probe caches, or introduce a body-transfer timeout. Existing JSON/config and raw-body serialization must continue to work; preserve the content-type forwarding in `proxyRequestOptions` (`src/server/machines/machineProxyRoutes.ts:140`).
+The plugin manifest has a separate 10-second budget outside this federated table (`src/server/machines/machinePluginProxyRoutes.ts:23`, `:43`). Preserve it. This work does not change WebSocket lifetimes, probe caches, or introduce a body-transfer timeout. Existing JSON/config and raw-body serialization must continue to work; preserve the content-type forwarding in `proxyRequestOptions` (`src/server/machines/machineProxyRoutes.ts:142`).
 
 ### `RemoteMachineClient` deadline and caller signal
 
@@ -188,9 +188,11 @@ Check the scope after asynchronous machine lookup and before each send. If the c
 
 For GET, merge `signal` into the existing request options without losing `timeoutMs` or `contentType`; for other methods leave `signal` undefined. Keep `proxyMachineHttpRequest` as the common route boundary: workspace-task proxy registrations already delegate to it (`src/server/workspaceTasks/workspaceTasksProxyRoutes.ts:1`). The `/config` GET special case must pass this signal through `proxySelectedMachineConfigRequest` into `client.requestJson`; its PUT passes no lifecycle signal. Retain config response validation and machine-local config projection, including `sessiond`/`sessiondUrl`; do not turn it into an unvalidated byte stream (`src/server/machines/machineProxyRoutes.ts:72`, `:90`).
 
+`/api/machines/:machineId/pi-webui-plugins/manifest.json` is a second route boundary that the machine proxy does not own. It calls `client.requestJson` with its own 10-second budget (`src/server/machines/machinePluginProxyRoutes.ts:24`, `:43`) and today passes no lifecycle signal. It is a GET read of the same class as the routes above, so it creates its own reply disconnect scope and passes that signal — while keeping the 10-second budget exactly as it is. A manifest read never widens to the machine budget, and the exempt-by-omission reading is not acceptable: either this scope exists, or the design's statement that federated proxy reads cancel on disconnect is false.
+
 ### Eager streaming headers
 
-For a returned upstream Node readable, forward the upstream status and existing safe-header allowlist, then arm a one-shot listener on **`reply.raw`'s `"pipe"` event immediately before `reply.send(upstream.body)`**. The callback calls `reply.raw.flushHeaders()` if the reply is neither destroyed nor already headers-sent. It neither reads nor writes a body byte. Remove an unused listener on finish, close, or any terminal error/no-stream branch.
+For a returned upstream Node readable, forward the upstream status and existing safe-header allowlist, then arm a one-shot listener on **`reply.raw`'s `"pipe"` event immediately before `reply.send(upstream.body)`**. The callback calls `reply.raw.flushHeaders()` if the reply is neither destroyed nor already headers-sent. It neither reads nor writes a body byte. Keep a local handle for that one-shot listener and remove it on finish, close, **and** in the catch that surrounds `reply.send(upstream.body)` (`src/server/machines/machineProxyRoutes.ts:60-63`). A send that throws before the raw `pipe` event must not leave the listener armed; that failure takes the ordinary gateway error path because no headers were flushed.
 
 This position is mandatory. In the installed Fastify stream path, final reply headers are copied onto the raw response immediately before `payload.pipe(res)` (`node_modules/fastify/lib/reply.js:842`). Node's destination `pipe` event occurs before source data flows. The compression hook sets `Content-Encoding`, `Vary`, and removes the upstream content length before that final stream reaches `sendStream` (`node_modules/@fastify/compress/index.js:246`). Consequently the listener flushes the compression-adjusted headers and status even when the **first** body chunk is delayed. Do not call `flushHeaders()` earlier in the handler or bypass the compression hook with `reply.hijack()`/manual raw piping.
 
@@ -290,6 +292,7 @@ Locations below refer to the inspected implementation before this change. **Back
 | `learnedSkillsController.ts:124`, `load` → `fetchSnapshot` | Same rule as memory: scheduled poll is background; initial scope load and explicit line-81 refresh are foreground. |
 | `PiWebUiApp.ts:3372`, `onRefreshMemory`; `:3637`–`:3638`, learned-skills refresh callbacks | Foreground; keep default explicit-refresh behavior without bow-out. |
 | `PiWebUiApp.ts:3845`, `showProjectStatistics` → `workspacesApi.workspaces` | Foreground, as are its subsequent usage/count requests; do not apply background bow-out to a statistics load. |
+| `GitUpdateManagerPanel.ts:86`, `:232`, direct `gitStatus` and `gitDiff` reads | Foreground. These are explicit user-driven reads outside `gitController`; they keep the full gateway budget and never receive the background helper, even though they are `await`ed inside a render-triggered load. |
 | New `WorkspaceController.retrySessionList()` | Foreground, current list only, no 20-second timer, owner `retry`. |
 | `machineService.ts:129` and `:153`, health/runtime probes | Separate 3-second server probe class; no browser background helper and no longer machine override. |
 
@@ -482,8 +485,10 @@ The following quoted strings are required test names, grouped by their owning ex
 | Same | `cancels an unfinished remote read when the downstream reply closes` | GET signal aborts pre-headers and mid-body; normal request-receive close does not cancel response |
 | Same | `cleans disconnect listeners for replies that never stream` | Missing machine, rejected fetch, empty body, and buffered config finish/close leave no owned listeners; normal finish never aborts |
 | Same | `cancels config GET buffering without cancelling config PUT` | GET signal reaches `requestJson`; PUT signal undefined; config projection and sessiond fields preserved |
+| `src/server/app.plugins.test.ts` | `cancels a disconnected manifest read while keeping its own budget` | The manifest GET receives a reply-owned signal; the 10-second budget still applies instead of the machine budget; a disconnected read aborts without writing a gateway error |
 | Same | `flushes upstream headers before the first body chunk` | Deferred source has emitted zero chunks when flush occurs; status/safe headers visible at flush; no duplicate body read |
 | Same | `destroys a streamed reply on upstream error after header flush` | Flush then source error closes/destroys response; no second status or JSON error write |
+| Same | `removes the flush listener when the streamed send throws before piping` | A `reply.send` failure raised before the raw `pipe` event leaves no armed flush listener and produces the ordinary gateway error |
 | `src/server/app.compression.test.ts` | `flushes delayed remote headers after compression negotiation` | Use real registered compression hook, injected remote stream; before first source chunk, raw flushed headers have correct encoding/Vary and no stale length; released body decodes correctly |
 | Same | `preserves identity negotiation with an eagerly flushed stream` | Identity response has no spurious content encoding; safe/security headers retained |
 
