@@ -6,7 +6,7 @@ import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, sele
 import { createReplyDisconnectScope } from "../http/replyDisconnect.js";
 import { bridgeSockets } from "../webSocketBridge.js";
 import { RemoteMachineRequestError, type MachineClient, type MachineJsonResponse, type MachineRequestOptions } from "./machineClient.js";
-import { MachineService } from "./machineService.js";
+import { MachineService, type RemoteMachineTarget } from "./machineService.js";
 
 export const REMOTE_HTTP_ROUTES = FEDERATED_HTTP_ROUTES.filter((spec) => !isWorkspaceTasksFederatedHttpRoute(spec));
 export const REMOTE_WEBSOCKET_ROUTES = FEDERATED_WEBSOCKET_ROUTES;
@@ -49,12 +49,11 @@ export async function proxyMachineHttpRequest(machines: MachineService, spec: Fe
   const signal = disconnect?.signal;
   const lookup = { failed: false };
   try {
-    let machine: Machine | undefined;
-    let client: MachineClient | undefined;
+    let target: RemoteMachineTarget | undefined;
     try {
-      machine = await machines.get(machineId);
-      if (isDisconnected(signal, reply)) return await reply;
-      if (machine !== undefined) client = await machines.remoteClient(machineId);
+      // One registry read owns both the route budget and the client, so a mid-request
+      // registry change cannot make them disagree.
+      target = await machines.remoteTarget(machineId);
     } catch (error) {
       // Preserve Fastify's original handling of registry/lookup failures, while still
       // suppressing work that raced with a disconnected reply.
@@ -63,7 +62,8 @@ export async function proxyMachineHttpRequest(machines: MachineService, spec: Fe
       throw error;
     }
     if (isDisconnected(signal, reply)) return await reply;
-    if (machine === undefined || client === undefined) return await reply.code(404).send({ error: "Machine not found" });
+    if (target === undefined) return await reply.code(404).send({ error: "Machine not found" });
+    const { machine, client } = target;
 
     const remotePath = remoteApiPath(machineId, requestUrl);
     if (spec.path === "/config") {
@@ -136,6 +136,8 @@ async function proxySelectedMachineConfigRequest(client: MachineClient, machineI
     const read = readOptions === undefined
       ? await client.requestJson("GET", "/api/machines/local/config")
       : await client.requestJson("GET", "/api/machines/local/config", undefined, readOptions);
+    // The read is buffered: a reply that closed while it was in flight must not be written.
+    if (isDisconnected(signal, reply)) return await reply;
     return await sendSelectedMachineConfigResponse(reply, read, machineId);
   }
 

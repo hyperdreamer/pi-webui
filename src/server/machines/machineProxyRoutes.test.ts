@@ -55,8 +55,7 @@ describe("machine proxy selected-machine config route", () => {
       },
     };
     const machines = new MachineService();
-    vi.spyOn(machines, "get").mockResolvedValue(machineRecord());
-    vi.spyOn(machines, "remoteClient").mockResolvedValue(fakeClient(upstream));
+    vi.spyOn(machines, "remoteTarget").mockResolvedValue({ machine: machineRecord(), client: fakeClient(upstream) });
     app = Fastify({ logger: false });
     await app.register(fastifyWebsocket);
     registerMachineProxyRoutes(app, machines);
@@ -92,6 +91,40 @@ describe("machine proxy route budgets", () => {
     expect(calls["/config"]?.put?.signal).toBeUndefined();
     expect(calls["/skills/search"]?.signal).toBeUndefined();
     expect(calls["/workspace-tasks/move"]?.signal).toBeUndefined();
+  });
+});
+
+describe("machine proxy registry lookups", () => {
+  it("resolves the machine and its client from one registry read", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-webui-machine-proxy-snapshot-"));
+    const storePath = join(directory, "machines.json");
+    await writeFile(storePath, JSON.stringify({ machines: [{ ...machineRecord(90_000), token: "secret" }] }), "utf8");
+    const store = new MachineStore(storePath);
+    const list = vi.spyOn(store, "list");
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({ statusCode: 200, headers: { "content-type": "application/json" }, body: Readable.from(["{}"]) }));
+    const harness = makeReplyHarness();
+    try {
+      const machines = new MachineService(store, { remoteClientFactory: () => fakeMachineClient({ request }) });
+
+      await expect(proxyMachineHttpRequest(
+        machines,
+        routeSpec("GET", "/projects"),
+        REMOTE_MACHINE_ID,
+        "GET",
+        `/api/machines/${REMOTE_MACHINE_ID}/projects`,
+        undefined,
+        undefined,
+        harness.reply,
+      )).resolves.toBe(harness.reply);
+
+      // One registry read builds both the route budget and the client, so the two
+      // cannot disagree for a single request.
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0]?.[3]?.timeoutMs).toBe(90_000);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -157,6 +190,28 @@ describe("machine proxy remote read cancellation", () => {
     await expect(putPending).resolves.toBe(putHarness.reply);
     expect(putHarness.writes).toHaveLength(1);
     expect(putHarness.writes[0]?.statusCode).toBe(200);
+  });
+
+  it("does not write a buffered config read that resolves after the reply closed", async () => {
+    let resolveRead: ((value: MachineJsonResponse) => void) | undefined;
+    const started = startedSignal();
+    const client = fakeMachineClient({
+      // A read that cannot be cancelled still must not write to a reply the browser left.
+      requestJson: () => new Promise<MachineJsonResponse>((resolve) => {
+        resolveRead = resolve;
+        started.resolve();
+      }),
+    });
+    const harness = makeReplyHarness();
+    const pending = invokeRemoteGet(client, harness.reply, { url: `/api/machines/${REMOTE_MACHINE_ID}/config`, spec: routeSpec("GET", "/config") });
+    await started.promise;
+
+    harness.raw.emit("close");
+    expect(resolveRead).toBeTypeOf("function");
+    resolveRead?.({ statusCode: 200, headers: { "content-type": "application/json" }, body: configResponseBody() });
+
+    await expect(pending).resolves.toBe(harness.reply);
+    expect(harness.writes).toEqual([]);
   });
 
   it("propagates browser bow out through both gateways to the daemon transport", async () => {
@@ -243,6 +298,47 @@ describe("machine proxy streaming replies", () => {
     await expect(pending).resolves.toBe(harness.reply);
     expect(harness.raw.destroyed).toBe(true);
     expect(harness.writes).toHaveLength(0);
+  });
+
+  it("cancels an in-flight remote body transfer when the downstream reply closes", async () => {
+    const source = deferredReadableBody();
+    const streamed = abortableStreamingClient(source.stream);
+    const harness = makeReplyHarness();
+
+    const pending = invokeRemoteGet(streamed.client, harness.reply);
+    await harness.flushed;
+    expect(harness.flush.count).toBe(1);
+    expect(streamed.options()?.signal).toBeInstanceOf(AbortSignal);
+
+    // The upstream headers already arrived; only the body is still open.
+    harness.raw.emit("close");
+
+    const signal = streamed.options()?.signal;
+    await expect(pending).resolves.toBe(harness.reply);
+    expect(signal?.aborted).toBe(true);
+    expect(source.stream.destroyed).toBe(true);
+    expect(streamed.destroyReason()).toBe(signal?.reason);
+    expect(harness.writes).toEqual([]);
+    expect(harness.raw.destroyed).toBe(true);
+  });
+
+  it("stops the real remote body transport when the reply closes mid-transfer", async () => {
+    const source = deferredWebBody();
+    const client = new RemoteMachineClient(
+      { baseUrl: "https://remote.example.test" },
+      () => Promise.resolve(new Response(source.stream, { status: 200, headers: { "content-type": "application/json" } })),
+    );
+    const harness = makeReplyHarness();
+
+    const pending = invokeRemoteGet(client, harness.reply);
+    await harness.flushed;
+
+    harness.raw.emit("close");
+
+    await expect(pending).resolves.toBe(harness.reply);
+    expect(source.cancelled()).toBe(true);
+    expect(harness.writes).toEqual([]);
+    expect(harness.raw.destroyed).toBe(true);
   });
 
   it("removes the flush listener when the streamed send throws before piping", async () => {
@@ -369,8 +465,7 @@ function moveTaskRequest(): unknown {
 async function assertNoOwnedListenersAfterMissingMachine(): Promise<void> {
   const harness = makeReplyHarness();
   const machines = new MachineService();
-  vi.spyOn(machines, "get").mockResolvedValue(machineRecord());
-  vi.spyOn(machines, "remoteClient").mockResolvedValue(undefined);
+  vi.spyOn(machines, "remoteTarget").mockResolvedValue(undefined);
 
   await expect(proxyMachineHttpRequest(machines, routeSpec("GET", "/sessions"), REMOTE_MACHINE_ID, "GET", SESSIONS_URL, undefined, undefined, harness.reply)).resolves.toBe(harness.reply);
 
@@ -473,8 +568,7 @@ function machineRecord(requestTimeoutMs?: number): Machine {
 
 function proxyMachines(client: MachineClient, requestTimeoutMs?: number): MachineService {
   const machines = new MachineService();
-  vi.spyOn(machines, "get").mockResolvedValue(machineRecord(requestTimeoutMs));
-  vi.spyOn(machines, "remoteClient").mockResolvedValue(client);
+  vi.spyOn(machines, "remoteTarget").mockResolvedValue({ machine: machineRecord(requestTimeoutMs), client });
   return machines;
 }
 
@@ -495,6 +589,52 @@ function streamingClient(body: NodeJS.ReadableStream): MachineClient {
   return fakeMachineClient({
     request: () => Promise.resolve({ statusCode: 200, headers: { "content-type": "application/json", "x-content-type-options": "nosniff" }, body }),
   });
+}
+
+interface ObservedBodyClient {
+  readonly client: MachineClient;
+  options(): MachineRequestOptions | undefined;
+  destroyReason(): Error | undefined;
+}
+
+/**
+ * Streams an open response body and mirrors the real client's `attachBody`
+ * teardown: an abort destroys the body with the reply-owned reason.
+ */
+function abortableStreamingClient(stream: Readable): ObservedBodyClient {
+  let captured: MachineRequestOptions | undefined;
+  let reason: Error | undefined;
+  const client = fakeMachineClient({
+    request: (_method, _path, _body, options) => {
+      captured = options;
+      const signal = options?.signal;
+      signal?.addEventListener("abort", () => {
+        reason = signalReason(signal);
+        stream.destroy(reason);
+      }, { once: true });
+      return Promise.resolve({ statusCode: 200, headers: { "content-type": "application/json", "x-content-type-options": "nosniff" }, body: stream });
+    },
+  });
+  return { client, options: () => captured, destroyReason: () => reason };
+}
+
+interface DeferredWebBody {
+  readonly stream: ReadableStream<Uint8Array>;
+  cancelled(): boolean;
+}
+
+/** A web response body that never produces a chunk, so it stays open until it is dropped. */
+function deferredWebBody(): DeferredWebBody {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull() {
+      // The body stays open: nothing is produced until the transport drops it.
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return { stream, cancelled: () => cancelled };
 }
 
 interface DeferredRemoteGet {

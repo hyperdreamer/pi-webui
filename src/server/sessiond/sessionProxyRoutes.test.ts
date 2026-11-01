@@ -6,22 +6,22 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ModelsConfigErrorResponse, ModelsConfigLimitsStatusResponse } from "../../shared/apiTypes.js";
 import { proxySessionDaemonRequest, registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessionProxyRoutes";
 
-let app: FastifyInstance;
-let daemon: FakeSessionDaemon;
-
-beforeEach(async () => {
-  app = Fastify({ logger: false });
-  await app.register(fastifyWebsocket);
-  daemon = await FakeSessionDaemon.create();
-  registerSessionProxyRoutes(app, daemon, "/api/machines/local");
-});
-
-afterEach(async () => {
-  await app.close();
-  await daemon.close();
-});
-
 describe("machine-scoped session proxy routes", () => {
+  let app: FastifyInstance;
+  let daemon: FakeSessionDaemon;
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    await app.register(fastifyWebsocket);
+    daemon = await FakeSessionDaemon.create();
+    registerSessionProxyRoutes(app, daemon, "/api/machines/local");
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await daemon.close();
+  });
+
   it("strips the machine prefix before forwarding session requests", async () => {
     const response = await app.inject({ method: "GET", url: "/api/machines/local/sessions?cwd=/repo" });
 

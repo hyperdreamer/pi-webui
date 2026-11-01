@@ -17,6 +17,11 @@ export interface MachineServiceDependencies {
   runtimeCacheTtlMs?: number;
 }
 
+export interface RemoteMachineTarget {
+  readonly machine: Machine;
+  readonly client: MachineClient;
+}
+
 const LOCAL_MACHINE_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 const DEFAULT_HEALTH_CACHE_TTL_MS = 5_000;
 
@@ -79,6 +84,15 @@ export class MachineService {
   async remoteClient(id: string): Promise<MachineClient | undefined> {
     const machine = await this.storedRemote(id);
     return machine === undefined ? undefined : this.clientFor(machine);
+  }
+
+  /**
+   * One registry read for a proxied request: the public record and its client come
+   * from the same snapshot, so the route budget and the client cannot disagree.
+   */
+  async remoteTarget(id: string): Promise<RemoteMachineTarget | undefined> {
+    const stored = await this.storedRemote(id);
+    return stored === undefined ? undefined : { machine: publicMachine(stored), client: this.clientFor(stored) };
   }
 
   async health(id: string): Promise<MachineHealth | undefined> {

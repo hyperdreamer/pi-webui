@@ -166,17 +166,23 @@ describe("SessionDaemonClient active agent profile protocol", () => {
   });
 
 
-  it("aborts HTTP and Unix daemon transports while leaving enumeration independent", async () => {
+  it("aborts the HTTP and Unix daemon transports while leaving an unrelated daemon read independent", async () => {
     const controller = new AbortController();
     const httpSignals: (AbortSignal | undefined)[] = [];
-    const fetchMock = vi.fn((_input: URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    let resolveUnrelated: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn((_input: URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
       const signal = init?.signal ?? undefined;
       httpSignals.push(signal);
-      if (signal?.aborted === true) {
+      if (signal === undefined) {
+        // An unsignalled read on the same client must not inherit another request's abort.
+        resolveUnrelated = resolve;
+        return;
+      }
+      if (signal.aborted) {
         reject(signalReason(signal));
         return;
       }
-      signal?.addEventListener("abort", () => { reject(signalReason(signal)); }, { once: true });
+      signal.addEventListener("abort", () => { reject(signalReason(signal)); }, { once: true });
     }));
     vi.stubGlobal("fetch", fetchMock);
     // The Unix transport is stubbed, so this test never opens a socket.
@@ -185,23 +191,27 @@ describe("SessionDaemonClient active agent profile protocol", () => {
     try {
       vi.stubEnv("PI_WEBUI_SESSIOND_URL", "http://127.0.0.1:43123");
       const httpClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "http://127.0.0.1:43123" } });
+      const unrelated = httpClient.request("GET", "/sessions/unread");
       const httpPending = httpClient.request("GET", "/sessions?cwd=%2Frepo", undefined, controller.signal);
 
       vi.stubEnv("PI_WEBUI_SESSIOND_URL", "");
       const unixClient = new SessionDaemonClient({ env: { PI_WEBUI_CONFIG: testConfigPath, PI_WEBUI_SESSIOND_URL: "" } });
       const unixPending = unixClient.request("GET", "/sessions?cwd=%2Frepo", undefined, controller.signal);
       expect(requestSpy).toHaveBeenCalledTimes(1);
+      expect(httpSignals[0]).toBeUndefined();
+      expect(httpSignals[1]).toBe(controller.signal);
 
-      // Daemon enumeration is not this transport's work, so it keeps running.
-      const enumeration = deferredEnumeration();
       controller.abort(new Error("browser disconnected"));
 
       await expect(httpPending).rejects.toThrow("browser disconnected");
       await expect(unixPending).rejects.toThrow("browser disconnected");
-      expect(httpSignals[0]?.aborted).toBe(true);
+      expect(httpSignals[1]?.aborted).toBe(true);
       expect(unixRequest.request.destroyed).toBe(true);
-      enumeration.resolve([]);
-      await expect(enumeration.promise).resolves.toEqual([]);
+
+      // The unrelated read settles on its own transport after the abort.
+      expect(resolveUnrelated).toBeTypeOf("function");
+      resolveUnrelated?.(new Response("[]", { status: 200, headers: { "content-type": "application/json" } }));
+      await expect(unrelated).resolves.toEqual(expect.objectContaining({ statusCode: 200, body: "[]" }));
     } finally {
       requestSpy.mockRestore();
       vi.unstubAllGlobals();
@@ -278,12 +288,6 @@ function fakeClientRequest(): FakeClientRequest {
 
 function signalReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
-}
-
-function deferredEnumeration(): { promise: Promise<string[]>; resolve(rows: string[]): void } {
-  let resolve: (rows: string[]) => void = () => undefined;
-  const promise = new Promise<string[]>((next) => { resolve = next; });
-  return { promise, resolve: (rows) => { resolve(rows); } };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
