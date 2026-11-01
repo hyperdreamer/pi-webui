@@ -280,15 +280,31 @@ supersession guards as the original load, keeps the selected session, publishes 
 fresh load record, and clears the failure record.
 
 **Completion semantics.** Two promises exist here, and they deliberately do not
-settle together. The promise returned by an explicit foreground refresh settles
-only after its queued replay has run and applied, so a caller that awaits
-`refreshSessionLists` sees the data it asked for. Workspace selection settles
-independently of the debounced invalidation replay: it resolves when its own read
-and reconciliation finish, and a replay queued behind it runs afterwards. Merging
-the two — making selection wait for the replay — deadlocks the existing
-calibration behaviour in `workspaceController.sessionLists.test.ts` and imposes a
-debounce delay on every workspace click, so it is explicitly rejected. (Decision
-D5, taken after the selection-retry lane's final review exposed the ambiguity.)
+settle together.
+
+A call to `refreshSessionLists` whose resolved intent is `foreground` — including
+the default when no intent is passed — settles only after its queued replay has run
+and applied its rows, so a caller that awaits it observes the data it asked for. A
+call whose resolved intent is `background` may settle as soon as its own pass
+returns; it makes no completion promise about the replay.
+
+Workspace selection settles independently of the debounced invalidation replay. Its
+promise covers the selected workspace's own session-list read and the
+selected-list/session reconciliation that follows it. It does not cover the
+delegated project-sessions refresh, which stays fire-and-forget, and it does not
+cover a replay queued behind the selection.
+
+One consequence is stated here so it cannot be discovered the hard way: a foreground
+refresh requested while a selection is loading cannot settle before that selection
+finishes, because the replay cannot run until selection releases it. A caller whose
+replay must not wait asks for `background` instead.
+
+The alternative — making selection wait for the replay — is rejected: it imposes a
+debounce delay on every workspace click and buys nothing the foreground refresh does
+not already provide. (Decision D5, taken after the selection-retry lane's final
+review exposed the ambiguity; sharpened after the amendment review showed that the
+existing calibration test calls `refreshSessionLists` while a selection is loading,
+so that call is a background invalidation and must say so.)
 
 **Raise limit** opens the machine dialog prefilled for that machine with the
 patience field focused.
