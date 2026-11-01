@@ -524,6 +524,16 @@ The chain fixture must exercise propagation, not manually abort each hop's contr
 
 ### Controllers, provenance, and overlap
 
+**Completion contract.** The promise returned by an explicit foreground
+`refreshSessionLists` call settles only after its queued replay has run and
+applied its rows; a caller that awaits it therefore observes the data it asked
+for, including the delegated foreground read. The promise returned by
+`selectWorkspace` settles when its own read and reconciliation finish and does
+**not** wait for a debounced invalidation replay queued behind it. An
+implementation that makes selection await the replay is rejected: it deadlocks
+the existing calibration path and adds a debounce delay to every workspace
+click. Both promises keep the per-cwd intent rules above.
+
 | File | Test name | Required assertion |
 | --- | --- | --- |
 | `src/client/src/controllers/workspaceController.test.ts` | `publishes captured remote selection and receiving provenance` | Exact scope/start/budget/owner, header callback transition before body, success cleanup; local has no records |
@@ -532,7 +542,7 @@ The chain fixture must exercise propagation, not manually abort each hop's contr
 | Same | `retries only the current list without selecting or detaching a session` | Selected session survives missing/archived-changed row; one list read, no topology/sibling/selection/socket/draft/URL effects; fresh captured budget |
 | `src/client/src/controllers/workspaceController.cancellation.test.ts` | `a superseded load cannot advance or clear a newer load in the same scope` | Deferred original header/success/error/finally after new retry produce no stale publication; workspace/machine switch also guarded |
 | `src/client/src/controllers/workspaceController.test.ts` | `foreground mutation refresh survives later background invalidations in the queue` | Both same-task and running-background overlap; a later background callback cannot replace pending foreground intent; full-budget read actually runs after 20 seconds |
-| Same | `preserves per cwd intent and deferred dirty work behind selection` | Mixed cwds use correct budgets; foreground loading deferral does not lose requests/intent; final foreground promise awaits its foreground read |
+| Same | `preserves per cwd intent and deferred dirty work behind selection` | Mixed cwds use correct budgets; foreground loading deferral does not lose requests/intent; the explicit refresh promise settles only after its replayed read applies, while the selection promise settles independently of that replay |
 | Same | `keeps cancelled discovery hydration eligible for a later snapshot` | No hydration mark on cancel; later normal pass succeeds; real error still reported |
 | `src/client/src/controllers/sessionController.refresh.test.ts` | `preserveSelection list application reconciles rows without session lifecycle effects` | New optional mode preserves exact selection even if missing/archived flag changes; normal default retains existing behavior |
 | Same | `post mutation reconciliation uses foreground intent even when fire and forget` | Wired and direct fallback full-budget; revalidate remains nonblocking; cleanup/reorder/start reconciliation not cancelled at 20 seconds |

@@ -279,6 +279,17 @@ session list for the current *(machine, project, workspace)* scope under the sam
 supersession guards as the original load, keeps the selected session, publishes a
 fresh load record, and clears the failure record.
 
+**Completion semantics.** Two promises exist here, and they deliberately do not
+settle together. The promise returned by an explicit foreground refresh settles
+only after its queued replay has run and applied, so a caller that awaits
+`refreshSessionLists` sees the data it asked for. Workspace selection settles
+independently of the debounced invalidation replay: it resolves when its own read
+and reconciliation finish, and a replay queued behind it runs afterwards. Merging
+the two — making selection wait for the replay — deadlocks the existing
+calibration behaviour in `workspaceController.sessionLists.test.ts` and imposes a
+debounce delay on every workspace click, so it is explicitly rejected. (Decision
+D5, taken after the selection-retry lane's final review exposed the ambiguity.)
+
 **Raise limit** opens the machine dialog prefilled for that machine with the
 patience field focused.
 
