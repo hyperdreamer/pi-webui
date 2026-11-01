@@ -11,6 +11,10 @@ import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.te
 
 registerAppTestHooks();
 
+// `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
 const TASK_ROUTE_SPECS = [
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
   { method: "PUT", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
@@ -168,10 +172,10 @@ describe("buildApp remote machine proxy routes", () => {
     ];
 
     expect(responses.map((response) => response.statusCode)).toEqual([200, 200, 200, 200, 200]);
-    expect(request).toHaveBeenNthCalledWith(1, "GET", workspacePath, undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", workspacePath, undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(2, "PUT", workspacePath, REPLACE_TASKS_REQUEST);
     expect(request).toHaveBeenNthCalledWith(3, "POST", `${workspacePath}/move`, MOVE_TASKS_REQUEST);
-    expect(request).toHaveBeenNthCalledWith(4, "GET", "/api/workspace-tasks/global", undefined);
+    expect(request).toHaveBeenNthCalledWith(4, "GET", "/api/workspace-tasks/global", undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(5, "PUT", "/api/workspace-tasks/global", REPLACE_TASKS_REQUEST);
     expect(request).toHaveBeenCalledTimes(5);
     expect(appTestContext.piWebUiConfig).toEqual({});
@@ -216,7 +220,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["set-cookie"]).toBeUndefined();
-    expect(request).toHaveBeenCalledWith("GET", "/api/workspace-tasks/global", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/workspace-tasks/global", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("permits a portable move between the replace and move body caps", async () => {
@@ -338,7 +342,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("application/json");
     expect(response.json()).toEqual([{ id: "p1", name: "Remote Project", path: "/repo", createdAt: "now" }]);
-    expect(request).toHaveBeenCalledWith("GET", "/api/projects?active=true", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/projects?active=true", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("preserves the force-refresh query when proxying update checks", async () => {
@@ -355,7 +359,7 @@ describe("buildApp remote machine proxy routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
-    expect(request).toHaveBeenCalledWith("GET", "/api/pi-webui/status?refresh=1", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/pi-webui/status?refresh=1", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("proxies remote Pi package routes and gives package mutations a longer timeout", async () => {
@@ -376,7 +380,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(listResponse.json()).toEqual({ method: "GET", path: "/api/pi-packages" });
     expect(installResponse.statusCode).toBe(200);
     expect(installResponse.json()).toEqual({ method: "POST", path: "/api/pi-packages/install", body: installBody });
-    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/pi-packages", undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/pi-packages", undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(2, "POST", "/api/pi-packages/install", installBody, { timeoutMs: PI_PACKAGE_MUTATION_PROXY_TIMEOUT_MS });
   });
 
@@ -397,7 +401,7 @@ describe("buildApp remote machine proxy routes", () => {
 
     expect(listResponse.json()).toEqual({ method: "GET", path: `/api/package-plugins?cwd=${encodeURIComponent(cwd)}` });
     expect(mutationResponse.json()).toEqual({ method: "POST", path: "/api/package-plugins", body: mutation });
-    expect(request).toHaveBeenNthCalledWith(1, "GET", `/api/package-plugins?cwd=${encodeURIComponent(cwd)}`, undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", `/api/package-plugins?cwd=${encodeURIComponent(cwd)}`, undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(2, "POST", "/api/package-plugins", mutation, { timeoutMs: PI_PACKAGE_PLUGINS_OPERATION_PROXY_TIMEOUT_MS });
   });
 
@@ -447,7 +451,7 @@ describe("buildApp remote machine proxy routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(remoteWorkspaces);
-    expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/workspaces", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/workspaces", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("preserves remote file preview security headers while proxying safe response metadata", async () => {
@@ -473,7 +477,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["set-cookie"]).toBeUndefined();
     expect(response.body).toBe("<svg xmlns=\"http://www.w3.org/2000/svg\" />");
-    expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/workspaces/w1/file/preview?path=diagram.svg", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/workspaces/w1/file/preview?path=diagram.svg", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("proxies remote workspace file writes as raw request bodies", async () => {
@@ -699,8 +703,8 @@ describe("buildApp remote machine proxy routes", () => {
 
     expect([catalog.statusCode, inbox.statusCode, dismiss.statusCode, dismissAll.statusCode]).toEqual([200, 200, 200, 200]);
     expect(wrongMethod.statusCode).toBe(404);
-    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/sessions/notifications", undefined);
-    expect(request).toHaveBeenNthCalledWith(2, "GET", "/api/sessions/s%201/notifications?cwd=%2Frepo%20one", undefined);
+    expect(request).toHaveBeenNthCalledWith(1, "GET", "/api/sessions/notifications", undefined, REPLY_OWNED_SIGNAL);
+    expect(request).toHaveBeenNthCalledWith(2, "GET", "/api/sessions/s%201/notifications?cwd=%2Frepo%20one", undefined, REPLY_OWNED_SIGNAL);
     expect(request).toHaveBeenNthCalledWith(3, "POST", "/api/sessions/s%201/notifications/dismiss", dismissBody);
     expect(request).toHaveBeenNthCalledWith(4, "POST", "/api/sessions/s%201/notifications/dismiss-all", dismissAllBody);
     expect(request).toHaveBeenCalledTimes(4);
@@ -742,7 +746,7 @@ describe("buildApp remote machine proxy routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(status);
-    expect(request).toHaveBeenCalledWith("GET", "/api/models-config/limits", undefined);
+    expect(request).toHaveBeenCalledWith("GET", "/api/models-config/limits", undefined, REPLY_OWNED_SIGNAL);
   });
 
   it("forwards remote JSON request bodies and normalizes remote timeouts", async () => {

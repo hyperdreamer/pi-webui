@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
-import type { PiWebUiAgentConfig } from "../../shared/apiTypes.js";
+import type { Machine, PiWebUiAgentConfig } from "../../shared/apiTypes.js";
 import { FEDERATED_HTTP_ROUTES, FEDERATED_WEBSOCKET_ROUTES, isWorkspaceTasksFederatedHttpRoute, type FederatedHttpRouteSpec } from "../../shared/federatedRoutes.js";
 import { parsePiWebUiConfigResponseBody, parseSelectedMachineConfigRequest, selectedMachineConfigResponse } from "../configRoutes.js";
+import { createReplyDisconnectScope } from "../http/replyDisconnect.js";
 import { bridgeSockets } from "../webSocketBridge.js";
 import { RemoteMachineRequestError, type MachineClient, type MachineJsonResponse, type MachineRequestOptions } from "./machineClient.js";
-import { MachineService } from "./machineService.js";
+import { MachineService, type RemoteMachineTarget } from "./machineService.js";
 
 export const REMOTE_HTTP_ROUTES = FEDERATED_HTTP_ROUTES.filter((spec) => !isWorkspaceTasksFederatedHttpRoute(spec));
 export const REMOTE_WEBSOCKET_ROUTES = FEDERATED_WEBSOCKET_ROUTES;
@@ -41,43 +42,116 @@ export async function proxyMachineHttpRequest(machines: MachineService, spec: Fe
     return reply.code(501).send({ error: "Local machine route is not registered for this endpoint" });
   }
 
-  const client = await machines.remoteClient(machineId);
-  if (client === undefined) {
-    return reply.code(404).send({ error: "Machine not found" });
-  }
-
+  // GET is the cancellable-read class at this boundary: a dropped browser owns the
+  // remote read it started. Mutations keep their independent gateway deadline and are
+  // never cancelled by a browser disconnect.
+  const disconnect = method === "GET" ? createReplyDisconnectScope(reply) : undefined;
+  const signal = disconnect?.signal;
+  const lookup = { failed: false };
   try {
-    const remotePath = remoteApiPath(machineId, requestUrl);
-    if (spec.path === "/config") return await proxySelectedMachineConfigRequest(client, machineId, method, remotePath, body, reply);
+    let target: RemoteMachineTarget | undefined;
+    try {
+      // One registry read owns both the route budget and the client, so a mid-request
+      // registry change cannot make them disagree.
+      target = await machines.remoteTarget(machineId);
+    } catch (error) {
+      // Preserve Fastify's original handling of registry/lookup failures, while still
+      // suppressing work that raced with a disconnected reply.
+      if (isDisconnected(signal, reply)) return await reply;
+      lookup.failed = true;
+      throw error;
+    }
+    if (isDisconnected(signal, reply)) return await reply;
+    if (target === undefined) return await reply.code(404).send({ error: "Machine not found" });
+    const { machine, client } = target;
 
-    const requestOptions = proxyRequestOptions(spec, body, contentType);
+    const remotePath = remoteApiPath(machineId, requestUrl);
+    if (spec.path === "/config") {
+      return await proxySelectedMachineConfigRequest(client, machineId, method, body, reply, routeRequestOptions(spec, machine, undefined, undefined), signal);
+    }
+
+    const requestOptions = withSignal(routeRequestOptions(spec, machine, body, contentType), signal);
     const upstream = requestOptions === undefined
       ? await client.request(method, remotePath, body)
       : await client.request(method, remotePath, body, requestOptions);
+    if (isDisconnected(signal, reply)) return await reply;
+
     reply.code(upstream.statusCode);
     applySafeHeaders(reply, upstream.headers);
     if (upstream.body === undefined) return await reply.send();
-    return await reply.send(upstream.body);
+    return await sendStreamedReply(reply, upstream.body);
   } catch (error) {
-    if (isSelectedMachineConfigRequestError(error)) return reply.code(400).send({ error: errorMessage(error) });
-    return sendGatewayError(reply, machineId, error);
+    if (lookup.failed) throw error;
+    if (isDisconnected(signal, reply)) return await reply;
+    if (isSelectedMachineConfigRequestError(error)) return await reply.code(400).send({ error: errorMessage(error) });
+    return await sendGatewayError(reply, machineId, error);
+  } finally {
+    // The reply owns cleanup on normal finish/close; this releases the terminal
+    // paths that leave neither a stream nor a pending body behind.
+    disconnect?.dispose();
   }
 }
 
-async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, _remotePath: string, body: unknown, reply: FastifyReply): Promise<FastifyReply> {
+/**
+ * Arms one eager header flush on the raw response's `pipe` event, which Fastify emits
+ * after copying the final (compression-adjusted) headers and before the first body
+ * byte. A send that fails before piping leaves no armed listener and still takes the
+ * ordinary gateway error path; a failure after the flush destroys the response
+ * instead of writing a second status or body.
+ */
+async function sendStreamedReply(reply: FastifyReply, body: NodeJS.ReadableStream): Promise<FastifyReply> {
+  const state = { flushed: false };
+  const flush = (): void => {
+    if (state.flushed) return;
+    state.flushed = true;
+    if (reply.raw.destroyed || reply.raw.headersSent) return;
+    reply.raw.flushHeaders();
+  };
+  const release = (): void => {
+    reply.raw.removeListener("pipe", flush);
+    reply.raw.removeListener("finish", release);
+    reply.raw.removeListener("close", release);
+  };
+  reply.raw.once("pipe", flush);
+  reply.raw.once("finish", release);
+  reply.raw.once("close", release);
+  try {
+    return await reply.send(body);
+  } catch (error) {
+    release();
+    if (state.flushed) reply.raw.destroy(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  } finally {
+    release();
+  }
+}
+
+function isDisconnected(signal: AbortSignal | undefined, reply: FastifyReply): boolean {
+  return signal?.aborted === true || reply.raw.destroyed;
+}
+
+async function proxySelectedMachineConfigRequest(client: MachineClient, machineId: string, method: string, body: unknown, reply: FastifyReply, baseOptions: MachineRequestOptions | undefined, signal: AbortSignal | undefined): Promise<FastifyReply> {
   if (method === "GET") {
-    return sendSelectedMachineConfigResponse(reply, await client.requestJson("GET", "/api/machines/local/config"), machineId);
+    const readOptions = withSignal(baseOptions, signal);
+    const read = readOptions === undefined
+      ? await client.requestJson("GET", "/api/machines/local/config")
+      : await client.requestJson("GET", "/api/machines/local/config", undefined, readOptions);
+    // The read is buffered: a reply that closed while it was in flight must not be written.
+    if (isDisconnected(signal, reply)) return await reply;
+    return await sendSelectedMachineConfigResponse(reply, read, machineId);
   }
 
   if (method === "PUT") {
     // The target gateway's coordinator performs the merge under its own lock;
     // this gateway only validates the portable patch and forwards it once.
     const patch = parseSelectedMachineConfigRequest(configPayload(body), "portable");
-    const updateResponse = await client.requestJson("PUT", "/api/machines/local/config", { config: patch });
-    return sendSelectedMachineConfigResponse(reply, updateResponse, machineId, patch.agent);
+    const update = baseOptions === undefined
+      ? await client.requestJson("PUT", "/api/machines/local/config", { config: patch })
+      : await client.requestJson("PUT", "/api/machines/local/config", { config: patch }, baseOptions);
+    return await sendSelectedMachineConfigResponse(reply, update, machineId, patch.agent);
   }
 
-  return reply.code(405).send({ error: "Method not allowed" });
+  return await reply.code(405).send({ error: "Method not allowed" });
 }
 
 function configPayload(body: unknown): unknown {
@@ -139,14 +213,22 @@ function remoteApiPath(machineId: string, requestUrl: string): string {
   return `/api${compatPath}`;
 }
 
-function proxyRequestOptions(spec: Pick<FederatedHttpRouteSpec, "timeoutMs">, body: unknown, contentType: string | string[] | undefined): MachineRequestOptions | undefined {
+function routeRequestOptions(spec: Pick<FederatedHttpRouteSpec, "timeoutMs">, machine: Pick<Machine, "requestTimeoutMs">, body: unknown, contentType: string | string[] | undefined): MachineRequestOptions | undefined {
   const options: MachineRequestOptions = {};
-  if (spec.timeoutMs !== undefined) options.timeoutMs = spec.timeoutMs;
+  // An override wins; otherwise the stored machine value, and never the default, so an
+  // absent stored value still resolves in the client.
+  const timeoutMs = spec.timeoutMs ?? machine.requestTimeoutMs;
+  if (timeoutMs !== undefined) options.timeoutMs = timeoutMs;
   if (isRawProxyBody(body)) {
     const value = firstHeaderValue(contentType);
     if (value !== undefined && value !== "") options.contentType = value;
   }
   return Object.keys(options).length === 0 ? undefined : options;
+}
+
+function withSignal(options: MachineRequestOptions | undefined, signal: AbortSignal | undefined): MachineRequestOptions | undefined {
+  if (signal === undefined) return options;
+  return { ...options, signal };
 }
 
 function isRawProxyBody(body: unknown): boolean {

@@ -48,7 +48,13 @@ export class SessionDaemonClient {
       init.headers = { "content-type": "application/json" };
       init.body = payload;
     }
-    const response = await fetch(new URL(path, this.baseUrl), init);
+    let response: Response;
+    try {
+      response = await fetch(new URL(path, this.baseUrl), init);
+    } catch (error) {
+      // Fetch normalizes an abort into its own DOMException; the caller still owns the reason.
+      throw signal?.aborted === true ? abortError(signal) : asError(error);
+    }
     return {
       statusCode: response.status,
       headers: Object.fromEntries(response.headers.entries()),
@@ -70,6 +76,7 @@ export class SessionDaemonClient {
       const chunks: Uint8Array[] = [];
 
       const cleanup = (): void => {
+        signal?.removeEventListener("abort", onAbort);
         request?.removeListener("error", onRequestError);
         request?.removeListener("close", onRequestClose);
         response?.removeListener("data", onData);
@@ -86,6 +93,12 @@ export class SessionDaemonClient {
       };
       const fail = (error: unknown): void => {
         settle(() => { reject(asError(error)); });
+      };
+      const onAbort = (): void => {
+        // Settle first: destroying the transport can synchronously emit close/aborted.
+        fail(signal === undefined ? new DOMException("The operation was aborted", "AbortError") : abortError(signal));
+        request?.destroy();
+        response?.destroy();
       };
       const onData = (chunk: Buffer | string): void => {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -109,6 +122,9 @@ export class SessionDaemonClient {
       const onRequestClose = (): void => {
         if (!settled && response === undefined) fail(new Error("Session daemon request closed."));
       };
+      // Node's own signal handling destroys the socket; this listener keeps the caller's
+      // reason and releases the reception buffers without waiting for a socket error.
+      signal?.addEventListener("abort", onAbort, { once: true });
       const onResponse = (nextResponse: http.IncomingMessage): void => {
         response = nextResponse;
         response.on("data", onData);
