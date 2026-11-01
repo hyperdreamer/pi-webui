@@ -285,8 +285,7 @@ settle together.
 A call to `refreshSessionLists` whose resolved intent is `foreground` — including
 the default when no intent is passed — settles only after its queued replay has run
 and applied its rows, so a caller that awaits it observes the data it asked for. A
-call whose resolved intent is `background` may settle as soon as its own pass
-returns; it makes no completion promise about the replay.
+call whose resolved intent is `background` settles when its own pass returns and makes no completion promise about the replay.
 
 Workspace selection settles independently of the debounced invalidation replay. Its
 promise covers the selected workspace's own session-list read and the

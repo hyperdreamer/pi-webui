@@ -985,6 +985,7 @@ git commit -m "feat(client): expose response phases and bounded background reads
 - Modify: `src/client/src/controllers/workspaceController.ts:1-792`
 - Modify: `src/client/src/controllers/workspaceController.test.ts:1-900`
 - Modify: `src/client/src/controllers/workspaceController.cancellation.test.ts:1-420`
+- Modify: `src/client/src/controllers/workspaceController.sessionLists.test.ts:1-220`
 - Modify: `src/client/src/controllers/sessionController.ts:1-2792`
 - Modify: `src/client/src/controllers/sessionController.refresh.test.ts:1-500`
 
@@ -1124,7 +1125,20 @@ it("post mutation reconciliation uses foreground intent even when fire and forge
 
 - [ ] **Step 2: Run the controller tests and confirm they fail**
 
-Run: `npm test -- --run src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/sessionController.refresh.test.ts`
+- [ ] **Update the calibration invalidation to declare background intent**
+
+`workspaceController.sessionLists.test.ts` calls `refreshSessionLists([main.path])`
+while `selectWorkspace` is loading and awaits it. That call is an invalidation, so
+under the completion contract it is `background` and must say so, otherwise a
+foreground call would have to wait for a replay that selection is blocking:
+
+```ts
+await settle(h.controller.refreshSessionLists([main.path], undefined, "background"));
+```
+
+The test's calibration assertions are unchanged.
+
+Run: `npm test -- --run src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/workspaceController.sessionLists.test.ts src/client/src/controllers/sessionController.refresh.test.ts`
 
 Expected: FAIL because state has no provenance records, refresh queues have no intent priority, retry does not exist, and refreshed-list application always has selection side effects.
 
@@ -1158,14 +1172,14 @@ Implement retry as a fresh same-scope operation that calls only `api.sessions(cu
 
 - [ ] **Step 4: Run the focused controller tests and typecheck**
 
-Run: `npm test -- --run src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/sessionController.refresh.test.ts`
+Run: `npm test -- --run src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/workspaceController.sessionLists.test.ts src/client/src/controllers/sessionController.refresh.test.ts`
 
 Expected: PASS, including same-scope stale callbacks, exact elapsed/budget capture, silent catalog fallback, list-only retry with an open session, foreground queue precedence after a 20-second background bow-out, per-cwd deferred intent, and normal mutation reconciliation. Run `npm run typecheck`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/client/src/appState.ts src/client/src/controllers/workspaceController.ts src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/sessionController.ts src/client/src/controllers/sessionController.refresh.test.ts
+git add src/client/src/appState.ts src/client/src/controllers/workspaceController.ts src/client/src/controllers/workspaceController.test.ts src/client/src/controllers/workspaceController.cancellation.test.ts src/client/src/controllers/workspaceController.sessionLists.test.ts src/client/src/controllers/sessionController.ts src/client/src/controllers/sessionController.refresh.test.ts
 git commit -m "feat(client): add session-list provenance and list-only retry"
 ```
 

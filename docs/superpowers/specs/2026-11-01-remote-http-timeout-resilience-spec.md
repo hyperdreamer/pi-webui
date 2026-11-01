@@ -526,8 +526,7 @@ The chain fixture must exercise propagation, not manually abort each hop's contr
 
 **Completion contract.** A `refreshSessionLists` call whose resolved intent is
 `foreground` — including the default — settles only after its queued replay has run
-and applied its rows. A call whose resolved intent is `background` may settle when
-its own pass returns and makes no completion promise about the replay.
+and applied its rows. A call whose resolved intent is `background` settles when its own pass returns and makes no completion promise about the replay.
 
 `selectWorkspace` settles independently of the debounced invalidation replay. Its
 promise covers the selected workspace's own `api.sessions` read and the
