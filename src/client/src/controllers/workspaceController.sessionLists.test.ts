@@ -144,7 +144,7 @@ describe("workspace session list invalidation", () => {
     const h = harness(() => Promise.resolve([]));
     h.list.mockImplementationOnce(() => foreground.promise);
     const selecting = h.controller.selectWorkspace(main);
-    await settle(h.controller.refreshSessionLists([main.path]));
+    await settle(h.controller.refreshSessionLists([main.path], undefined, "background"));
     expect(h.list).toHaveBeenCalledTimes(1);
     foreground.resolve([parent]);
     await selecting;

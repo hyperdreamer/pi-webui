@@ -5,6 +5,37 @@ import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
 import type { WorkspaceUploadBatchState } from "./workspaceUploadState";
 
+/** The workspace whose session list a remote read is loading. */
+export interface SessionListLoadScope {
+  machineId: string;
+  projectId: string;
+  workspaceId: string;
+  workspacePath: string;
+}
+
+/**
+ * Provenance for one in-flight remote session-list read.
+ *
+ * `phase` distinguishes the budgeted wait for an upstream response from the
+ * unbounded body transfer after it started, so the UI can explain what the
+ * timeout actually covers.
+ */
+export interface SessionListLoad {
+  owner: "selection" | "catalog-fallback" | "retry";
+  scope: SessionListLoadScope;
+  startedAt: number;
+  budgetMs: number;
+  phase: "waiting" | "receiving";
+}
+
+/** A selected remote session list that ended with a typed failure, not an error banner. */
+export interface SessionListFailure {
+  scope: { machineId: string; machineName: string; projectId: string; workspaceId: string };
+  kind: "timeout" | "transfer";
+  elapsedMs: number;
+  budgetMs: number;
+}
+
 export interface AppState {
   machines: Machine[];
   selectedMachine: Machine | undefined;
@@ -39,6 +70,10 @@ export interface AppState {
   isLoadingWorkspaces: boolean;
   /** True while the currently selected workspace's session list is loading. */
   isLoadingSessions: boolean;
+  /** Provenance for the remote selected session list currently being read. */
+  sessionListLoad: SessionListLoad | undefined;
+  /** Typed failure record for the selected session list, used by the retry notice. */
+  sessionListFailure: SessionListFailure | undefined;
   selectedProject: Project | undefined;
   selectedWorkspace: Workspace | undefined;
   selectedSession: SessionInfo | undefined;
@@ -128,6 +163,8 @@ export type WorkspaceScopedStateReset = Pick<AppState,
   | "clientQueuedSessionMessages"
   | "startingSessionCount"
   | "isLoadingSessions"
+  | "sessionListLoad"
+  | "sessionListFailure"
   | "selectedNotificationInbox"
   | "treeDialog"
   | "fileTree"
@@ -154,6 +191,8 @@ export function resetWorkspaceScopedState(): WorkspaceScopedStateReset {
     clientQueuedSessionMessages: {},
     startingSessionCount: 0,
     isLoadingSessions: false,
+    sessionListLoad: undefined,
+    sessionListFailure: undefined,
     selectedNotificationInbox: undefined,
     treeDialog: undefined,
     fileTree: [],
@@ -197,6 +236,8 @@ export function initialAppState(): AppState {
     isLoadingProjects: false,
     isLoadingWorkspaces: false,
     isLoadingSessions: false,
+    sessionListLoad: undefined,
+    sessionListFailure: undefined,
     selectedProject: undefined,
     selectedWorkspace: undefined,
     selectedSession: undefined,

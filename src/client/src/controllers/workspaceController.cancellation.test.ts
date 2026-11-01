@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Project, SessionInfo, Workspace } from "../api";
+import type { Machine, Project, SessionInfo, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import type { SessionController } from "./sessionController";
 import { InMemoryWorkspaceSelectionMemory } from "./workspaceSelection";
@@ -10,6 +10,7 @@ const otherProject: Project = { id: "project-2", name: "other", path: "/other", 
 const mainWorkspace = workspace(project, "workspace-1", project.path);
 const otherWorkspace = workspace(otherProject, "workspace-2", otherProject.path);
 const featureWorkspace = workspace(project, "workspace-feature", "/workspace-feature");
+const remoteMachine: Machine = { id: "remote-lab", name: "Remote Lab", kind: "remote", createdAt: "now", updatedAt: "now" };
 
 interface Recorded {
   signal: AbortSignal | undefined;
@@ -211,6 +212,43 @@ describe("WorkspaceController selection load cancellation", () => {
 
     expect(listSessions).toHaveBeenCalled();
     expect(listSessions.mock.calls.every((call) => call[2] === undefined)).toBe(true);
+  });
+
+  // A superseded selection must not leave provenance or a failure notice behind
+  // for a read the user already replaced.
+  it("publishes no failure and keeps the newer load for a superseded read", async () => {
+    const sessionCalls: { signal: AbortSignal | undefined; resolve(rows: SessionInfo[]): void }[] = [];
+    const api = {
+      workspaces: () => Promise.resolve<Workspace[]>([mainWorkspace, featureWorkspace]),
+      sessions: (_cwd: string, _machineId?: string, signal?: AbortSignal) => new Promise<SessionInfo[]>((resolve, reject) => {
+        sessionCalls.push({ signal, resolve });
+        signal?.addEventListener("abort", () => { reject(asError(signal.reason)); }, { once: true });
+      }),
+    };
+    const { controller, state } = controllerWith(api, {
+      selectedMachine: remoteMachine,
+      selectedProject: project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    });
+
+    const superseded = controller.selectWorkspace(mainWorkspace);
+    await Promise.resolve();
+    expect(state().sessionListLoad).toMatchObject({ owner: "selection", phase: "waiting" });
+    expect(state().sessionListLoad?.scope.workspacePath).toBe(mainWorkspace.path);
+
+    const current = controller.selectWorkspace(featureWorkspace);
+    await superseded;
+
+    expect(state().sessionListFailure).toBeUndefined();
+    expect(state().error).toBe("");
+    expect(state().sessionListLoad?.scope.workspacePath).toBe(featureWorkspace.path);
+    expect(sessionCalls[0]?.signal?.aborted).toBe(true);
+
+    sessionCalls[1]?.resolve([]);
+    await current;
+
+    expect(state().sessionListLoad).toBeUndefined();
+    expect(state().sessionListFailure).toBeUndefined();
   });
 });
 
