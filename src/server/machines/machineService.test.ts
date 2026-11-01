@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PiWebUiRuntimeResponse } from "../../shared/apiTypes.js";
 import { PI_WEBUI_CAPABILITIES } from "../../shared/capabilities.js";
 import type { MachineClient } from "./machineClient.js";
-import { MachineService } from "./machineService.js";
+import { MachineService, type UpdateMachineInput } from "./machineService.js";
 import { MachineStore, machineStorePath } from "./machineStore.js";
+
+const INVALID_REQUEST_TIMEOUT_MESSAGE = "requestTimeoutMs must be an integer between 5000 and 180000 milliseconds";
 
 let tempDir: string;
 let storePath: string;
@@ -90,6 +92,110 @@ describe("MachineService", () => {
 
     const persistedAfterRemove: unknown = JSON.parse(await readFile(storePath, "utf8"));
     expect(persistedAfterRemove).toEqual({ machines: [] });
+  });
+
+  it("round trips a supplied requestTimeoutMs through the store", async () => {
+    const machine = await service.add({ name: "Remote Lab", baseUrl: "https://remote.example.test", requestTimeoutMs: 5_000 });
+
+    expect(machine).toMatchObject({ name: "Remote Lab", kind: "remote", requestTimeoutMs: 5_000 });
+    expect(machine).not.toHaveProperty("token");
+
+    const updated = await service.update(machine.id, { requestTimeoutMs: 180_000 });
+    expect(updated).toMatchObject({ id: machine.id, requestTimeoutMs: 180_000 });
+    expect(await service.get(machine.id)).toMatchObject({ id: machine.id, requestTimeoutMs: 180_000 });
+    expect(await service.list()).toEqual([
+      expect.objectContaining({ id: "local", kind: "local" }),
+      expect.objectContaining({ id: machine.id, requestTimeoutMs: 180_000 }),
+    ]);
+
+    const persisted: unknown = JSON.parse(await readFile(storePath, "utf8"));
+    expect(persisted).toMatchObject({ machines: [expect.objectContaining({ id: machine.id, requestTimeoutMs: 180_000 })] });
+    await expectOwnerOnlyMachineStore(storePath);
+  });
+
+  it("projects requestTimeoutMs publicly without exposing secrets", async () => {
+    const machine = await service.add({
+      name: "Remote Lab",
+      baseUrl: "https://remote.example.test",
+      token: "secret",
+      headers: { "X-Pi-Web-Test": "yes" },
+      requestTimeoutMs: 90_000,
+    });
+
+    const fetched = await service.get(machine.id);
+    expect(fetched).toMatchObject({ id: machine.id, requestTimeoutMs: 90_000 });
+    expect(fetched).not.toHaveProperty("token");
+    expect(fetched).not.toHaveProperty("headers");
+    expect(await service.get("local")).not.toHaveProperty("requestTimeoutMs");
+  });
+
+  it("omits requestTimeoutMs for a record written before the setting existed", async () => {
+    await writeFile(storePath, `${JSON.stringify({
+      machines: [{
+        id: "remote-1",
+        name: "Remote",
+        kind: "remote",
+        baseUrl: "https://remote.example.test",
+        createdAt: "2026-05-25T00:00:00.000Z",
+        updatedAt: "2026-05-25T00:00:00.000Z",
+      }],
+    }, null, 2)}\n`, "utf8");
+
+    expect(await service.get("remote-1")).toMatchObject({ id: "remote-1", kind: "remote" });
+    expect(await service.get("remote-1")).not.toHaveProperty("requestTimeoutMs");
+    expect(await service.get("local")).not.toHaveProperty("requestTimeoutMs");
+  });
+
+  it("validates requestTimeoutMs before writing or invalidating caches", async () => {
+    const requestJson = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({ statusCode: 200, headers: {}, body: remoteStatusBody() }));
+    const remoteService = new MachineService(new MachineStore(storePath), {
+      remoteClientFactory: () => fakeRemoteClient({ requestJson }),
+      now: () => new Date("2026-05-25T00:00:00.000Z"),
+      healthCacheTtlMs: 60_000,
+    });
+    const machine = await remoteService.add({ name: "Remote Lab", baseUrl: "https://remote.example.test", requestTimeoutMs: 5_000 });
+    await remoteService.health(machine.id);
+    const before = await remoteService.list();
+    const fileBefore = await readFile(storePath, "utf8");
+    const explicitUndefined = withOwnUndefinedRequestTimeout<UpdateMachineInput>({});
+
+    await expect(remoteService.add({ name: "Bad", baseUrl: "https://bad.example.test", requestTimeoutMs: 120_000.5 })).rejects.toThrow(INVALID_REQUEST_TIMEOUT_MESSAGE);
+    await expect(remoteService.add({ name: "Bad", baseUrl: "https://bad.example.test", requestTimeoutMs: 4_999 })).rejects.toThrow(INVALID_REQUEST_TIMEOUT_MESSAGE);
+    await expect(remoteService.update(machine.id, { requestTimeoutMs: 180_001 })).rejects.toThrow(INVALID_REQUEST_TIMEOUT_MESSAGE);
+    await expect(remoteService.update(machine.id, explicitUndefined)).rejects.toThrow(INVALID_REQUEST_TIMEOUT_MESSAGE);
+
+    await expect(remoteService.list()).resolves.toEqual(before);
+    await expect(readFile(storePath, "utf8")).resolves.toBe(fileBefore);
+    await remoteService.health(machine.id);
+    expect(requestJson).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the stored requestTimeoutMs to the remote client while probes stay at three seconds", async () => {
+    const timeouts: (number | undefined)[] = [];
+    const factoryMachines: unknown[] = [];
+    const requestJson = vi.fn<MachineClient["requestJson"]>((_method, path, _body, options) => {
+      timeouts.push(options?.timeoutMs);
+      return Promise.resolve({
+        statusCode: 200,
+        headers: {},
+        body: path === "/api/pi-webui/runtime" ? remoteRuntimeBody() : remoteStatusBody(),
+      });
+    });
+    const remoteService = new MachineService(new MachineStore(storePath), {
+      remoteClientFactory: (remote) => {
+        factoryMachines.push(remote);
+        return fakeRemoteClient({ requestJson });
+      },
+      now: () => new Date("2026-05-25T00:00:00.000Z"),
+    });
+    const machine = await remoteService.add({ name: "Remote Lab", baseUrl: "https://remote.example.test", requestTimeoutMs: 180_000 });
+
+    await remoteService.health(machine.id);
+    await remoteService.runtime(machine.id);
+
+    expect(timeouts).toEqual([3_000, 3_000]);
+    expect(factoryMachines).toHaveLength(2);
+    for (const remote of factoryMachines) expect(remote).toMatchObject({ id: machine.id, requestTimeoutMs: 180_000 });
   });
 
   it.skipIf(process.platform === "win32")("tightens permissions after reading an existing machine store", async () => {
@@ -290,6 +396,22 @@ function remoteRuntimeBody(): PiWebUiRuntimeResponse {
     },
     capabilities: [PI_WEBUI_CAPABILITIES.sessionsDeleteArchived, PI_WEBUI_CAPABILITIES.piPackagesManage],
   };
+}
+
+function remoteStatusBody(): Record<string, unknown> {
+  return {
+    packageName: "@hyperdreamer/pi-webui",
+    generatedAt: "2026-05-25T00:00:00.000Z",
+    components: {
+      web: { component: "web", label: "Remote Web", stale: false, available: true },
+      sessiond: { component: "sessiond", label: "Remote Sessiond", stale: false, available: true },
+    },
+  };
+}
+
+function withOwnUndefinedRequestTimeout<T extends object>(value: T): T {
+  Object.defineProperty(value, "requestTimeoutMs", { value: undefined, enumerable: true });
+  return value;
 }
 
 function fakeRemoteClient(overrides: Partial<MachineClient>): MachineClient {

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MachineClient } from "./machines/machineClient.js";
 import { PI_WEBUI_CAPABILITIES } from "../shared/capabilities.js";
-import type { PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import type { Machine, PiWebUiConfigResponse, PiWebUiConfigValues } from "../shared/apiTypes.js";
+import { effectiveMachineRequestTimeoutMs } from "../shared/machineRequestTimeout.js";
 import { appTestContext, configFromMachineConfigWriteBody, fakeRemoteClient, fullPiWebUiConfig, piWebUiConfigResponse, registerAppTestHooks, selectedMachinePiWebUiConfig } from "./app.testSupport.js";
 
 registerAppTestHooks();
@@ -20,6 +21,34 @@ describe("buildApp machine routes", () => {
     expect(addResponse.statusCode).toBe(200);
     expect(addResponse.json()).toMatchObject({ name: "Remote", kind: "remote", baseUrl: "https://remote.example.test" });
     expect(addResponse.json()).not.toHaveProperty("token");
+  });
+
+  it("validates and persists requestTimeoutMs through machine creation", async () => {
+    const addResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/machines",
+      payload: { name: "Remote", baseUrl: "https://remote.example.test/", requestTimeoutMs: 90_000 },
+    });
+
+    expect(addResponse.statusCode).toBe(200);
+    const machine = addResponse.json<Machine>();
+    expect(machine.requestTimeoutMs).toBe(90_000);
+    expect(effectiveMachineRequestTimeoutMs(machine)).toBe(90_000);
+
+    const invalidResponse = await appTestContext.app.inject({
+      method: "POST",
+      url: "/api/machines",
+      payload: { name: "Invalid", baseUrl: "https://invalid.example.test/", requestTimeoutMs: 180_001 },
+    });
+
+    expect(invalidResponse.statusCode).toBe(400);
+    expect(invalidResponse.json()).toEqual({
+      error: "requestTimeoutMs must be an integer between 5000 and 180000 milliseconds",
+    });
+
+    const listResponse = await appTestContext.app.inject({ method: "GET", url: "/api/machines" });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json()).toEqual({ machines: [expect.objectContaining({ id: "local" }), machine] });
   });
 
   it("reports machine health for local and remote machines", async () => {

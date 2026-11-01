@@ -122,6 +122,7 @@ export interface Machine {
   name: string;
   kind: MachineKind;
   baseUrl?: string;
+  requestTimeoutMs?: number;
   createdAt: string;
   updatedAt: string;
   status?: MachineStatus;

@@ -1,17 +1,13 @@
-import type { Machine, MachineHealth, MachineRuntime, PiWebUiComponentStatus, PiWebUiRuntimeComponent, PiWebUiRuntimeResponse, PiWebUiStatusResponse } from "../../shared/apiTypes.js";
+import type { Machine, MachineCreateRequest, MachineHealth, MachineRuntime, MachineUpdateRequest, PiWebUiComponentStatus, PiWebUiRuntimeComponent, PiWebUiRuntimeResponse, PiWebUiStatusResponse } from "../../shared/apiTypes.js";
+import { validateMachineRequestTimeoutMs } from "../../shared/machineRequestTimeout.js";
 import { parsePiWebUiRuntimeResponse } from "../../shared/piWebUiStatusParsing.js";
 import { getPiWebUiRuntime } from "../piWebUiStatus.js";
 import { DEFAULT_REMOTE_HEALTH_TIMEOUT_MS, RemoteMachineClient, type MachineClient, validateConfiguredMachineHeaders } from "./machineClient.js";
 import { MachineStore, type StoredMachine } from "./machineStore.js";
 
-export interface CreateMachineInput {
-  name?: string;
-  baseUrl?: string;
-  token?: string;
-  headers?: Record<string, string>;
-}
+export type CreateMachineInput = MachineCreateRequest;
 
-export type UpdateMachineInput = Partial<CreateMachineInput>;
+export type UpdateMachineInput = MachineUpdateRequest;
 
 export interface MachineServiceDependencies {
   localRuntime?: () => Promise<PiWebUiRuntimeResponse>;
@@ -43,17 +39,20 @@ export class MachineService {
   async add(input: CreateMachineInput): Promise<Machine> {
     const name = validateName(input.name);
     const baseUrl = validateBaseUrl(input.baseUrl);
-    const stored = await this.store.add({ name, baseUrl, ...optionalSecrets(input) });
+    const requestTimeoutMs = optionalRequestTimeout(input);
+    const stored = await this.store.add({ name, baseUrl, ...optionalSecrets(input), ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }) });
     return publicMachine(stored);
   }
 
   async update(id: string, input: UpdateMachineInput): Promise<Machine | undefined> {
     if (id === "local") throw new Error("Local machine cannot be changed");
-    const patch: Partial<Pick<StoredMachine, "name" | "baseUrl" | "token" | "headers">> = {};
+    const patch: Partial<Pick<StoredMachine, "name" | "baseUrl" | "token" | "headers" | "requestTimeoutMs">> = {};
     if (input.name !== undefined) patch.name = validateName(input.name);
     if (input.baseUrl !== undefined) patch.baseUrl = validateBaseUrl(input.baseUrl);
     if (input.token !== undefined) patch.token = input.token;
     if (input.headers !== undefined) patch.headers = validateHeaders(input.headers);
+    const requestTimeoutMs = optionalRequestTimeout(input);
+    if (requestTimeoutMs !== undefined) patch.requestTimeoutMs = requestTimeoutMs;
     const stored = await this.store.update(id, patch);
     if (stored !== undefined) {
       this.healthCache.delete(id);
@@ -173,7 +172,15 @@ export function localMachine(): Machine {
 }
 
 function publicMachine(machine: StoredMachine): Machine {
-  return { id: machine.id, name: machine.name, kind: "remote", baseUrl: machine.baseUrl, createdAt: machine.createdAt, updatedAt: machine.updatedAt };
+  return {
+    id: machine.id,
+    name: machine.name,
+    kind: "remote",
+    baseUrl: machine.baseUrl,
+    ...(machine.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: machine.requestTimeoutMs }),
+    createdAt: machine.createdAt,
+    updatedAt: machine.updatedAt,
+  };
 }
 
 function validateName(value: string | undefined): string {
@@ -195,6 +202,11 @@ function validateBaseUrl(value: string | undefined): string {
   if (url.username !== "" || url.password !== "") throw new Error("Machine baseUrl must not include credentials");
   if (url.search !== "" || url.hash !== "") throw new Error("Machine baseUrl must not include query or hash");
   return url.href.replace(/\/$/u, "");
+}
+
+function optionalRequestTimeout(input: { requestTimeoutMs?: unknown }): number | undefined {
+  if (!Object.hasOwn(input, "requestTimeoutMs")) return undefined;
+  return validateMachineRequestTimeoutMs(input.requestTimeoutMs);
 }
 
 function optionalSecrets(input: CreateMachineInput): { token?: string; headers?: Record<string, string> } {
