@@ -285,7 +285,7 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("lets the stored machine budget govern a task move and maps a remote timeout to 504", async () => {
+  it("maps a remote task-move timeout to 504", async () => {
     const request = vi.fn<MachineClient["request"]>(() => Promise.reject(new RemoteMachineRequestError("timed out", 504)));
     const machineId = await addRemoteMachine(request);
 

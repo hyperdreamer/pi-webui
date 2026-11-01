@@ -9,6 +9,27 @@ import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.te
 
 registerAppTestHooks();
 
+const MOVE_TASK_REQUEST = {
+  operationId: "00000000-0000-4000-8000-000000000001",
+  intent: "start",
+  source: {
+    ref: { scope: "workspace", id: "build" },
+    expectedCatalog: {
+      kind: "loaded",
+      revision: "workspace-revision",
+      config: {
+        version: 1,
+        tasks: [{ id: "build", title: "Build", command: "npm run build", confirm: false }],
+      },
+    },
+  },
+  destination: {
+    scope: "global",
+    expectedCatalog: { kind: "loaded", revision: "global-revision", config: { version: 1, tasks: [] } },
+    task: { id: "build", title: "Build", command: "npm run build", confirm: false },
+  },
+};
+
 interface RawReply extends EventEmitter {
   writableFinished: boolean;
   destroyed: boolean;
@@ -235,5 +256,27 @@ describe("buildApp PI WEBUI plugin routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "Invalid remote PI WEBUI plugin asset path" });
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("leaves a remote workspace-task move on the stored machine budget", async () => {
+    const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
+    const remote = addResponse.json<{ id: string }>();
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: Readable.from([JSON.stringify({ moved: true })]),
+    }));
+    appTestContext.remoteClient = fakeRemoteClient({ request });
+    const movePath = "/projects/project-1/workspaces/workspace-1/workspace-tasks/move";
+
+    const response = await appTestContext.app.inject({
+      method: "POST",
+      url: `/api/machines/${remote.id}${movePath}`,
+      payload: MOVE_TASK_REQUEST,
+    });
+
+    expect(response.statusCode).toBe(200);
+    // The route carries no per-route override, so the stored machine/default budget resolves.
+    expect(request.mock.calls[0]).toEqual(["POST", `/api${movePath}`, MOVE_TASK_REQUEST]);
   });
 });
