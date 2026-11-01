@@ -86,14 +86,19 @@ Precedence, most specific first. Only the second row is new.
 
 | Call site | Budget |
 | --- | --- |
-| A per-call `timeoutMs` — remote health and runtime probes (3 s), and the federated routes that already name 5 minutes or 30 s | That value, unchanged |
-| Federated proxy routes with no per-call budget | The machine's `requestTimeoutMs`, else 120 000 |
+| The remote health and runtime probes (3 s) | 3 s, unchanged — these measure liveness, not transfer, and must stay short |
+| The federated routes that name 5 minutes (skills, package-plugin, pi-package, and session tree operations) | That value, unchanged — their duration is unrelated to link quality |
+| Every other federated proxy route | The machine's `requestTimeoutMs`, else 120 000 |
 | Browser background refresh to a remote machine | Abandoned at 20 000 by the client |
 | Browser foreground read | No client timer; the gateway decides, and the existing selection signal still cancels on supersession |
 
-Rationale for the first row: the probes measure liveness, not transfer, and must
-stay short; the operations that name 5 minutes are doing work whose duration is
-unrelated to link quality.
+One override disappears as part of this change. `WORKSPACE_TASKS_MOVE_PROXY_TIMEOUT_MS`
+(`federatedRoutes.ts`) names 30 000, which is exactly today's default; an
+override that duplicates the default expresses nothing, and while it stays it
+would pin that route to 30 seconds on a machine granted two minutes. The route
+drops the override and follows the machine budget. The two rows that remain — the
+3-second probes and the 5-minute operations — are the ones whose number carries
+meaning.
 
 ### 2. Machine record and API contract
 
@@ -246,7 +251,9 @@ By layer, narrowest first:
 3. **Machine store:** a registry without the field parses, and an update that
    omits the field leaves it absent rather than writing a default.
 4. **Proxy contract:** the budget reaching `RemoteMachineClient` for a federated
-   route comes from the machine record, and a 5-minute route is unaffected.
+   route comes from the machine record, a 5-minute route is unaffected, and the
+   workspace-task move route follows the machine budget rather than a redundant
+   30 s override.
 5. **Browser parser and client:** additive parse with the field absent, present,
    and malformed; `updateMachine` sends `PATCH` with the encoded machine segment
    and the exact outbound body; a nested base path stays correct.
