@@ -1198,6 +1198,54 @@ describe("WorkspaceController session list provenance", () => {
     }
   });
 
+  it.each(["success", "deadline"] as const)("aborts a superseded foreground selection while catalog fallback keeps its own bounded read (%s)", async (outcome) => {
+    vi.useFakeTimers();
+    try {
+      await withoutNativeAbortTimeout(async () => {
+        const fixture = createSessionListHarness(remoteLabMachine);
+        const selecting = fixture.controller.selectWorkspace(remoteSiblingWorkspace);
+        const foreground = fixture.reads[0];
+        expect(foreground?.signal?.aborted).toBe(false);
+
+        const reconciling = fixture.controller.reconcileProjectCatalog({
+          machineId: "remote-lab",
+          project: remoteProject,
+          workspaces: [remoteWorkspace],
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fixture.reads).toHaveLength(2);
+        const fallback = fixture.reads[1];
+        expect(fallback?.cwd).toBe(remoteWorkspace.path);
+        expect(foreground?.signal?.aborted).toBe(true);
+        expect(isLoadCancellation(foreground?.failure)).toBe(true);
+        expect(fallback?.signal).not.toBe(foreground?.signal);
+        expect(fallback?.signal?.aborted).toBe(false);
+        expect(fallback?.responseStarted).toBeUndefined();
+        await selecting;
+        expect(fixture.state.selectedWorkspace).toEqual(remoteWorkspace);
+        expect(fixture.state.isLoadingSessions).toBe(true);
+        expect(fixture.state.sessionListLoad).toBeUndefined();
+
+        await vi.advanceTimersByTimeAsync(REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS - 1);
+        expect(fallback?.signal?.aborted).toBe(false);
+        if (outcome === "success") fallback?.resolve([remoteSession]);
+        else await vi.advanceTimersByTimeAsync(1);
+        await reconciling;
+
+        expect(fallback?.signal?.aborted).toBe(outcome === "deadline");
+        expect(isLoadCancellation(fallback?.failure)).toBe(outcome === "deadline");
+        expect(fixture.state.sessions).toEqual(outcome === "success" ? [remoteSession] : []);
+        expect(fixture.state.isLoadingSessions).toBe(false);
+        expect(fixture.state.sessionListLoad).toBeUndefined();
+        expect(fixture.state.sessionListFailure).toBeUndefined();
+        expect(fixture.state.error).toBe("");
+        expect(fixture.reportedErrors).toEqual([]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps selection continuation sibling reads foreground beyond twenty seconds", async () => {
     vi.useFakeTimers();
     try {

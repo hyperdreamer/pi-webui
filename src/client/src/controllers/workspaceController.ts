@@ -524,16 +524,17 @@ export class WorkspaceController {
     const state = this.getState();
     const preserveMemory = isSameWorkspaceScope(state, workspace);
     const projectSessionsRequest = ++this.projectSessionsRequest;
-    // A catalog-driven fallback runs while the user's own selection may still be
-    // loading, so it neither restarts nor borrows the foreground scope; its own
-    // topology-token guards decide whether its result may be applied. A
-    // continuation inherits the open load. Any other selection is a new
-    // foreground action and supersedes whatever was loading before it.
-    const signal = target?.catalogScope !== undefined
-      ? undefined
-      : target?.continuesSelectionLoad === true
-        ? this.selectionLoad.signal
-        : this.selectionLoad.restart();
+    // A catalog fallback replaces the selected workspace after the catalog
+    // removed it. Abandon any foreground selection it supersedes, but keep the
+    // fallback itself independent so its remote read can use the bounded path.
+    let signal: AbortSignal | undefined;
+    if (target?.catalogScope !== undefined) {
+      this.selectionLoad.abort();
+    } else if (target?.continuesSelectionLoad === true) {
+      signal = this.selectionLoad.signal;
+    } else {
+      signal = this.selectionLoad.restart();
+    }
     const machineId = selectedMachineId(state);
     const error = state.error;
     this.workspaceSelection.rememberWorkspace({ ...workspace, projectId: machineProjectKey(machineId, workspace.projectId) });
