@@ -82,14 +82,14 @@ type SessionListFailurePublication = "published" | "unclassified" | "stale";
 /** One admitted list-only retry that its selection generation still owns. */
 interface ActiveSessionListRetry {
   readonly key: string;
-  readonly token: number;
-  readonly supersession: AbortSignal | undefined;
+  readonly operation: SessionListReadOperation;
   promise: Promise<void>;
 }
 
 /** One remote selected-list read, with everything its guards and records need. */
 interface SessionListReadOperation {
   readonly token: number;
+  readonly revision: number;
   readonly owner: SessionListLoad["owner"];
   readonly scope: SessionListLoadScope;
   readonly machineId: string;
@@ -259,8 +259,7 @@ export class WorkspaceController {
     });
     const retry: ActiveSessionListRetry = {
       key: retryKey,
-      token: operation.token,
-      supersession: operation.supersession,
+      operation,
       promise: Promise.resolve(),
     };
     this.activeSessionListRetry = retry;
@@ -270,9 +269,7 @@ export class WorkspaceController {
 
   /** Share only with the selection generation and operation that admitted the retry. */
   private isActiveSessionListRetryCurrent(retry: ActiveSessionListRetry): boolean {
-    return !this.disposed
-      && retry.token === this.activeSessionListOperation
-      && retry.supersession?.aborted !== true;
+    return this.ownsSessionListOperation(retry.operation);
   }
 
   private async runSessionListRetry(
@@ -287,7 +284,7 @@ export class WorkspaceController {
       // The catalog may have dropped the workspace between admission and the read.
       if (!isTargetCurrent()) throw new LoadCancelledError("Session list retry target changed");
       const rows = await this.readSessionList(operation, workspace);
-      if (!isTargetCurrent()) return;
+      if (!this.ownsSessionListOperation(operation)) return;
       await this.sessions.applyRefreshedSessionLists(
         [{ cwd: workspace.path, sessions: rows }],
         machineId,
@@ -313,6 +310,13 @@ export class WorkspaceController {
       });
     } finally {
       this.finishSessionListOperation(operation, { clearFailure: applied });
+      if (this.ownsSessionListOperation(operation)) {
+        // A retry can inherit a selection's loading flag and its dirty work.
+        // Release and replay only while this retry still owns that selection.
+        if (this.getState().isLoadingSessions) this.setState({ isLoadingSessions: false });
+        const pending = this.pendingSessionListRefresh;
+        if (pending !== undefined && pending.dirty.size > 0 && this.isSessionListRefreshCurrent(pending)) this.scheduleSessionListRefreshPass(pending);
+      }
       if (this.activeSessionListRetry === retry) this.activeSessionListRetry = undefined;
     }
   }
@@ -571,6 +575,7 @@ export class WorkspaceController {
     try {
       const listedSessions = await this.readSessionList(operation, workspace);
       listed = true;
+      if (!this.hasSessionListOperationIdentity(operation)) return;
       if (!isTargetCurrent()) {
         if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
           workspace,
@@ -578,10 +583,11 @@ export class WorkspaceController {
           projectSessionsRequest,
           target?.catalogScope,
         )) {
-          this.restoreCatalogFallbackSessionState(workspace, machineId, catalogFallback);
+          this.restoreCatalogFallbackSessionState(operation, workspace, machineId, catalogFallback);
           return;
         }
         this.clearStaleCatalogSelectionLoadingIfOwned(
+          operation,
           workspace,
           machineId,
           projectSessionsRequest,
@@ -590,12 +596,18 @@ export class WorkspaceController {
         return;
       }
       const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
+      if (!this.ownsSessionListOperation(operation)) return;
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
+      if (!this.ownsSessionListOperation(operation)) return;
       void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope, signal);
+      if (!this.ownsSessionListOperation(operation)) return;
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
+      if (!this.ownsSessionListOperation(operation)) return;
       if (session) await this.sessions.selectSession(session, { updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
+      // Recovery may outlive its topology token, but never its operation owner.
+      if (!this.hasSessionListOperationIdentity(operation)) return;
       if (isLoadCancellation(error)) {
         // Supersession by a newer selection: the newer selection owns the state,
         // including its own loading indicator, so nothing is published here. A
@@ -607,7 +619,7 @@ export class WorkspaceController {
           projectSessionsRequest,
           target?.catalogScope,
         )) {
-          this.restoreCatalogFallbackSessionState(workspace, machineId, catalogFallback);
+          this.restoreCatalogFallbackSessionState(operation, workspace, machineId, catalogFallback);
         }
         return;
       }
@@ -618,10 +630,11 @@ export class WorkspaceController {
           projectSessionsRequest,
           target?.catalogScope,
         )) {
-          this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+          this.applyCatalogFallbackSessionFailure(operation, workspace, machineId, catalogFallback, error);
           return;
         }
         this.clearStaleCatalogSelectionLoadingIfOwned(
+          operation,
           workspace,
           machineId,
           projectSessionsRequest,
@@ -632,18 +645,17 @@ export class WorkspaceController {
       // A bounded remote wait that expired, or a body that stopped mid-transfer,
       // is a typed list failure with its own notice — never a generic state error.
       const publication = this.publishSessionListFailure(operation, error);
+      // A newer read owns all channels, including background fallback recovery.
+      if (publication === "stale") return;
       if (publication === "published") {
         this.setState({ isLoadingSessions: false });
         return;
       }
       // A catalog fallback owns its own recovery channel, including its failure.
       if (catalogFallback !== undefined) {
-        this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+        this.applyCatalogFallbackSessionFailure(operation, workspace, machineId, catalogFallback, error);
         return;
       }
-      // An operation a newer read replaced publishes nothing: that read owns the
-      // records and the loading indicator this one opened.
-      if (publication === "stale") return;
       this.setState({ error: String(error), isLoadingSessions: false });
     } finally {
       this.finishSessionListOperation(operation, { clearFailure: listed });
@@ -659,8 +671,11 @@ export class WorkspaceController {
     supersession: AbortSignal | undefined;
     isTargetCurrent: () => boolean;
   }): SessionListReadOperation {
+    const revision = (this.sessionListRevisions.get(input.workspace.path) ?? 0) + 1;
+    this.sessionListRevisions.set(input.workspace.path, revision);
     const operation: SessionListReadOperation = {
       token: ++this.nextSessionListOperationToken,
+      revision,
       owner: input.owner,
       scope: {
         machineId: input.machineId,
@@ -740,12 +755,17 @@ export class WorkspaceController {
     });
   }
 
-  /** The operation that currently owns this scope's records, provenance, and errors. */
-  private ownsSessionListOperation(operation: SessionListReadOperation): boolean {
+  /** Identity survives a topology-token change, but never a newer list read. */
+  private hasSessionListOperationIdentity(operation: SessionListReadOperation): boolean {
     return !this.disposed
       && operation.token === this.activeSessionListOperation
-      && operation.supersession?.aborted !== true
-      && operation.isTargetCurrent();
+      && operation.revision === this.sessionListRevisions.get(operation.scope.workspacePath)
+      && operation.supersession?.aborted !== true;
+  }
+
+  /** The operation that currently owns this scope's records, provenance, and errors. */
+  private ownsSessionListOperation(operation: SessionListReadOperation): boolean {
+    return this.hasSessionListOperationIdentity(operation) && operation.isTargetCurrent();
   }
 
   private isSessionListOperationCurrent(operation: SessionListReadOperation, signal?: AbortSignal): boolean {
@@ -1135,20 +1155,23 @@ export class WorkspaceController {
   }
 
   private applyCatalogFallbackSessionFailure(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     fallback: CatalogFallbackSelection,
     error: unknown,
   ): void {
-    this.restoreCatalogFallbackSessionState(workspace, machineId, fallback, { error });
+    this.restoreCatalogFallbackSessionState(operation, workspace, machineId, fallback, { error });
   }
 
   private restoreCatalogFallbackSessionState(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     fallback: CatalogFallbackSelection,
     failure?: CatalogFallbackFailure,
   ): void {
+    if (!this.hasSessionListOperationIdentity(operation)) return;
     const state = this.getState();
     const workspaces = state.workspacesByProjectId[workspace.projectId] ?? state.workspaces;
     const workspacePaths = new Set(workspaces.map((candidate) => candidate.path));
@@ -1158,6 +1181,7 @@ export class WorkspaceController {
     ]);
     this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(machineId, workspace.projectId, workspace));
     if (failure !== undefined) this.reportBackgroundError("reconcile selected workspace fallback sessions", failure.error);
+    if (!this.hasSessionListOperationIdentity(operation)) return;
     this.setState({
       sessions: eligibleProjectSessions.filter((session) => session.cwd === workspace.path),
       projectSessions: eligibleProjectSessions,
@@ -1191,12 +1215,14 @@ export class WorkspaceController {
   }
 
   private clearStaleCatalogSelectionLoadingIfOwned(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     request: number,
     catalogScope: CatalogWorkspaceSelectionScope | undefined,
   ): void {
-    if (catalogScope !== undefined && this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) {
+    if (this.hasSessionListOperationIdentity(operation)
+      && catalogScope !== undefined && this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) {
       this.setState({ isLoadingSessions: false });
     }
   }
