@@ -83,7 +83,7 @@ export class GitUpdateManagerPanel extends LitElement {
     this.error = "";
 
     try {
-      const status = await this.api.gitStatus(workspace.projectId, workspace.id, machineId);
+      const status = await this.readStatus(workspace, machineId);
       if (request !== this.statusRequest || !this.isCurrentWorkspace(workspace, machineId)) return;
       this.status = status;
       this.loadingStatus = false;
@@ -229,7 +229,7 @@ export class GitUpdateManagerPanel extends LitElement {
     const request = ++this.diffRequest;
     this.loadingDiff = true;
     try {
-      const diff = await this.api.gitDiff(workspace.projectId, workspace.id, { path: change.path, staged: change.scope === "staged" }, machineId);
+      const diff = await this.readDiff(workspace, machineId, change);
       if (request !== this.diffRequest || !this.isCurrentWorkspace(workspace, machineId) || this.selectedChange?.id !== change.id) return;
       this.selectedDiff = diff;
       this.loadingDiff = false;
@@ -332,6 +332,19 @@ export class GitUpdateManagerPanel extends LitElement {
 
   private isCurrentWorkspace(workspace: Workspace, machineId: string): boolean {
     return this.workspace?.id === workspace.id && this.workspace.projectId === workspace.projectId && this.machineId === machineId;
+  }
+
+  /**
+   * The panel's reads are explicit foreground work: the user opened the panel
+   * and asked for this workspace, so they keep the machine budget and never
+   * take the remote background bow-out.
+   */
+  private readStatus(workspace: Workspace, machineId: string): Promise<GitStatusResponse> {
+    return this.api.gitStatus(workspace.projectId, workspace.id, machineId);
+  }
+
+  private readDiff(workspace: Workspace, machineId: string, change: GitUpdateChange): Promise<GitDiffResponse> {
+    return this.api.gitDiff(workspace.projectId, workspace.id, { path: change.path, staged: change.scope === "staged" }, machineId);
   }
 
   static override styles = css`

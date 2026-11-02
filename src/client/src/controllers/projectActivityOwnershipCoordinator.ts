@@ -1,6 +1,9 @@
 import { workspacesApi as defaultApi, type Project, type Workspace } from "../api";
 import { isWorkspaceActivityActive } from "../../../shared/activity";
+import { LOCAL_MACHINE_ID } from "../machineKeys";
 import { projectOwnsWorkspacePath } from "../workspaceActivity";
+import { runBackgroundRead } from "./backgroundRead";
+import { isLoadCancellation } from "./cancellableLoadScope";
 import { selectedMachineId, type GetState, type SetState } from "./types";
 import type { ProjectCatalogTopologyRequest, ProjectCatalogTopologyScope } from "./projectCatalogController";
 
@@ -39,6 +42,8 @@ interface OwnershipPass {
   projects: ProjectTopologySnapshot[];
   cwdActivations: Map<string, number>;
   trailingRequested: boolean;
+  /** A read bowed out or was superseded, so this pass must not consume its CWDs. */
+  cancelled: boolean;
   promise: Promise<void>;
 }
 
@@ -127,6 +132,7 @@ export class ProjectActivityOwnershipCoordinator {
       })),
       cwdActivations: unknownCwdActivations,
       trailingRequested: false,
+      cancelled: false,
       promise: Promise.resolve(),
     };
     this.activePass = pass;
@@ -142,9 +148,15 @@ export class ProjectActivityOwnershipCoordinator {
           projectId: project.id,
           projectPath: project.path,
         });
-        const workspaces = await this.api.workspaces(project.id, pass.machineId);
+        const workspaces = await this.readProjectWorkspaces(pass.machineId, project.id);
         await this.applyProjectWorkspaces(pass, project, workspaces, topologyRequest);
       } catch (error) {
+        if (isLoadCancellation(error)) {
+          // Ownership discovery is background work: a bow-out leaves the CWDs
+          // unresolved and eligible for the next reconciliation.
+          pass.cancelled = true;
+          return;
+        }
         if (this.isPassScopeCurrent(pass)) this.reportError({ machineId: pass.machineId, projectId: project.id, error });
       }
     }));
@@ -153,16 +165,27 @@ export class ProjectActivityOwnershipCoordinator {
 
     const state = this.getState();
     const activeCwdActivations = this.syncActiveCwds(state);
-    for (const [cwd, activation] of pass.cwdActivations) {
-      if (activeCwdActivations.get(cwd) === activation
-        && !projectOwnsCwd(state.projects, state.workspacesByProjectId, cwd)) {
-        this.attemptedCwdActivations.set(cwd, activation);
+    if (!pass.cancelled) {
+      for (const [cwd, activation] of pass.cwdActivations) {
+        if (activeCwdActivations.get(cwd) === activation
+          && !projectOwnsCwd(state.projects, state.workspacesByProjectId, cwd)) {
+          this.attemptedCwdActivations.set(cwd, activation);
+        }
       }
     }
 
     const runTrailingPass = pass.trailingRequested;
     this.activePass = undefined;
     if (runTrailingPass) await this.reconcile(selectedMachineId(this.getState()));
+  }
+
+  /** Remote discovery is background work; the local machine keeps its plain read. */
+  private readProjectWorkspaces(machineId: string, projectId: string): Promise<Workspace[]> {
+    if (machineId === LOCAL_MACHINE_ID) return this.api.workspaces(projectId, machineId);
+    return runBackgroundRead(
+      machineId,
+      (signal) => this.api.workspaces(projectId, machineId, signal),
+    );
   }
 
   private async applyProjectWorkspaces(

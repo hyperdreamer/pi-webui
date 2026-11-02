@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryEntry, MemorySnapshotResponse } from "../../../shared/apiTypes";
-import type { Project, Workspace } from "../api";
+import type { Machine, Project, Workspace } from "../api";
 import { initialAppState, resetWorkspaceScopedState, type AppState } from "../appState";
 import { MemoryController, type MemoryControllerDependencies } from "./memoryController";
 
@@ -14,6 +14,14 @@ const workspace: Workspace = {
   isGitRepo: true,
   isGitWorktree: false,
 };
+const remoteMachine: Machine = { id: "remote-a", name: "Remote A", kind: "remote", createdAt: "now", updatedAt: "now" };
+
+const nativeAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+afterEach(() => {
+  vi.useRealTimers();
+  restoreAbortTimeout(nativeAbortTimeout);
+});
 
 describe("MemoryController", () => {
   it("loads immediately and schedules the next poll only after the request settles", async () => {
@@ -321,6 +329,100 @@ describe("workspace-scoped memory state", () => {
   });
 });
 
+describe("memory background read budget", () => {
+  it("bows out of a scheduled remote poll without changing published memory and keeps polling", async () => {
+    useBackgroundDeadlineTimers();
+    const reads: ReadIntentRecord[] = [];
+    const initial = deferred<MemorySnapshotResponse>();
+    const polled = deferred<MemorySnapshotResponse>();
+    const recovered = deferred<MemorySnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<MemorySnapshotResponse>>()
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return initial.promise;
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return rejectOnAbort(polled.promise, signal);
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return recovered.promise;
+      });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads.map((read) => read.intent)).toEqual(["foreground"]);
+
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "initial" }] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background"]);
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("initial")], projectEntries: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    recovered.resolve(dataSnapshot("recovered"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "recovered" }] });
+  });
+
+  it("gives a manual refresh foreground priority over a running scheduled poll", async () => {
+    useBackgroundDeadlineTimers();
+    const reads: ReadIntentRecord[] = [];
+    const initial = deferred<MemorySnapshotResponse>();
+    const polled = deferred<MemorySnapshotResponse>();
+    const manual = deferred<MemorySnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<MemorySnapshotResponse>>()
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return initial.promise;
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return rejectOnAbort(polled.promise, signal);
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return manual.promise;
+      });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background"]);
+
+    const manualRefresh = harness.controller.refresh();
+
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background", "foreground"]);
+    expect(reads[1]?.signal?.aborted).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("initial")], projectEntries: [] });
+
+    manual.resolve(dataSnapshot("manual"));
+    await manualRefresh;
+
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("manual")], projectEntries: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+});
+
 interface FakeTimers {
   readonly delays: number[];
   fireLatest(): void;
@@ -392,4 +494,48 @@ function controllerFor(input: { snapshot: NonNullable<MemoryControllerDependenci
     get state() { return state; },
     apply: (patch: Partial<AppState>) => { state = { ...state, ...patch }; },
   };
+}
+
+interface ReadIntentRecord {
+  intent: "background" | "foreground";
+  signal: AbortSignal | undefined;
+}
+
+function recordIntent(signal: AbortSignal | undefined): ReadIntentRecord {
+  return { intent: signal === undefined ? "foreground" : "background", signal };
+}
+
+/** Drives the background deadline by faking the clock it is scheduled on. */
+function useBackgroundDeadlineTimers(): void {
+  vi.useFakeTimers();
+  restoreAbortTimeout((delayMs: number): AbortSignal => {
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(new DOMException("The operation timed out.", "TimeoutError")); }, delayMs);
+    return controller.signal;
+  });
+}
+
+function restoreAbortTimeout(replacement: unknown): void {
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: replacement });
+}
+
+/** Rejects a pending read when its transport signal aborts, like a real fetch. */
+function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      const reason: unknown = signal.reason;
+      const fallback = new Error("The operation was aborted");
+      fallback.name = "AbortError";
+      reject(reason instanceof Error ? reason : fallback);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }

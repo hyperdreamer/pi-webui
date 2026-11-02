@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, type Project, type Workspace } from "../api";
+import { api, type GitStatusResponse, type Machine, type Project, type Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { GitController } from "./gitController";
 
 const project: Project = { id: "project-1", name: "Project", path: "/repo", createdAt: "now" };
 const gitWorkspace: Workspace = { id: "workspace-1", projectId: project.id, path: "/repo", label: "main", isMain: true, isGitRepo: true, isGitWorktree: false };
+const remoteMachine: Machine = { id: "remote-a", name: "Remote A", kind: "remote", createdAt: "now", updatedAt: "now" };
+
+const nativeAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
 
 afterEach(() => {
+  vi.useRealTimers();
+  restoreAbortTimeout(nativeAbortTimeout);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -147,6 +152,128 @@ describe("GitController badge polling", () => {
   });
 });
 
+describe("GitController background polling budget", () => {
+  it("bounds a remote polling pass across status and its consequential diff without shortening a manual refresh", async () => {
+    startPollingClock();
+    const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine, selectedDiffPath: "src/a.ts" });
+    const statusSignals: (AbortSignal | undefined)[] = [];
+    const diffSignals: (AbortSignal | undefined)[] = [];
+    const polledDiffs = abortableDeferred<ReturnType<typeof diff>>();
+    const manualStatus = abortableDeferred<GitStatusResponse>();
+    vi.spyOn(api, "gitStatus").mockImplementation((_projectId, _workspaceId, _machineId, signal) => {
+      statusSignals.push(signal);
+      if (statusSignals.length === 1) return Promise.resolve(statusWithPath("poll", "src/a.ts"));
+      return manualStatus.bind(signal);
+    });
+    let diffCalls = 0;
+    vi.spyOn(api, "gitDiff").mockImplementation((_projectId, _workspaceId, options, _machineId, signal) => {
+      diffSignals.push(signal);
+      diffCalls += 1;
+      if (diffCalls <= 2) return polledDiffs.bind(signal);
+      return Promise.resolve(diff(options?.staged === true));
+    });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.gitStatus).toHaveBeenCalledOnce();
+    expect(api.gitDiff).toHaveBeenCalledTimes(2);
+    expect(harness.state.gitStatus?.hash).toBe("poll");
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(statusSignals[0]?.aborted).toBe(true);
+    expect(diffSignals.slice(0, 2).every((signal) => signal?.aborted === true)).toBe(true);
+    expect(harness.state.selectedDiff).toBeUndefined();
+    expect(harness.state.error).toBe("");
+
+    const manualRefresh = harness.controller.refreshGit();
+    await vi.advanceTimersByTimeAsync(20_001);
+
+    expect(api.gitStatus).toHaveBeenCalledTimes(2);
+    expect(statusSignals[1]).toBeUndefined();
+
+    manualStatus.resolve(statusWithPath("manual", "src/a.ts"));
+    await manualRefresh;
+
+    expect(harness.state.gitStatus?.hash).toBe("manual");
+    expect(harness.state.selectedDiff).toEqual(diff(false));
+    expect(harness.state.error).toBe("");
+  });
+
+  it("cancels an active background poll before a foreground refresh", async () => {
+    startPollingClock();
+    const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine });
+    const statusSignals: (AbortSignal | undefined)[] = [];
+    const polled = abortableDeferred<GitStatusResponse>();
+    const manual = abortableDeferred<GitStatusResponse>();
+    vi.spyOn(api, "gitStatus").mockImplementation((_projectId, _workspaceId, _machineId, signal) => {
+      statusSignals.push(signal);
+      return statusSignals.length === 1 ? polled.bind(signal) : manual.bind(signal);
+    });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.gitStatus).toHaveBeenCalledOnce();
+
+    const manualRefresh = harness.controller.refreshGit();
+
+    expect(statusSignals[0]?.aborted).toBe(true);
+    expect(statusSignals[1]).toBeUndefined();
+
+    manual.resolve(status("manual"));
+    await manualRefresh;
+
+    expect(harness.state.gitStatus?.hash).toBe("manual");
+    expect(harness.state.error).toBe("");
+  });
+
+  it("skips a poll tick while foreground Git work is pending", async () => {
+    const { intervals } = startPollingClock();
+    const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine });
+    const statusSignals: (AbortSignal | undefined)[] = [];
+    const manual = abortableDeferred<GitStatusResponse>();
+    vi.spyOn(api, "gitStatus").mockImplementation((_projectId, _workspaceId, _machineId, signal) => {
+      statusSignals.push(signal);
+      return statusSignals.length === 1 ? Promise.resolve(status("initial")) : manual.bind(signal);
+    });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.state.gitStatus?.hash).toBe("initial");
+    expect(intervals).toHaveLength(1);
+
+    const manualRefresh = harness.controller.refreshGit();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.gitStatus).toHaveBeenCalledTimes(2);
+
+    intervals[0]?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.gitStatus).toHaveBeenCalledTimes(2);
+
+    manual.resolve(status("manual"));
+    await manualRefresh;
+
+    intervals[0]?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.gitStatus).toHaveBeenCalledTimes(3);
+    expect(statusSignals[2]).not.toBeUndefined();
+    expect(harness.state.gitStatus?.hash).toBe("manual");
+  });
+
+  it("keeps a genuine foreground failure after the background window", async () => {
+    startPollingClock();
+    const harness = controllerFor(gitWorkspace);
+    vi.spyOn(api, "gitStatus").mockRejectedValue(new Error("Git unavailable"));
+
+    const manualRefresh = harness.controller.refreshGit();
+    await vi.advanceTimersByTimeAsync(20_001);
+    await manualRefresh;
+
+    expect(harness.state.error).toBe("Error: Git unavailable");
+  });
+});
+
 function controllerFor(workspace: Workspace, patch: Partial<AppState> = {}): { controller: GitController; state: AppState; apply(patch: Partial<AppState>): void } {
   let state: AppState = {
     ...initialAppState(),
@@ -178,4 +305,66 @@ function status(hash: string) {
 
 function diff(staged: boolean) {
   return { path: "src/a.ts", staged, hash: staged ? "staged" : "unstaged", diff: "", truncated: false };
+}
+
+function statusWithPath(hash: string, path: string): GitStatusResponse {
+  return { isGitRepo: true, hash, files: [{ path, index: "modified", workingTree: "unmodified" }] };
+}
+
+interface AbortableDeferred<T> {
+  bind(signal: AbortSignal | undefined): Promise<T>;
+  resolve(value: T): void;
+}
+
+function abortableDeferred<T>(): AbortableDeferred<T> {
+  let settle!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => { settle = resolve; });
+  return {
+    bind: (signal) => rejectOnAbort(promise, signal),
+    resolve: (value) => { settle(value); },
+  };
+}
+
+/** Rejects a pending read when its transport signal aborts, like a real fetch. */
+function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      const reason: unknown = signal.reason;
+      const fallback = new Error("The operation was aborted");
+      fallback.name = "AbortError";
+      reject(reason instanceof Error ? reason : fallback);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+/** Drives the background deadline and the poll interval on a faked clock. */
+function startPollingClock(): { readonly intervals: (() => void)[] } {
+  vi.useFakeTimers();
+  restoreAbortTimeout((delayMs: number): AbortSignal => {
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(new DOMException("The operation timed out.", "TimeoutError")); }, delayMs);
+    return controller.signal;
+  });
+  const intervals: (() => void)[] = [];
+  vi.stubGlobal("window", {
+    setInterval: (callback: () => void): number => {
+      intervals.push(callback);
+      return 41;
+    },
+    clearInterval: vi.fn(),
+  });
+  return { intervals };
+}
+
+function restoreAbortTimeout(replacement: unknown): void {
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: replacement });
 }
