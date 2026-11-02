@@ -153,7 +153,7 @@ describe("GitController badge polling", () => {
 });
 
 describe("GitController background polling budget", () => {
-  it("bounds a remote polling pass across status and its consequential diff without shortening a manual refresh", async () => {
+  it("keeps one pass deadline across a delayed status and its consequential diffs without shortening a manual refresh", async () => {
     startPollingClock();
     const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine, selectedDiffPath: "src/a.ts" });
     const statusSignals: (AbortSignal | undefined)[] = [];
@@ -162,7 +162,7 @@ describe("GitController background polling budget", () => {
     const manualStatus = abortableDeferred<GitStatusResponse>();
     vi.spyOn(api, "gitStatus").mockImplementation((_projectId, _workspaceId, _machineId, signal) => {
       statusSignals.push(signal);
-      if (statusSignals.length === 1) return Promise.resolve(statusWithPath("poll", "src/a.ts"));
+      if (statusSignals.length === 1) return delayed(15_000).then(() => statusWithPath("poll", "src/a.ts"));
       return manualStatus.bind(signal);
     });
     let diffCalls = 0;
@@ -177,13 +177,24 @@ describe("GitController background polling budget", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(api.gitStatus).toHaveBeenCalledOnce();
+    expect(api.gitDiff).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
     expect(api.gitDiff).toHaveBeenCalledTimes(2);
     expect(harness.state.gitStatus?.hash).toBe("poll");
 
-    await vi.advanceTimersByTimeAsync(20_000);
+    // A separate deadline for the consequential reads would keep them alive
+    // well past the pass; the shared deadline closes them five seconds in.
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(diffSignals.every((signal) => signal?.aborted === false)).toBe(true);
+    expect(harness.state.selectedDiff).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(statusSignals[0]?.aborted).toBe(true);
-    expect(diffSignals.slice(0, 2).every((signal) => signal?.aborted === true)).toBe(true);
+    expect(diffSignals.every((signal) => signal?.aborted === true)).toBe(true);
     expect(harness.state.selectedDiff).toBeUndefined();
     expect(harness.state.error).toBe("");
 
@@ -198,6 +209,77 @@ describe("GitController background polling budget", () => {
 
     expect(harness.state.gitStatus?.hash).toBe("manual");
     expect(harness.state.selectedDiff).toEqual(diff(false));
+    expect(harness.state.error).toBe("");
+  });
+
+  it("aborts pending consequential diffs when a foreground read supersedes the background pass", async () => {
+    startPollingClock();
+    const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine, selectedDiffPath: "src/a.ts" });
+    const statusSignals: (AbortSignal | undefined)[] = [];
+    const diffSignals: (AbortSignal | undefined)[] = [];
+    const polledDiffs = abortableDeferred<ReturnType<typeof diff>>();
+    const manualStatus = abortableDeferred<GitStatusResponse>();
+    vi.spyOn(api, "gitStatus").mockImplementation((_projectId, _workspaceId, _machineId, signal) => {
+      statusSignals.push(signal);
+      return statusSignals.length === 1 ? Promise.resolve(statusWithPath("poll", "src/a.ts")) : manualStatus.bind(signal);
+    });
+    vi.spyOn(api, "gitDiff").mockImplementation((_projectId, _workspaceId, options, _machineId, signal) => {
+      diffSignals.push(signal);
+      return diffSignals.length <= 2 ? polledDiffs.bind(signal) : Promise.resolve(diff(options?.staged === true));
+    });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.gitDiff).toHaveBeenCalledTimes(2);
+    expect(harness.state.gitStatus?.hash).toBe("poll");
+
+    const manualRefresh = harness.controller.refreshGit();
+
+    expect(diffSignals.slice(0, 2).every((signal) => signal?.aborted === true)).toBe(true);
+    expect(harness.state.selectedDiff).toBeUndefined();
+
+    manualStatus.resolve(statusWithPath("manual", "src/a.ts"));
+    await manualRefresh;
+
+    expect(harness.state.gitStatus?.hash).toBe("manual");
+    expect(harness.state.selectedDiff).toEqual(diff(false));
+    expect(harness.state.error).toBe("");
+  });
+
+  it("drops a cancelled background pass instead of publishing its status and consequential diffs", async () => {
+    startPollingClock();
+    const harness = controllerFor(gitWorkspace, {
+      selectedMachine: remoteMachine,
+      selectedDiffPath: "src/a.ts",
+      gitStatus: statusWithPath("initial", "src/a.ts"),
+    });
+    const polledStatus = deferred<GitStatusResponse>();
+    const unstaged = deferred<ReturnType<typeof diff>>();
+    const staged = deferred<ReturnType<typeof diff>>();
+    const diffSignals: (AbortSignal | undefined)[] = [];
+    vi.spyOn(api, "gitStatus").mockReturnValue(polledStatus.promise);
+    vi.spyOn(api, "gitDiff").mockImplementation((_projectId, _workspaceId, options, _machineId, signal) => {
+      diffSignals.push(signal);
+      return rejectOnAbort(options?.staged === true ? staged.promise : unstaged.promise, signal);
+    });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.gitStatus).toHaveBeenCalledOnce();
+
+    // The polled status settles before its cancelled continuation runs, so only
+    // pass ownership can keep it from publishing and starting diffs.
+    polledStatus.resolve(statusWithPath("poll", "src/a.ts"));
+    const refreshing = harness.controller.refreshDiff("src/a.ts");
+    unstaged.resolve(diff(false));
+    staged.resolve(diff(true));
+    await refreshing;
+
+    expect(harness.state.gitStatus?.hash).toBe("initial");
+    expect(diffSignals).toHaveLength(2);
+    expect(harness.state.selectedDiff).toEqual(diff(false));
+    expect(harness.state.selectedStagedDiff).toEqual(diff(true));
     expect(harness.state.error).toBe("");
   });
 
@@ -328,12 +410,10 @@ function abortableDeferred<T>(): AbortableDeferred<T> {
 /** Rejects a pending read when its transport signal aborts, like a real fetch. */
 function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
-      const reason: unknown = signal.reason;
-      const fallback = new Error("The operation was aborted");
-      fallback.name = "AbortError";
-      reject(reason instanceof Error ? reason : fallback);
+      reject(abortReason(signal));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     void promise.then(
@@ -344,6 +424,18 @@ function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
       },
     );
   });
+}
+
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  const fallback = new Error("The operation was aborted");
+  fallback.name = "AbortError";
+  return fallback;
+}
+
+function delayed(delayMs: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, delayMs); });
 }
 
 /** Drives the background deadline and the poll interval on a faked clock. */

@@ -376,6 +376,75 @@ describe("memory background read budget", () => {
     expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "recovered" }] });
   });
 
+  it("keeps a scheduled local poll single-flight when a manual refresh arrives", async () => {
+    const initial = deferred<MemorySnapshotResponse>();
+    const polled = deferred<MemorySnapshotResponse>();
+    const manual = deferred<MemorySnapshotResponse>();
+    const snapshot = vi.fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(polled.promise)
+      .mockReturnValueOnce(manual.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledOnce(); });
+    initial.resolve(dataSnapshot("initial"));
+    await vi.waitFor(() => { expect(harness.state.memory).toMatchObject({ kind: "data", globalEntries: [{ content: "initial" }] }); });
+
+    timers.fireLatest();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledTimes(2); });
+    expect(snapshot).toHaveBeenNthCalledWith(2, workspace.path, "local");
+
+    const manualRefresh = harness.controller.refresh();
+
+    // A scheduled local poll is not a bounded read, so the manual refresh joins
+    // it instead of sweeping it out and fetching beside it.
+    expect(snapshot).toHaveBeenCalledTimes(2);
+
+    polled.resolve(dataSnapshot("polled"));
+    await manualRefresh;
+
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("polled")], projectEntries: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
+  it.each([
+    { name: "snapshot", settle: (request: Deferred<MemorySnapshotResponse>) => { request.resolve(dataSnapshot("superseded")); } },
+    { name: "failure", settle: (request: Deferred<MemorySnapshotResponse>) => { request.reject(new Error("Obsolete poll failure")); } },
+  ])("publishes neither a superseded $name nor its obsolete error after a manual refresh", async ({ settle }) => {
+    useBackgroundDeadlineTimers();
+    const initial = deferred<MemorySnapshotResponse>();
+    const polled = deferred<MemorySnapshotResponse>();
+    const manual = deferred<MemorySnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<MemorySnapshotResponse>>()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(polled.promise)
+      .mockReturnValueOnce(manual.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    const manualRefresh = harness.controller.refresh();
+
+    manual.resolve(dataSnapshot("manual"));
+    await manualRefresh;
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("manual")], projectEntries: [] });
+
+    // The superseded poll settles afterwards, ignoring its transport abort.
+    settle(polled);
+    await polled.promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("manual")], projectEntries: [] });
+  });
+
   it("gives a manual refresh foreground priority over a running scheduled poll", async () => {
     useBackgroundDeadlineTimers();
     const reads: ReadIntentRecord[] = [];
@@ -464,14 +533,28 @@ function dataSnapshot(label: string): Extract<MemorySnapshotResponse, { kind: "d
   return { kind: "data", globalEntries: [entry(label)], projectEntries: [] };
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
   let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
   return {
     promise,
     resolve(value) {
       if (resolvePromise === undefined) throw new Error("Deferred promise is unavailable");
       resolvePromise(value);
+    },
+    reject(error) {
+      if (rejectPromise === undefined) throw new Error("Deferred promise is unavailable");
+      rejectPromise(error);
     },
   };
 }

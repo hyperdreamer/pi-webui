@@ -31,8 +31,7 @@ interface InFlightMemoryRequest {
   generation: number;
   requestId: number;
   scopeKey: string;
-  intent: ReadIntent;
-  /** Background purpose signal, so a foreground read can supersede this read. */
+  /** A scheduled remote poll's purpose signal, so a foreground read can supersede it. */
   cancellation: AbortController | undefined;
   promise: Promise<void>;
 }
@@ -114,7 +113,10 @@ export class MemoryController {
   private startRequest(scope: MemoryScope, intent: ReadIntent): Promise<void> {
     const existing = this.inFlight;
     if (existing?.generation === this.generation && existing.scopeKey === scope.key) {
-      if (intent !== "foreground" || existing.intent !== "background") return existing.promise;
+      // Only a bounded remote poll can be replaced. A scheduled local poll keeps
+      // its single-flight behaviour: a foreground read joins it instead of
+      // sweeping it out and fetching a second time beside it.
+      if (existing.cancellation === undefined || intent !== "foreground") return existing.promise;
       // Foreground work wins over a running poll: cancel the bounded read and
       // start a full-budget read instead of joining the background one.
       this.supersedeBackgroundRequest(existing);
@@ -122,13 +124,14 @@ export class MemoryController {
 
     const generation = this.generation;
     const requestId = ++this.nextRequestId;
-    const cancellation = intent === "background" ? new AbortController() : undefined;
+    // Only a scheduled remote poll bows out on the deadline, so only it needs a
+    // supersession signal; the local machine keeps the plain unbounded read.
+    const cancellation = intent === "background" && scope.machineId !== LOCAL_MACHINE_ID ? new AbortController() : undefined;
     // `load()` can settle synchronously when a snapshot collaborator throws, so register it first.
     const request: InFlightMemoryRequest = {
       generation,
       requestId,
       scopeKey: scope.key,
-      intent,
       cancellation,
       promise: Promise.resolve(),
     };
@@ -151,13 +154,13 @@ export class MemoryController {
   ): Promise<void> {
     try {
       const snapshot = await this.readSnapshot(scope, signal);
-      if (!this.isCurrent(scope, generation)) return;
+      if (!this.isCurrentRequest(scope, generation, requestId)) return;
       const memory = stateForSnapshot(snapshot);
       this.setState({ memory });
       if (memory.kind === "unavailable") this.stopObserving();
     } catch (error) {
       if (isLoadCancellation(error)) return;
-      if (!this.isCurrent(scope, generation)) return;
+      if (!this.isCurrentRequest(scope, generation, requestId)) return;
       this.applyFailure(String(error));
     } finally {
       const wasCurrentRequest = this.inFlight?.requestId === requestId;
@@ -231,6 +234,15 @@ export class MemoryController {
       workspaceId: workspace.id,
       workspacePath: workspace.path,
     };
+  }
+
+  /**
+   * A request may publish only while it is still the scope's live request: a
+   * superseded read must not overwrite the result that replaced it, nor report
+   * its obsolete failure.
+   */
+  private isCurrentRequest(scope: MemoryScope, generation: number, requestId: number): boolean {
+    return this.inFlight?.requestId === requestId && this.isCurrent(scope, generation);
   }
 
   private isCurrent(scope: MemoryScope, generation: number): boolean {

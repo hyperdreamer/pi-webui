@@ -106,7 +106,7 @@ export class GitController {
     try {
       await runBackgroundRead(
         target.machineId,
-        (signal) => this.loadGitStatus(target, signal, options),
+        (signal) => this.loadGitStatus(target, signal, options, pass),
         pass.controller.signal,
       );
     } catch (error) {
@@ -131,6 +131,8 @@ export class GitController {
   private cancelBackgroundPass(): void {
     const pass = this.backgroundPass;
     if (pass === undefined) return;
+    // Clearing the active pass invalidates its already-queued continuations: a
+    // read that settled before this abort still refuses to publish.
     this.backgroundPass = undefined;
     pass.controller.abort(new LoadCancelledError("Git background read superseded by a foreground read"));
   }
@@ -139,25 +141,25 @@ export class GitController {
     target: SelectedGitTarget,
     signal: AbortSignal | undefined,
     options: GitRefreshOptions,
+    pass?: GitBackgroundPass,
   ): Promise<void> {
-    const { project, workspace, machineId } = target;
     const request = ++this.statusRequest;
     this.diffRequest += 1;
     try {
       const status = await this.readStatus(target, signal);
-      if (request !== this.statusRequest || !this.isCurrentWorkspace(project, workspace, machineId)) return;
+      if (!this.ownsStatus(request, pass, target, signal)) return;
       this.setState({ gitStatus: status, gitStale: false, ...(options.reportError === false ? {} : { error: "" }) });
       const selectedDiffPath = this.getState().selectedDiffPath;
       if (selectedDiffPath === undefined) return;
       if (status.files.some((file) => file.path === selectedDiffPath)) {
-        await this.loadDiff(target, selectedDiffPath, signal, options);
+        await this.loadDiff(target, selectedDiffPath, signal, options, pass);
         return;
       }
       this.setState({ selectedDiffPath: undefined, selectedDiff: undefined, selectedStagedDiff: undefined });
       setNamespacedQueryKey(GIT_ROUTE_NAMESPACE, "diff", undefined, { replace: true });
     } catch (error) {
       if (isLoadCancellation(error)) return;
-      if (request !== this.statusRequest || !this.isCurrentWorkspace(project, workspace, machineId)) return;
+      if (!this.ownsStatus(request, pass, target, signal)) return;
       if (options.reportError !== false) this.setState({ error: String(error) });
     }
   }
@@ -167,21 +169,58 @@ export class GitController {
     path: string,
     signal: AbortSignal | undefined,
     options: GitRefreshOptions,
+    pass?: GitBackgroundPass,
   ): Promise<void> {
-    const { project, workspace, machineId } = target;
     const request = ++this.diffRequest;
     try {
       const [selectedDiff, selectedStagedDiff] = await Promise.all([
         this.readDiff(target, { path }, signal),
         this.readDiff(target, { path, staged: true }, signal),
       ]);
-      if (request !== this.diffRequest || !this.isCurrentWorkspace(project, workspace, machineId)) return;
+      if (!this.ownsDiff(request, pass, target, signal)) return;
       this.setState({ selectedDiff, selectedStagedDiff, ...(options.reportError === false ? {} : { error: "" }) });
     } catch (error) {
       if (isLoadCancellation(error)) return;
-      if (request !== this.diffRequest || !this.isCurrentWorkspace(project, workspace, machineId)) return;
+      if (!this.ownsDiff(request, pass, target, signal)) return;
       if (options.reportError !== false) this.setState({ error: String(error) });
     }
+  }
+
+  /**
+   * A settled status read may publish only while it still owns the state: its
+   * request is the newest one, its workspace is still selected, its transport
+   * signal is live, and any background pass that started it is still current.
+   */
+  private ownsStatus(
+    request: number,
+    pass: GitBackgroundPass | undefined,
+    target: SelectedGitTarget,
+    signal: AbortSignal | undefined,
+  ): boolean {
+    return request === this.statusRequest && this.ownsTarget(pass, target, signal);
+  }
+
+  /** The diff variant of {@link ownsStatus}: a superseded diff publishes nothing. */
+  private ownsDiff(
+    request: number,
+    pass: GitBackgroundPass | undefined,
+    target: SelectedGitTarget,
+    signal: AbortSignal | undefined,
+  ): boolean {
+    return request === this.diffRequest && this.ownsTarget(pass, target, signal);
+  }
+
+  private ownsTarget(
+    pass: GitBackgroundPass | undefined,
+    target: SelectedGitTarget,
+    signal: AbortSignal | undefined,
+  ): boolean {
+    // A foreground read cancels the pass without awaiting its continuations, so
+    // a pass that settled after the cancel must not publish or start more work.
+    if (pass !== undefined && (this.backgroundPass !== pass || pass.controller.signal.aborted)) return false;
+    if (signal?.aborted === true) return false;
+    const { project, workspace, machineId } = target;
+    return this.isCurrentWorkspace(project, workspace, machineId);
   }
 
   private readStatus(target: SelectedGitTarget, signal: AbortSignal | undefined): Promise<GitStatusResponse> {
