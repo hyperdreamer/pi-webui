@@ -1,6 +1,7 @@
 import { LitElement, css, html, nothing, svg, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
-import type { SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace } from "../api";
+import type { Machine, SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace } from "../api";
+import type { SessionListFailure, SessionListLoad } from "../appState";
 import { createSessionActivityResolver, sessionRowActivityKind, type SessionActivityResolver } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
@@ -12,6 +13,7 @@ import { SESSION_REORDER_LIMIT } from "../../../shared/apiTypes";
 import { actionMenuPanelStyle, isClickWithinActionMenu } from "./actionMenu";
 import { renderActionActivityIndicators } from "./activityBadge";
 import type { KeyboardNavigableSection } from "./navigationFocus";
+import "./SessionListLoadNotice";
 import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard, isFromInteractiveElement } from "./selectableRow";
 import { listStyles } from "./shared";
 
@@ -65,6 +67,11 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean }) canCleanup = false;
   @property({ type: Boolean }) canReorder = false;
   @property({ type: Boolean }) authoritativeSessionPersistence = false;
+  @property({ attribute: false }) machine?: Machine;
+  @property({ attribute: false }) sessionListLoad?: SessionListLoad;
+  @property({ attribute: false }) sessionListFailure?: SessionListFailure;
+  @property({ attribute: false }) onRetrySessionList?: () => void | Promise<void>;
+  @property({ attribute: false }) onRaiseSessionListLimit?: () => void;
   @property({ type: String }) archivedDeleteUnavailableMessage = "Update and restart Pi-Web on this machine to delete archived sessions.";
   @property({ type: String }) cleanupUnavailableMessage = "Update and restart Pi-Web on this machine to clean up sessions.";
   @property({ type: Boolean, reflect: true }) collapsible = false;
@@ -246,6 +253,7 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
       <section>
         ${this.renderHeading(normalCurrentRows.length + allArchivedRows.length, currentSelectableSessions, unreadCount)}
         ${this.collapsed ? null : html`
+          ${this.renderSessionListLoadNotice()}
           ${this.searchOpen ? this.renderSearchInput() : null}
           <div class="list-body">
             ${this.renderCurrentSelectionToolbar(currentSelectableSessions)}
@@ -407,6 +415,19 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   private renderStartButton() {
     const title = this.startingCount > 0 ? "Start another session" : "Start a new session";
     return html`<button class="section-add-button" title=${title} aria-label=${title} ?disabled=${!this.canStart} @click=${(event: MouseEvent) => { event.stopPropagation(); this.onStart?.(); }}>+</button>`;
+  }
+
+  /** Remote load feedback sits below the heading, never replacing or ordering rows. */
+  private renderSessionListLoadNotice() {
+    if (this.machine === undefined) return null;
+    if (this.sessionListLoad === undefined && this.sessionListFailure === undefined) return null;
+    return html`<session-list-load-notice
+      .machine=${this.machine}
+      .load=${this.sessionListLoad}
+      .failure=${this.sessionListFailure}
+      .onRetry=${this.onRetrySessionList}
+      .onRaiseLimit=${this.onRaiseSessionListLimit}
+    ></session-list-load-notice>`;
   }
 
   private renderStartingSession() {

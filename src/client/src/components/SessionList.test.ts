@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SessionInfo, SessionStatus } from "../api";
+import type { Machine, SessionInfo, SessionStatus } from "../api";
+import type { SessionListFailure, SessionListLoad } from "../appState";
 import { markCachedNewSessionInfo } from "../cachedNewSessions";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
-import { findOptionalTemplateEventHandlerAfterMarker, findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText } from "../templateInspection.testSupport";
+import { findOptionalTemplateEventHandlerAfterMarker, findOptionalTemplateEventHandlerNearMarker, templateEventHandlerAfterMarker, templateEventHandlerAfterValue, templateEventHandlerNearMarker, templateText, templateValueAfterMarker } from "../templateInspection.testSupport";
 import { clickOutsideActionMenu } from "./actionMenu.testSupport";
 import { SessionList, sessionRowActivityKind, sessionRowsForCurrentTree, sessionRowsForSessionList, unreadSessionCount } from "./SessionList";
 
@@ -452,6 +453,61 @@ describe("session sidebar search and cleanup controls", () => {
     expect(templateText(list.render())).toContain("No matching sessions.");
   });
 
+  it("renders remote load feedback inside the navigation session section", () => {
+    const list = new SessionList();
+    const rows = [session("one"), session("two")];
+    list.sessions = rows;
+    list.machine = remoteMachine;
+    list.sessionListLoad = selectionLoad();
+    const onRetrySessionList = vi.fn();
+    const onRaiseSessionListLimit = vi.fn();
+    list.onRetrySessionList = onRetrySessionList;
+    list.onRaiseSessionListLimit = onRaiseSessionListLimit;
+
+    const rendered = list.render();
+    const renderedText = templateText(rendered);
+    const noticeIndex = renderedText.indexOf("session-list-load-notice");
+
+    expect(noticeIndex).toBeGreaterThan(renderedText.indexOf("</h2>"));
+    expect(noticeIndex).toBeLessThan(renderedText.indexOf('class="action-row'));
+    expect(renderedText.match(/class="action-row/g)).toHaveLength(rows.length);
+    expect(renderedText).not.toContain("main-pane-only-notice");
+    expect(templateValueAfterMarker(rendered, ".machine=")).toBe(list.machine);
+    expect(templateValueAfterMarker(rendered, ".load=")).toBe(list.sessionListLoad);
+    expect(templateValueAfterMarker(rendered, ".onRetry=")).toBe(onRetrySessionList);
+    expect(templateValueAfterMarker(rendered, ".onRaiseLimit=")).toBe(onRaiseSessionListLimit);
+  });
+
+  it("forwards a typed list failure and renders no notice without a record", () => {
+    const list = new SessionList();
+    list.sessions = [session("one")];
+    list.machine = remoteMachine;
+    const failure: SessionListFailure = {
+      scope: { machineId: remoteMachine.id, machineName: remoteMachine.name, projectId: "project", workspaceId: "workspace" },
+      kind: "timeout",
+      elapsedMs: 2_000,
+      budgetMs: 120_000,
+    };
+    list.sessionListFailure = failure;
+
+    const rendered = list.render();
+    expect(templateValueAfterMarker(rendered, ".failure=")).toBe(failure);
+    expect(templateValueAfterMarker(rendered, ".load=")).toBeUndefined();
+
+    const withoutRecord = new SessionList();
+    withoutRecord.sessions = [session("one")];
+    withoutRecord.machine = remoteMachine;
+    expect(templateText(withoutRecord.render())).not.toContain("session-list-load-notice");
+
+    const collapsed = new SessionList();
+    collapsed.sessions = [session("one")];
+    collapsed.machine = remoteMachine;
+    collapsed.sessionListLoad = selectionLoad();
+    collapsed.collapsible = true;
+    collapsed.collapsed = true;
+    expect(templateText(collapsed.render())).not.toContain("session-list-load-notice");
+  });
+
   it("keeps cleanup callable through a labelled icon-only broom button", () => {
     const list = new SessionList();
     list.canCleanup = true;
@@ -471,6 +527,25 @@ describe("session sidebar search and cleanup controls", () => {
     expect(templateText(list.render())).toContain(list.cleanupUnavailableMessage);
   });
 });
+
+const remoteMachine: Machine = {
+  id: "remote",
+  name: "Remote Lab",
+  kind: "remote",
+  baseUrl: "https://remote.example",
+  createdAt: "2026-06-09T00:00:00.000Z",
+  updatedAt: "2026-06-09T00:00:00.000Z",
+};
+
+function selectionLoad(): SessionListLoad {
+  return {
+    owner: "selection",
+    scope: { machineId: remoteMachine.id, projectId: "project", workspaceId: "workspace", workspacePath: "/workspace" },
+    startedAt: 1_000_000,
+    budgetMs: 120_000,
+    phase: "waiting",
+  };
+}
 
 function searchInputEvent(value: string): Event {
   const event = new Event("input");
