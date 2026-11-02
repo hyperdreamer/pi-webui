@@ -47,6 +47,7 @@ Process restarts depend on the key:
 - `tts`: saved voice/rate settings apply to the next utterance; no service restart required.
 - `speechInput`: saved provider, language, transcript-polishing preference, and cloud settings apply to the next dictation run; no service restart required for saves. The already-committed transcript-polishing route and session-daemon service changes require one manual `pi-webui-sessiond.service` restart when this feature is installed or updated because both services adopt the shared config-mutation coordinator.
 - `pathAccess`: applies on the next request; existing file views may need a browser refresh.
+- Remote machine `requestTimeoutMs`: not a config-file key, but a gateway-owned field on the machine record; applies on the next request, with no service or session restart.
 - `uploads.defaultFolder`: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.
 - `plugins`: reload the browser tab after changing PI WEBUI plugin enablement.
 - Pi package install/remove/update: not a PI WEBUI config key; after a mutation, type `/reload` in each idle PI WEBUI session on the target machine to refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system prompt files as supported by Pi. Reload the browser page separately for PI WEBUI browser plugin changes. A routine session daemon restart is not required.
@@ -186,6 +187,19 @@ This managed state is not the user-editable config API. Edit it through PI WEBUI
 `$PI_WEBUI_DATA_DIR/config-mutations/` holds a private coordination database PI WEBUI uses to serialize read-modify-write updates to the shared global config file across the web/API process and the session daemon. It contains no config, credential, audio, or transcript data; see [Speech input](#speech-input).
 
 This setting does not change the PI WEBUI config file selected by `PI_WEBUI_CONFIG` or Pi-owned state such as the active session files selected by `PI_CODING_AGENT_SESSION_DIR`.
+
+### Remote machine request patience
+
+Each remote machine record carries an optional `requestTimeoutMs` patience value in the gateway's `machines.json`. It is gateway-owned managed state, not a config-file key: set it through the machine dialog, not in `$PI_WEBUI_CONFIG` or a project config, and it never changes a setting on the remote machine itself.
+
+- Absence means `120000` ms, and an explicit `120000` behaves the same, so a record written before this setting existed keeps using the default.
+- Accepted values are integers from `5000` to `180000` ms (5–180 seconds). The dialog takes seconds with up to millisecond precision, such as `5.001`; values outside the range are rejected rather than rounded or clamped.
+- Precedence is `operation override → machine value → default`. Health and runtime probes keep their 3,000 ms budget, the remote plugin manifest keeps 10,000 ms, and the skills, Pi package, and session-tree operations keep their 300,000 ms override; other proxied routes use the machine value.
+- A save applies on the next request; no session, session-daemon, or web/API restart is required, and an in-flight request keeps the patience it started with.
+- The budget covers only the wait for the remote's response headers. After headers arrive, body transfer is not timed.
+- Browser background reads the user did not trigger (activity, git status, memory and learned-skills catalogs, and automatic list reconciliation) bow out after `20000` ms regardless of the stored value.
+
+See [Slow or distant machines](https://pi-webui.dev/machines#request-patience) for the session-list progress and retry behavior, and for the reverse-proxy, older-gateway, and daemon-enumeration limits.
 
 ### External path access
 
