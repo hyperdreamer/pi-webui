@@ -95,6 +95,7 @@
             <a href="#prepare-machines">Set up another runtime</a>
             <a href="#add-machine">Add a machine</a>
             <a href="#what-is-proxied">What works remotely</a>
+            <a href="#request-patience">Slow or distant machines</a>
             <a href="#auth-credentials">Credentials</a>
             <a href="#plugins">Plugins</a>
             <a href="#trust-model">Trust boundaries</a>
@@ -220,6 +221,92 @@ PI WEBUI gateway you opened
               </ul>
             </section>
 
+            <section id="request-patience">
+              <h2>Slow or distant machines</h2>
+              <p>
+                Every remote machine has its own request patience: how long the gateway waits for that machine to start
+                answering one proxied request before it gives up. Raise it for a host behind a slow VPN or on a cold disk;
+                lower it when you would rather see a failure sooner.
+              </p>
+              <p>
+                Patience belongs to the gateway's copy of the machine record, not to the remote machine's own config. Set
+                it in the machine dialog: open the <code>⋯</code> actions menu for the machine, either in the
+                <strong>Machine</strong> switcher or in the <strong>Machines</strong> section, choose <strong>Edit</strong>,
+                and change <strong>Request timeout</strong>. <strong>Actions → Add Machine</strong> asks for the same value
+                on a new machine, and a failing session-list notice can open the same dialog for you.
+              </p>
+              <ul>
+                <li>
+                  <strong>Default:</strong> 120 seconds (<code>120000</code> ms). A record that stores no value behaves
+                  exactly like one that stores the default, and a new machine starts at 120.
+                </li>
+                <li>
+                  <strong>Range:</strong> 5 to 180 seconds (<code>5000</code>–<code>180000</code> ms). The field takes
+                  seconds with up to millisecond precision, such as <code>5.001</code>; a value outside the range is
+                  rejected and stays in the field for correction instead of being rounded or clamped.
+                </li>
+                <li>
+                  <strong>Precedence:</strong> a route with its own budget keeps it. Health and runtime probes stay at 3
+                  seconds, the remote plugin manifest stays at 10 seconds, and the skills, Pi package, and session-tree
+                  operations keep their 5-minute budget. Everything else the gateway proxies uses the machine value.
+                </li>
+                <li>
+                  <strong>When it applies:</strong> the next request after you save. No session, session-daemon, or gateway
+                  restart is needed, and a request already in flight keeps the patience it started with.
+                </li>
+              </ul>
+              <p>
+                The budget covers the wait for the remote's response headers, not the response body. Once headers arrive
+                the transfer has no timer, so a large transcript or file keeps streaming after the deadline has passed.
+              </p>
+              <p>
+                Background refreshes the UI starts by itself — activity, git status, memory and learned-skills catalogs,
+                and automatic list reconciliation — give up after 20 seconds regardless of the stored patience, so a slow
+                machine cannot hold a hidden refresh open indefinitely. Work you trigger, such as selecting a machine,
+                project, workspace, or session, keeps the machine patience.
+              </p>
+
+              <h3>What a slow session list shows</h3>
+              <p>
+                A remote session list still waiting after five seconds explains the wait in the Sessions section:
+                <code>Loading sessions from Dev Box… 0:42 of 2:00</code>. The first value is the elapsed wait, the second
+                is the machine's patience, and both use whole <code>m:ss</code> values; the wait counts up every second.
+                When the remote starts answering, the line changes to
+                <code>Receiving sessions from Dev Box…</code> while the body arrives.
+              </p>
+              <p>
+                A timed-out or interrupted read stays visible as a typed failure that names the machine, its budget, and
+                the elapsed wait — for example <code>Dev Box didn't answer within 2:00. Waited 2:03.</code>, or
+                <code>Dev Box stopped responding while sending sessions. Waited 2:00.</code> when the wait succeeded but
+                the transfer did not. Two actions follow it:
+              </p>
+              <ul>
+                <li><strong>Try again</strong> re-reads only that workspace's session list. The open session, its transcript, and its stream stay as they are.</li>
+                <li><strong>Raise limit</strong> opens that machine's edit dialog with the patience field focused, so you can accept a longer wait and save.</li>
+              </ul>
+
+              <h3>What patience cannot fix</h3>
+              <div class="callout warning">
+                A longer budget helps a slow machine, not one that is unreachable, unauthenticated, or already cut off by
+                an earlier hop.
+              </div>
+              <ul>
+                <li>
+                  A reverse proxy in front of the gateway, or between the gateway and the remote, can cut the connection
+                  well before the machine budget. Raising the machine value past your proxy timeouts will not make that
+                  request succeed.
+                </li>
+                <li>
+                  Federation does not bypass another hop's ceiling. When the gateway reaches a machine through an older
+                  PI WEBUI gateway, that gateway's own patience and defaults still bound the request.
+                </li>
+                <li>
+                  Giving up in the browser only ends the wait. A session-list enumeration that the remote's session daemon
+                  already started keeps running and finishes that pass on its own.
+                </li>
+              </ul>
+            </section>
+
             <section id="auth-credentials">
               <h2>Credentials stay on the target machine</h2>
               <p>
@@ -275,6 +362,7 @@ PI WEBUI gateway you opened
                 <li>Use <strong>Actions → Refresh Selected Machine</strong> to re-check health.</li>
                 <li>Make sure the remote URL is reachable from the gateway server.</li>
                 <li>Open the remote PI WEBUI directly to verify it is running and to complete provider login flows.</li>
+                <li>For a machine that is simply slow, raise its <strong>Request timeout</strong> only as far as your proxy path allows, then use <strong>Try again</strong>.</li>
                 <li>Check gateway logs with <code>pi-webui logs</code> for proxy timeouts or upstream errors.</li>
               </ul>
               <div class="doc-actions">

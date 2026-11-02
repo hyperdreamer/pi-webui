@@ -96,6 +96,7 @@
             <a href="#global-config">Global config</a>
             <a href="#project-config">Project config</a>
             <a href="#keys">Config matrix</a>
+            <a href="#remote-request-timeout">Remote request patience</a>
             <a href="#path-access">External path access</a>
             <a href="#manual-uploads">Manual uploads</a>
             <a href="#agent-runtime">Agent profile and companion CLI</a>
@@ -191,6 +192,7 @@
                 <li><code>tts</code>: saved voice/rate settings apply to the next utterance; no service restart required.</li>
                 <li><code>speechInput</code>: saved provider, language, transcript-polishing preference, and cloud settings apply to the next dictation run; no service restart required for saves. The already-committed transcript-polishing route and session-daemon service changes require one manual <code>pi-webui-sessiond.service</code> restart when this feature is installed or updated because both services adopt the shared config-mutation coordinator.</li>
                 <li><code>pathAccess</code>: applies on the next request; existing file views may need a browser refresh.</li>
+                <li>Remote machine <code>requestTimeoutMs</code>: not a config-file key, but a gateway-owned field on the machine record; applies on the next request, with no service or session restart.</li>
                 <li><code>uploads.defaultFolder</code>: applies to newly opened Files upload dialogs and new direct drag/drop batches after config/workspace refresh.</li>
                 <li><code>plugins</code>: reload the browser tab after changing PI WEBUI plugin enablement.</li>
                 <li>Pi package install/remove/update: not a PI WEBUI config key; after a mutation, type <code>/reload</code> in each idle PI WEBUI session on the target machine to refresh Pi runtime resources such as extensions, skills, prompt templates, themes, and context/system prompt files as supported by Pi. Reload the browser page separately for PI WEBUI browser plugin changes. A routine session daemon restart is not required.</li>
@@ -565,6 +567,28 @@
                   </tbody>
                 </table>
               </div>
+            </section>
+
+            <section id="remote-request-timeout">
+              <h2>Remote machine request patience</h2>
+              <p>
+                Each remote machine record carries an optional <code>requestTimeoutMs</code> patience value in the
+                gateway's <code>machines.json</code>. It is gateway-owned managed state, not a config-file key: set it
+                through the machine dialog, not in <code>$PI_WEBUI_CONFIG</code> or a project config, and it never
+                changes a setting on the remote machine itself.
+              </p>
+              <ul>
+                <li>Absence means <code>120000</code> ms, and an explicit <code>120000</code> behaves the same, so a record written before this setting existed keeps using the default.</li>
+                <li>Accepted values are integers from <code>5000</code> to <code>180000</code> ms (5–180 seconds). The dialog takes seconds with up to millisecond precision, such as <code>5.001</code>; values outside the range are rejected rather than rounded or clamped.</li>
+                <li>Precedence is <code>operation override → machine value → default</code>. Health and runtime probes keep their 3,000 ms budget, the remote plugin manifest keeps 10,000 ms, and the skills, Pi package, and session-tree operations keep their 300,000 ms override; other proxied routes use the machine value.</li>
+                <li>A save applies on the next request; no session, session-daemon, or web/API restart is required, and an in-flight request keeps the patience it started with.</li>
+                <li>The budget covers only the wait for the remote's response headers. After headers arrive, body transfer is not timed.</li>
+                <li>Browser background reads the user did not trigger (activity, git status, memory and learned-skills catalogs, and automatic list reconciliation) bow out after <code>20000</code> ms regardless of the stored value.</li>
+              </ul>
+              <p>
+                See <a href="machines#request-patience">Slow or distant machines</a> for the session-list progress and
+                retry behavior, and for the reverse-proxy, older-gateway, and daemon-enumeration limits.
+              </p>
             </section>
 
             <section id="path-access">
