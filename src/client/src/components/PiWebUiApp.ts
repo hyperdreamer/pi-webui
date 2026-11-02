@@ -10,7 +10,7 @@ import { completeUnownedStarterExactFromActiveTier, evaluateStarterModelPolicyDr
 import { shouldRetainStarterNotice, starterFailureNotice, starterNoticeVisibleText, starterPolicyBlockedNotice, starterPolicyFallbackNotice, type StarterNotice, type StarterNoticeScope } from "./starterNotice";
 import { starterStartDecision, type StarterStartDecision } from "./starterPolicyStartDecision";
 import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelOptions";
-import { initialAppState, type AppState } from "../appState";
+import { initialAppState, type AppState, type SessionListFailure } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
 import { ActivityController } from "../controllers/activityController";
@@ -2579,8 +2579,8 @@ export class PiWebUiApp extends LitElement {
         .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
         .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}
-        .onRetrySessionList=${() => this.workspaces.retrySessionList()}
-        .onRaiseSessionListLimit=${() => { this.raiseSessionListLimit(); }}
+        .onRetrySessionList=${(failure: SessionListFailure) => this.workspaces.retrySessionList(failure)}
+        .onRaiseSessionListLimit=${(failure: SessionListFailure) => { this.raiseSessionListLimit(failure); }}
         .onFocusNavigationTarget=${(target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); }}
         .onCancelKeyboardNavigation=${() => { void this.focusChatComposer(); }}
       ></app-navigation-panel>
@@ -3962,13 +3962,14 @@ export class PiWebUiApp extends LitElement {
    * Raise the patience of the machine whose read actually failed, and only
    * while that failure still describes the selected scope.
    */
-  private raiseSessionListLimit(): void {
-    const failure = this.state.sessionListFailure;
+  private raiseSessionListLimit(failure: SessionListFailure): void {
     const machine = this.state.selectedMachine;
-    if (failure === undefined || machine === undefined) return;
+    const project = this.state.selectedProject;
+    const workspace = this.state.selectedWorkspace;
+    if (this.state.sessionListFailure !== failure || machine === undefined || project === undefined || workspace === undefined) return;
     if (machine.kind !== "remote" || machine.id !== failure.scope.machineId) return;
-    if (this.state.selectedProject?.id !== failure.scope.projectId) return;
-    if (this.state.selectedWorkspace?.id !== failure.scope.workspaceId) return;
+    if (project.id !== failure.scope.projectId || project.path !== failure.scope.projectPath) return;
+    if (workspace.id !== failure.scope.workspaceId || workspace.path !== failure.scope.workspacePath) return;
     this.openMachineEditDialog(machine);
   }
 

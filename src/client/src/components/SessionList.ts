@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing, svg, type PropertyValues } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { Machine, SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace } from "../api";
-import type { SessionListFailure, SessionListLoad } from "../appState";
+import type { SessionListFailure, SessionListLoad, SessionListScope } from "../appState";
 import { createSessionActivityResolver, sessionRowActivityKind, type SessionActivityResolver } from "../sessionActivity";
 import { sessionLabel } from "../sessionLabels";
 import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
@@ -54,6 +54,9 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) sessions: SessionInfo[] = [];
   @property({ attribute: false }) projectSessions: SessionInfo[] = [];
   @property({ type: String }) currentWorkspacePath: string | undefined;
+  @property({ type: String }) currentProjectId: string | undefined;
+  @property({ type: String }) currentProjectPath: string | undefined;
+  @property({ type: String }) currentWorkspaceId: string | undefined;
   @property({ attribute: false }) workspaces: Workspace[] = [];
   @property({ attribute: false }) statuses: Record<string, SessionStatus> = {};
   @property({ attribute: false }) activities: Record<string, SessionActivity> = {};
@@ -70,8 +73,8 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
   @property({ attribute: false }) machine?: Machine;
   @property({ attribute: false }) sessionListLoad?: SessionListLoad;
   @property({ attribute: false }) sessionListFailure?: SessionListFailure;
-  @property({ attribute: false }) onRetrySessionList?: () => void | Promise<void>;
-  @property({ attribute: false }) onRaiseSessionListLimit?: () => void;
+  @property({ attribute: false }) onRetrySessionList?: (failure: SessionListFailure) => void | Promise<void>;
+  @property({ attribute: false }) onRaiseSessionListLimit?: (failure: SessionListFailure) => void;
   @property({ type: String }) archivedDeleteUnavailableMessage = "Update and restart Pi-Web on this machine to delete archived sessions.";
   @property({ type: String }) cleanupUnavailableMessage = "Update and restart Pi-Web on this machine to clean up sessions.";
   @property({ type: Boolean, reflect: true }) collapsible = false;
@@ -423,11 +426,23 @@ export class SessionList extends LitElement implements KeyboardNavigableSection 
     if (this.sessionListLoad === undefined && this.sessionListFailure === undefined) return null;
     return html`<session-list-load-notice
       .machine=${this.machine}
+      .currentScope=${this.currentSessionListScope()}
       .load=${this.sessionListLoad}
       .failure=${this.sessionListFailure}
       .onRetry=${this.onRetrySessionList}
       .onRaiseLimit=${this.onRaiseSessionListLimit}
     ></session-list-load-notice>`;
+  }
+
+  private currentSessionListScope(): SessionListScope | undefined {
+    const machine = this.machine;
+    const projectId = this.currentProjectId;
+    const projectPath = this.currentProjectPath;
+    const workspaceId = this.currentWorkspaceId;
+    const workspacePath = this.currentWorkspacePath;
+    if (machine === undefined || projectId === undefined || projectPath === undefined
+      || workspaceId === undefined || workspacePath === undefined) return undefined;
+    return { machineId: machine.id, projectId, projectPath, workspaceId, workspacePath };
   }
 
   private renderStartingSession() {

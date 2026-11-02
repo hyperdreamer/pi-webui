@@ -5,13 +5,16 @@ import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
 import type { WorkspaceUploadBatchState } from "./workspaceUploadState";
 
-/** The workspace whose session list a remote read is loading. */
-export interface SessionListLoadScope {
+export interface SessionListScope {
   machineId: string;
   projectId: string;
+  projectPath: string;
   workspaceId: string;
   workspacePath: string;
 }
+
+/** The workspace whose session list a remote read is loading. */
+export type SessionListLoadScope = SessionListScope;
 
 /**
  * Provenance for one in-flight remote session-list read.
@@ -28,9 +31,13 @@ export interface SessionListLoad {
   phase: "waiting" | "receiving";
 }
 
+export interface SessionListFailureScope extends SessionListScope {
+  machineName: string;
+}
+
 /** A selected remote session list that ended with a typed failure, not an error banner. */
 export interface SessionListFailure {
-  scope: { machineId: string; machineName: string; projectId: string; workspaceId: string };
+  scope: SessionListFailureScope;
   kind: "timeout" | "transfer";
   elapsedMs: number;
   budgetMs: number;

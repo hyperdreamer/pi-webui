@@ -1043,6 +1043,52 @@ describe("WorkspaceController", () => {
     expect(harness.state.projectSessions).toEqual([parentSession]);
   });
 
+  it("does not let a catalog fallback abort a newer same-project selection during hydration", async () => {
+    const oldWorkspace = workspace(project, "workspace-old", "/workspace-old");
+    const newWorkspace = workspace(project, "workspace-new", "/workspace-new");
+    const hydrationReads = [deferred<SessionInfo[]>(), deferred<SessionInfo[]>()];
+    const reads: { cwd: string; signal: AbortSignal | undefined }[] = [];
+    let hydrationIndex = 0;
+    const harness = controllerForCatalog({
+      selectedWorkspace: oldWorkspace,
+      workspaces: [oldWorkspace],
+      workspacesByProjectId: { [project.id]: [oldWorkspace] },
+      listSessions: (cwd, _machineId, signal) => {
+        reads.push({ cwd, signal });
+        const hydration = hydrationReads[hydrationIndex];
+        if (signal === undefined && hydration !== undefined && hydrationIndex < hydrationReads.length) {
+          hydrationIndex += 1;
+          return hydration.promise;
+        }
+        return Promise.resolve([]);
+      },
+    });
+
+    const reconciling = harness.controller.reconcileProjectCatalog({
+      machineId: "local",
+      project,
+      workspaces: [mainWorkspace, featureWorkspace],
+    }, { fallbackSelection: "foreground" });
+    await vi.waitFor(() => {
+      expect(hydrationIndex).toBe(2);
+    });
+
+    const selecting = harness.controller.selectWorkspace(newWorkspace);
+    await selecting;
+    const newerSelectionRead = reads.find((read) => read.cwd === newWorkspace.path);
+    expect(harness.state.selectedWorkspace).toEqual(newWorkspace);
+    expect(newerSelectionRead?.signal?.aborted).toBe(false);
+
+    const firstHydration = hydrationReads[0];
+    if (firstHydration !== undefined) firstHydration.resolve([]);
+    const secondHydration = hydrationReads[1];
+    if (secondHydration !== undefined) secondHydration.resolve([]);
+    await reconciling;
+
+    expect(harness.state.selectedWorkspace).toEqual(newWorkspace);
+    expect(newerSelectionRead?.signal?.aborted).toBe(false);
+  });
+
   it("returns fetched workspaces after reconciling them for command-run callers", async () => {
     const listWorkspaces = vi.fn(() => Promise.resolve([mainWorkspace, featureWorkspace]));
     const harness = controllerForCatalog({
@@ -1067,33 +1113,58 @@ describe("WorkspaceController session list provenance", () => {
   it.each(["selection", "retry"] as const)("keeps %s pending beyond the nominal budget until the gateway responds", async (owner) => {
     vi.useFakeTimers();
     try {
-      const fixture = createSessionListHarness(remoteLabMachine);
-      let pending = fixture.controller.selectWorkspace(remoteWorkspace);
-      if (owner === "retry") {
-        fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+      await withoutNativeAbortTimeout(async () => {
+        const fixture = createSessionListHarness(remoteLabMachine);
+        let pending = fixture.controller.selectWorkspace(remoteWorkspace);
+        if (owner === "retry") {
+          fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+          await pending;
+          pending = fixture.controller.retrySessionList();
+        }
+        const read = fixture.reads.at(-1);
+        expect(read).toBeDefined();
+
+        await vi.advanceTimersByTimeAsync(2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS);
+
+        expect(read?.signal?.aborted).toBe(false);
+        expect(read?.failure).toBeUndefined();
+        expect(fixture.state.sessionListLoad).toMatchObject({ owner, phase: "waiting" });
+
+        read?.reject(new HttpRequestError("actual gateway timeout", 504));
         await pending;
-        pending = fixture.controller.retrySessionList();
-      }
-      const read = fixture.reads.at(-1);
-      expect(read).toBeDefined();
-
-      await vi.advanceTimersByTimeAsync(2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS);
-
-      expect(read?.signal?.aborted).toBe(false);
-      expect(read?.failure).toBeUndefined();
-      expect(fixture.state.sessionListLoad).toMatchObject({ owner, phase: "waiting" });
-
-      read?.reject(new HttpRequestError("actual gateway timeout", 504));
-      await pending;
-      expect(fixture.state.sessionListFailure).toMatchObject({
-        kind: "timeout",
-        elapsedMs: 2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+        expect(fixture.state.sessionListFailure).toMatchObject({
+          kind: "timeout",
+          elapsedMs: 2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+        });
+        expect(fixture.state.sessionListLoad).toBeUndefined();
+        expect(fixture.state.error).toBe("");
       });
-      expect(fixture.state.sessionListLoad).toBeUndefined();
-      expect(fixture.state.error).toBe("");
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("ignores a retained retry action after its failure's workspace selection changes", async () => {
+    const failure = {
+      scope: { machineId: "remote-lab", machineName: "Remote Lab", projectId: remoteProject.id, projectPath: remoteProject.path, workspaceId: remoteWorkspace.id, workspacePath: remoteWorkspace.path },
+      kind: "timeout" as const,
+      elapsedMs: 120_000,
+      budgetMs: 120_000,
+    };
+    const fixture = createSessionListHarness(remoteLabMachine, {
+      state: { sessionListFailure: failure },
+    });
+    const selecting = fixture.controller.selectWorkspace(remoteSiblingWorkspace);
+    expect(fixture.reads).toHaveLength(1);
+
+    const retry = fixture.controller.retrySessionList(failure);
+
+    expect(fixture.reads).toHaveLength(1);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "selection", scope: { workspacePath: remoteSiblingWorkspace.path } });
+    for (const read of fixture.reads) {
+      read.resolve([]);
+    }
+    await Promise.all([selecting, retry]);
   });
 
   it("keeps queued foreground refresh pending beyond the nominal gateway budget", async () => {
@@ -1133,7 +1204,7 @@ describe("WorkspaceController session list provenance", () => {
 
       expect(fixture.state.sessionListLoad).toMatchObject({
         owner: "selection",
-        scope: { machineId: "remote-lab", projectId: "project-1", workspaceId: "workspace-1", workspacePath: "/repo" },
+        scope: { machineId: "remote-lab", projectId: "project-1", projectPath: "/repo", workspaceId: "workspace-1", workspacePath: "/repo" },
         startedAt: 1_000_000,
         budgetMs: DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
         phase: "waiting",
@@ -1328,6 +1399,13 @@ describe("WorkspaceController session list provenance", () => {
       timeout.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
       await timeoutPending;
       expect(timeout.state.sessionListFailure).toMatchObject({
+        scope: {
+          machineId: "remote-lab",
+          projectId: remoteProject.id,
+          projectPath: remoteProject.path,
+          workspaceId: remoteWorkspace.id,
+          workspacePath: remoteWorkspace.path,
+        },
         kind: "timeout",
         elapsedMs: 2_000,
         budgetMs: DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,

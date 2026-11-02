@@ -368,26 +368,53 @@ describe("PiWebUiApp session-list notice wiring", () => {
     expect(Reflect.get(list, "onRaiseSessionListLimit")).toBeTypeOf("function");
   });
 
-  it("hides a failure captured for another machine and refuses to raise a foreign workspace", async () => {
+  it("hides failures outside the selected workspace scope", async () => {
+    const foreignMachineFailure = timeoutFailure({ machineId: "remote-other" });
+    const foreignWorkspaceFailure = timeoutFailure({ workspaceId: "workspace-other" });
+    const movedProjectFailure = timeoutFailure({ projectPath: "/moved/project" });
+    const movedPathFailure = timeoutFailure({ workspacePath: "/moved/workspace" });
     const app = await mountApp({
       selectedSession: session,
       sessions: [session],
-      sessionListFailure: timeoutFailure({ machineId: "remote-other" }),
+      sessionListFailure: foreignMachineFailure,
     });
     await settleUpdates(app);
 
     expect(noticeText(app)).not.toContain("Raise limit");
     expect(machineDialogTarget(app)).toBeUndefined();
 
+    for (const failure of [foreignWorkspaceFailure, movedProjectFailure, movedPathFailure]) {
+      Reflect.set(app, "state", { ...appState(app), sessionListFailure: failure });
+      await settleUpdates(app);
+      expect(noticeText(app)).not.toContain("Try again");
+      expect(machineDialogTarget(app)).toBeUndefined();
+    }
+  });
+
+  it("binds retained failure actions to their originating scope", async () => {
+    const failure = timeoutFailure();
+    const app = await mountApp({ sessionListFailure: failure });
+    await settleUpdates(app);
+    const actionButtons = Array.from(noticeRoot(app).querySelectorAll<HTMLButtonElement>("button"));
+    const retryButton = actionButtons[0];
+    const raiseButton = actionButtons[1];
+    if (retryButton === undefined || raiseButton === undefined) throw new Error("Expected both failure actions");
+    const retry = vi.spyOn(workspacesController(app), "retrySessionList").mockResolvedValue(undefined);
+    const movedWorkspace = { ...workspace, path: "/moved/workspace" };
     Reflect.set(app, "state", {
       ...appState(app),
-      sessionListFailure: timeoutFailure({ workspaceId: "workspace-other" }),
+      selectedWorkspace: movedWorkspace,
+      workspaces: [movedWorkspace],
+      workspacesByProjectId: { [project.id]: [movedWorkspace] },
     });
     await settleUpdates(app);
-    clickButton(noticeRoot(app), "Raise limit");
+
+    retryButton.click();
+    raiseButton.click();
     await app.updateComplete;
 
-    expect(appState(app).machineDialogOpen).toBe(false);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(retry).toHaveBeenCalledWith(failure);
     expect(machineDialogTarget(app)).toBeUndefined();
   });
 });
@@ -656,25 +683,28 @@ function captureReconnect(app: PiWebUiAppElement): () => void {
 function selectionLoad(): SessionListLoad {
   return {
     owner: "selection",
-    scope: { machineId: remoteMachine.id, projectId: project.id, workspaceId: workspace.id, workspacePath: workspace.path },
+    scope: { machineId: remoteMachine.id, projectId: project.id, projectPath: project.path, workspaceId: workspace.id, workspacePath: workspace.path },
     startedAt: LOAD_STARTED_AT,
     budgetMs: REMOTE_BUDGET_MS,
     phase: "waiting",
   };
 }
 
-function timeoutFailure(overrides: { machineId?: string; workspaceId?: string } = {}): SessionListFailure {
-  return {
+function timeoutFailure(overrides: { machineId?: string; workspaceId?: string; projectPath?: string; workspacePath?: string } = {}): SessionListFailure {
+  const failure: SessionListFailure = {
     scope: {
       machineId: overrides.machineId ?? remoteMachine.id,
       machineName: remoteMachine.name,
       projectId: project.id,
+      projectPath: overrides.projectPath ?? project.path,
       workspaceId: overrides.workspaceId ?? workspace.id,
+      workspacePath: overrides.workspacePath ?? workspace.path,
     },
     kind: "timeout",
     elapsedMs: 1_002_000,
     budgetMs: REMOTE_BUDGET_MS,
   };
+  return failure;
 }
 
 function clickButton(root: ParentNode, label: string): void {

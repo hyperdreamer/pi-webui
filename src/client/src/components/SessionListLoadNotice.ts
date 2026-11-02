@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { Machine } from "../api";
-import type { SessionListFailure, SessionListLoad } from "../appState";
+import type { SessionListFailure, SessionListLoad, SessionListScope } from "../appState";
 
 /**
  * How long a foreground remote list read stays silent before it explains the
@@ -29,10 +29,11 @@ export const SESSION_LIST_NOTICE_TICK_MS = 1_000;
 @customElement("session-list-load-notice")
 export class SessionListLoadNotice extends LitElement {
   @property({ attribute: false }) machine: Machine | undefined;
+  @property({ attribute: false }) currentScope: SessionListScope | undefined;
   @property({ attribute: false }) load: SessionListLoad | undefined;
   @property({ attribute: false }) failure: SessionListFailure | undefined;
-  @property({ attribute: false }) onRetry: (() => void | Promise<void>) | undefined;
-  @property({ attribute: false }) onRaiseLimit: (() => void) | undefined;
+  @property({ attribute: false }) onRetry: ((failure: SessionListFailure) => void | Promise<void>) | undefined;
+  @property({ attribute: false }) onRaiseLimit: ((failure: SessionListFailure) => void) | undefined;
   @property({ attribute: false }) now: () => number = Date.now;
 
   private interval: number | undefined;
@@ -71,7 +72,7 @@ export class SessionListLoadNotice extends LitElement {
     const machine = this.machine;
     const load = this.load;
     if (machine?.kind !== "remote" || load === undefined) return false;
-    return load.scope.machineId === machine.id
+    return this.matchesCurrentScope(load.scope)
       && load.owner !== "catalog-fallback"
       && load.phase === "waiting"
       && this.failure === undefined;
@@ -81,10 +82,9 @@ export class SessionListLoadNotice extends LitElement {
     const machine = this.machine;
     if (machine?.kind !== "remote") return nothing;
     const failure = this.failure;
-    if (failure !== undefined) return this.renderFailure(failure, machine);
+    if (failure !== undefined) return this.renderFailure(failure);
     const load = this.load;
-    if (load === undefined) return nothing;
-    if (load.scope.machineId !== machine.id || load.owner === "catalog-fallback") return nothing;
+    if (load === undefined || !this.matchesCurrentScope(load.scope) || load.owner === "catalog-fallback") return nothing;
     if (load.phase === "receiving") {
       return html`<div class="session-list-load-notice receiving" role="status">Receiving sessions from ${machine.name}…</div>`;
     }
@@ -93,8 +93,8 @@ export class SessionListLoadNotice extends LitElement {
     return html`<div class="session-list-load-notice waiting" role="status">Loading sessions from ${machine.name}… ${formatElapsed(elapsedMs)} of ${formatElapsed(load.budgetMs)}</div>`;
   }
 
-  private renderFailure(failure: SessionListFailure, machine: Machine): TemplateResult | typeof nothing {
-    if (failure.scope.machineId !== machine.id) return nothing;
+  private renderFailure(failure: SessionListFailure): TemplateResult | typeof nothing {
+    if (!this.matchesCurrentScope(failure.scope)) return nothing;
     const machineName = failure.scope.machineName;
     const waited = `Waited ${formatElapsed(failure.elapsedMs)}.`;
     const message = failure.kind === "timeout"
@@ -104,11 +104,22 @@ export class SessionListLoadNotice extends LitElement {
       <div class="session-list-load-notice failure" role="alert">
         <span>${message}</span>
         <div class="session-list-load-actions">
-          <button type="button" @click=${() => { void this.onRetry?.(); }}>Try again</button>
-          <button type="button" @click=${() => { this.onRaiseLimit?.(); }}>Raise limit</button>
+          <button type="button" @click=${() => { void this.onRetry?.(failure); }}>Try again</button>
+          <button type="button" @click=${() => { this.onRaiseLimit?.(failure); }}>Raise limit</button>
         </div>
       </div>
     `;
+  }
+
+  private matchesCurrentScope(scope: SessionListScope): boolean {
+    const machine = this.machine;
+    const currentScope = this.currentScope;
+    if (machine?.kind !== "remote" || currentScope?.machineId !== machine.id) return false;
+    return scope.machineId === machine.id
+      && scope.projectId === currentScope.projectId
+      && scope.projectPath === currentScope.projectPath
+      && scope.workspaceId === currentScope.workspaceId
+      && scope.workspacePath === currentScope.workspacePath;
   }
 
   static override styles = css`

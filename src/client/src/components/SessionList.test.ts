@@ -483,7 +483,7 @@ describe("session sidebar search and cleanup controls", () => {
     list.sessions = [session("one")];
     list.machine = remoteMachine;
     const failure: SessionListFailure = {
-      scope: { machineId: remoteMachine.id, machineName: remoteMachine.name, projectId: "project", workspaceId: "workspace" },
+      scope: { machineId: remoteMachine.id, machineName: remoteMachine.name, projectId: "project", projectPath: "/project", workspaceId: "workspace", workspacePath: "/workspace" },
       kind: "timeout",
       elapsedMs: 2_000,
       budgetMs: 120_000,
@@ -540,7 +540,7 @@ const remoteMachine: Machine = {
 function selectionLoad(): SessionListLoad {
   return {
     owner: "selection",
-    scope: { machineId: remoteMachine.id, projectId: "project", workspaceId: "workspace", workspacePath: "/workspace" },
+    scope: { machineId: remoteMachine.id, projectId: "project", projectPath: "/project", workspaceId: "workspace", workspacePath: "/workspace" },
     startedAt: 1_000_000,
     budgetMs: 120_000,
     phase: "waiting",

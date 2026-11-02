@@ -99,6 +99,18 @@ describe("session list load notice", () => {
     expect(activeIntervals()).toBe(0);
   });
 
+  it("does not render a same-machine failure for another workspace path", async () => {
+    const capturedFailure = timeoutFailure(1_002_000);
+    Reflect.set(capturedFailure.scope, "workspacePath", "/another-workspace");
+    const notice = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      Reflect.set(element, "currentScope", selectionLoad().scope);
+      element.failure = capturedFailure;
+    });
+
+    expect(noticeText(notice)).toBe("");
+  });
+
   it("replaces a failure with the retry waiting clock and then receiving feedback", async () => {
     const clock = fakeClock(LOAD_STARTED_AT + 2_000);
     const notice = await renderNotice((element) => {
@@ -173,9 +185,10 @@ describe("session list load notice", () => {
   it("renders both typed failures with elapsed and the two scoped actions", async () => {
     const retry = vi.fn();
     const raise = vi.fn();
+    const timeoutFailureRecord = timeoutFailure(1_002_000);
     const timeout = await renderNotice((element) => {
       element.machine = remoteMachine;
-      element.failure = timeoutFailure(1_002_000);
+      element.failure = timeoutFailureRecord;
       element.onRetry = retry;
       element.onRaiseLimit = raise;
     });
@@ -185,8 +198,8 @@ describe("session list load notice", () => {
     expect(noticeText(timeout)).toContain("Waited 0:02.");
     clickButton(timeout, "Try again");
     clickButton(timeout, "Raise limit");
-    expect(retry).toHaveBeenCalledOnce();
-    expect(raise).toHaveBeenCalledOnce();
+    expect(retry).toHaveBeenCalledWith(timeoutFailureRecord);
+    expect(raise).toHaveBeenCalledWith(timeoutFailureRecord);
     expect(activeIntervals()).toBe(0);
 
     const transferRetry = vi.fn();
@@ -306,6 +319,8 @@ function fakeClock(startedAt: number): TestClock {
 
 async function renderNotice(configure: (element: SessionListLoadNotice) => void): Promise<SessionListLoadNotice> {
   const element = new SessionListLoadNotice();
+  element.machine = remoteMachine;
+  Reflect.set(element, "currentScope", selectionLoad().scope);
   configure(element);
   document.body.append(element);
   await element.updateComplete;
@@ -325,7 +340,7 @@ function selectionLoad(overrides: Partial<SessionListLoad> & { machineId?: strin
   const { machineId, ...loadOverrides } = overrides;
   return {
     owner: "selection",
-    scope: { machineId: machineId ?? remoteMachine.id, projectId: "project", workspaceId: "workspace", workspacePath: "/repo" },
+    scope: { machineId: machineId ?? remoteMachine.id, projectId: "project", projectPath: "/project", workspaceId: "workspace", workspacePath: "/repo" },
     startedAt: LOAD_STARTED_AT,
     budgetMs: REMOTE_BUDGET_MS,
     phase: "waiting",
@@ -347,7 +362,7 @@ function transferFailure(endedAt: number, machineName = remoteMachine.name): Ses
 
 function failure(kind: SessionListFailure["kind"], endedAt: number, machineName: string): SessionListFailure {
   return {
-    scope: { machineId: remoteMachine.id, machineName, projectId: "project", workspaceId: "workspace" },
+    scope: { machineId: remoteMachine.id, machineName, projectId: "project", projectPath: "/project", workspaceId: "workspace", workspacePath: "/repo" },
     kind,
     elapsedMs: endedAt - LOAD_STARTED_AT,
     budgetMs: REMOTE_BUDGET_MS,

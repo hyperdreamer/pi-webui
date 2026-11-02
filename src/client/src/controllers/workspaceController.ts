@@ -236,14 +236,16 @@ export class WorkspaceController {
    * side effects. A retry aimed at a workspace the catalog no longer has, or one
    * that is no longer selected, is a no-op instead of a read.
    */
-  async retrySessionList(): Promise<void> {
+  async retrySessionList(expectedFailure?: SessionListFailure): Promise<void> {
     const state = this.getState();
     const project = state.selectedProject;
     const workspace = state.selectedWorkspace;
     if (this.disposed || project === undefined || workspace === undefined) return;
+    if (expectedFailure !== undefined && state.sessionListFailure !== expectedFailure) return;
     const machineId = selectedMachineId(state);
     const request = this.projectSessionsRequest;
     if (!this.isSessionListRetryTargetCurrent(workspace, machineId, request)) return;
+    if (expectedFailure !== undefined && !sessionListFailureMatchesSelection(expectedFailure, machineId, project, workspace)) return;
     // The selection generation is part of the sharing key: reselecting the same
     // workspace opens a new generation whose retry must not answer for this one.
     const retryKey = JSON.stringify([machineId, project.id, project.path, workspace.id, workspace.path, request]);
@@ -680,6 +682,7 @@ export class WorkspaceController {
       scope: {
         machineId: input.machineId,
         projectId: input.workspace.projectId,
+        projectPath: projectPathForWorkspace(this.getState(), input.workspace),
         workspaceId: input.workspace.id,
         workspacePath: input.workspace.path,
       },
@@ -789,7 +792,9 @@ export class WorkspaceController {
           machineId: operation.machineId,
           machineName: operation.machineName,
           projectId: operation.scope.projectId,
+          projectPath: operation.scope.projectPath,
           workspaceId: operation.scope.workspaceId,
+          workspacePath: operation.scope.workspacePath,
         },
         kind,
         elapsedMs: Math.max(0, this.now() - operation.startedAt),
@@ -911,6 +916,9 @@ export class WorkspaceController {
       return;
     }
 
+    if (!this.isProjectCatalogSnapshotCurrent(orderedSnapshot)) return;
+    const selectionRequest = this.projectSessionsRequest;
+
     for (const workspace of added) {
       this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(
         orderedSnapshot.machineId,
@@ -926,7 +934,8 @@ export class WorkspaceController {
       ))
     )));
     await this.hydrateDiscoveredWorkspaceSessions(orderedSnapshot, workspacesToHydrate);
-    if (!this.isProjectCatalogSnapshotCurrent(orderedSnapshot)) return;
+    if (selectionRequest !== this.projectSessionsRequest
+      || !this.isProjectCatalogSnapshotCurrent(orderedSnapshot)) return;
 
     const selectedWorkspace = this.getState().selectedWorkspace;
     if (!selectedWorkspaceRemoved
@@ -1293,6 +1302,25 @@ function classifySessionListFailure(error: unknown): SessionListFailure["kind"] 
   if (error instanceof HttpResponseBodyError) return "transfer";
   if (error instanceof HttpRequestError && error.status === SESSION_LIST_TIMEOUT_STATUS) return "timeout";
   return undefined;
+}
+
+function projectPathForWorkspace(state: AppState, workspace: Workspace): string {
+  const project = state.projects.find((candidate) => candidate.id === workspace.projectId)
+    ?? (state.selectedProject?.id === workspace.projectId ? state.selectedProject : undefined);
+  return project?.path ?? workspace.path;
+}
+
+function sessionListFailureMatchesSelection(
+  failure: SessionListFailure,
+  machineId: string,
+  project: Project,
+  workspace: Workspace,
+): boolean {
+  return failure.scope.machineId === machineId
+    && failure.scope.projectId === project.id
+    && failure.scope.projectPath === project.path
+    && failure.scope.workspaceId === workspace.id
+    && failure.scope.workspacePath === workspace.path;
 }
 
 function selectFallbackWorkspace(workspaces: Workspace[]): Workspace | undefined {

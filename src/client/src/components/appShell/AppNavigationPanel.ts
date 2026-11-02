@@ -101,8 +101,8 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onPinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onUnpinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onCleanupSessions?: () => void | Promise<void>;
-  @property({ attribute: false }) onRetrySessionList?: () => void | Promise<void>;
-  @property({ attribute: false }) onRaiseSessionListLimit?: () => void;
+  @property({ attribute: false }) onRetrySessionList?: (failure: SessionListFailure) => void | Promise<void>;
+  @property({ attribute: false }) onRaiseSessionListLimit?: (failure: SessionListFailure) => void;
   @property({ attribute: false }) onArchivedCollapsed?: () => void | Promise<void>;
   @property({ attribute: false }) onSelectMachine?: (machine: Machine) => void | Promise<void>;
   @property({ attribute: false }) onEditMachine?: (machine: Machine) => void;
@@ -204,6 +204,9 @@ export class AppNavigationPanel extends LitElement {
         .sessions=${this.sessions}
         .projectSessions=${this.projectSessions}
         .currentWorkspacePath=${this.selectedWorkspace?.path}
+        .currentProjectId=${this.selectedProject?.id}
+        .currentProjectPath=${this.selectedProject?.path}
+        .currentWorkspaceId=${this.selectedWorkspace?.id}
         .workspaces=${this.workspaces}
         .machine=${this.selectedMachine}
         .sessionListLoad=${this.sessionListLoad}
@@ -244,8 +247,8 @@ export class AppNavigationPanel extends LitElement {
         .onPin=${(session: SessionInfo) => this.onPinSession?.(session)}
         .onUnpin=${(session: SessionInfo) => this.onUnpinSession?.(session)}
         .onCleanup=${() => this.onCleanupSessions?.()}
-        .onRetrySessionList=${() => this.onRetrySessionList?.()}
-        .onRaiseSessionListLimit=${() => { this.onRaiseSessionListLimit?.(); }}
+        .onRetrySessionList=${(failure: SessionListFailure) => this.onRetrySessionList?.(failure)}
+        .onRaiseSessionListLimit=${(failure: SessionListFailure) => { this.onRaiseSessionListLimit?.(failure); }}
         .onFocusPreviousSection=${() => { this.focusPreviousFrom("sessions"); }}
         .onFocusNextSection=${() => { this.focusNextFrom("sessions"); }}
         .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
