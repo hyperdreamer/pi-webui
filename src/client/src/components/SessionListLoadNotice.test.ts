@@ -31,6 +31,7 @@ beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => {
   document.body.replaceChildren();
   vi.clearAllTimers();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -67,6 +68,34 @@ describe("session list load notice", () => {
     expect(await renderedText(remoteMachine, selectionLoad({ owner: "catalog-fallback" }), undefined)).toBe("");
     expect(await renderedText(remoteMachine, selectionLoad({ machineId: "/other" }), undefined)).toBe("");
     expect(await renderedText(localMachine, selectionLoad(), undefined)).toBe("");
+    expect(activeIntervals()).toBe(0);
+  });
+
+  it("renders retry-owned progress while a catalog fallback read owns no clock", async () => {
+    const clock = fakeClock(LOAD_STARTED_AT);
+    const retry = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.load = selectionLoad({ owner: "retry" });
+      element.now = clock.now;
+    });
+
+    expect(noticeText(retry)).toBe("");
+    clock.advance(SESSION_LIST_NOTICE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_LIST_NOTICE_DELAY_MS);
+    await retry.updateComplete;
+    expect(statusRegion(retry)?.textContent).toContain("Loading sessions from Remote Lab… 0:05 of 2:00");
+    retry.remove();
+    expect(activeIntervals()).toBe(0);
+
+    const fallback = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.load = selectionLoad({ owner: "catalog-fallback" });
+      element.now = clock.now;
+    });
+    clock.advance(SESSION_LIST_NOTICE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_LIST_NOTICE_DELAY_MS);
+    await fallback.updateComplete;
+    expect(noticeText(fallback)).toBe("");
     expect(activeIntervals()).toBe(0);
   });
 
@@ -110,20 +139,51 @@ describe("session list load notice", () => {
     expect(raise).toHaveBeenCalledOnce();
     expect(activeIntervals()).toBe(0);
 
+    const transferRetry = vi.fn();
+    const transferRaise = vi.fn();
     const transfer = await renderNotice((element) => {
       element.machine = remoteMachine;
       element.failure = transferFailure(1_003_000, "Remote <Lab>");
+      element.onRetry = transferRetry;
+      element.onRaiseLimit = transferRaise;
     });
     expect(alertRegion(transfer)).not.toBeNull();
     expect(noticeText(transfer)).toContain("stopped responding while sending sessions");
     expect(noticeText(transfer)).toContain("Waited 0:03.");
     expect(shadowHtml(transfer)).toContain("Remote &lt;Lab&gt;");
     expect(shadowHtml(transfer)).not.toContain("<Lab>");
-    expect(buttonLabels(transfer)).toEqual(["Try again"]);
+    expect(buttonLabels(transfer)).toEqual(["Try again", "Raise limit"]);
+    clickButton(transfer, "Try again");
+    clickButton(transfer, "Raise limit");
+    expect(transferRetry).toHaveBeenCalledOnce();
+    expect(transferRaise).toHaveBeenCalledOnce();
     expect(activeIntervals()).toBe(0);
   });
 
-  it("keeps one owner clock and stops it on disconnect, scope loss, and terminal states", async () => {
+  it("keeps one owner clock instead of replacing it when a retry read takes over", async () => {
+    const clock = fakeClock(LOAD_STARTED_AT);
+    const createInterval = vi.spyOn(window, "setInterval");
+    const notice = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.load = selectionLoad();
+      element.now = clock.now;
+    });
+    expect(activeIntervals()).toBe(1);
+    expect(createInterval).toHaveBeenCalledOnce();
+
+    notice.load = selectionLoad({ owner: "retry" });
+    await notice.updateComplete;
+    expect(activeIntervals()).toBe(1);
+    expect(createInterval).toHaveBeenCalledOnce();
+
+    // The surviving interval is the live one: it still drives the elapsed text.
+    clock.advance(SESSION_LIST_NOTICE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_LIST_NOTICE_DELAY_MS);
+    await notice.updateComplete;
+    expect(noticeText(notice)).toContain("Loading sessions from Remote Lab… 0:05 of 2:00");
+  });
+
+  it("stops the owner clock on scope loss, failure, record loss, and disconnect", async () => {
     const clock = fakeClock(LOAD_STARTED_AT);
     const notice = await renderNotice((element) => {
       element.machine = remoteMachine;
@@ -132,7 +192,20 @@ describe("session list load notice", () => {
     });
     expect(activeIntervals()).toBe(1);
 
-    notice.load = selectionLoad({ owner: "retry" });
+    notice.load = selectionLoad({ machineId: "/other" });
+    await notice.updateComplete;
+    expect(activeIntervals()).toBe(0);
+
+    notice.load = selectionLoad();
+    await notice.updateComplete;
+    expect(activeIntervals()).toBe(1);
+
+    notice.failure = timeoutFailure(1_010_000);
+    await notice.updateComplete;
+    expect(activeIntervals()).toBe(0);
+
+    notice.failure = undefined;
+    notice.load = selectionLoad();
     await notice.updateComplete;
     expect(activeIntervals()).toBe(1);
 
@@ -145,6 +218,25 @@ describe("session list load notice", () => {
     expect(activeIntervals()).toBe(1);
 
     notice.remove();
+    expect(activeIntervals()).toBe(0);
+  });
+
+  it("does not restart the clock when a pending update flushes after disconnect", async () => {
+    const clock = fakeClock(LOAD_STARTED_AT);
+    const notice = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.load = selectionLoad();
+      element.now = clock.now;
+    });
+    expect(activeIntervals()).toBe(1);
+
+    // Schedule an update, then detach before its microtask flush: Lit still
+    // performs the update on the detached element.
+    notice.load = selectionLoad({ owner: "retry" });
+    notice.remove();
+    expect(activeIntervals()).toBe(0);
+
+    await notice.updateComplete;
     expect(activeIntervals()).toBe(0);
   });
 });

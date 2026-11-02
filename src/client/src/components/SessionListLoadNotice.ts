@@ -22,7 +22,9 @@ export const SESSION_LIST_NOTICE_TICK_MS = 1_000;
  *
  * The elapsed wait needs a clock of its own. The tick only recomputes elapsed
  * time; it is retired as soon as the read reaches a terminal phase, a failure
- * replaces it, its scope no longer matches, or the notice disconnects.
+ * replaces it, its scope no longer matches, or the notice disconnects. Only a
+ * connected notice may own the interval, so a pending update that flushes after
+ * `disconnectedCallback` cannot resurrect it.
  */
 @customElement("session-list-load-notice")
 export class SessionListLoadNotice extends LitElement {
@@ -50,7 +52,9 @@ export class SessionListLoadNotice extends LitElement {
   }
 
   private syncClock(): void {
-    if (this.shouldTick()) {
+    // A pending Lit update can still flush after `disconnectedCallback`, so the
+    // connected state is the authority, not just the disconnect hook.
+    if (this.isConnected && this.shouldTick()) {
       this.interval ??= window.setInterval(() => { this.requestUpdate(); }, SESSION_LIST_NOTICE_TICK_MS);
       return;
     }
@@ -101,7 +105,7 @@ export class SessionListLoadNotice extends LitElement {
         <span>${message}</span>
         <div class="session-list-load-actions">
           <button type="button" @click=${() => { void this.onRetry?.(); }}>Try again</button>
-          ${failure.kind === "timeout" ? html`<button type="button" @click=${() => { this.onRaiseLimit?.(); }}>Raise limit</button>` : null}
+          <button type="button" @click=${() => { this.onRaiseLimit?.(); }}>Raise limit</button>
         </div>
       </div>
     `;
