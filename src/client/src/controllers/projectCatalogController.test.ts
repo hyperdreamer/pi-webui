@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Machine, Project, Workspace } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import {
   ProjectCatalogController,
   type ProjectCatalogControllerDependencies,
   type ProjectCatalogSnapshot,
+  type ProjectCatalogTopologyRequest,
 } from "./projectCatalogController";
 
 const project: Project = {
@@ -53,6 +54,13 @@ const remoteMachine: Machine = {
   createdAt: "now",
   updatedAt: "now",
 };
+
+const nativeAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+afterEach(() => {
+  vi.useRealTimers();
+  restoreAbortTimeout(nativeAbortTimeout);
+});
 
 describe("ProjectCatalogController", () => {
   it("uses the foreground project snapshot as a seed and schedules one fallback poll", () => {
@@ -305,6 +313,77 @@ describe("ProjectCatalogController", () => {
   });
 });
 
+describe("ProjectCatalogController background reconciliation", () => {
+  it("bows out of a remote poll without reporting an error and recovers on the next scheduled pass", async () => {
+    useBackgroundDeadlineTimers();
+    const pending = deferred<Workspace[]>();
+    const workspaces = vi.fn<(projectId: string, machineId: string, signal?: AbortSignal) => Promise<Workspace[]>>()
+      .mockImplementationOnce((_projectId, _machineId, signal) => rejectOnAbort(pending.promise, signal))
+      .mockResolvedValueOnce([featureWorkspace]);
+    const applySnapshot = vi.fn();
+    const onBackgroundError = vi.fn();
+    const cacheTopology = topologyCapture();
+    const timers = fakeTimers();
+    const harness = controllerFor({
+      workspaces,
+      applySnapshot,
+      timers,
+      onBackgroundError,
+      captureTopologyRequest: cacheTopology.capture,
+      statePatch: { selectedMachine: remoteMachine },
+    });
+    harness.controller.updatePolling();
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(workspaces).toHaveBeenCalledOnce();
+    expect(cacheTopology.count()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(onBackgroundError).not.toHaveBeenCalled();
+    expect(applySnapshot).not.toHaveBeenCalled();
+    expect(timers.delays).toEqual([5_000, 5_000]);
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(applySnapshot).toHaveBeenCalledWith({
+      machineId: remoteMachine.id,
+      project,
+      workspaces: [featureWorkspace],
+      topologyRequest: cacheTopology.request,
+    });
+    expect(onBackgroundError).not.toHaveBeenCalled();
+  });
+
+  it("leaves local catalog reconciliation unbounded", async () => {
+    useBackgroundDeadlineTimers();
+    const pending = deferred<Workspace[]>();
+    const workspaces = vi.fn<(projectId: string, machineId: string, signal?: AbortSignal) => Promise<Workspace[]>>()
+      .mockReturnValue(pending.promise);
+    const applySnapshot = vi.fn();
+    const timers = fakeTimers();
+    const harness = controllerFor({ workspaces, applySnapshot, timers });
+    harness.controller.updatePolling();
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(20_001);
+
+    expect(workspaces.mock.calls[0]).toEqual([project.id, "local"]);
+    pending.resolve([featureWorkspace]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(applySnapshot).toHaveBeenCalledWith({
+      machineId: "local",
+      project,
+      workspaces: [featureWorkspace],
+    });
+  });
+});
+
 interface FakeTimers {
   readonly delays: number[];
   fireLatest(): void;
@@ -349,12 +428,70 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(e
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
+/** Drives the background deadline by faking the clock it is scheduled on. */
+function useBackgroundDeadlineTimers(): void {
+  vi.useFakeTimers();
+  restoreAbortTimeout((delayMs: number): AbortSignal => {
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(new DOMException("The operation timed out.", "TimeoutError")); }, delayMs);
+    return controller.signal;
+  });
+}
+
+function restoreAbortTimeout(replacement: unknown): void {
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: replacement });
+}
+
+/** Rejects a pending read when its transport signal aborts, like a real fetch. */
+function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      const reason: unknown = signal.reason;
+      const fallback = new Error("The operation was aborted");
+      fallback.name = "AbortError";
+      reject(reason instanceof Error ? reason : fallback);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+function topologyCapture(): {
+  readonly request: ProjectCatalogTopologyRequest;
+  readonly capture: NonNullable<ProjectCatalogControllerDependencies["captureTopologyRequest"]>;
+  count(): number;
+} {
+  const request: ProjectCatalogTopologyRequest = {
+    machineId: remoteMachine.id,
+    projectId: project.id,
+    projectPath: project.path,
+    order: 1,
+  };
+  let calls = 0;
+  return {
+    request,
+    capture: () => {
+      calls += 1;
+      return request;
+    },
+    count: () => calls,
+  };
+}
+
 function controllerFor(input: {
   workspaces: NonNullable<ProjectCatalogControllerDependencies["workspaces"]>;
   applySnapshot: ProjectCatalogControllerDependencies["applySnapshot"];
   timers: FakeTimers;
   statePatch?: Partial<AppState>;
   onBackgroundError?: ProjectCatalogControllerDependencies["onBackgroundError"];
+  captureTopologyRequest?: ProjectCatalogControllerDependencies["captureTopologyRequest"];
 }) {
   let state: AppState = {
     ...initialAppState(),
@@ -369,6 +506,7 @@ function controllerFor(input: {
       applySnapshot: input.applySnapshot,
       timer: input.timers,
       ...(input.onBackgroundError === undefined ? {} : { onBackgroundError: input.onBackgroundError }),
+      ...(input.captureTopologyRequest === undefined ? {} : { captureTopologyRequest: input.captureTopologyRequest }),
     },
   );
   return {

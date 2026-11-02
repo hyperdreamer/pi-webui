@@ -1,5 +1,8 @@
 import { workspacesApi, type Project, type Workspace } from "../api";
 import type { AppState } from "../appState";
+import { LOCAL_MACHINE_ID } from "../machineKeys";
+import { runBackgroundRead } from "./backgroundRead";
+import { isLoadCancellation } from "./cancellableLoadScope";
 import { selectedMachineId, type GetState } from "./types";
 
 const DEFAULT_PROJECT_CATALOG_POLL_INTERVAL_MS = 5_000;
@@ -29,7 +32,7 @@ export interface ProjectCatalogTimer {
 }
 
 export interface ProjectCatalogControllerDependencies {
-  workspaces?: (projectId: string, machineId: string) => Promise<Workspace[]>;
+  workspaces?: (projectId: string, machineId: string, signal?: AbortSignal) => Promise<Workspace[]>;
   applySnapshot: (snapshot: ProjectCatalogSnapshot) => Promise<void> | void;
   timer?: ProjectCatalogTimer;
   pollIntervalMs?: number;
@@ -179,7 +182,7 @@ export class ProjectCatalogController {
         projectId: scope.project.id,
         projectPath: scope.project.path,
       });
-      const workspaces = await this.listWorkspaces(scope.project.id, scope.machineId);
+      const workspaces = await this.readWorkspaces(scope);
       if (!this.isCurrent(scope, generation)) return;
       await this.applySnapshot({
         machineId: scope.machineId,
@@ -188,10 +191,25 @@ export class ProjectCatalogController {
         ...(topologyRequest === undefined ? {} : { topologyRequest }),
       });
     } catch (error) {
+      if (isLoadCancellation(error)) return;
       if (this.isCurrent(scope, generation)) this.reportBackgroundError(error);
     } finally {
       this.finishRequest(requestId);
     }
+  }
+
+  /**
+   * Catalog reconciliation is background work on every call path: the initial
+   * foreground selection already seeded this topology, and polling, realtime
+   * recovery, and browser resume only reconcile it. Remote reads therefore bow
+   * out at the background window, while the local machine keeps its plain read.
+   */
+  private readWorkspaces(scope: ProjectCatalogScope): Promise<Workspace[]> {
+    if (scope.machineId === LOCAL_MACHINE_ID) return this.listWorkspaces(scope.project.id, scope.machineId);
+    return runBackgroundRead(
+      scope.machineId,
+      (signal) => this.listWorkspaces(scope.project.id, scope.machineId, signal),
+    );
   }
 
   private finishRequest(requestId: number): void {

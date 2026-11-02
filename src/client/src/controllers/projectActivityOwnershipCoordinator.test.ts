@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppState } from "../appState";
 import { initialAppState } from "../appState";
 import type { Machine, Project, Workspace, WorkspaceActivity } from "../api";
@@ -39,6 +39,39 @@ function activity(cwd: string, patch: Partial<WorkspaceActivity> = {}): Workspac
   return { cwd, hasSessionActivity: true, hasTerminalActivity: false, updatedAt: "now", ...patch };
 }
 
+function installBackgroundDeadline(): void {
+  restoreAbortTimeout((delayMs: number): AbortSignal => {
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(new DOMException("The operation timed out.", "TimeoutError")); }, delayMs);
+    return controller.signal;
+  });
+}
+
+function restoreAbortTimeout(replacement: unknown): void {
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: replacement });
+}
+
+/** Rejects a pending read when its transport signal aborts, like a real fetch. */
+function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      const reason: unknown = signal.reason;
+      const fallback = new Error("The operation was aborted");
+      fallback.name = "AbortError";
+      reject(reason instanceof Error ? reason : fallback);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 function machine(id: string): Machine {
   return {
     id,
@@ -60,7 +93,81 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve: resolveDeferred, reject: rejectDeferred };
 }
 
+const nativeAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+afterEach(() => {
+  vi.useRealTimers();
+  restoreAbortTimeout(nativeAbortTimeout);
+});
+
 describe("ProjectActivityOwnershipCoordinator", () => {
+  it("keeps discovery in a remote machine bounded and eligible after a cancelled pass", async () => {
+    vi.useFakeTimers();
+    installBackgroundDeadline();
+    const candidate = project();
+    const remoteLeftover = activity("/tmp/remote-unmatched-worktree");
+    const aborted = deferred<Workspace[]>();
+    const discovered = [workspace(candidate.id, candidate.path), workspace(candidate.id, remoteLeftover.cwd)];
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: machine("remote-a"),
+      projects: [candidate],
+      workspaceActivities: { [remoteLeftover.cwd]: remoteLeftover },
+    };
+    const loadWorkspaces = vi.fn<(projectId: string, machineId?: string, signal?: AbortSignal) => Promise<Workspace[]>>()
+      .mockImplementationOnce((_projectId, _machineId, signal) => rejectOnAbort(aborted.promise, signal))
+      .mockResolvedValueOnce(discovered);
+    const onError = vi.fn();
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { api: { workspaces: loadWorkspaces }, onError },
+    );
+
+    const cancelledPass = coordinator.handleActivityApplied("remote-a");
+    await vi.advanceTimersByTimeAsync(20_000);
+    await cancelledPass;
+
+    expect(loadWorkspaces).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+    expect(state.workspacesByProjectId[candidate.id]).toBeUndefined();
+
+    await coordinator.handleActivityApplied("remote-a");
+
+    expect(loadWorkspaces).toHaveBeenCalledTimes(2);
+    expect(state.workspacesByProjectId[candidate.id]).toEqual(discovered);
+  });
+
+  it("leaves local machine discovery unbounded", async () => {
+    vi.useFakeTimers();
+    installBackgroundDeadline();
+    const candidate = project();
+    const externalActivity = activity("/tmp/local-unbounded-worktree");
+    const pending = deferred<Workspace[]>();
+    let state: AppState = {
+      ...initialAppState(),
+      selectedMachine: localMachine,
+      projects: [candidate],
+      workspaceActivities: { [externalActivity.cwd]: externalActivity },
+    };
+    const loadWorkspaces = vi.fn<(projectId: string, machineId?: string, signal?: AbortSignal) => Promise<Workspace[]>>()
+      .mockReturnValue(pending.promise);
+    const coordinator = new ProjectActivityOwnershipCoordinator(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      { api: { workspaces: loadWorkspaces } },
+    );
+
+    const pass = coordinator.handleActivityApplied(localMachine.id);
+    await vi.advanceTimersByTimeAsync(20_001);
+
+    expect(loadWorkspaces.mock.calls[0]).toEqual([candidate.id, localMachine.id]);
+    pending.resolve([workspace(candidate.id, externalActivity.cwd)]);
+    await pass;
+
+    expect(state.workspacesByProjectId[candidate.id]).toEqual([workspace(candidate.id, externalActivity.cwd)]);
+  });
+
   it("hydrates an external worktree before project selection without changing selection state", async () => {
     const candidate = project();
     const externalActivity = activity("/tmp/repo-worktree");
@@ -714,8 +821,10 @@ describe("ProjectActivityOwnershipCoordinator", () => {
     await coordinator.handleActivityApplied(machineA.id);
 
     expect(loadWorkspaces).toHaveBeenCalledTimes(2);
-    expect(loadWorkspaces).toHaveBeenNthCalledWith(1, candidate.id, machineA.id);
-    expect(loadWorkspaces).toHaveBeenNthCalledWith(2, candidate.id, machineA.id);
+    expect(loadWorkspaces.mock.calls.map(([projectId, machineId]) => [projectId, machineId])).toEqual([
+      [candidate.id, machineA.id],
+      [candidate.id, machineA.id],
+    ]);
     expect(state.workspacesByProjectId[candidate.id]).toEqual(currentWorkspaces);
   });
 

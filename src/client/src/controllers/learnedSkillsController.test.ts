@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LearnedSkill, LearnedSkillsSnapshotResponse } from "../../../shared/apiTypes";
-import type { Project, Workspace } from "../api";
+import type { Machine, Project, Workspace } from "../api";
 import { initialAppState, resetWorkspaceScopedState, type AppState } from "../appState";
 import { LearnedSkillsController, type LearnedSkillsControllerDependencies } from "./learnedSkillsController";
 
@@ -14,6 +14,14 @@ const workspace: Workspace = {
   isGitRepo: true,
   isGitWorktree: false,
 };
+const remoteMachine: Machine = { id: "remote-a", name: "Remote A", kind: "remote", createdAt: "now", updatedAt: "now" };
+
+const nativeAbortTimeout = AbortSignal.timeout.bind(AbortSignal);
+
+afterEach(() => {
+  vi.useRealTimers();
+  restoreAbortTimeout(nativeAbortTimeout);
+});
 
 const lateResultScopeCases: { name: string; patch: Partial<AppState> }[] = [
   { name: "selected machine id", patch: { selectedMachine: { id: "remote-a", name: "Remote A", kind: "remote", createdAt: "now", updatedAt: "now" } } },
@@ -362,6 +370,180 @@ describe("workspace-scoped learned skills state", () => {
   });
 });
 
+describe("learned skills background read budget", () => {
+  it("bows out of a scheduled remote poll without changing published skills and keeps polling", async () => {
+    useBackgroundDeadlineTimers();
+    const reads: ReadIntentRecord[] = [];
+    const initial = deferred<LearnedSkillsSnapshotResponse>();
+    const polled = deferred<LearnedSkillsSnapshotResponse>();
+    const recovered = deferred<LearnedSkillsSnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<LearnedSkillsSnapshotResponse>>()
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return initial.promise;
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return rejectOnAbort(polled.promise, signal);
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return recovered.promise;
+      });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads.map((read) => read.intent)).toEqual(["foreground"]);
+
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "initial" }] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background"]);
+    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("initial")], projectSkills: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    recovered.resolve(dataSnapshot("recovered"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "recovered" }] });
+  });
+
+  it("keeps a scheduled local poll single-flight when a manual refresh arrives", async () => {
+    const initial = deferred<LearnedSkillsSnapshotResponse>();
+    const polled = deferred<LearnedSkillsSnapshotResponse>();
+    const manual = deferred<LearnedSkillsSnapshotResponse>();
+    const snapshot = vi.fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(polled.promise)
+      .mockReturnValueOnce(manual.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers });
+
+    harness.controller.updatePolling();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledOnce(); });
+    initial.resolve(dataSnapshot("initial"));
+    await vi.waitFor(() => { expect(harness.state.learnedSkills).toMatchObject({ kind: "data", globalSkills: [{ id: "initial" }] }); });
+
+    timers.fireLatest();
+    await vi.waitFor(() => { expect(snapshot).toHaveBeenCalledTimes(2); });
+    expect(snapshot).toHaveBeenNthCalledWith(2, workspace.path, "local");
+
+    const manualRefresh = harness.controller.refresh();
+
+    // A scheduled local poll is not a bounded read, so the manual refresh joins
+    // it instead of sweeping it out and fetching beside it.
+    expect(snapshot).toHaveBeenCalledTimes(2);
+
+    polled.resolve(dataSnapshot("polled"));
+    await manualRefresh;
+
+    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("polled")], projectSkills: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+
+  it.each([
+    { name: "skills", settle: (request: Deferred<LearnedSkillsSnapshotResponse>) => { request.resolve(dataSnapshot("superseded")); } },
+    { name: "failure", settle: (request: Deferred<LearnedSkillsSnapshotResponse>) => { request.reject(new Error("Obsolete poll failure")); } },
+  ])("publishes no queued obsolete $name while the replacing manual refresh is pending", async ({ settle }) => {
+    useBackgroundDeadlineTimers();
+    const initial = deferred<LearnedSkillsSnapshotResponse>();
+    const polled = deferred<LearnedSkillsSnapshotResponse>();
+    const manual = deferred<LearnedSkillsSnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<LearnedSkillsSnapshotResponse>>()
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(polled.promise)
+      .mockReturnValueOnce(manual.promise);
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    const publicationCount = harness.publications.length;
+
+    // Settle Promise.race, then runBackgroundRead, but supersede the request
+    // before the controller's queued publication continuation can run. Aborting
+    // the helper now is too late: only the request-ID guard can suppress it.
+    settle(polled);
+    await Promise.resolve();
+    await Promise.resolve();
+    const manualRefresh = harness.controller.refresh();
+
+    try {
+      expect(snapshot).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(harness.publications.slice(publicationCount)).toEqual([]);
+      expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("initial")], projectSkills: [] });
+      expect(timers.pendingCallbacks()).toHaveLength(0);
+    } finally {
+      manual.resolve(dataSnapshot("manual"));
+      await manualRefresh;
+    }
+
+    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("manual")], projectSkills: [] });
+  });
+
+  it("gives a manual refresh foreground priority over a running scheduled poll", async () => {
+    useBackgroundDeadlineTimers();
+    const reads: ReadIntentRecord[] = [];
+    const initial = deferred<LearnedSkillsSnapshotResponse>();
+    const polled = deferred<LearnedSkillsSnapshotResponse>();
+    const manual = deferred<LearnedSkillsSnapshotResponse>();
+    const snapshot = vi.fn<(projectPath: string, machineId: string, signal?: AbortSignal) => Promise<LearnedSkillsSnapshotResponse>>()
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return initial.promise;
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return rejectOnAbort(polled.promise, signal);
+      })
+      .mockImplementationOnce((_path, _machineId, signal) => {
+        reads.push(recordIntent(signal));
+        return manual.promise;
+      });
+    const timers = fakeTimers();
+    const harness = controllerFor({ snapshot, timers, statePatch: { selectedMachine: remoteMachine } });
+
+    harness.controller.updatePolling();
+    await vi.advanceTimersByTimeAsync(0);
+    initial.resolve(dataSnapshot("initial"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    timers.fireLatest();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background"]);
+
+    const manualRefresh = harness.controller.refresh();
+
+    expect(reads.map((read) => read.intent)).toEqual(["foreground", "background", "foreground"]);
+    expect(reads[1]?.signal?.aborted).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("initial")], projectSkills: [] });
+
+    manual.resolve(dataSnapshot("manual"));
+    await manualRefresh;
+
+    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("manual")], projectSkills: [] });
+    expect(timers.pendingCallbacks()).toHaveLength(1);
+  });
+});
+
 interface FakeTimers {
   readonly delays: number[];
   fireLatest(): void;
@@ -403,14 +585,28 @@ function dataSnapshot(label: string): Extract<LearnedSkillsSnapshotResponse, { k
   return { kind: "data", globalSkills: [skill(label)], projectSkills: [] };
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
   let resolvePromise: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => { resolvePromise = resolve; });
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
   return {
     promise,
     resolve(value) {
       if (resolvePromise === undefined) throw new Error("Deferred promise is unavailable");
       resolvePromise(value);
+    },
+    reject(error) {
+      if (rejectPromise === undefined) throw new Error("Deferred promise is unavailable");
+      rejectPromise(error);
     },
   };
 }
@@ -422,15 +618,61 @@ function controllerFor(input: { snapshot: NonNullable<LearnedSkillsControllerDep
     selectedWorkspace: workspace,
     ...input.statePatch,
   };
+  const publications: Partial<AppState>[] = [];
   const controller = new LearnedSkillsController(
     () => state,
-    (patch) => { state = { ...state, ...patch }; },
+    (patch) => { publications.push(patch); state = { ...state, ...patch }; },
     { snapshot: input.snapshot, timer: input.timers },
   );
   return {
     controller,
     timers: input.timers,
+    publications,
     get state() { return state; },
     apply: (patch: Partial<AppState>) => { state = { ...state, ...patch }; },
   };
+}
+
+interface ReadIntentRecord {
+  intent: "background" | "foreground";
+  signal: AbortSignal | undefined;
+}
+
+function recordIntent(signal: AbortSignal | undefined): ReadIntentRecord {
+  return { intent: signal === undefined ? "foreground" : "background", signal };
+}
+
+/** Drives the background deadline by faking the clock it is scheduled on. */
+function useBackgroundDeadlineTimers(): void {
+  vi.useFakeTimers();
+  restoreAbortTimeout((delayMs: number): AbortSignal => {
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(new DOMException("The operation timed out.", "TimeoutError")); }, delayMs);
+    return controller.signal;
+  });
+}
+
+function restoreAbortTimeout(replacement: unknown): void {
+  Object.defineProperty(AbortSignal, "timeout", { configurable: true, writable: true, value: replacement });
+}
+
+/** Rejects a pending read when its transport signal aborts, like a real fetch. */
+function rejectOnAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      const reason: unknown = signal.reason;
+      const fallback = new Error("The operation was aborted");
+      fallback.name = "AbortError";
+      reject(reason instanceof Error ? reason : fallback);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
