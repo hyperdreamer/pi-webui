@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.29.0
+
+### Minor Changes
+
+- 5756ce4: Add configurable remote request patience, session-list progress and Retry/Raise limit controls, machine editing, and bounded background reads.
+
 ## 1.28.4
 
 ### Patch Changes
