@@ -4,6 +4,22 @@ import { resetWorkspaceScopedState } from "../appState";
 import type { GetState, SetState, UpdateUrl } from "./types";
 import type { ProjectController } from "./projectController";
 
+/**
+ * Whether the caller that started a machine mutation still owns the UI.
+ *
+ * A dialog submit can land after the user reopened the dialog for another
+ * machine. The server-side change still belongs to the record it named, but
+ * selecting a created record or publishing a failure would rewrite state the
+ * newer dialog owns.
+ */
+interface MachineMutationOwnership {
+  isCurrent?: () => boolean;
+}
+
+function callerOwnsUi(ownership: MachineMutationOwnership): boolean {
+  return ownership.isCurrent?.() ?? true;
+}
+
 export class MachineController {
   private readonly runtimeRefreshSeqByMachine = new Map<string, number>();
 
@@ -55,15 +71,25 @@ export class MachineController {
     void this.refreshMachineRuntime(machine.id);
   }
 
-  async addMachine(input: { name: string; baseUrl: string; requestTimeoutMs?: number; token?: string }): Promise<Machine | undefined> {
+  /**
+   * Persist a new machine and select it while the caller still owns the UI.
+   *
+   * Selection resets workspace-scoped state, so a create whose dialog was
+   * superseded only publishes the record; the newer dialog keeps its scope.
+   */
+  async addMachine(
+    input: { name: string; baseUrl: string; requestTimeoutMs?: number; token?: string },
+    ownership: MachineMutationOwnership = {},
+  ): Promise<Machine | undefined> {
     this.setState({ error: "" });
     try {
       const machine = await api.addMachine(input);
       this.setState({ machines: [...this.getState().machines.filter((candidate) => candidate.id !== machine.id), machine] });
+      if (!callerOwnsUi(ownership)) return machine;
       await this.selectMachine(machine);
       return machine;
     } catch (error) {
-      this.setState({ error: String(error) });
+      if (callerOwnsUi(ownership)) this.setState({ error: String(error) });
       return undefined;
     }
   }
@@ -74,9 +100,10 @@ export class MachineController {
    * An edit is not a selection: the machine keeps its id, so the workspace,
    * session, draft, and attachment state all stay with the current selection.
    * The selected record is refreshed in the same patch so sidebar and notice
-   * rendering see the saved values.
+   * rendering see the saved values. A failure publishes its message only while
+   * the submitting caller owns the UI, so a superseded dialog stays silent.
    */
-  async updateMachine(machineId: string, patch: MachineUpdateRequest): Promise<Machine> {
+  async updateMachine(machineId: string, patch: MachineUpdateRequest, ownership: MachineMutationOwnership = {}): Promise<Machine> {
     this.setState({ error: "" });
     try {
       const machine = await api.updateMachine(machineId, patch);
@@ -87,7 +114,7 @@ export class MachineController {
       });
       return machine;
     } catch (error) {
-      this.setState({ error: String(error) });
+      if (callerOwnsUi(ownership)) this.setState({ error: String(error) });
       throw error;
     }
   }

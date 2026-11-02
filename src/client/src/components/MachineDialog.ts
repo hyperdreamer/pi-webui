@@ -11,9 +11,10 @@ import {
 const CREATE_IDENTITY = "create";
 
 /**
- * Decimal seconds with at most millisecond precision. An exponent, a sign, or a
- * fourth fractional digit is not a timeout this field accepts, so it is handed
- * to the shared validator unchanged and reports that one range message.
+ * Decimal seconds with at most millisecond precision. An exponent, a sign, a
+ * radix prefix, or a fourth fractional digit is not a timeout this field
+ * accepts, so it is never coerced into a number: it is handed to the shared
+ * validator as an invalid value and reports that one range message.
  */
 const TIMEOUT_SECONDS_PATTERN = /^\d+(?:\.\d{1,3})?$/u;
 
@@ -256,13 +257,13 @@ export class MachineDialog extends LitElement {
 /**
  * Decimal seconds as milliseconds, validated against the shared bounds.
  *
- * A token that is not decimal seconds at all (an exponent, a sign, a fourth
- * fractional digit) goes to the validator unchanged, so the user reads the one
- * accepted-range message instead of a second, invented parse error.
+ * A token that is not decimal seconds at all (an exponent, a sign, a trailing
+ * dot, a fourth fractional digit) is rejected without coercion: `5e3` would
+ * otherwise pass as a valid 5 000 ms while the field reads seconds.
  */
 function parseTimeoutSeconds(raw: string): number {
   const value = raw.trim();
-  if (!TIMEOUT_SECONDS_PATTERN.test(value)) return validateMachineRequestTimeoutMs(Number(value));
+  if (!TIMEOUT_SECONDS_PATTERN.test(value)) return validateMachineRequestTimeoutMs(Number.NaN);
   const [whole = "", fraction = ""] = value.split(".");
   return validateMachineRequestTimeoutMs(Number(whole) * 1_000 + Number(fraction.padEnd(3, "0")));
 }

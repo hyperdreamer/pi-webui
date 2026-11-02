@@ -188,6 +188,81 @@ describe("PiWebUiApp machine edit dialog", () => {
     expect(appState(app).selectedMachine?.id).toBe(remoteMachine.id);
   });
 
+  it("keeps the selection when a superseded create lands after a newer dialog opened", async () => {
+    const creation = deferred<Machine>();
+    const addMachine = vi.spyOn(api, "addMachine").mockReturnValue(creation.promise);
+    const app = await mountApp({ selectedSession: session, sessions: [session] });
+    openCreateDialog(app);
+    await app.updateComplete;
+    const generation: unknown = Reflect.get(app, "machineDialogGeneration");
+
+    const staleSubmit = submitMachineDialog(app, generation, 120_000);
+    openCreateDialog(app);
+    await app.updateComplete;
+    creation.resolve({ ...remoteMachine, id: "remote-new" });
+    await staleSubmit;
+    await settleUpdates(app);
+
+    expect(addMachine).toHaveBeenCalledWith({
+      name: remoteMachine.name,
+      baseUrl: remoteMachine.baseUrl,
+      requestTimeoutMs: 120_000,
+    });
+    // The create persisted, but the newer dialog owns the UI: no selection and
+    // no workspace/session reset may follow from the superseded submit.
+    expect(appState(app).machines.some((machine) => machine.id === "remote-new")).toBe(true);
+    expect(appState(app).machineDialogOpen).toBe(true);
+    expect(machineDialogTarget(app)).toBeUndefined();
+    expect(appState(app).selectedMachine?.id).toBe(remoteMachine.id);
+    expect(appState(app).selectedWorkspace?.id).toBe(workspace.id);
+    expect(appState(app).selectedSession?.id).toBe(session.id);
+  });
+
+  it("keeps a superseded edit failure out of the newer dialog", async () => {
+    const update = deferred<Machine>();
+    const updateMachine = vi.spyOn(api, "updateMachine").mockReturnValue(update.promise);
+    const app = await mountApp();
+    openEditDialog(app, remoteMachine);
+    await app.updateComplete;
+    const generation: unknown = Reflect.get(app, "machineDialogGeneration");
+
+    const staleSubmit = submitMachineDialog(app, generation, 150_000);
+    openCreateDialog(app);
+    await app.updateComplete;
+    Reflect.set(app, "state", { ...appState(app), error: "Newer dialog error" });
+    await settleUpdates(app);
+
+    update.reject(new Error("Remote rejected the old edit"));
+    await staleSubmit;
+    await settleUpdates(app);
+
+    expect(updateMachine).toHaveBeenCalledWith(remoteMachine.id, {
+      name: remoteMachine.name,
+      baseUrl: remoteMachine.baseUrl,
+      requestTimeoutMs: 150_000,
+    });
+    expect(appState(app).machineDialogOpen).toBe(true);
+    expect(machineDialogTarget(app)).toBeUndefined();
+    expect(appState(app).error).toBe("Newer dialog error");
+    expect(machineDialog(app)?.error).toBe("Newer dialog error");
+    expect(appState(app).selectedMachine?.id).toBe(remoteMachine.id);
+  });
+
+  it("shows a current edit failure in the dialog that owns it", async () => {
+    vi.spyOn(api, "updateMachine").mockRejectedValue(new Error("Remote rejected the edit"));
+    const app = await mountApp();
+    openEditDialog(app, remoteMachine);
+    await app.updateComplete;
+    const generation: unknown = Reflect.get(app, "machineDialogGeneration");
+
+    await submitMachineDialog(app, generation, 150_000);
+    await settleUpdates(app);
+
+    expect(appState(app).machineDialogOpen).toBe(true);
+    expect(appState(app).error).toBe("Error: Remote rejected the edit");
+    expect(machineDialog(app)?.error).toContain("Remote rejected the edit");
+  });
+
   it("saves the edited patience without selecting or resetting the machine", async () => {
     const updateMachine = vi.spyOn(api, "updateMachine").mockImplementation((machineId, patch) => Promise.resolve({
       ...remoteMachine,
@@ -630,10 +705,15 @@ async function submitDialog(dialog: MachineDialogElement): Promise<void> {
   await flush();
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
   let resolve: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve: (value: T) => { if (resolve === undefined) throw new Error("Deferred already resolved"); resolve(value); } };
+  let reject: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+  return {
+    promise,
+    resolve: (value: T) => { if (resolve === undefined) throw new Error("Deferred already settled"); resolve(value); },
+    reject: (reason: unknown) => { if (reject === undefined) throw new Error("Deferred already settled"); reject(reason); },
+  };
 }
 
 async function flush(): Promise<void> {

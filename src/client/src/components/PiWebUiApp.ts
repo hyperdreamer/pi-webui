@@ -3980,17 +3980,19 @@ export class PiWebUiApp extends LitElement {
       requestTimeoutMs: input.requestTimeoutMs,
       ...(input.token === undefined ? {} : { token: input.token }),
     };
+    // Every completion belongs to the dialog that submitted it. A superseded
+    // submit may persist its record, but it must not select, publish its
+    // failure, or close a dialog the user opened for something else.
+    const ownership = { isCurrent: () => generation === this.machineDialogGeneration };
     if (target === undefined) {
-      const machine = await this.machines.addMachine(patch);
-      if (machine === undefined || generation !== this.machineDialogGeneration) return;
+      const machine = await this.machines.addMachine(patch, ownership);
+      if (machine === undefined || !ownership.isCurrent()) return;
       this.closeMachineDialog();
       this.schedulePiWebUiStatusRefresh();
       return;
     }
-    const machine = await this.machines.updateMachine(target.id, patch).catch(() => undefined);
-    // A failed update published its message into the dialog's error; a dialog
-    // opened after this submit owns the record now, so neither may close it.
-    if (machine === undefined || generation !== this.machineDialogGeneration) return;
+    const machine = await this.machines.updateMachine(target.id, patch, ownership).catch(() => undefined);
+    if (machine === undefined || !ownership.isCurrent()) return;
     this.closeMachineDialog();
   }
 

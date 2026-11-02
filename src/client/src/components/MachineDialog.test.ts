@@ -104,6 +104,25 @@ describe("machine dialog request timeout", () => {
     expect(inputValue(dialog, "requestTimeoutMs")).toBe("3");
   });
 
+  it("rejects forbidden numeric syntax even when its coercion would land in range", async () => {
+    const submitted: MachineDialogSubmit[] = [];
+    const dialog = await renderMachineDialog((element) => {
+      element.machine = remoteMachine;
+      element.onSubmit = (input) => { submitted.push(input); };
+    });
+
+    // Every one of these coerces to 5 000 ms, inside the accepted bounds, so
+    // only the lexical pattern can reject them.
+    for (const value of ["5e3", "+5000", "5000.", "5000.0000", "0x1388"]) {
+      setInput(dialog, "requestTimeoutMs", value);
+      await submit(dialog);
+
+      expect(submitted).toHaveLength(0);
+      expect(dialogText(dialog)).toContain(INVALID_TIMEOUT_MESSAGE);
+      expect(inputValue(dialog, "requestTimeoutMs")).toBe(value);
+    }
+  });
+
   it("keeps a rejected value and its message across rerenders", async () => {
     const dialog = await renderMachineDialog((element) => { element.machine = remoteMachine; });
     setInput(dialog, "requestTimeoutMs", "0.5");
