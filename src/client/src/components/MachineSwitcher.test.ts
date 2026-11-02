@@ -461,6 +461,45 @@ describe("machine-switcher interaction", () => {
     expect(shadowElement(element, ".machine-option-actions-toggle").getAttribute("aria-label")).toBe(`Actions for ${REMOTE_NAME}`);
   });
 
+  it("edits from the switcher actions menu through the shared callback", async () => {
+    const edit = vi.fn();
+    const select = vi.fn();
+    const element = await mountSwitcher("online");
+    element.onEdit = edit;
+    element.onSelect = select;
+    await element.updateComplete;
+    await openMenu(element);
+
+    const actionsToggle = shadowElement(element, `.machine-option-actions-toggle[aria-label="Actions for ${REMOTE_NAME}"]`);
+    actionsToggle.click();
+    await element.updateComplete;
+    const editButton = shadowElements(element, ".machine-option-actions-panel button")
+      .find((button) => button.textContent.trim() === "Edit");
+    if (editButton === undefined) throw new Error("Expected an Edit action");
+    editButton.click();
+    await element.updateComplete;
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(edit).toHaveBeenCalledWith({ ...machine("remote", REMOTE_NAME), status: "online" });
+    expect(select).not.toHaveBeenCalled();
+    expect(selectedButton(element).getAttribute("aria-expanded")).toBe("false");
+    expect(shadowElements(element, ".machine-option")).toHaveLength(0);
+    expect(shadowElements(element, ".machine-option-actions-toggle")).toHaveLength(0);
+  });
+
+  it("offers an edit menu for a remote machine without a remove handler", async () => {
+    const element = await mountSwitcher("online");
+    element.onEdit = vi.fn();
+    await element.updateComplete;
+    await openMenu(element);
+
+    expect(shadowElements(element, ".machine-option-actions-toggle")).toHaveLength(1);
+    shadowElement(element, ".machine-option-actions-toggle").click();
+    await element.updateComplete;
+
+    expect(shadowElements(element, ".machine-option-actions-panel button").map((button) => button.textContent)).toEqual(["Edit"]);
+  });
+
   it("prefers session activity over terminal activity and suppresses it when the machine is offline or errored", async () => {
     const activity = (overrides: Partial<WorkspaceActivity>): Record<string, WorkspaceActivity> => ({
       "/repo": { cwd: "/repo", hasSessionActivity: false, hasTerminalActivity: false, updatedAt: "2026-10-17T00:00:00.000Z", ...overrides },

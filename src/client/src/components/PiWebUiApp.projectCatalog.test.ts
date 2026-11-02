@@ -118,7 +118,9 @@ describe("PiWebUiApp project catalog wiring", () => {
     invokeRealtimeConnected(app);
     invokeRealtimeConnected(app);
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(refresh).toHaveBeenCalledWith(undefined, "local");
+    // A socket open is a recovery invalidation, so it bows out at the
+    // background window instead of taking the machine's foreground budget.
+    expect(refresh).toHaveBeenCalledWith(undefined, "local", "background");
   });
 
   it("routes scoped invalidations to session list refresh and rejects events from a previous machine", () => {
@@ -130,7 +132,7 @@ describe("PiWebUiApp project catalog wiring", () => {
     if (!isConnectRealtime(connect)) throw new Error("Missing realtime connect method");
     connect.call(app);
     receive?.({ type: "sessions.changed", cwd: featureWorkspace.path });
-    expect(refresh).toHaveBeenCalledExactlyOnceWith([featureWorkspace.path], "local");
+    expect(refresh).toHaveBeenCalledExactlyOnceWith([featureWorkspace.path], "local", "background");
     setAppState(app, { ...initialAppState(), selectedMachine: { id: "remote", name: "remote", kind: "remote", createdAt: "now", updatedAt: "now" } });
     receive?.({ type: "sessions.changed", cwd: featureWorkspace.path });
     expect(refresh).toHaveBeenCalledTimes(1);
