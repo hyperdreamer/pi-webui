@@ -103,7 +103,7 @@ interface SessionListReadOperation {
 
 /** The debounce that merges a burst of invalidations into one read pass. */
 const SESSION_LIST_REFRESH_DELAY_MS = 50;
-/** Gateway-timeout status marking a bounded wait that expired without headers. */
+/** Gateway-reported timeout status; the browser never synthesizes this failure. */
 const SESSION_LIST_TIMEOUT_STATUS = 504;
 
 interface WorkspaceSelectionTarget {
@@ -456,18 +456,9 @@ export class WorkspaceController {
     if (intent === "background") {
       return runBackgroundRead(machineId, (signal) => this.api.sessions(cwd, machineId, signal));
     }
-    // Foreground invalidation reads keep the machine budget. Once the upstream
-    // response starts, body transfer is unbounded, so the deadline is disarmed.
-    const budgetMs = this.machineBudgetMs(machineId);
-    const deadline = new AbortController();
-    const timer = setTimeout(() => { deadline.abort(sessionListTimeoutError(budgetMs)); }, budgetMs);
-    try {
-      return await this.api.sessions(cwd, machineId, deadline.signal, (response) => {
-        if (response.ok) clearTimeout(timer);
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    // The gateway owns the foreground budget; only selection supersession
+    // cancels the browser read while it is waiting for a response.
+    return this.api.sessions(cwd, machineId, this.selectionLoad.signal);
   }
 
   clearSelection(options?: { updateUrl?: boolean | undefined; preserveError?: boolean | undefined }) {
@@ -599,7 +590,15 @@ export class WorkspaceController {
       if (!this.ownsSessionListOperation(operation)) return;
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
       if (!this.ownsSessionListOperation(operation)) return;
-      void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope, signal);
+      void this.refreshProjectSessions(
+        projectSessionsRequest,
+        workspace,
+        sessions,
+        machineId,
+        operation.owner === "catalog-fallback" ? "background" : "foreground",
+        target?.catalogScope,
+        signal,
+      );
       if (!this.ownsSessionListOperation(operation)) return;
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
       if (!this.ownsSessionListOperation(operation)) return;
@@ -694,6 +693,8 @@ export class WorkspaceController {
     this.activeSessionListOperation = operation.token;
     if (this.publishesSessionListProvenance(operation)) {
       this.setState({
+        sessionListFailure: undefined,
+        isLoadingSessions: true,
         sessionListLoad: {
           owner: operation.owner,
           scope: operation.scope,
@@ -722,28 +723,17 @@ export class WorkspaceController {
         operation.supersession,
       );
     }
-    // Foreground selection and retry keep the machine budget, and only the wait
-    // for upstream headers is budgeted: the deadline is disarmed when a successful
-    // response starts so body transfer stays unbounded.
-    const deadline = new AbortController();
-    const timer = setTimeout(() => { deadline.abort(sessionListTimeoutError(operation.budgetMs)); }, operation.budgetMs);
-    const stopForwarding = forwardSupersession(operation.supersession, deadline);
-    try {
-      return await this.api.sessions(workspace.path, operation.machineId, deadline.signal, (response) => {
-        if (!response.ok) return;
-        clearTimeout(timer);
-        this.publishSessionListPhase(operation, deadline.signal);
-      });
-    } finally {
-      clearTimeout(timer);
-      stopForwarding();
-    }
+    // The gateway owns the timeout. Keep the inherited cancellation signal and
+    // report successful response headers without a browser deadline.
+    return this.api.sessions(workspace.path, operation.machineId, operation.supersession, (response) => {
+      if (response.ok) this.publishSessionListPhase(operation);
+    });
   }
 
-  private publishSessionListPhase(operation: SessionListReadOperation, signal: AbortSignal): void {
+  private publishSessionListPhase(operation: SessionListReadOperation): void {
     if (operation.phase === "waiting") operation.phase = "receiving";
     if (!this.publishesSessionListProvenance(operation)) return;
-    if (!this.isSessionListOperationCurrent(operation, signal)) return;
+    if (!this.isSessionListOperationCurrent(operation)) return;
     this.setState({
       sessionListLoad: {
         owner: operation.owner,
@@ -815,10 +805,15 @@ export class WorkspaceController {
     return workspaceStillExists(workspace, workspaces);
   }
 
-  private readProjectSiblingSessions(path: string, machineId: string, signal: AbortSignal | undefined): Promise<SessionInfo[]> {
-    // Cross-workspace grouping is background work: a remote reader bows out at
-    // the background window, while the local machine keeps its plain read.
-    if (machineId === LOCAL_MACHINE_ID) return this.api.sessions(path, machineId, signal);
+  private readProjectSiblingSessions(
+    path: string,
+    machineId: string,
+    intent: ReadIntent,
+    signal: AbortSignal | undefined,
+  ): Promise<SessionInfo[]> {
+    // Sibling reads inherit their selection's intent and cancellation. Only a
+    // remote catalog fallback takes the bounded background path.
+    if (machineId === LOCAL_MACHINE_ID || intent === "foreground") return this.api.sessions(path, machineId, signal);
     return runBackgroundRead(machineId, (backgroundSignal) => this.api.sessions(path, machineId, backgroundSignal), signal);
   }
 
@@ -846,6 +841,7 @@ export class WorkspaceController {
     workspace: Workspace,
     currentSessions: SessionInfo[],
     machineId: string,
+    intent: ReadIntent,
     catalogScope?: CatalogWorkspaceSelectionScope,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -859,7 +855,7 @@ export class WorkspaceController {
         if (candidate.id === workspace.id) return currentSessions;
         return mergeCachedNewSessions(
           candidate.path,
-          await this.readProjectSiblingSessions(candidate.path, machineId, signal),
+          await this.readProjectSiblingSessions(candidate.path, machineId, intent, signal),
           machineId,
         );
       }));
@@ -1288,13 +1284,6 @@ function mergeSessionListIntent(dirty: Map<string, ReadIntent>, cwd: string, int
   dirty.set(cwd, intent);
 }
 
-function sessionListTimeoutError(budgetMs: number): HttpRequestError {
-  return new HttpRequestError(
-    `Session list request timed out after ${String(budgetMs)} milliseconds`,
-    SESSION_LIST_TIMEOUT_STATUS,
-  );
-}
-
 /**
  * Only a gateway timeout and a stopped body are typed list failures. Any other
  * rejection keeps the existing generic error reporting.
@@ -1303,21 +1292,6 @@ function classifySessionListFailure(error: unknown): SessionListFailure["kind"] 
   if (error instanceof HttpResponseBodyError) return "transfer";
   if (error instanceof HttpRequestError && error.status === SESSION_LIST_TIMEOUT_STATUS) return "timeout";
   return undefined;
-}
-
-function forwardSupersession(source: AbortSignal | undefined, target: AbortController): () => void {
-  if (source === undefined) return () => undefined;
-  const forward = (): void => { target.abort(source.reason); };
-  // Read through a closure so a source that aborted between the admission check
-  // and the listener attach still forwards its first reason.
-  const isAborted = (): boolean => source.aborted;
-  if (isAborted()) {
-    forward();
-    return () => undefined;
-  }
-  source.addEventListener("abort", forward, { once: true });
-  if (isAborted()) forward();
-  return () => { source.removeEventListener("abort", forward); };
 }
 
 function selectFallbackWorkspace(workspaces: Workspace[]): Workspace | undefined {

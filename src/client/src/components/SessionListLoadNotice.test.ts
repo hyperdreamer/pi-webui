@@ -99,6 +99,56 @@ describe("session list load notice", () => {
     expect(activeIntervals()).toBe(0);
   });
 
+  it("replaces a failure with the retry waiting clock and then receiving feedback", async () => {
+    const clock = fakeClock(LOAD_STARTED_AT + 2_000);
+    const notice = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.failure = timeoutFailure(clock.now());
+      element.now = clock.now;
+    });
+    expect(alertRegion(notice)?.textContent).toContain("didn't answer");
+    expect(activeIntervals()).toBe(0);
+
+    const retryLoad = selectionLoad({ owner: "retry", startedAt: clock.now() });
+    notice.failure = undefined;
+    notice.load = retryLoad;
+    await notice.updateComplete;
+    expect(alertRegion(notice)).toBeNull();
+    expect(noticeText(notice)).toBe("");
+    expect(activeIntervals()).toBe(1);
+
+    clock.advance(SESSION_LIST_NOTICE_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_LIST_NOTICE_DELAY_MS);
+    await notice.updateComplete;
+    expect(statusRegion(notice)?.textContent).toContain("Loading sessions from Remote Lab… 0:05 of 2:00");
+    expect(alertRegion(notice)).toBeNull();
+
+    notice.load = { ...retryLoad, phase: "receiving" };
+    await notice.updateComplete;
+    expect(statusRegion(notice)?.textContent).toBe("Receiving sessions from Remote Lab…");
+    expect(activeIntervals()).toBe(0);
+
+    notice.load = undefined;
+    await notice.updateComplete;
+    expect(noticeText(notice)).toBe("");
+    expect(activeIntervals()).toBe(0);
+  });
+
+  it.each(["waiting", "receiving"] as const)("removes %s retry feedback silently when its load is cancelled", async (phase) => {
+    const notice = await renderNotice((element) => {
+      element.machine = remoteMachine;
+      element.load = selectionLoad({ owner: "retry", phase });
+      element.now = () => LOAD_STARTED_AT + SESSION_LIST_NOTICE_DELAY_MS;
+    });
+    expect(statusRegion(notice)).not.toBeNull();
+
+    notice.load = undefined;
+    await notice.updateComplete;
+    expect(noticeText(notice)).toBe("");
+    expect(alertRegion(notice)).toBeNull();
+    expect(activeIntervals()).toBe(0);
+  });
+
   it("shows receiving before any body byte without a budget countdown", async () => {
     const clock = fakeClock(LOAD_STARTED_AT);
     const notice = await renderNotice((element) => {

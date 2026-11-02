@@ -1064,6 +1064,66 @@ describe("WorkspaceController", () => {
 });
 
 describe("WorkspaceController session list provenance", () => {
+  it.each(["selection", "retry"] as const)("keeps %s pending beyond the nominal budget until the gateway responds", async (owner) => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createSessionListHarness(remoteLabMachine);
+      let pending = fixture.controller.selectWorkspace(remoteWorkspace);
+      if (owner === "retry") {
+        fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+        await pending;
+        pending = fixture.controller.retrySessionList();
+      }
+      const read = fixture.reads.at(-1);
+      expect(read).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS);
+
+      expect(read?.signal?.aborted).toBe(false);
+      expect(read?.failure).toBeUndefined();
+      expect(fixture.state.sessionListLoad).toMatchObject({ owner, phase: "waiting" });
+
+      read?.reject(new HttpRequestError("actual gateway timeout", 504));
+      await pending;
+      expect(fixture.state.sessionListFailure).toMatchObject({
+        kind: "timeout",
+        elapsedMs: 2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+      });
+      expect(fixture.state.sessionListLoad).toBeUndefined();
+      expect(fixture.state.error).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps queued foreground refresh pending beyond the nominal gateway budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createSessionListHarness(remoteLabMachine, {
+        state: { selectedWorkspace: remoteWorkspace },
+      });
+      const pending = fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "foreground");
+      await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
+      expect(fixture.reads).toHaveLength(1);
+      const read = fixture.reads[0];
+
+      await vi.advanceTimersByTimeAsync(2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS);
+
+      expect(read?.signal?.aborted ?? false).toBe(false);
+      expect(read?.failure).toBeUndefined();
+      expect(fixture.recording.applyCalls).toEqual([]);
+      expect(fixture.reportedErrors).toEqual([]);
+
+      read?.resolve([remoteSession]);
+      await pending;
+      expect(fixture.recording.applyCalls).toEqual([
+        { cwd: remoteWorkspace.path, machineId: "remote-lab", preserveSelection: undefined },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("publishes captured remote selection and receiving provenance", async () => {
     vi.useFakeTimers();
     try {
@@ -1138,6 +1198,77 @@ describe("WorkspaceController session list provenance", () => {
     }
   });
 
+  it("keeps selection continuation sibling reads foreground beyond twenty seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      await withoutNativeAbortTimeout(async () => {
+        const fixture = createSessionListHarness(remoteLabMachine);
+        const selecting = fixture.controller.selectProject(remoteProject);
+        await vi.waitFor(() => { expect(fixture.reads).toHaveLength(1); });
+        fixture.reads[0]?.resolve([remoteSession]);
+        await selecting;
+        expect(fixture.reads).toHaveLength(2);
+        const sibling = fixture.reads[1];
+        expect(sibling?.cwd).toBe(remoteSiblingWorkspace.path);
+
+        await vi.advanceTimersByTimeAsync(REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS + 5_000);
+
+        expect(sibling?.signal?.aborted).toBe(false);
+        expect(sibling?.signal).toBe(fixture.reads[0]?.signal);
+        expect(sibling?.failure).toBeUndefined();
+        const siblingSession = session("sibling", remoteSiblingWorkspace.path);
+        sibling?.resolve([siblingSession]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fixture.state.projectSessions).toEqual([remoteSession, siblingSession]);
+        expect(fixture.reportedErrors).toEqual([]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds catalog fallback sibling reads beyond twenty seconds without a notice", async () => {
+    vi.useFakeTimers();
+    try {
+      await withoutNativeAbortTimeout(async () => {
+        const removedWorkspace = { ...remoteWorkspace, id: "removed", path: "/removed" };
+        const workspaces = [removedWorkspace, remoteWorkspace, remoteSiblingWorkspace];
+        const fixture = createSessionListHarness(remoteLabMachine, {
+          state: {
+            selectedWorkspace: removedWorkspace,
+            workspaces,
+            workspacesByProjectId: { [remoteProject.id]: workspaces },
+          },
+        });
+        const reconciling = fixture.controller.reconcileProjectCatalog({
+          machineId: "remote-lab",
+          project: remoteProject,
+          workspaces: [remoteWorkspace, remoteSiblingWorkspace],
+        });
+        await vi.waitFor(() => { expect(fixture.reads).toHaveLength(1); });
+        fixture.reads[0]?.resolve([remoteSession]);
+        await reconciling;
+        expect(fixture.reads).toHaveLength(2);
+        const sibling = fixture.reads[1];
+        expect(sibling?.cwd).toBe(remoteSiblingWorkspace.path);
+
+        await vi.advanceTimersByTimeAsync(REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS + 5_000);
+
+        expect(sibling?.signal?.aborted).toBe(true);
+        expect(isLoadCancellation(sibling?.failure)).toBe(true);
+        sibling?.resolve([session("obsolete", remoteSiblingWorkspace.path)]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fixture.state.projectSessions).toEqual([remoteSession]);
+        expect(fixture.state.sessionListLoad).toBeUndefined();
+        expect(fixture.state.sessionListFailure).toBeUndefined();
+        expect(fixture.state.error).toBe("");
+        expect(fixture.reportedErrors).toEqual([]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("publishes timeout and transfer failures without writing state error", async () => {
     vi.useFakeTimers();
     try {
@@ -1176,6 +1307,78 @@ describe("WorkspaceController session list provenance", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each(["timeout", "transfer"] as const)("clears the owned %s failure atomically at retry admission and keeps loading through row application", async (kind) => {
+    const clock = fakeClock(1_000_000);
+    const application = deferred<undefined>();
+    const fixture = createSessionListHarness(remoteLabMachine, { now: clock.now, applyGate: application.promise });
+    const failing = fixture.controller.selectWorkspace(remoteWorkspace);
+    if (kind === "transfer") fixture.reads[0]?.startResponse();
+    fixture.reads[0]?.reject(kind === "timeout"
+      ? new HttpRequestError("gateway timeout", 504)
+      : new HttpResponseBodyError(200, new Error("body stopped")));
+    await failing;
+    expect(fixture.state.sessionListFailure).toMatchObject({ kind });
+    expect(fixture.state.isLoadingSessions).toBe(false);
+    fixture.state.error = "unrelated error";
+    fixture.recording.reset();
+    clock.advance(3_000);
+
+    const retry = fixture.controller.retrySessionList();
+
+    expect(fixture.recording.statePatches).toHaveLength(1);
+    expect(fixture.recording.statePatches[0]).toHaveProperty("sessionListFailure", undefined);
+    expect(fixture.recording.statePatches[0]).toMatchObject({
+      isLoadingSessions: true,
+      sessionListLoad: { owner: "retry", phase: "waiting", startedAt: 1_003_000 },
+    });
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.error).toBe("unrelated error");
+
+    clock.advance(5_000);
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry", phase: "waiting" });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+    fixture.reads[1]?.startResponse();
+    expect(fixture.state.sessionListLoad).toMatchObject({ owner: "retry", phase: "receiving", startedAt: 1_003_000 });
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(true);
+
+    fixture.reads[1]?.resolve([remoteSession]);
+    await vi.waitFor(() => { expect(fixture.recording.applyCalls).toHaveLength(1); });
+    expect(fixture.state.isLoadingSessions).toBe(true);
+    expect(fixture.state.sessionListLoad?.phase).toBe("receiving");
+    application.resolve(undefined);
+    await retry;
+
+    expect(fixture.state.isLoadingSessions).toBe(false);
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.error).toBe("unrelated error");
+  });
+
+  it.each(["waiting", "receiving"] as const)("keeps cancellation of a %s retry silent after removing the owned failure", async (phase) => {
+    const fixture = createSessionListHarness(remoteLabMachine);
+    const failing = fixture.controller.selectWorkspace(remoteWorkspace);
+    fixture.reads[0]?.reject(new HttpRequestError("gateway timeout", 504));
+    await failing;
+    expect(fixture.state.sessionListFailure).toMatchObject({ kind: "timeout" });
+    fixture.state.error = "unrelated error";
+
+    const retry = fixture.controller.retrySessionList();
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(true);
+    if (phase === "receiving") fixture.reads[1]?.startResponse();
+    expect(fixture.state.sessionListLoad?.phase).toBe(phase);
+    fixture.reads[1]?.reject(new LoadCancelledError("retry cancelled"));
+    await retry;
+
+    expect(fixture.state.sessionListFailure).toBeUndefined();
+    expect(fixture.state.sessionListLoad).toBeUndefined();
+    expect(fixture.state.isLoadingSessions).toBe(false);
+    expect(fixture.state.error).toBe("unrelated error");
+    expect(fixture.recording.applyCalls).toEqual([]);
+    expect(fixture.reportedErrors).toEqual([]);
   });
 
   it("retries only the current list without selecting or detaching a session", async () => {
@@ -1243,7 +1446,10 @@ describe("WorkspaceController session list provenance", () => {
         await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
         expect(fixture.reads).toHaveLength(1);
 
-        const foreground = fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "foreground");
+        let foregroundSettled = false;
+        const foreground = fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "foreground")
+          .then(() => { foregroundSettled = true; });
+        void fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "background");
         await vi.advanceTimersByTimeAsync(REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS);
 
         expect(fixture.reads).toHaveLength(1);
@@ -1252,11 +1458,15 @@ describe("WorkspaceController session list provenance", () => {
         await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
         expect(fixture.reads).toHaveLength(2);
         const foregroundRead = fixture.reads[1];
-        expect(foregroundRead?.signal?.aborted).toBe(false);
+        expect(foregroundRead).toBeDefined();
+        expect(foregroundRead?.signal?.aborted ?? false).toBe(false);
 
-        await vi.advanceTimersByTimeAsync(REMOTE_BACKGROUND_REQUEST_TIMEOUT_MS);
-        const foregroundReadWasFullBudget = foregroundRead?.signal?.aborted === false;
-        expect(foregroundReadWasFullBudget).toBe(true);
+        await vi.advanceTimersByTimeAsync(2 * DEFAULT_REMOTE_REQUEST_TIMEOUT_MS);
+        expect(foregroundRead?.signal?.aborted ?? false).toBe(false);
+        expect(foregroundRead?.failure).toBeUndefined();
+        expect(foregroundSettled).toBe(false);
+        expect(fixture.recording.applyCalls).toEqual([]);
+        expect(fixture.reportedErrors).toEqual([]);
 
         foregroundRead?.resolve([remoteSession]);
         await foreground;
@@ -1430,8 +1640,9 @@ describe("WorkspaceController session list operation ownership", () => {
     await cancelled;
 
     expect(silent.state.error).toBe("");
-    expect(silent.state.sessionListFailure).toEqual(previousFailure);
+    expect(silent.state.sessionListFailure).toBeUndefined();
     expect(silent.state.sessionListLoad).toBeUndefined();
+    expect(silent.state.isLoadingSessions).toBe(false);
   });
 
   // A dirty cwd that leaves the catalog while the selection stays can never be
@@ -1607,7 +1818,7 @@ describe("WorkspaceController final-fix regressions", () => {
     }
   });
 
-  it("F-6 rejects retry rows superseded by a newer foreground refresh", async () => {
+  it("F-6 applies a newer foreground refresh after the owning retry settles", async () => {
     vi.useFakeTimers();
     const fixture = createSessionListHarness(remoteLabMachine, {
       state: {
@@ -1621,18 +1832,32 @@ describe("WorkspaceController final-fix regressions", () => {
       fixture.reads[0]?.reject(new HttpRequestError("selection timeout", 504));
       await selecting;
       const retrying = fixture.controller.retrySessionList();
-      const refreshing = fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "foreground");
+      let refreshSettled = false;
+      const refreshing = fixture.controller.refreshSessionLists([remoteWorkspace.path], "remote-lab", "foreground")
+        .then(() => { refreshSettled = true; });
+      await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
+      expect(fixture.reads).toHaveLength(2);
+      expect(fixture.state.isLoadingSessions).toBe(true);
+      expect(refreshSettled).toBe(false);
+      expect(apply).not.toHaveBeenCalled();
+
+      const retryRows = [{ ...remoteSession, name: "retry snapshot" }];
+      fixture.reads[1]?.resolve(retryRows);
+      await retrying;
+      expect(apply).toHaveBeenCalledExactlyOnceWith(
+        [{ cwd: remoteWorkspace.path, sessions: retryRows }], "remote-lab", { preserveSelection: true },
+      );
+      expect(fixture.state.isLoadingSessions).toBe(false);
+      expect(refreshSettled).toBe(false);
+
       await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_DELAY_MS);
       expect(fixture.reads).toHaveLength(3);
-
       const refreshed = { ...remoteSession, name: "newer refresh" };
       fixture.reads[2]?.resolve([refreshed]);
       await refreshing;
-      expect(apply).toHaveBeenCalledExactlyOnceWith([{ cwd: remoteWorkspace.path, sessions: [refreshed] }], "remote-lab");
-
-      fixture.reads[1]?.resolve([{ ...remoteSession, name: "obsolete retry" }]);
-      await retrying;
-      expect(apply).toHaveBeenCalledTimes(1);
+      expect(refreshSettled).toBe(true);
+      expect(apply).toHaveBeenCalledTimes(2);
+      expect(apply).toHaveBeenLastCalledWith([{ cwd: remoteWorkspace.path, sessions: [refreshed] }], "remote-lab");
       expect(fixture.state.sessionListLoad).toBeUndefined();
       expect(fixture.recording.selectionCalls).toEqual([]);
       expect(fixture.urlChanges).toEqual([]);
@@ -1917,6 +2142,7 @@ function createSessionListHarness(
   const selectionCalls: string[] = [];
   const streamCalls: string[] = [];
   const applyCalls: RecordedApplyCall[] = [];
+  const statePatches: Partial<AppState>[] = [];
   const listSessions = vi.fn((cwd: string, machineId?: string, signal?: AbortSignal, responseStarted?: (response: Response) => void) => {
     const read = recordSessionListRead(cwd, machineId, signal, responseStarted);
     reads.push(read);
@@ -1937,7 +2163,10 @@ function createSessionListHarness(
   };
   const workspaceController = new WorkspaceController(
     () => state,
-    (patch) => { Object.assign(state, patch); },
+    (patch) => {
+      statePatches.push(patch);
+      Object.assign(state, patch);
+    },
     () => { urlChanges.push(undefined); },
     sessionController,
     new InMemoryWorkspaceSelectionMemory(),
@@ -1962,10 +2191,12 @@ function createSessionListHarness(
       selectionCalls,
       streamCalls,
       applyCalls,
+      statePatches,
       reset: () => {
         selectionCalls.length = 0;
         streamCalls.length = 0;
         applyCalls.length = 0;
+        statePatches.length = 0;
       },
     },
   };
