@@ -1,9 +1,20 @@
 import { api as defaultApi, type Project, type SessionInfo, type Workspace } from "../api";
-import { resetWorkspaceScopedState, type AppState } from "../appState";
+import { HttpResponseBodyError, HttpRequestError } from "../api/http";
+import {
+  resetWorkspaceScopedState,
+  type AppState,
+  type SessionListFailure,
+  type SessionListLoad,
+  type SessionListLoadScope,
+} from "../appState";
 import { mergeCachedNewSessions } from "../cachedNewSessions";
-import { machineProjectKey } from "../machineKeys";
-import { CancellableLoadScope, isLoadCancellation } from "./cancellableLoadScope";
-import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
+import { LOCAL_MACHINE_ID, machineProjectKey } from "../machineKeys";
+import {
+  DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+  effectiveMachineRequestTimeoutMs,
+} from "../../../shared/machineRequestTimeout";
+import { runBackgroundRead, type ReadIntent } from "./backgroundRead";
+import { CancellableLoadScope, LoadCancelledError, isLoadCancellation } from "./cancellableLoadScope";
 import { selectedMachineId, type GetState, type RouteTarget, type SetState, type UpdateUrl } from "./types";
 import type {
   ProjectCatalogSnapshot,
@@ -41,8 +52,59 @@ interface SessionListRefreshScope {
   machineId: string;
   project: Project;
   workspace: Workspace;
-  cwds: Set<string>;
+  /**
+   * Invalidations waiting for a read, with the strongest requested intent per
+   * cwd. A foreground arrival upgrades a pending background read of that cwd so
+   * the full machine budget applies instead of the background bow-out window.
+   */
+  dirty: Map<string, ReadIntent>;
+  calls: SessionListRefreshCall[];
+  scheduled: boolean;
+  running: boolean;
 }
+
+interface SessionListRefreshCall {
+  cwds: ReadonlySet<string>;
+  intent: ReadIntent;
+  resolve: () => void;
+}
+
+/**
+ * What happened to a typed-failure publication attempt.
+ *
+ * `stale` is distinct from `unclassified` on purpose: a superseded operation
+ * must publish nothing at all — not a typed record and not the generic error
+ * banner the ordinary channel would otherwise write — because the operation
+ * that replaced it owns this scope's records.
+ */
+type SessionListFailurePublication = "published" | "unclassified" | "stale";
+
+/** One admitted list-only retry that its selection generation still owns. */
+interface ActiveSessionListRetry {
+  readonly key: string;
+  readonly operation: SessionListReadOperation;
+  promise: Promise<void>;
+}
+
+/** One remote selected-list read, with everything its guards and records need. */
+interface SessionListReadOperation {
+  readonly token: number;
+  readonly revision: number;
+  readonly owner: SessionListLoad["owner"];
+  readonly scope: SessionListLoadScope;
+  readonly machineId: string;
+  readonly machineName: string;
+  readonly budgetMs: number;
+  readonly startedAt: number;
+  readonly supersession: AbortSignal | undefined;
+  readonly isTargetCurrent: () => boolean;
+  phase: SessionListLoad["phase"];
+}
+
+/** The debounce that merges a burst of invalidations into one read pass. */
+const SESSION_LIST_REFRESH_DELAY_MS = 50;
+/** Gateway-timeout status marking a bounded wait that expired without headers. */
+const SESSION_LIST_TIMEOUT_STATUS = 504;
 
 interface WorkspaceSelectionTarget {
   sessionId?: string | undefined;
@@ -68,12 +130,15 @@ export interface WorkspaceControllerDependencies {
   api?: Pick<typeof defaultApi, "sessions" | "workspaces">;
   onBackgroundError?: (operation: string, error: unknown) => void;
   onForgetProject?: (machineId: string, projectId: string) => void;
+  /** Injectable clock for provenance timestamps; defaults to `Date.now`. */
+  now?: () => number;
 }
 
 export class WorkspaceController {
   private readonly api: Pick<typeof defaultApi, "sessions" | "workspaces">;
   private readonly onBackgroundError: WorkspaceControllerDependencies["onBackgroundError"];
   private readonly onForgetProject: WorkspaceControllerDependencies["onForgetProject"];
+  private readonly now: () => number;
   private readonly unhydratedWorkspaceKeys = new Set<string>();
   private readonly latestTopologyRequestOrderByScope = new Map<string, number>();
   /**
@@ -88,9 +153,12 @@ export class WorkspaceController {
   private projectSessionsRequest = 0;
   private projectSelectionRequest = 0;
   private pendingProjectSelection: PendingProjectSelection | undefined;
-  private readonly sessionListRefreshes = new TrailingRefreshCoordinator<string>();
   private readonly sessionListRevisions = new Map<string, number>();
   private pendingSessionListRefresh: SessionListRefreshScope | undefined;
+  private nextSessionListOperationToken = 0;
+  /** The only operation allowed to publish provenance or failures right now. */
+  private activeSessionListOperation = 0;
+  private activeSessionListRetry: ActiveSessionListRetry | undefined;
   private disposed = false;
 
   constructor(
@@ -104,17 +172,32 @@ export class WorkspaceController {
     this.api = deps.api ?? defaultApi;
     this.onBackgroundError = deps.onBackgroundError;
     this.onForgetProject = deps.onForgetProject;
+    this.now = deps.now ?? (() => Date.now());
   }
 
   dispose(): void {
     this.disposed = true;
     this.projectSessionsRequest += 1;
     this.selectionLoad.abort();
-    this.pendingSessionListRefresh = undefined;
+    this.settlePendingSessionListRefresh();
+    this.activeSessionListOperation = 0;
+    this.activeSessionListRetry = undefined;
   }
 
-  /** Invalidation is scoped to the visible catalog, never a periodic project-wide scan. */
-  refreshSessionLists(cwds?: readonly string[], machineId = selectedMachineId(this.getState())): Promise<void> {
+  /**
+   * Invalidation is scoped to the visible catalog, never a periodic project-wide scan.
+   *
+   * `intent` decides how each affected cwd is read: background invalidations bow
+   * out at the background window, while a foreground (mutation-commit) refresh
+   * keeps the machine budget and settles only after its queued replay applied its
+   * rows. A foreground call always settles later than any background read of the
+   * same cwd, so it cannot be satisfied by the short-window path.
+   */
+  refreshSessionLists(
+    cwds?: readonly string[],
+    machineId = selectedMachineId(this.getState()),
+    intent: ReadIntent = "foreground",
+  ): Promise<void> {
     const state = this.getState();
     const project = state.selectedProject;
     const workspace = state.selectedWorkspace;
@@ -126,40 +209,230 @@ export class WorkspaceController {
     const key = JSON.stringify([machineId, project.id, project.path, workspace.id, workspace.path, request]);
     let scope = this.pendingSessionListRefresh;
     if (scope?.key !== key) {
-      scope = { key, request, machineId, project, workspace, cwds: new Set() };
+      if (scope !== undefined) this.settleSessionListRefreshCalls(scope);
+      scope = {
+        key,
+        request,
+        machineId,
+        project,
+        workspace,
+        dirty: new Map(),
+        calls: [],
+        scheduled: false,
+        running: false,
+      };
       this.pendingSessionListRefresh = scope;
     }
-    for (const cwd of affected) scope.cwds.add(cwd);
-    return this.scheduleSessionListRefresh(scope);
+    const promise = new Promise<void>((resolve) => {
+      scope.calls.push({ cwds: new Set(affected), intent, resolve });
+    });
+    for (const cwd of affected) mergeSessionListIntent(scope.dirty, cwd, intent);
+    this.scheduleSessionListRefreshPass(scope);
+    return promise;
   }
 
-  private scheduleSessionListRefresh(scope: SessionListRefreshScope): Promise<void> {
-    return this.sessionListRefreshes.request(scope.key, async () => {
-      // WebSocket messages arrive in separate tasks; a short window also merges
-      // those bursts rather than only callers within a single microtask turn.
-      await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
-      // Foreground selection owns its initial reads. Keep invalidations dirty until
-      // it settles, then re-read; otherwise its older response could resurrect rows.
-      if (!this.isSessionListRefreshCurrent(scope) || this.getState().isLoadingSessions) return;
-      const cwds = [...scope.cwds].filter((cwd) => this.relevantSessionCwds().has(cwd));
-      scope.cwds.clear();
-      const revisions = new Map(cwds.map((cwd) => {
-        const revision = (this.sessionListRevisions.get(cwd) ?? 0) + 1;
-        this.sessionListRevisions.set(cwd, revision);
-        return [cwd, revision];
-      }));
-      const results = await Promise.allSettled(cwds.map(async (cwd) => ({ cwd, sessions: await this.api.sessions(cwd, scope.machineId) })));
-      if (!this.isSessionListRefreshCurrent(scope)) return;
-      const relevant = this.relevantSessionCwds();
-      const lists: { cwd: string; sessions: SessionInfo[] }[] = [];
-      for (const result of results) {
-        if (result.status === "rejected") this.reportBackgroundError("refresh invalidated session list", result.reason);
-        else if (relevant.has(result.value.cwd) && revisions.get(result.value.cwd) === this.sessionListRevisions.get(result.value.cwd)) lists.push(result.value);
-      }
-      if (lists.length > 0) await this.sessions.applyRefreshedSessionLists(lists, scope.machineId);
-    }).catch((error: unknown) => {
-      if (this.isSessionListRefreshCurrent(scope)) this.reportBackgroundError("refresh invalidated session lists", error);
+  /**
+   * Retry the selected workspace's session list without any selection or stream
+   * side effects. A retry aimed at a workspace the catalog no longer has, or one
+   * that is no longer selected, is a no-op instead of a read.
+   */
+  async retrySessionList(): Promise<void> {
+    const state = this.getState();
+    const project = state.selectedProject;
+    const workspace = state.selectedWorkspace;
+    if (this.disposed || project === undefined || workspace === undefined) return;
+    const machineId = selectedMachineId(state);
+    const request = this.projectSessionsRequest;
+    if (!this.isSessionListRetryTargetCurrent(workspace, machineId, request)) return;
+    // The selection generation is part of the sharing key: reselecting the same
+    // workspace opens a new generation whose retry must not answer for this one.
+    const retryKey = JSON.stringify([machineId, project.id, project.path, workspace.id, workspace.path, request]);
+    const active = this.activeSessionListRetry;
+    if (active?.key === retryKey && this.isActiveSessionListRetryCurrent(active)) return active.promise;
+    const isTargetCurrent = (): boolean => this.isSessionListRetryTargetCurrent(workspace, machineId, request);
+    const operation = this.beginSessionListRead({
+      owner: "retry",
+      workspace,
+      machineId,
+      supersession: this.selectionLoad.signal,
+      isTargetCurrent,
     });
+    const retry: ActiveSessionListRetry = {
+      key: retryKey,
+      operation,
+      promise: Promise.resolve(),
+    };
+    this.activeSessionListRetry = retry;
+    retry.promise = this.runSessionListRetry(retry, operation, workspace, machineId);
+    return retry.promise;
+  }
+
+  /** Share only with the selection generation and operation that admitted the retry. */
+  private isActiveSessionListRetryCurrent(retry: ActiveSessionListRetry): boolean {
+    return this.ownsSessionListOperation(retry.operation);
+  }
+
+  private async runSessionListRetry(
+    retry: ActiveSessionListRetry,
+    operation: SessionListReadOperation,
+    workspace: Workspace,
+    machineId: string,
+  ): Promise<void> {
+    const isTargetCurrent = operation.isTargetCurrent;
+    let applied = false;
+    try {
+      // The catalog may have dropped the workspace between admission and the read.
+      if (!isTargetCurrent()) throw new LoadCancelledError("Session list retry target changed");
+      const rows = await this.readSessionList(operation, workspace);
+      if (!this.ownsSessionListOperation(operation)) return;
+      await this.sessions.applyRefreshedSessionLists(
+        [{ cwd: workspace.path, sessions: rows }],
+        machineId,
+        { preserveSelection: true },
+      );
+      applied = true;
+      // Ownership is rechecked after the awaited application. A newer read of
+      // the same scope, such as a same-workspace reselection, can be admitted
+      // while these rows are applied, and it owns the loading indicator its own
+      // read opened. Publishing success here would clear it early.
+      if (!this.ownsSessionListOperation(operation)) return;
+      this.setState({ isLoadingSessions: false });
+    } catch (error) {
+      if (isLoadCancellation(error)) return;
+      if (!isTargetCurrent()) return;
+      const publication = this.publishSessionListFailure(operation, error);
+      // A read that already lost its operation identity publishes nothing.
+      if (publication === "stale") return;
+      this.setState({
+        // The retry's own outcome replaces the notice for the load it retried.
+        ...(publication === "unclassified" ? { error: String(error), sessionListFailure: undefined } : {}),
+        isLoadingSessions: false,
+      });
+    } finally {
+      this.finishSessionListOperation(operation, { clearFailure: applied });
+      if (this.ownsSessionListOperation(operation)) {
+        // A retry can inherit a selection's loading flag and its dirty work.
+        // Release and replay only while this retry still owns that selection.
+        if (this.getState().isLoadingSessions) this.setState({ isLoadingSessions: false });
+        const pending = this.pendingSessionListRefresh;
+        if (pending !== undefined && pending.dirty.size > 0 && this.isSessionListRefreshCurrent(pending)) this.scheduleSessionListRefreshPass(pending);
+      }
+      if (this.activeSessionListRetry === retry) this.activeSessionListRetry = undefined;
+    }
+  }
+
+  private scheduleSessionListRefreshPass(scope: SessionListRefreshScope): void {
+    if (this.disposed || scope.scheduled) return;
+    scope.scheduled = true;
+    // WebSocket messages arrive in separate tasks; a short window also merges
+    // those bursts rather than only callers within a single microtask turn.
+    setTimeout(() => {
+      scope.scheduled = false;
+      void this.runSessionListRefreshPass(scope);
+    }, SESSION_LIST_REFRESH_DELAY_MS);
+  }
+
+  private async runSessionListRefreshPass(scope: SessionListRefreshScope): Promise<void> {
+    if (this.disposed || this.pendingSessionListRefresh !== scope) {
+      this.settleSessionListRefreshCalls(scope);
+      return;
+    }
+    if (scope.running) return;
+    if (!this.isSessionListRefreshCurrent(scope)) {
+      this.settleSessionListRefreshCalls(scope);
+      return;
+    }
+    if (this.getState().isLoadingSessions) {
+      // A foreground selection owns its initial read. Keep the invalidation dirty
+      // for the selection's completion flush; a background caller's own pass has
+      // returned without a read, so it settles now and promises nothing further.
+      this.settleSessionListRefreshCalls(scope, (call) => call.intent === "background");
+      return;
+    }
+
+    scope.running = true;
+    const claimed = new Map<string, ReadIntent>();
+    const relevant = this.relevantSessionCwds();
+    for (const [cwd, intent] of scope.dirty) {
+      if (!relevant.has(cwd)) {
+        // A cwd the catalog no longer shows can never be read. Dropping it here
+        // (instead of only deleting claimed entries) settles its callers and
+        // stops the pass from rescheduling forever over work that cannot run.
+        scope.dirty.delete(cwd);
+        continue;
+      }
+      claimed.set(cwd, intent);
+      scope.dirty.delete(cwd);
+    }
+    try {
+      if (claimed.size > 0) {
+        const revisions = new Map<string, number>();
+        for (const cwd of claimed.keys()) {
+          const revision = (this.sessionListRevisions.get(cwd) ?? 0) + 1;
+          this.sessionListRevisions.set(cwd, revision);
+          revisions.set(cwd, revision);
+        }
+        const results = await Promise.allSettled([...claimed.entries()].map(async ([cwd, intent]) => ({
+          cwd,
+          sessions: await this.readQueuedSessionList(cwd, scope.machineId, intent),
+        })));
+        if (!this.isSessionListRefreshCurrent(scope)) {
+          this.settleSessionListRefreshCalls(scope);
+          return;
+        }
+        const currentRelevant = this.relevantSessionCwds();
+        const lists: { cwd: string; sessions: SessionInfo[] }[] = [];
+        for (const result of results) {
+          if (result.status === "rejected") {
+            if (!isLoadCancellation(result.reason)) this.reportBackgroundError("refresh invalidated session list", result.reason);
+          } else if (currentRelevant.has(result.value.cwd) && revisions.get(result.value.cwd) === this.sessionListRevisions.get(result.value.cwd)) {
+            lists.push({ cwd: result.value.cwd, sessions: result.value.sessions });
+          }
+        }
+        if (lists.length > 0) await this.sessions.applyRefreshedSessionLists(lists, scope.machineId);
+      }
+    } catch (error) {
+      if (!isLoadCancellation(error) && this.isSessionListRefreshCurrent(scope)) this.reportBackgroundError("refresh invalidated session lists", error);
+    } finally {
+      scope.running = false;
+      this.settleSessionListRefreshCallsAfterPass(scope);
+      if (!this.isSessionListRefreshCurrent(scope)) this.settleSessionListRefreshCalls(scope);
+      else if (scope.dirty.size > 0) this.scheduleSessionListRefreshPass(scope);
+      else if (this.pendingSessionListRefresh === scope && scope.calls.length === 0) this.pendingSessionListRefresh = undefined;
+    }
+  }
+
+  /**
+   * Settle the callers a completed pass can honestly satisfy. Background callers
+   * settle with their pass; foreground callers stay pending until a pass claims
+   * and applies (or definitively drops) every cwd they asked about.
+   */
+  private settleSessionListRefreshCallsAfterPass(scope: SessionListRefreshScope): void {
+    if (!this.isSessionListRefreshCurrent(scope)) {
+      this.settleSessionListRefreshCalls(scope);
+      return;
+    }
+    this.settleSessionListRefreshCalls(scope, (call) => (
+      call.intent === "background" || ![...call.cwds].some((cwd) => scope.dirty.has(cwd))
+    ));
+  }
+
+  private settleSessionListRefreshCalls(
+    scope: SessionListRefreshScope,
+    shouldSettle: (call: SessionListRefreshCall) => boolean = () => true,
+  ): void {
+    const retained: SessionListRefreshCall[] = [];
+    for (const call of scope.calls) {
+      if (shouldSettle(call)) call.resolve();
+      else retained.push(call);
+    }
+    scope.calls = retained;
+  }
+
+  private settlePendingSessionListRefresh(): void {
+    const pending = this.pendingSessionListRefresh;
+    this.pendingSessionListRefresh = undefined;
+    if (pending !== undefined) this.settleSessionListRefreshCalls(pending);
   }
 
   private relevantSessionCwds(): Set<string> {
@@ -178,9 +451,29 @@ export class WorkspaceController {
       && state.selectedWorkspace?.id === scope.workspace.id && state.selectedWorkspace.path === scope.workspace.path;
   }
 
+  private async readQueuedSessionList(cwd: string, machineId: string, intent: ReadIntent): Promise<SessionInfo[]> {
+    if (machineId === LOCAL_MACHINE_ID) return this.api.sessions(cwd, machineId);
+    if (intent === "background") {
+      return runBackgroundRead(machineId, (signal) => this.api.sessions(cwd, machineId, signal));
+    }
+    // Foreground invalidation reads keep the machine budget. Once the upstream
+    // response starts, body transfer is unbounded, so the deadline is disarmed.
+    const budgetMs = this.machineBudgetMs(machineId);
+    const deadline = new AbortController();
+    const timer = setTimeout(() => { deadline.abort(sessionListTimeoutError(budgetMs)); }, budgetMs);
+    try {
+      return await this.api.sessions(cwd, machineId, deadline.signal, (response) => {
+        if (response.ok) clearTimeout(timer);
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   clearSelection(options?: { updateUrl?: boolean | undefined; preserveError?: boolean | undefined }) {
     this.invalidatePendingProjectSelection();
     this.selectionLoad.abort();
+    this.settlePendingSessionListRefresh();
     const error = this.getState().error;
     this.projectSessionsRequest += 1;
     this.sessions.clearActiveSession();
@@ -210,6 +503,7 @@ export class WorkspaceController {
   }
 
   async selectProject(project: Project, target?: RouteTarget) {
+    this.settlePendingSessionListRefresh();
     this.projectSessionsRequest += 1;
     const pending = this.beginProjectSelection(project, target);
     const signal = this.selectionLoad.restart();
@@ -231,6 +525,10 @@ export class WorkspaceController {
 
   async selectWorkspace(workspace: Workspace, target?: WorkspaceSelectionTarget) {
     if (!this.isCatalogSelectionScopeCurrent(target?.catalogScope)) return;
+    // Refresh work queued for the previous selection can no longer be flushed by
+    // it; settle those callers instead of leaving them waiting for rows that the
+    // new selection supersedes.
+    this.settlePendingSessionListRefresh();
 
     const state = this.getState();
     const preserveMemory = isSameWorkspaceScope(state, workspace);
@@ -259,19 +557,37 @@ export class WorkspaceController {
       isLoadingSessions: true,
     });
     const catalogFallback = target?.catalogFallback;
+    const isTargetCurrent = (): boolean => this.isWorkspaceSelectionTargetCurrent(
+      workspace,
+      machineId,
+      projectSessionsRequest,
+      target,
+    );
+    const operation = this.beginSessionListRead({
+      // A catalog fallback is background recovery, not the user's own selection.
+      owner: catalogFallback === undefined ? "selection" : "catalog-fallback",
+      workspace,
+      machineId,
+      supersession: signal,
+      isTargetCurrent,
+    });
+    let listed = false;
     try {
-      const listedSessions = await this.api.sessions(workspace.path, machineId, signal);
-      if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
+      const listedSessions = await this.readSessionList(operation, workspace);
+      listed = true;
+      if (!this.hasSessionListOperationIdentity(operation)) return;
+      if (!isTargetCurrent()) {
         if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
           workspace,
           machineId,
           projectSessionsRequest,
           target?.catalogScope,
         )) {
-          this.restoreCatalogFallbackSessionState(workspace, machineId, catalogFallback);
+          this.restoreCatalogFallbackSessionState(operation, workspace, machineId, catalogFallback);
           return;
         }
         this.clearStaleCatalogSelectionLoadingIfOwned(
+          operation,
           workspace,
           machineId,
           projectSessionsRequest,
@@ -280,26 +596,45 @@ export class WorkspaceController {
         return;
       }
       const sessions = mergeCachedNewSessions(workspace.path, listedSessions, machineId);
+      if (!this.ownsSessionListOperation(operation)) return;
       this.setState({ sessions, projectSessions: sessions, isLoadingSessions: false });
+      if (!this.ownsSessionListOperation(operation)) return;
       void this.refreshProjectSessions(projectSessionsRequest, workspace, sessions, machineId, target?.catalogScope, signal);
+      if (!this.ownsSessionListOperation(operation)) return;
       const session = this.sessions.preferredSession(workspace.path, sessions, target?.sessionId);
+      if (!this.ownsSessionListOperation(operation)) return;
       if (session) await this.sessions.selectSession(session, { updateUrl: target?.updateUrl });
       else if (target?.updateUrl !== false) this.updateUrl();
     } catch (error) {
-      // Supersession by a newer selection: the newer selection owns the state,
-      // including its own loading indicator, so nothing is published here.
-      if (isLoadCancellation(error)) return;
-      if (!this.isWorkspaceSelectionTargetCurrent(workspace, machineId, projectSessionsRequest, target)) {
+      // Recovery may outlive its topology token, but never its operation owner.
+      if (!this.hasSessionListOperationIdentity(operation)) return;
+      if (isLoadCancellation(error)) {
+        // Supersession by a newer selection: the newer selection owns the state,
+        // including its own loading indicator, so nothing is published here. A
+        // cancelled background fallback owns the loading state it opened, so it
+        // releases it and restores the rows the catalog already had.
         if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
           workspace,
           machineId,
           projectSessionsRequest,
           target?.catalogScope,
         )) {
-          this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+          this.restoreCatalogFallbackSessionState(operation, workspace, machineId, catalogFallback);
+        }
+        return;
+      }
+      if (!isTargetCurrent()) {
+        if (catalogFallback !== undefined && this.isCatalogFallbackRecoveryCurrent(
+          workspace,
+          machineId,
+          projectSessionsRequest,
+          target?.catalogScope,
+        )) {
+          this.applyCatalogFallbackSessionFailure(operation, workspace, machineId, catalogFallback, error);
           return;
         }
         this.clearStaleCatalogSelectionLoadingIfOwned(
+          operation,
           workspace,
           machineId,
           projectSessionsRequest,
@@ -307,15 +642,203 @@ export class WorkspaceController {
         );
         return;
       }
-      if (catalogFallback === undefined) {
-        this.setState({ error: String(error), isLoadingSessions: false });
+      // A bounded remote wait that expired, or a body that stopped mid-transfer,
+      // is a typed list failure with its own notice — never a generic state error.
+      const publication = this.publishSessionListFailure(operation, error);
+      // A newer read owns all channels, including background fallback recovery.
+      if (publication === "stale") return;
+      if (publication === "published") {
+        this.setState({ isLoadingSessions: false });
         return;
       }
-      this.applyCatalogFallbackSessionFailure(workspace, machineId, catalogFallback, error);
+      // A catalog fallback owns its own recovery channel, including its failure.
+      if (catalogFallback !== undefined) {
+        this.applyCatalogFallbackSessionFailure(operation, workspace, machineId, catalogFallback, error);
+        return;
+      }
+      this.setState({ error: String(error), isLoadingSessions: false });
     } finally {
+      this.finishSessionListOperation(operation, { clearFailure: listed });
       const pending = this.pendingSessionListRefresh;
-      if (pending !== undefined && pending.cwds.size > 0 && this.isSessionListRefreshCurrent(pending)) void this.scheduleSessionListRefresh(pending);
+      if (pending !== undefined && pending.dirty.size > 0 && this.isSessionListRefreshCurrent(pending)) this.scheduleSessionListRefreshPass(pending);
     }
+  }
+
+  private beginSessionListRead(input: {
+    owner: SessionListLoad["owner"];
+    workspace: Workspace;
+    machineId: string;
+    supersession: AbortSignal | undefined;
+    isTargetCurrent: () => boolean;
+  }): SessionListReadOperation {
+    const revision = (this.sessionListRevisions.get(input.workspace.path) ?? 0) + 1;
+    this.sessionListRevisions.set(input.workspace.path, revision);
+    const operation: SessionListReadOperation = {
+      token: ++this.nextSessionListOperationToken,
+      revision,
+      owner: input.owner,
+      scope: {
+        machineId: input.machineId,
+        projectId: input.workspace.projectId,
+        workspaceId: input.workspace.id,
+        workspacePath: input.workspace.path,
+      },
+      machineId: input.machineId,
+      machineName: this.machineName(input.machineId),
+      budgetMs: this.machineBudgetMs(input.machineId),
+      startedAt: this.now(),
+      supersession: input.supersession,
+      isTargetCurrent: input.isTargetCurrent,
+      phase: "waiting",
+    };
+    this.activeSessionListOperation = operation.token;
+    if (this.publishesSessionListProvenance(operation)) {
+      this.setState({
+        sessionListLoad: {
+          owner: operation.owner,
+          scope: operation.scope,
+          startedAt: operation.startedAt,
+          budgetMs: operation.budgetMs,
+          phase: "waiting",
+        },
+      });
+    }
+    return operation;
+  }
+
+  /** The local machine keeps the plain read path: no budget, records, or notice. */
+  private publishesSessionListProvenance(operation: SessionListReadOperation): boolean {
+    return operation.machineId !== LOCAL_MACHINE_ID && operation.owner !== "catalog-fallback";
+  }
+
+  private async readSessionList(operation: SessionListReadOperation, workspace: Workspace): Promise<SessionInfo[]> {
+    if (operation.machineId === LOCAL_MACHINE_ID) {
+      return this.api.sessions(workspace.path, operation.machineId, operation.supersession);
+    }
+    if (operation.owner === "catalog-fallback") {
+      return runBackgroundRead(
+        operation.machineId,
+        (signal) => this.api.sessions(workspace.path, operation.machineId, signal),
+        operation.supersession,
+      );
+    }
+    // Foreground selection and retry keep the machine budget, and only the wait
+    // for upstream headers is budgeted: the deadline is disarmed when a successful
+    // response starts so body transfer stays unbounded.
+    const deadline = new AbortController();
+    const timer = setTimeout(() => { deadline.abort(sessionListTimeoutError(operation.budgetMs)); }, operation.budgetMs);
+    const stopForwarding = forwardSupersession(operation.supersession, deadline);
+    try {
+      return await this.api.sessions(workspace.path, operation.machineId, deadline.signal, (response) => {
+        if (!response.ok) return;
+        clearTimeout(timer);
+        this.publishSessionListPhase(operation, deadline.signal);
+      });
+    } finally {
+      clearTimeout(timer);
+      stopForwarding();
+    }
+  }
+
+  private publishSessionListPhase(operation: SessionListReadOperation, signal: AbortSignal): void {
+    if (operation.phase === "waiting") operation.phase = "receiving";
+    if (!this.publishesSessionListProvenance(operation)) return;
+    if (!this.isSessionListOperationCurrent(operation, signal)) return;
+    this.setState({
+      sessionListLoad: {
+        owner: operation.owner,
+        scope: operation.scope,
+        startedAt: operation.startedAt,
+        budgetMs: operation.budgetMs,
+        phase: "receiving",
+      },
+    });
+  }
+
+  /** Identity survives a topology-token change, but never a newer list read. */
+  private hasSessionListOperationIdentity(operation: SessionListReadOperation): boolean {
+    return !this.disposed
+      && operation.token === this.activeSessionListOperation
+      && operation.revision === this.sessionListRevisions.get(operation.scope.workspacePath)
+      && operation.supersession?.aborted !== true;
+  }
+
+  /** The operation that currently owns this scope's records, provenance, and errors. */
+  private ownsSessionListOperation(operation: SessionListReadOperation): boolean {
+    return this.hasSessionListOperationIdentity(operation) && operation.isTargetCurrent();
+  }
+
+  private isSessionListOperationCurrent(operation: SessionListReadOperation, signal?: AbortSignal): boolean {
+    return this.ownsSessionListOperation(operation) && signal?.aborted !== true;
+  }
+
+  private finishSessionListOperation(operation: SessionListReadOperation, options: { clearFailure?: boolean } = {}): void {
+    if (operation.token !== this.activeSessionListOperation) return;
+    if (!this.publishesSessionListProvenance(operation)) return;
+    this.setState({
+      sessionListLoad: undefined,
+      ...(options.clearFailure === true ? { sessionListFailure: undefined } : {}),
+    });
+  }
+
+  /** Publish a typed list failure instead of a generic error, when it is one. */
+  private publishSessionListFailure(
+    operation: SessionListReadOperation,
+    error: unknown,
+  ): SessionListFailurePublication {
+    // Ownership comes first so a superseded operation cannot publish through the
+    // generic channel just because its error was not typed.
+    if (!this.ownsSessionListOperation(operation)) return "stale";
+    const kind = classifySessionListFailure(error);
+    if (kind === undefined || !this.publishesSessionListProvenance(operation)) return "unclassified";
+    this.setState({
+      sessionListLoad: undefined,
+      sessionListFailure: {
+        scope: {
+          machineId: operation.machineId,
+          machineName: operation.machineName,
+          projectId: operation.scope.projectId,
+          workspaceId: operation.scope.workspaceId,
+        },
+        kind,
+        elapsedMs: Math.max(0, this.now() - operation.startedAt),
+        budgetMs: operation.budgetMs,
+      },
+    });
+    return "published";
+  }
+
+  private isSessionListRetryTargetCurrent(workspace: Workspace, machineId: string, request: number): boolean {
+    if (this.disposed || !this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) return false;
+    const state = this.getState();
+    const workspaces = state.workspacesByProjectId[workspace.projectId] ?? state.workspaces;
+    return workspaceStillExists(workspace, workspaces);
+  }
+
+  private readProjectSiblingSessions(path: string, machineId: string, signal: AbortSignal | undefined): Promise<SessionInfo[]> {
+    // Cross-workspace grouping is background work: a remote reader bows out at
+    // the background window, while the local machine keeps its plain read.
+    if (machineId === LOCAL_MACHINE_ID) return this.api.sessions(path, machineId, signal);
+    return runBackgroundRead(machineId, (backgroundSignal) => this.api.sessions(path, machineId, backgroundSignal), signal);
+  }
+
+  private readDiscoveredWorkspaceSessions(path: string, machineId: string): Promise<SessionInfo[]> {
+    // Discovery hydration is background work too, and must be able to bail out.
+    if (machineId === LOCAL_MACHINE_ID) return this.api.sessions(path, machineId);
+    return runBackgroundRead(machineId, (signal) => this.api.sessions(path, machineId, signal));
+  }
+
+  private machineBudgetMs(machineId: string): number {
+    const state = this.getState();
+    const machine = state.machines.find((candidate) => candidate.id === machineId)
+      ?? (state.selectedMachine?.id === machineId ? state.selectedMachine : undefined);
+    return machine === undefined ? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS : effectiveMachineRequestTimeoutMs(machine);
+  }
+
+  private machineName(machineId: string): string {
+    const state = this.getState();
+    return state.machines.find((candidate) => candidate.id === machineId)?.name
+      ?? (state.selectedMachine?.id === machineId ? state.selectedMachine.name : machineId);
   }
 
   private async refreshProjectSessions(
@@ -334,7 +857,11 @@ export class WorkspaceController {
     try {
       const sessionLists = await Promise.all(projectWorkspaces.map(async (candidate) => {
         if (candidate.id === workspace.id) return currentSessions;
-        return mergeCachedNewSessions(candidate.path, await this.api.sessions(candidate.path, machineId, signal), machineId);
+        return mergeCachedNewSessions(
+          candidate.path,
+          await this.readProjectSiblingSessions(candidate.path, machineId, signal),
+          machineId,
+        );
       }));
       if (!this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)
         || !this.isCatalogSelectionScopeCurrent(catalogScope)) return;
@@ -581,7 +1108,7 @@ export class WorkspaceController {
 
     const revisions = new Map(this.sessionListRevisions);
     const results = await Promise.allSettled(workspacesToHydrate.map(async (workspace) => {
-      const sessions = await this.api.sessions(workspace.path, machineId);
+      const sessions = await this.readDiscoveredWorkspaceSessions(workspace.path, machineId);
       if (!this.isWorkspaceCurrentForProject(snapshot, workspace)) return undefined;
       return { workspace, sessions: mergeCachedNewSessions(workspace.path, sessions, machineId) };
     }));
@@ -593,7 +1120,8 @@ export class WorkspaceController {
       const workspace = workspacesToHydrate[index];
       if (workspace === undefined) continue;
       if (result.status === "rejected") {
-        this.reportBackgroundError("reconcile discovered workspace sessions", result.reason);
+        // A cancelled hydration keeps its workspace eligible for a later snapshot.
+        if (!isLoadCancellation(result.reason)) this.reportBackgroundError("reconcile discovered workspace sessions", result.reason);
         continue;
       }
       if (result.value === undefined || revisions.get(workspace.path) !== this.sessionListRevisions.get(workspace.path)) continue;
@@ -627,20 +1155,23 @@ export class WorkspaceController {
   }
 
   private applyCatalogFallbackSessionFailure(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     fallback: CatalogFallbackSelection,
     error: unknown,
   ): void {
-    this.restoreCatalogFallbackSessionState(workspace, machineId, fallback, { error });
+    this.restoreCatalogFallbackSessionState(operation, workspace, machineId, fallback, { error });
   }
 
   private restoreCatalogFallbackSessionState(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     fallback: CatalogFallbackSelection,
     failure?: CatalogFallbackFailure,
   ): void {
+    if (!this.hasSessionListOperationIdentity(operation)) return;
     const state = this.getState();
     const workspaces = state.workspacesByProjectId[workspace.projectId] ?? state.workspaces;
     const workspacePaths = new Set(workspaces.map((candidate) => candidate.path));
@@ -650,6 +1181,7 @@ export class WorkspaceController {
     ]);
     this.unhydratedWorkspaceKeys.add(workspaceHydrationKey(machineId, workspace.projectId, workspace));
     if (failure !== undefined) this.reportBackgroundError("reconcile selected workspace fallback sessions", failure.error);
+    if (!this.hasSessionListOperationIdentity(operation)) return;
     this.setState({
       sessions: eligibleProjectSessions.filter((session) => session.cwd === workspace.path),
       projectSessions: eligibleProjectSessions,
@@ -683,12 +1215,14 @@ export class WorkspaceController {
   }
 
   private clearStaleCatalogSelectionLoadingIfOwned(
+    operation: SessionListReadOperation,
     workspace: Workspace,
     machineId: string,
     request: number,
     catalogScope: CatalogWorkspaceSelectionScope | undefined,
   ): void {
-    if (catalogScope !== undefined && this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) {
+    if (this.hasSessionListOperationIdentity(operation)
+      && catalogScope !== undefined && this.isCurrentWorkspaceSessionRequest(request, workspace, machineId)) {
       this.setState({ isLoadingSessions: false });
     }
   }
@@ -746,6 +1280,44 @@ export class WorkspaceController {
 
 export function canDeleteWorkspace(workspace: Workspace | undefined): boolean {
   return workspace !== undefined && workspace.isGitWorktree && !workspace.isMain;
+}
+
+/** Foreground is the stronger intent: it upgrades a pending background read. */
+function mergeSessionListIntent(dirty: Map<string, ReadIntent>, cwd: string, intent: ReadIntent): void {
+  if (dirty.get(cwd) === "foreground") return;
+  dirty.set(cwd, intent);
+}
+
+function sessionListTimeoutError(budgetMs: number): HttpRequestError {
+  return new HttpRequestError(
+    `Session list request timed out after ${String(budgetMs)} milliseconds`,
+    SESSION_LIST_TIMEOUT_STATUS,
+  );
+}
+
+/**
+ * Only a gateway timeout and a stopped body are typed list failures. Any other
+ * rejection keeps the existing generic error reporting.
+ */
+function classifySessionListFailure(error: unknown): SessionListFailure["kind"] | undefined {
+  if (error instanceof HttpResponseBodyError) return "transfer";
+  if (error instanceof HttpRequestError && error.status === SESSION_LIST_TIMEOUT_STATUS) return "timeout";
+  return undefined;
+}
+
+function forwardSupersession(source: AbortSignal | undefined, target: AbortController): () => void {
+  if (source === undefined) return () => undefined;
+  const forward = (): void => { target.abort(source.reason); };
+  // Read through a closure so a source that aborted between the admission check
+  // and the listener attach still forwards its first reason.
+  const isAborted = (): boolean => source.aborted;
+  if (isAborted()) {
+    forward();
+    return () => undefined;
+  }
+  source.addEventListener("abort", forward, { once: true });
+  if (isAborted()) forward();
+  return () => { source.removeEventListener("abort", forward); };
 }
 
 function selectFallbackWorkspace(workspaces: Workspace[]): Workspace | undefined {

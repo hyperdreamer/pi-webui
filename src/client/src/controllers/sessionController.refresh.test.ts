@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initialAppState } from "../appState";
 import { SessionController } from "./sessionController";
 import { defaultApi, deferred, FakeSocket, oldSession, replacementSession, sessionLookupId, status, workspace, type AppState, type MessagePage, type SessionStatus } from "./sessionController.testSupport";
@@ -157,5 +157,84 @@ describe("SessionController selected-session refresh", () => {
     await controller.refreshSelectedSession();
 
     expect(snapshotLookups).toEqual([oldSession.id]);
+  });
+
+  it("preserveSelection list application reconciles rows without session lifecycle effects", async () => {
+    const selected = { ...oldSession, id: "session-1" };
+    const archivedSelected = { ...selected, archived: true, archivedAt: "now" };
+    const other = { ...oldSession, id: "session-2", path: "/tmp/session-2.jsonl" };
+    let state: AppState = {
+      ...initialAppState(),
+      selectedWorkspace: workspace,
+      selectedSession: selected,
+      sessions: [selected],
+      projectSessions: [selected],
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { socket: new FakeSocket() },
+    );
+    const lifecycleCalls: string[] = [];
+    vi.spyOn(controller, "selectSession").mockImplementation((session) => {
+      lifecycleCalls.push(`select:${session.id}`);
+      return Promise.resolve();
+    });
+    vi.spyOn(controller, "deselectSession").mockImplementation(() => { lifecycleCalls.push("deselect"); });
+    vi.spyOn(controller, "clearActiveSession").mockImplementation(() => { lifecycleCalls.push("clear"); });
+
+    await controller.applyRefreshedSessionLists(
+      [{ cwd: workspace.path, sessions: [archivedSelected] }],
+      "local",
+      { preserveSelection: true },
+    );
+
+    expect(state.selectedSession?.id).toBe("session-1");
+    expect(lifecycleCalls).toEqual([]);
+    expect(state.sessions).toEqual([archivedSelected]);
+    expect(state.projectSessions).toEqual([archivedSelected]);
+
+    await controller.applyRefreshedSessionLists([{ cwd: workspace.path, sessions: [other] }], "local");
+
+    expect(lifecycleCalls).not.toEqual([]);
+  });
+
+  it("post mutation reconciliation uses foreground intent even when fire and forget", async () => {
+    vi.useFakeTimers();
+    try {
+      const refreshCalls: { intent: string | undefined }[] = [];
+      let acceptedMutationRefreshCompleted = false;
+      let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+      const controller = new SessionController(
+        () => state,
+        (patch) => { state = { ...state, ...patch }; },
+        () => undefined,
+        undefined,
+        {
+          socket: new FakeSocket(),
+          refreshSessionLists: (cwds, machineId, intent) => {
+            void cwds;
+            void machineId;
+            refreshCalls.push({ intent });
+            return new Promise<void>((resolve) => {
+              setTimeout(() => {
+                acceptedMutationRefreshCompleted = true;
+                resolve();
+              }, 20_000);
+            });
+          },
+        },
+      );
+
+      controller.revalidateSessionListsAfterCommit(oldSession.cwd, "local");
+
+      expect(refreshCalls).toContainEqual({ intent: "foreground" });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(acceptedMutationRefreshCompleted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

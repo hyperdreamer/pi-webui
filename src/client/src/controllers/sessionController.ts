@@ -20,6 +20,7 @@ import type { ClientSessionModelPolicyStatus, ExactModelSelection, PromptAttachm
 import { InMemorySessionSelectionMemory, markSessionArchived, markSessionsArchived, selectPreferredSession, selectionAfterArchivingSession, selectionAfterArchivingSessions, shouldDeselectAfterArchivedCollapse, type SessionSelectionMemory } from "./sessionSelection";
 import { selectedMachineId, type GetState, type SetState, type UpdateUrl } from "./types";
 import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
+import type { ReadIntent } from "./backgroundRead";
 import { CancellableLoadScope, isLoadCancellation } from "./cancellableLoadScope";
 
 const MESSAGE_PAGE_SIZE = 100;
@@ -109,7 +110,7 @@ export interface SessionControllerDependencies {
   onStarterModelPolicyConfirmed?: (event: StarterModelPolicyConfirmedEvent) => void;
   onStarterModelPolicySubstitution?: (event: StarterModelPolicySubstitutionEvent) => void;
   refreshProjectSessionCatalog?: () => void | Promise<void>;
-  refreshSessionLists?: (cwds?: readonly string[], machineId?: string) => Promise<void>;
+  refreshSessionLists?: (cwds?: readonly string[], machineId?: string, intent?: ReadIntent) => Promise<void>;
 }
 
 interface BulkSessionMutationResult {
@@ -1157,7 +1158,7 @@ export class SessionController {
   async refreshCurrentWorkspaceSessions(machineId = selectedMachineId(this.getState())): Promise<void> {
     const workspace = this.getState().selectedWorkspace;
     if (this.refreshSessionLists !== undefined) {
-      await this.refreshSessionLists(workspace === undefined ? [] : [workspace.path], machineId);
+      await this.refreshSessionLists(workspace === undefined ? [] : [workspace.path], machineId, "foreground");
       return;
     }
     if (workspace === undefined) return;
@@ -1171,7 +1172,11 @@ export class SessionController {
   }
 
   /** Apply authoritative lists together, retaining only genuinely local pending starts. */
-  async applyRefreshedSessionLists(lists: readonly { cwd: string; sessions: SessionInfo[] }[], machineId: string): Promise<void> {
+  async applyRefreshedSessionLists(
+    lists: readonly { cwd: string; sessions: SessionInfo[] }[],
+    machineId: string,
+    options?: { preserveSelection?: boolean | undefined },
+  ): Promise<void> {
     if (this.disposed || selectedMachineId(this.getState()) !== machineId) return;
     for (const { sessions } of lists) {
       for (const session of sessions) {
@@ -1186,19 +1191,25 @@ export class SessionController {
       sessions,
       projectSessions: [...state.projectSessions.filter((session) => !byCwd.has(session.cwd)), ...[...byCwd.values()].flat()],
     });
+    const preserveSelection = options?.preserveSelection === true;
     const selected = state.selectedSession;
     if (selected === undefined || !byCwd.has(selected.cwd)) return;
     const refreshed = byCwd.get(selected.cwd)?.find((session) => session.id === selected.id);
     if (refreshed !== undefined) {
       if ((selected.archived === true) !== (refreshed.archived === true)) {
         // Archive state changes switch between history-only and live selection.
-        // Rejoin (or close) the stream rather than only replacing row metadata.
+        // Rejoin (or close) the stream rather than only replacing row metadata —
+        // unless the caller explicitly asked for a list-only reconciliation.
+        if (preserveSelection) return;
         await this.selectSession(refreshed);
       } else {
         this.setState({ selectedSession: refreshed });
       }
       return;
     }
+    // A list-only reconciliation keeps the current selection even when the
+    // authoritative rows no longer contain it; only the caller decides that.
+    if (preserveSelection) return;
     const next = sessions.find((session) => session.archived !== true) ?? sessions[0];
     if (next !== undefined) await this.selectSession(next);
     else this.deselectSession({ forgetRememberedSelection: true });
@@ -2186,11 +2197,16 @@ export class SessionController {
     }
   }
 
-  private revalidateSessionListsAfterCommit(cwd: string, machineId: string): void {
-    // The mutation's broadcast can settle before its HTTP identity response.
-    // Reconcile after committing/selecting that identity, including a failed
-    // join, without blocking creation confirmation or model-policy writeback.
-    void this.refreshSessionLists?.([cwd], machineId);
+  /**
+   * Reconcile after a committed mutation/selection identity.
+   *
+   * The mutation's broadcast can settle before its HTTP identity response. This
+   * is accepted foreground work, so it declares foreground intent: the queued
+   * read keeps the machine budget and applies its rows even when it is fire and
+   * forget. It stays callable from tests and from the mutation paths.
+   */
+  revalidateSessionListsAfterCommit(cwd: string, machineId: string): void {
+    void this.refreshSessionLists?.([cwd], machineId, "foreground");
   }
 
   private confirmSessionPersisted(sessionId: string, machineId: string): void {
