@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.30.0
+
+### Minor Changes
+
+- cc7cd92: Upgrade the supported Pi core and coding agent dependencies to the 1.5.0 series (`^1.5.0` and `>=1.5.0 <2`). Full-history export now serves Pi's iterative HTML viewer directly instead of patching its recursive tree helpers, so long sessions keep exporting and rendering.
+
+### Patch Changes
+
+- 69690b1: Remove the vulnerable `glob@13` and `minimatch@10` releases from the static-file server dependency path by overriding them to `glob@^14.0.3` and `minimatch@^11.0.4`. Wildcard static file serving behaves identically, and `npm audit` is now clean for both the production and the development dependency trees.
+
 ## 1.29.0
 
 ### Minor Changes
