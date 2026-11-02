@@ -1,6 +1,7 @@
 import { LitElement, css, html, svg } from "lit";
 import { customElement, property, query } from "lit/decorators.js";
 import type { Machine, MachineHealth, Project, SessionActivity, SessionInfo, SessionReorderRequest, SessionStatus, Workspace, WorkspaceActivity } from "../../api";
+import type { SessionListFailure, SessionListLoad } from "../../appState";
 import type { WorkspaceLabelItem } from "../../plugins/types";
 import type { NavigationSection } from "../../appShell/navigationState";
 import { NAVIGATION_SECTION_ORDER } from "../../appShell/navigationState";
@@ -38,6 +39,8 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) sessionActivities: Record<string, SessionActivity> = {};
   @property({ attribute: false }) sessionStatuses: Record<string, SessionStatus> = {};
   @property({ attribute: false }) sendingPrompts: Record<string, true> = {};
+  @property({ attribute: false }) sessionListLoad?: SessionListLoad;
+  @property({ attribute: false }) sessionListFailure?: SessionListFailure;
   @property({ attribute: false }) unreadSessionIds: ReadonlySet<string> = new Set();
   @property({ attribute: false }) workspacesByProjectId: Record<string, Workspace[]> = {};
   @property({ attribute: false }) deletingWorkspaceIds: string[] = [];
@@ -98,8 +101,11 @@ export class AppNavigationPanel extends LitElement {
   @property({ attribute: false }) onPinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onUnpinSession?: (session: SessionInfo) => void | Promise<void>;
   @property({ attribute: false }) onCleanupSessions?: () => void | Promise<void>;
+  @property({ attribute: false }) onRetrySessionList?: () => void | Promise<void>;
+  @property({ attribute: false }) onRaiseSessionListLimit?: () => void;
   @property({ attribute: false }) onArchivedCollapsed?: () => void | Promise<void>;
   @property({ attribute: false }) onSelectMachine?: (machine: Machine) => void | Promise<void>;
+  @property({ attribute: false }) onEditMachine?: (machine: Machine) => void;
   @property({ attribute: false }) onRemoveMachine?: (machine: Machine) => void | Promise<void>;
   @property({ attribute: false }) onFocusNavigationTarget?: (target: NavigationFocusTarget) => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
@@ -132,6 +138,7 @@ export class AppNavigationPanel extends LitElement {
             .statuses=${this.machineStatuses}
             .activities=${this.machineActivities}
             .onSelect=${(machine: Machine) => this.onSelectMachine?.(machine)}
+            .onEdit=${(machine: Machine) => this.onEditMachine?.(machine)}
             .onRemove=${(machine: Machine) => this.onRemoveMachine?.(machine)}
             .onFocusNextSection=${() => { this.focusNextFrom("machines"); }}
             .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
@@ -151,6 +158,7 @@ export class AppNavigationPanel extends LitElement {
           .collapsed=${this.machinesCollapsed}
           .onToggleCollapsed=${() => { this.onToggleMachines?.(); }}
           .onSelect=${(machine: Machine) => this.onSelectMachine?.(machine)}
+          .onEdit=${(machine: Machine) => this.onEditMachine?.(machine)}
           .onRemove=${(machine: Machine) => this.onRemoveMachine?.(machine)}
           .onFocusNextSection=${() => { this.focusNextFrom("machines"); }}
           .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
@@ -197,6 +205,9 @@ export class AppNavigationPanel extends LitElement {
         .projectSessions=${this.projectSessions}
         .currentWorkspacePath=${this.selectedWorkspace?.path}
         .workspaces=${this.workspaces}
+        .machine=${this.selectedMachine}
+        .sessionListLoad=${this.sessionListLoad}
+        .sessionListFailure=${this.sessionListFailure}
         .statuses=${this.sessionStatuses}
         .activities=${this.sessionActivities}
         .sending=${this.sendingPrompts}
@@ -233,6 +244,8 @@ export class AppNavigationPanel extends LitElement {
         .onPin=${(session: SessionInfo) => this.onPinSession?.(session)}
         .onUnpin=${(session: SessionInfo) => this.onUnpinSession?.(session)}
         .onCleanup=${() => this.onCleanupSessions?.()}
+        .onRetrySessionList=${() => this.onRetrySessionList?.()}
+        .onRaiseSessionListLimit=${() => { this.onRaiseSessionListLimit?.(); }}
         .onFocusPreviousSection=${() => { this.focusPreviousFrom("sessions"); }}
         .onFocusNextSection=${() => { this.focusNextFrom("sessions"); }}
         .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}

@@ -265,7 +265,7 @@ export class PiWebUiApp extends LitElement {
     new SessionStorageSessionSelectionMemory(),
     {
       refreshProjectSessionCatalog: () => this.workspaces.refreshSessionLists(),
-      refreshSessionLists: (cwds, machineId) => this.workspaces.refreshSessionLists(cwds, machineId),
+      refreshSessionLists: (cwds, machineId, intent) => this.workspaces.refreshSessionLists(cwds, machineId, intent),
       notifications: this.notifications,
       onSelectedSessionReady: ({ machineId, session }) => {
         void this.commitReadyChatAfterRender(machineId, session);
@@ -453,6 +453,14 @@ export class PiWebUiApp extends LitElement {
   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
   @state() private historyWindow: SessionHistoryWindowState | undefined;
   @state() private recentProjectDialogEntry: RecentProjectEntry | undefined;
+  /**
+   * The machine the open dialog edits; absent while adding a new machine. The
+   * generation is bumped by every open/close so a submit that lands later
+   * cannot close or rewrite a dialog the user reopened for something else.
+   */
+  @state() private machineDialogTarget: Machine | undefined;
+  @state() private machineDialogFocusRequestTimeout = false;
+  private machineDialogGeneration = 0;
   private recentProjectDialogMachineId: string | undefined;
   private recentProjectDialogInitialView: RecentProjectDialogView = "closed-actions";
   private recentProjectDialogCancelFocus: (() => void) | undefined;
@@ -1584,7 +1592,7 @@ export class PiWebUiApp extends LitElement {
       (event) => { this.handleRealtimeEvent(machineId, event); },
       () => {
         if (selectedMachineId(this.state) !== machineId) return;
-        void this.workspaces.refreshSessionLists(undefined, machineId);
+        void this.workspaces.refreshSessionLists(undefined, machineId, "background");
         void this.renegotiateUnreadMachine(machineId);
         const workspace = this.state.selectedWorkspace;
         if (workspace !== undefined) void this.refreshActiveTerminals(workspace);
@@ -1637,7 +1645,7 @@ export class PiWebUiApp extends LitElement {
 
   private handleRealtimeEvent(machineId: string, event: BrowserRealtimeEvent): void {
     if (selectedMachineId(this.state) !== machineId) return;
-    if (event.type === "sessions.changed") void this.workspaces.refreshSessionLists([event.cwd], machineId);
+    if (event.type === "sessions.changed") void this.workspaces.refreshSessionLists([event.cwd], machineId, "background");
     else if (event.type === "sessions.unread") this.sessionUnread.applyEvent(machineId, event);
     else if (event.type === "workspace.activity") this.activity.applyWorkspaceActivity(event.activity);
     else if (isTerminalEvent(event)) {
@@ -2493,6 +2501,7 @@ export class PiWebUiApp extends LitElement {
         .machinesCollapsed=${this.navigationSections.isCollapsed("machines")}
         .onToggleMachines=${() => { this.navigationSections.toggle("machines"); }}
         .onSelectMachine=${(machine: Machine) => this.selectNavigationItem("machines", "projects", () => this.selectMachineWithMemory(machine))}
+        .onEditMachine=${(machine: Machine) => { this.openMachineEditDialog(machine); }}
         .onRemoveMachine=${(machine: Machine) => { void this.removeMachine(machine); }}
         .projects=${this.state.projects}
         .selectedProject=${this.state.selectedProject}
@@ -2505,6 +2514,9 @@ export class PiWebUiApp extends LitElement {
         .deletingWorkspaceIds=${pendingWorkspaceDeletionIds(this.state.workspaceDeletionRuns)}
         .sessions=${this.state.sessions}
         .projectSessions=${this.state.projectSessions}
+        // The notice explains only the selected machine's own remote reads.
+        .sessionListLoad=${this.state.sessionListLoad}
+        .sessionListFailure=${this.state.sessionListFailure}
         .sessionStatuses=${this.state.sessionStatuses}
         .sessionActivities=${this.state.sessionActivities}
         .sendingPrompts=${this.state.sendingPrompts}
@@ -2567,6 +2579,8 @@ export class PiWebUiApp extends LitElement {
         .onPinSession=${(session: SessionInfo) => this.sessions.pinSession(session)}
         .onUnpinSession=${(session: SessionInfo) => this.sessions.unpinSession(session)}
         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}
+        .onRetrySessionList=${() => this.workspaces.retrySessionList()}
+        .onRaiseSessionListLimit=${() => { this.raiseSessionListLimit(); }}
         .onFocusNavigationTarget=${(target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); }}
         .onCancelKeyboardNavigation=${() => { void this.focusChatComposer(); }}
       ></app-navigation-panel>
@@ -2955,6 +2969,9 @@ export class PiWebUiApp extends LitElement {
     return state.selectedWorkspace !== undefined
       && state.selectedSession === undefined
       && !state.isLoadingSessions
+      // A typed list failure owns the explanation of the empty list; the start
+      // screen would cover that notice with its own starter controls.
+      && state.sessionListFailure === undefined
       && state.sessions.every((session) => session.archived === true)
       && state.error === "";
   }
@@ -3914,15 +3931,67 @@ export class PiWebUiApp extends LitElement {
   }
 
   private openMachineDialog(): void {
+    this.machineDialogTarget = undefined;
+    this.machineDialogFocusRequestTimeout = false;
+    this.machineDialogGeneration += 1;
     this.setState({ machineDialogOpen: true, error: "" });
   }
 
-  private async submitMachineDialog(input: MachineDialogSubmit): Promise<void> {
-    const machine = await this.machines.addMachine(input);
-    if (machine !== undefined) {
-      this.setState({ machineDialogOpen: false });
+  /**
+   * Open the machine dialog prefilled for one remote machine.
+   *
+   * Editing is not selecting: the machine keeps its id, so the current
+   * workspace, session, drafts, and attachments stay where they are.
+   */
+  private openMachineEditDialog(machine: Machine): void {
+    if (machine.kind !== "remote") return;
+    this.machineDialogTarget = machine;
+    this.machineDialogFocusRequestTimeout = true;
+    this.machineDialogGeneration += 1;
+    this.setState({ machineDialogOpen: true, error: "" });
+  }
+
+  private closeMachineDialog(): void {
+    this.machineDialogGeneration += 1;
+    this.machineDialogTarget = undefined;
+    this.machineDialogFocusRequestTimeout = false;
+    this.setState({ machineDialogOpen: false });
+  }
+
+  /**
+   * Raise the patience of the machine whose read actually failed, and only
+   * while that failure still describes the selected scope.
+   */
+  private raiseSessionListLimit(): void {
+    const failure = this.state.sessionListFailure;
+    const machine = this.state.selectedMachine;
+    if (failure === undefined || machine === undefined) return;
+    if (machine.kind !== "remote" || machine.id !== failure.scope.machineId) return;
+    if (this.state.selectedProject?.id !== failure.scope.projectId) return;
+    if (this.state.selectedWorkspace?.id !== failure.scope.workspaceId) return;
+    this.openMachineEditDialog(machine);
+  }
+
+  private async submitMachineDialog(input: MachineDialogSubmit, generation: number): Promise<void> {
+    const target = this.machineDialogTarget;
+    const patch = {
+      name: input.name,
+      baseUrl: input.baseUrl,
+      requestTimeoutMs: input.requestTimeoutMs,
+      ...(input.token === undefined ? {} : { token: input.token }),
+    };
+    if (target === undefined) {
+      const machine = await this.machines.addMachine(patch);
+      if (machine === undefined || generation !== this.machineDialogGeneration) return;
+      this.closeMachineDialog();
       this.schedulePiWebUiStatusRefresh();
+      return;
     }
+    const machine = await this.machines.updateMachine(target.id, patch).catch(() => undefined);
+    // A failed update published its message into the dialog's error; a dialog
+    // opened after this submit owns the record now, so neither may close it.
+    if (machine === undefined || generation !== this.machineDialogGeneration) return;
+    this.closeMachineDialog();
   }
 
   private async removeMachine(machine: Machine | undefined = this.state.selectedMachine): Promise<void> {
@@ -5002,7 +5071,13 @@ export class PiWebUiApp extends LitElement {
         ></session-browser-dialog>` : null}
         ${this.historyWindow === undefined ? null : html`<session-history-window .machineId=${this.historyWindow.machineId} .session=${this.historyWindow.session} .onClose=${() => { this.historyWindow = undefined; }}></session-history-window>`}
         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean) => this.projects.addProject(path, create)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
-        ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
+        ${state.machineDialogOpen ? html`<machine-dialog
+          .machine=${this.machineDialogTarget}
+          .focusRequestTimeout=${this.machineDialogFocusRequestTimeout}
+          .error=${state.error}
+          .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input, this.machineDialogGeneration)}
+          .onCancel=${() => { this.closeMachineDialog(); }}
+        ></machine-dialog>` : null}
         ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .canCleanup=${this.canCleanupSessions()} .unavailableMessage=${this.sessionCleanupUnavailableMessage()} .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onForceCleanup=${() => { void this.runForceSessionCleanup(); }} .forceCleanupResult=${this.sessionCleanupDialog.forceCleanupResult} .runningForce=${this.sessionCleanupDialog.runningForce === true} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
         ${this.modelsConfigDialogOpen ? html`<models-config-dialog .machine=${state.selectedMachine} .onClose=${() => { this.modelsConfigDialogOpen = false; }} .onConfigureAuth=${() => { void this.auth.openLogin(); }} .onSaved=${() => { this.handleModelsConfigSaved(); }}></models-config-dialog>` : null}
         ${this.skillsConfigDialogOpen && state.selectedWorkspace !== undefined ? html`<skills-config-dialog .machine=${state.selectedMachine} .cwd=${state.selectedWorkspace.path} .onClose=${() => { this.skillsConfigDialogOpen = false; }}></skills-config-dialog>` : null}

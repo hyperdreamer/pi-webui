@@ -4,7 +4,7 @@ import type { Machine, MachineHealth, MachineStatus, WorkspaceActivity } from ".
 import { machineActivityIndicator } from "../workspaceActivity";
 import { actionMenuPanelStyle } from "./actionMenu";
 import { renderActivityIndicator } from "./activityBadge";
-import { canRemoveMachine } from "./MachineList";
+import { canEditMachine, canRemoveMachine } from "./MachineList";
 import type { KeyboardNavigableSection } from "./navigationFocus";
 
 @customElement("machine-switcher")
@@ -14,6 +14,7 @@ export class MachineSwitcher extends LitElement implements KeyboardNavigableSect
   @property({ attribute: false }) statuses: Record<string, MachineHealth> = {};
   @property({ attribute: false }) activities: Record<string, Record<string, WorkspaceActivity>> = {};
   @property({ attribute: false }) onSelect?: (machine: Machine) => void | Promise<void>;
+  @property({ attribute: false }) onEdit?: (machine: Machine) => void;
   @property({ attribute: false }) onRemove?: (machine: Machine) => void | Promise<void>;
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
@@ -87,7 +88,7 @@ export class MachineSwitcher extends LitElement implements KeyboardNavigableSect
   private renderMachineOption(machine: Machine): TemplateResult {
     const selected = this.selected?.id === machine.id;
     const status = machineStatus(machine, this.statuses);
-    const hasActions = canRemoveMachine(machine) && this.onRemove !== undefined;
+    const hasActions = this.hasMachineActions(machine);
     const actionsOpen = this.openActionsMachineId === machine.id;
     return html`
       <div class=${`machine-option ${selected ? "selected" : ""} ${hasActions ? "" : "no-actions"}`}>
@@ -114,13 +115,20 @@ export class MachineSwitcher extends LitElement implements KeyboardNavigableSect
             >⋯</button>
             ${actionsOpen ? html`
               <div class="machine-option-actions-panel" style=${this.actionMenuStyle} @click=${(event: MouseEvent) => { event.stopPropagation(); }}>
-                <button class="danger" title=${`Remove ${machine.name}`} @click=${() => { this.removeMachine(machine); }}>Remove</button>
+                ${canEditMachine(machine) && this.onEdit !== undefined ? html`<button class="machine-option-edit" title=${`Edit ${machine.name}`} @click=${() => { this.editMachine(machine); }}>Edit</button>` : null}
+                ${canRemoveMachine(machine) && this.onRemove !== undefined ? html`<button class="danger" title=${`Remove ${machine.name}`} @click=${() => { this.removeMachine(machine); }}>Remove</button>` : null}
               </div>
             ` : null}
           </div>
         ` : null}
       </div>
     `;
+  }
+
+  /** Edit and remove are independent actions that share one menu. */
+  private hasMachineActions(machine: Machine): boolean {
+    return (canEditMachine(machine) && this.onEdit !== undefined)
+      || (canRemoveMachine(machine) && this.onRemove !== undefined);
   }
 
   private renderActivity(machine: Machine): TemplateResult | undefined {
@@ -287,6 +295,14 @@ export class MachineSwitcher extends LitElement implements KeyboardNavigableSect
     this.open = false;
     this.openActionsMachineId = undefined;
     void this.onRemove?.(machine);
+  }
+
+  private editMachine(machine: Machine): void {
+    // The actions panel stops its click from reaching the option, so editing
+    // never selects the machine it edits; the menu closes for the dialog.
+    this.open = false;
+    this.openActionsMachineId = undefined;
+    this.onEdit?.(machine);
   }
 
   static override styles = css`

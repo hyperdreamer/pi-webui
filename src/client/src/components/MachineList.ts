@@ -17,6 +17,7 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
   @property({ type: Boolean, reflect: true }) collapsible = false;
   @property({ type: Boolean, reflect: true }) collapsed = false;
   @property({ attribute: false }) onSelect?: (machine: Machine) => void;
+  @property({ attribute: false }) onEdit?: (machine: Machine) => void;
   @property({ attribute: false }) onRemove?: (machine: Machine) => void | Promise<void>;
   @property({ attribute: false }) onToggleCollapsed?: () => void;
   @property({ attribute: false }) onFocusNextSection?: () => void | Promise<void>;
@@ -65,10 +66,10 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
   private renderMachine(machine: Machine) {
     const status = this.statuses[machine.id]?.status ?? machine.status ?? "unknown";
     const statusLabel = status === "online" ? "online" : status === "offline" ? "offline" : status === "error" ? "error" : "unknown";
-    const hasRemoveAction = canRemoveMachine(machine) && this.onRemove !== undefined;
+    const hasActions = this.hasMachineActions(machine);
     return html`
       <div
-        class=${`action-row machine-row ${this.selected?.id === machine.id ? "selected" : ""} ${hasRemoveAction ? "" : "no-actions"}`}
+        class=${`action-row machine-row ${this.selected?.id === machine.id ? "selected" : ""} ${hasActions ? "" : "no-actions"}`}
         tabindex="0"
         title=${machine.baseUrl ?? machine.name}
         @click=${(event: MouseEvent) => { activateSelectableRow(event, () => this.onSelect?.(machine)); }}
@@ -78,9 +79,15 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
           <span class="action-name machine-primary"><span class="machine-primary-label">${machine.name}</span></span><small>${machine.kind === "local" ? "Local Pi WebUI" : machine.baseUrl ?? "Remote Pi WebUI"} · ${statusLabel}</small>
           ${this.renderActivity(machine)}
         </div>
-        ${hasRemoveAction ? this.renderMachineMenu(machine) : null}
+        ${hasActions ? this.renderMachineMenu(machine) : null}
       </div>
     `;
+  }
+
+  /** Edit and remove are independent actions that share one menu. */
+  private hasMachineActions(machine: Machine): boolean {
+    return (canEditMachine(machine) && this.onEdit !== undefined)
+      || (canRemoveMachine(machine) && this.onRemove !== undefined);
   }
 
   private renderActivity(machine: Machine) {
@@ -105,7 +112,8 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
         >⋯</button>
         ${open ? html`
           <div class="action-menu-panel machine-menu-panel" id=${menuId} style=${this.menuStyle} @click=${(event: MouseEvent) => { event.stopPropagation(); }}>
-            <button class="danger" title=${`Remove ${machine.name}`} @click=${() => { this.removeMachine(machine); }}>Remove</button>
+            ${canEditMachine(machine) && this.onEdit !== undefined ? html`<button class="machine-menu-edit" title=${`Edit ${machine.name}`} @click=${() => { this.editMachine(machine); }}>Edit</button>` : null}
+            ${canRemoveMachine(machine) && this.onRemove !== undefined ? html`<button class="danger" title=${`Remove ${machine.name}`} @click=${() => { this.removeMachine(machine); }}>Remove</button>` : null}
           </div>
         ` : null}
       </div>
@@ -131,6 +139,13 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
   private removeMachine(machine: Machine): void {
     this.openMenuMachineId = undefined;
     void this.onRemove?.(machine);
+  }
+
+  private editMachine(machine: Machine): void {
+    // The menu panel already stops the click from reaching the row, so editing
+    // never selects the machine it edits.
+    this.openMenuMachineId = undefined;
+    this.onEdit?.(machine);
   }
 
   private handleMachineKeydown(event: KeyboardEvent, machine: Machine): void {
@@ -160,6 +175,11 @@ export class MachineList extends LitElement implements KeyboardNavigableSection 
 }
 
 export function canRemoveMachine(machine: Machine): boolean {
+  return machine.kind === "remote";
+}
+
+/** Editing is a remote-machine action; the local machine is not configurable. */
+export function canEditMachine(machine: Machine): boolean {
   return machine.kind === "remote";
 }
 

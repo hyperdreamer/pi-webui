@@ -1,4 +1,5 @@
 import { api, type Machine, type MachineHealth, type MachineRuntime } from "../api";
+import type { MachineUpdateRequest } from "../../../shared/apiTypes";
 import { resetWorkspaceScopedState } from "../appState";
 import type { GetState, SetState, UpdateUrl } from "./types";
 import type { ProjectController } from "./projectController";
@@ -54,7 +55,7 @@ export class MachineController {
     void this.refreshMachineRuntime(machine.id);
   }
 
-  async addMachine(input: { name: string; baseUrl: string; token?: string }): Promise<Machine | undefined> {
+  async addMachine(input: { name: string; baseUrl: string; requestTimeoutMs?: number; token?: string }): Promise<Machine | undefined> {
     this.setState({ error: "" });
     try {
       const machine = await api.addMachine(input);
@@ -64,6 +65,30 @@ export class MachineController {
     } catch (error) {
       this.setState({ error: String(error) });
       return undefined;
+    }
+  }
+
+  /**
+   * Replace one machine's public record in place.
+   *
+   * An edit is not a selection: the machine keeps its id, so the workspace,
+   * session, draft, and attachment state all stay with the current selection.
+   * The selected record is refreshed in the same patch so sidebar and notice
+   * rendering see the saved values.
+   */
+  async updateMachine(machineId: string, patch: MachineUpdateRequest): Promise<Machine> {
+    this.setState({ error: "" });
+    try {
+      const machine = await api.updateMachine(machineId, patch);
+      const state = this.getState();
+      this.setState({
+        machines: state.machines.map((candidate) => (candidate.id === machine.id ? machine : candidate)),
+        ...(state.selectedMachine?.id === machine.id ? { selectedMachine: machine } : {}),
+      });
+      return machine;
+    } catch (error) {
+      this.setState({ error: String(error) });
+      throw error;
     }
   }
 
