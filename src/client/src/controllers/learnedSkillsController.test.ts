@@ -453,7 +453,7 @@ describe("learned skills background read budget", () => {
   it.each([
     { name: "skills", settle: (request: Deferred<LearnedSkillsSnapshotResponse>) => { request.resolve(dataSnapshot("superseded")); } },
     { name: "failure", settle: (request: Deferred<LearnedSkillsSnapshotResponse>) => { request.reject(new Error("Obsolete poll failure")); } },
-  ])("publishes neither superseded $name nor their obsolete error after a manual refresh", async ({ settle }) => {
+  ])("publishes no queued obsolete $name while the replacing manual refresh is pending", async ({ settle }) => {
     useBackgroundDeadlineTimers();
     const initial = deferred<LearnedSkillsSnapshotResponse>();
     const polled = deferred<LearnedSkillsSnapshotResponse>();
@@ -472,16 +472,27 @@ describe("learned skills background read budget", () => {
 
     timers.fireLatest();
     await vi.advanceTimersByTimeAsync(0);
+    const publicationCount = harness.publications.length;
+
+    // Settle Promise.race, then runBackgroundRead, but supersede the request
+    // before the controller's queued publication continuation can run. Aborting
+    // the helper now is too late: only the request-ID guard can suppress it.
+    settle(polled);
+    await Promise.resolve();
+    await Promise.resolve();
     const manualRefresh = harness.controller.refresh();
 
-    manual.resolve(dataSnapshot("manual"));
-    await manualRefresh;
-    expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("manual")], projectSkills: [] });
+    try {
+      expect(snapshot).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
 
-    // The superseded poll settles afterwards, ignoring its transport abort.
-    settle(polled);
-    await polled.promise.catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(0);
+      expect(harness.publications.slice(publicationCount)).toEqual([]);
+      expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("initial")], projectSkills: [] });
+      expect(timers.pendingCallbacks()).toHaveLength(0);
+    } finally {
+      manual.resolve(dataSnapshot("manual"));
+      await manualRefresh;
+    }
 
     expect(harness.state.learnedSkills).toEqual({ kind: "data", globalSkills: [skill("manual")], projectSkills: [] });
   });
@@ -607,14 +618,16 @@ function controllerFor(input: { snapshot: NonNullable<LearnedSkillsControllerDep
     selectedWorkspace: workspace,
     ...input.statePatch,
   };
+  const publications: Partial<AppState>[] = [];
   const controller = new LearnedSkillsController(
     () => state,
-    (patch) => { state = { ...state, ...patch }; },
+    (patch) => { publications.push(patch); state = { ...state, ...patch }; },
     { snapshot: input.snapshot, timer: input.timers },
   );
   return {
     controller,
     timers: input.timers,
+    publications,
     get state() { return state; },
     apply: (patch: Partial<AppState>) => { state = { ...state, ...patch }; },
   };

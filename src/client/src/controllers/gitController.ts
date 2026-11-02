@@ -22,23 +22,33 @@ interface GitBackgroundPass {
   controller: AbortController;
 }
 
+interface GitForegroundWork {
+  scope: string;
+  pending: number;
+}
+
 export class GitController {
   private pollTimer: number | undefined;
   private pollingScope: string | undefined;
   private statusRequest = 0;
   private diffRequest = 0;
   private backgroundPass: GitBackgroundPass | undefined;
-  private foregroundPending = 0;
+  private foregroundPending: GitForegroundWork | undefined;
 
   constructor(private readonly getState: GetState, private readonly setState: SetState, private readonly updateUrl: UpdateUrl) {}
 
   dispose(): void {
+    this.stopPolling();
+    this.foregroundPending = undefined;
+    this.statusRequest += 1;
+    this.diffRequest += 1;
+  }
+
+  private stopPolling(): void {
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
     this.pollTimer = undefined;
     this.pollingScope = undefined;
     this.cancelBackgroundPass();
-    this.statusRequest += 1;
-    this.diffRequest += 1;
   }
 
   /** Explicit and manual Git reads are foreground work: they keep the machine budget. */
@@ -61,13 +71,17 @@ export class GitController {
   async refreshDiff(path: string, options: GitRefreshOptions = {}): Promise<void> {
     const target = this.selectedTarget();
     if (target === undefined) return;
-    await this.runForegroundRead(() => this.loadDiff(target, path, undefined, options));
+    await this.runForegroundRead(target, () => this.loadDiff(target, path, undefined, options));
   }
 
   updatePolling(): void {
     const scope = this.currentPollingScope();
     if (scope === this.pollingScope && this.pollTimer !== undefined) return;
-    this.dispose();
+    // Workspace selection can start its foreground read before configuring
+    // polling. Keep that read's publication ownership instead of discarding it
+    // and then deferring its replacement behind the foreground tick gate.
+    if (scope !== undefined && this.foregroundPending?.scope === scope) this.stopPolling();
+    else this.dispose();
     if (scope === undefined) return;
     this.pollingScope = scope;
     this.pollGit();
@@ -77,7 +91,8 @@ export class GitController {
   private pollGit(): void {
     // A manual read owns the workspace state while it runs, so a poll tick is
     // deferred rather than started beside it.
-    if (this.foregroundPending > 0) return;
+    const foreground = this.foregroundPending;
+    if (foreground !== undefined && foreground.scope === this.currentPollingScope()) return;
     void this.loadSelectedGit("background", { reportError: false });
   }
 
@@ -85,7 +100,7 @@ export class GitController {
     const target = this.selectedTarget();
     if (target === undefined) return;
     if (intent === "foreground") {
-      await this.runForegroundRead(() => this.loadGitStatus(target, undefined, options));
+      await this.runForegroundRead(target, () => this.loadGitStatus(target, undefined, options));
       return;
     }
     if (target.machineId === LOCAL_MACHINE_ID) {
@@ -118,13 +133,19 @@ export class GitController {
     }
   }
 
-  private async runForegroundRead(read: () => Promise<void>): Promise<void> {
+  private async runForegroundRead(target: SelectedGitTarget, read: () => Promise<void>): Promise<void> {
     this.cancelBackgroundPass();
-    this.foregroundPending += 1;
+    const scope = gitTargetScope(target);
+    const foreground = this.foregroundPending?.scope === scope ? this.foregroundPending : { scope, pending: 0 };
+    this.foregroundPending = foreground;
+    foreground.pending += 1;
     try {
       await read();
     } finally {
-      this.foregroundPending -= 1;
+      foreground.pending -= 1;
+      // Disposed or abandoned work may finish after a newer scope owns the
+      // gate. Its finally must never release that newer foreground owner.
+      if (this.foregroundPending === foreground && foreground.pending === 0) this.foregroundPending = undefined;
     }
   }
 
@@ -248,9 +269,9 @@ export class GitController {
   }
 
   private currentPollingScope(): string | undefined {
-    const state = this.getState();
-    if (state.selectedProject === undefined || state.selectedWorkspace?.isGitRepo !== true) return undefined;
-    return JSON.stringify([selectedMachineId(state), state.selectedProject.id, state.selectedWorkspace.id]);
+    const target = this.selectedTarget();
+    if (target?.workspace.isGitRepo !== true) return undefined;
+    return gitTargetScope(target);
   }
 
   private isCurrentWorkspace(project: Project, workspace: Workspace, machineId: string): boolean {
@@ -260,4 +281,8 @@ export class GitController {
       && state.selectedWorkspace?.id === workspace.id
       && state.selectedWorkspace.projectId === workspace.projectId;
   }
+}
+
+function gitTargetScope(target: SelectedGitTarget): string {
+  return JSON.stringify([target.machineId, target.project.id, target.workspace.id]);
 }

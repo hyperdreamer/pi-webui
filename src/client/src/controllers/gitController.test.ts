@@ -92,6 +92,88 @@ describe("GitController badge polling", () => {
     expect(gitStatus).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { name: "local", selectedMachine: undefined },
+    { name: "remote", selectedMachine: remoteMachine },
+  ])("preserves a $name foreground load started before the first polling setup", async ({ selectedMachine }) => {
+    const { intervals } = startPollingClock();
+    const harness = controllerFor(gitWorkspace, { selectedMachine });
+    const foregroundStatus = deferred<GitStatusResponse>();
+    const gitStatus = vi.spyOn(api, "gitStatus").mockReturnValue(foregroundStatus.promise);
+
+    const refreshing = harness.controller.refreshGit();
+    harness.controller.updatePolling();
+
+    try {
+      intervals[0]?.();
+      expect(gitStatus).toHaveBeenCalledOnce();
+      expect(gitStatus).toHaveBeenCalledWith(project.id, gitWorkspace.id, selectedMachine?.id ?? "local");
+
+      foregroundStatus.resolve(status("foreground"));
+      await refreshing;
+
+      expect(harness.state.gitStatus?.hash).toBe("foreground");
+      expect(gitStatus).toHaveBeenCalledOnce();
+    } finally {
+      foregroundStatus.resolve(status("foreground"));
+      await refreshing;
+      await vi.advanceTimersByTimeAsync(0);
+      harness.controller.dispose();
+    }
+  });
+
+  it("retires remote foreground ownership when polling switches to a local workspace", async () => {
+    const { intervals } = startPollingClock();
+    const workspaceB = { ...gitWorkspace, id: "workspace-2", path: "/other" };
+    const harness = controllerFor(gitWorkspace, { selectedMachine: remoteMachine });
+    const remoteStatus = deferred<GitStatusResponse>();
+    const localStatus = deferred<GitStatusResponse>();
+    const manualStatus = deferred<GitStatusResponse>();
+    const gitStatus = vi.spyOn(api, "gitStatus")
+      .mockReturnValueOnce(remoteStatus.promise)
+      .mockReturnValueOnce(localStatus.promise)
+      .mockReturnValueOnce(manualStatus.promise)
+      .mockResolvedValue(status("next-poll"));
+
+    const remoteRefresh = harness.controller.refreshGit();
+    harness.apply({ selectedMachine: undefined, selectedWorkspace: workspaceB });
+    harness.controller.updatePolling();
+
+    try {
+      expect(gitStatus).toHaveBeenCalledTimes(2);
+      expect(gitStatus).toHaveBeenNthCalledWith(2, project.id, workspaceB.id, "local");
+
+      localStatus.resolve(status("workspace-b"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.state.gitStatus?.hash).toBe("workspace-b");
+
+      const manualRefresh = harness.controller.refreshGit();
+      remoteStatus.resolve(status("obsolete-remote"));
+      await remoteRefresh;
+
+      // The retired read's finally must not release B's newer foreground owner.
+      intervals[0]?.();
+      expect(gitStatus).toHaveBeenCalledTimes(3);
+      expect(harness.state.gitStatus?.hash).toBe("workspace-b");
+
+      manualStatus.resolve(status("manual-b"));
+      await manualRefresh;
+      expect(harness.state.gitStatus?.hash).toBe("manual-b");
+
+      intervals[0]?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gitStatus).toHaveBeenCalledTimes(4);
+      expect(harness.state.gitStatus?.hash).toBe("next-poll");
+    } finally {
+      remoteStatus.resolve(status("obsolete-remote"));
+      localStatus.resolve(status("workspace-b"));
+      manualStatus.resolve(status("manual-b"));
+      await remoteRefresh;
+      await vi.advanceTimersByTimeAsync(0);
+      harness.controller.dispose();
+    }
+  });
+
   it("ignores a prior workspace status response after badge polling switches workspaces", async () => {
     const workspaceB = { ...gitWorkspace, id: "workspace-2", path: "/other" };
     const harness = controllerFor(gitWorkspace);

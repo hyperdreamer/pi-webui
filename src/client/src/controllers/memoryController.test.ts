@@ -412,7 +412,7 @@ describe("memory background read budget", () => {
   it.each([
     { name: "snapshot", settle: (request: Deferred<MemorySnapshotResponse>) => { request.resolve(dataSnapshot("superseded")); } },
     { name: "failure", settle: (request: Deferred<MemorySnapshotResponse>) => { request.reject(new Error("Obsolete poll failure")); } },
-  ])("publishes neither a superseded $name nor its obsolete error after a manual refresh", async ({ settle }) => {
+  ])("publishes no queued obsolete $name while the replacing manual refresh is pending", async ({ settle }) => {
     useBackgroundDeadlineTimers();
     const initial = deferred<MemorySnapshotResponse>();
     const polled = deferred<MemorySnapshotResponse>();
@@ -431,16 +431,27 @@ describe("memory background read budget", () => {
 
     timers.fireLatest();
     await vi.advanceTimersByTimeAsync(0);
+    const publicationCount = harness.publications.length;
+
+    // Settle Promise.race, then runBackgroundRead, but supersede the request
+    // before the controller's queued publication continuation can run. Aborting
+    // the helper now is too late: only the request-ID guard can suppress it.
+    settle(polled);
+    await Promise.resolve();
+    await Promise.resolve();
     const manualRefresh = harness.controller.refresh();
 
-    manual.resolve(dataSnapshot("manual"));
-    await manualRefresh;
-    expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("manual")], projectEntries: [] });
+    try {
+      expect(snapshot).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
 
-    // The superseded poll settles afterwards, ignoring its transport abort.
-    settle(polled);
-    await polled.promise.catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(0);
+      expect(harness.publications.slice(publicationCount)).toEqual([]);
+      expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("initial")], projectEntries: [] });
+      expect(timers.pendingCallbacks()).toHaveLength(0);
+    } finally {
+      manual.resolve(dataSnapshot("manual"));
+      await manualRefresh;
+    }
 
     expect(harness.state.memory).toEqual({ kind: "data", globalEntries: [entry("manual")], projectEntries: [] });
   });
@@ -566,14 +577,16 @@ function controllerFor(input: { snapshot: NonNullable<MemoryControllerDependenci
     selectedWorkspace: workspace,
     ...input.statePatch,
   };
+  const publications: Partial<AppState>[] = [];
   const controller = new MemoryController(
     () => state,
-    (patch) => { state = { ...state, ...patch }; },
+    (patch) => { publications.push(patch); state = { ...state, ...patch }; },
     { snapshot: input.snapshot, timer: input.timers },
   );
   return {
     controller,
     timers: input.timers,
+    publications,
     get state() { return state; },
     apply: (patch: Partial<AppState>) => { state = { ...state, ...patch }; },
   };
