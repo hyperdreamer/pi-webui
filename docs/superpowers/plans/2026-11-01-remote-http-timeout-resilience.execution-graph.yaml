@@ -230,7 +230,7 @@ tasks:
     lane: "machine-edit-and-app"
     sequence: 1
     depends_on: [T-006, T-007, T-009]
-    owns: ["src/client/src/controllers/machineController.ts", "src/client/src/components/MachineDialog.ts", "src/client/src/components/MachineDialog.test.ts", "src/client/src/components/MachineList.ts", "src/client/src/components/MachineList.test.ts", "src/client/src/components/MachineSwitcher.ts", "src/client/src/components/MachineSwitcher.test.ts", "src/client/src/components/appShell/AppNavigationPanel.ts", "src/client/src/components/PiWebUiApp.ts", "src/client/src/components/PiWebUiApp.remoteTimeout.test.ts"]
+    owns: ["src/client/src/controllers/machineController.ts", "src/client/src/components/MachineDialog.ts", "src/client/src/components/MachineDialog.test.ts", "src/client/src/components/MachineList.ts", "src/client/src/components/MachineList.test.ts", "src/client/src/components/MachineSwitcher.ts", "src/client/src/components/MachineSwitcher.test.ts", "src/client/src/components/appShell/AppNavigationPanel.ts", "src/client/src/components/PiWebUiApp.ts", "src/client/src/components/PiWebUiApp.remoteTimeout.test.ts", "src/client/src/components/PiWebUiApp.projectCatalog.test.ts"]
     exclusive_resources: []
     interfaces:
       produces: []
