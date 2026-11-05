@@ -62,6 +62,36 @@ it("treats duplicate or present-invalid Origin as rejection rather than absence"
   }
 });
 
+it("rejects a smuggled second raw Origin field while the parsed Origin stays scalar", async () => {
+  const app = Fastify({ logger: false }); let calls = 0;
+  const observed: (string | string[] | undefined)[] = [];
+  app.addHook("onRequest", (r) => { observed.push(r.headers.origin); r.raw.rawHeaders.push("Origin", "https://foreign.example"); return Promise.resolve(); });
+  registerBrowserOriginGuard(app);
+  app.post("/", () => { calls++; return {}; });
+  try {
+    const r = await app.inject({ method: "POST", url: "/", headers: { host: "pi.test:8808", origin: "http://pi.test:8808" } });
+    // The parsed header is still one scalar matching the request origin; only a second raw field was added.
+    expect(observed).toEqual(["http://pi.test:8808"]);
+    expect(r.statusCode).toBe(403); expect(r.body).toBe('{"error":"Cross-origin request rejected"}'); expect(calls).toBe(0);
+    expect(r.headers["cache-control"]).toBe("no-store"); expect(r.headers["x-content-type-options"]).toBe("nosniff");
+  } finally { await app.close(); }
+});
+
+it("rejects a retained raw Origin field after the parsed Origin is removed", async () => {
+  const app = Fastify({ logger: false }); let calls = 0;
+  const observed: (string | string[] | undefined)[] = [];
+  app.addHook("onRequest", (r) => { observed.push(r.headers.origin); delete r.headers.origin; return Promise.resolve(); });
+  registerBrowserOriginGuard(app);
+  app.post("/", () => { calls++; return {}; });
+  try {
+    const r = await app.inject({ method: "POST", url: "/", headers: { host: "pi.test:8808", origin: "http://pi.test:8808" } });
+    // The raw field still exists, but the parsed header reads as absent; that must not become an admitted no-Origin request.
+    expect(observed).toEqual(["http://pi.test:8808"]);
+    expect(r.statusCode).toBe(403); expect(r.body).toBe('{"error":"Cross-origin request rejected"}'); expect(calls).toBe(0);
+    expect(r.headers["cache-control"]).toBe("no-store"); expect(r.headers["x-content-type-options"]).toBe("nosniff");
+  } finally { await app.close(); }
+});
+
 it("guards case-insensitive websocket upgrade tokens before handling", async () => {
   const app = Fastify({ logger: false }); let calls = 0;
   registerBrowserOriginGuard(app); app.get("/", () => { calls++; return {}; });
