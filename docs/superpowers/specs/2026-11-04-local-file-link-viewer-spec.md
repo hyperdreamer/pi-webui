@@ -514,18 +514,19 @@ Authorization-stage failures are mapped before the open:
 | raw `EACCES`, `EPERM`, or `ELOOP` from target `realpath` | 403 policy message |
 | any other error | 500 infrastructure message |
 
-The root row takes precedence. A root that is missing, is not a directory, is a cyclic symlink, or is unreadable is an infrastructure/configuration failure, even though the same errno from a target is a client-visible denial.
+The root row takes precedence. A root-stage failure is one raised while canonicalizing or validating the root itself: missing, not a directory, a cyclic symlink, or unreachable because an ancestor denies traversal. A root whose own mode denies traversal but still canonicalizes is not a root-stage failure; the later target lookup raises the target-stage 403. The same errno is therefore classified by the operation that raised it, not by its value alone.
 
 Open-stage failures are mapped after authorization, before a handle exists:
 
 | Open-stage errno | Status and body |
 | --- | --- |
 | `ENOENT`, `ENOTDIR` | 404 target message |
-| `ENXIO` (a Unix-domain socket target on Linux/macOS) | 415 nonregular message |
+| `ENXIO` (Unix-domain socket target on Linux) | 415 nonregular message |
+| `EOPNOTSUPP` (Unix-domain socket target on Darwin) | 415 nonregular message |
 | `ELOOP`, `EACCES`, `EPERM` | 403 policy message |
 | any other errno | 500 infrastructure message |
 
-`ENXIO` is the POSIX socket/device refusal produced by the required nonblocking open. It must be handled in the pre-handle branch. Map only the documented errno set; an unknown error is 500 and is never treated as previewable.
+`ENXIO` and `EOPNOTSUPP` are the platform socket/device refusals produced by the required nonblocking open; Darwin returns `EOPNOTSUPP` for a socket target, Linux returns `ENXIO`. Both must be handled in the pre-handle branch. Map only the documented errno set; an unknown error is 500 and is never treated as previewable.
 
 Unknown workspace is currently an ordinary `Error("Workspace not found")` from `resolveWorkspaceContext`; recognize it only in that context-resolution catch. Do not rewrite the shared helper or change other explorer routes' catch-all semantics.
 
@@ -770,7 +771,7 @@ Create a real temporary workspace and a separate allowed root/outside root. Fixt
 - `reads an absolute path only through a configured allowed root` — positive allowed-root file and negative near-prefix sibling; do not accidentally grant absolute workspace paths without allowlisting.
 - `maps a missing target to 404 while retaining the request path` — exact body message for a relative target.
 - `maps a target below a regular-file ancestor to 404` — request `ordinary.txt/child.html` where `ordinary.txt` is a regular file; the policy's typed target error produces the 404 message. A missing workspace-root control produces 500, not 404.
-- `rejects a real Unix-domain socket target with 415` — POSIX-only fixture named with a supported extension; the nonblocking open fails with `ENXIO` before any handle exists, producing the 415 message. Skip on Windows and record the skip.
+- `rejects a real Unix-domain socket target with 415` — POSIX fixture named with a supported extension; the nonblocking open fails before any handle exists, producing the 415 message. Assert `ENXIO` on Linux and `EOPNOTSUPP` on Darwin with a platform seam case for each mapping; use a native socket fixture on each supported host and record an unavailable-fixture skip instead of substituting a header-only assertion. Skip on Windows and record the skip.
 - `rejects oversized files after handle measurement and accepts the exact cap` — fstat cap+1 fails 413/close; a bounded fake handle with exact cap is admitted without allocating 64 MB in the test.
 - `rejects directories and unknown extensions with 415` — directories with a supported-looking name and ordinary unknown files; handles closed after open.
 - `uses no-follow and nonblocking flags on <POSIX platform>` — Linux and darwin seam rows assert each flag is present and O_RDONLY semantics. Replacing flags with `r`/O_RDONLY alone fails.
@@ -787,7 +788,7 @@ Create a real temporary workspace and a separate allowed root/outside root. Fixt
 - `denies <Windows identity failure>` — rows: lstat symlink, dev mismatch, ino mismatch, zero inode, missing/NaN metadata, unsafe integer identity. Assert 403 and whether open must remain uncalled (symlink) or handle closes (post-open failures).
 - `closes every handle on <post-open failure>` — fstat rejection, nonregular metadata, invalid size, oversized, Windows mismatch, Linux lookup failure, unknown kind, and createReadStream throw; primary status/error preserved and close observed once before ownership transfer.
 - `maps authorization-stage target permission and loop errors to 403` — real inaccessible-directory EACCES and cyclic-symlink ELOOP on a target, before any open; each returns 403 and the open seam records zero calls.
-- `maps root-stage canonicalization failures to 500` — workspace root and configured allowed root controls as missing, non-directory, cyclic symlink, and unreadable; each returns the infrastructure message, not 403 or 404, and the open seam records zero calls.
+- `maps root-stage canonicalization failures to 500` — workspace root and configured allowed root controls as missing, non-directory, cyclic symlink, and ancestor-traversal-denied; each returns the infrastructure message, not 403 or 404, and the open seam records zero calls. A mode-000 root that still canonicalizes is a separate control: root canonicalization succeeds and the child lookup returns the target-stage 403, not 500.
 - `maps open-stage permission errors to 403 and unexpected filesystem errors to rejection` — EACCES/EPERM/ELOOP versus EIO at the open seam; EIO is not misreported as a supported file.
 
 Short-stream HTTP assertions belong to the reply test, not a claim that a raw ReadStream EOF knows its previously measured length.
@@ -956,7 +957,7 @@ Use the real RemoteMachineClient with an injected fetch boundary for HTTP and a 
 ### 10.23 `src/server/workspaces/pathAccessPolicy.test.ts` (extend)
 
 - `wrap target ENOENT and ENOTDIR as PathAccessTargetNotFoundError` — both the workspace-relative branch and the configured allowed-root branch; ENOENT keeps `Path does not exist` and ENOTDIR keeps the original Node message verbatim.
-- `wrap root canonicalization failures as PathAccessRootError` — workspace root and each configured allowed root; missing, non-directory, cyclic symlink, and unreadable controls keep their existing message and are not the target type.
+- `wrap root canonicalization failures as PathAccessRootError` — workspace root and each configured allowed root; missing, non-directory, cyclic symlink, and ancestor-traversal-denied controls keep their existing message and are not the target type. A mode-000 root that canonicalizes successfully is not wrapped; its child lookup raises the target-stage error.
 - `do not wrap workspace-root or allowed-root canonicalization failures` — missing root and non-directory root keep their existing error and are not the typed target error.
 - `keep existing Explorer error messages unchanged` — ENOENT keeps `Path does not exist`; ENOTDIR keeps the original Node message verbatim. Compare both against the pre-change route bodies so the 400 responses are byte-identical.
 
@@ -1078,5 +1079,5 @@ At specification-authoring time these are future implementation checks; this doc
 10. **Pre-stream infrastructure taxonomy.** The design's five FileViewError statuses remain exact; malformed query shape/NUL, missing project/workspace, and unexpected infrastructure failures have explicit boundary messages. Only unexpected errors use generic plain-text 500. Remote transport failures retain existing envelopes.
 11. **Headers beyond the design minimum.** File-view errors also use no-store/no-referrer. Only document success has CSP. Successful previews omit cache validators/range/disposition and fixed length; deterministic error strings may use Fastify's correct length. Existing compression is preserved and counts original file bytes.
 12. **Startup trust is a snapshot.** Gateway reads once via injected config service; daemon uses its existing startup effective config. A valid explicit allowlist can match even when request-origin derivation is unavailable; malformed present Origin can never be treated as absent. Both owners must restart for activation.
-13. **Typed resolution stages.** `PathAccessTargetNotFoundError` and `PathAccessRootError` distinguish target absence from root failure. ENOENT keeps `Path does not exist`; ENOTDIR keeps the original Node message verbatim; root errors keep their existing message and map to 500 even for EACCES/EPERM/ELOOP. Target-stage EACCES/EPERM/ELOOP map to 403; open-stage `ENXIO` maps to 415 before a handle exists. Root precedence is checked first.
+13. **Typed resolution stages.** `PathAccessTargetNotFoundError` and `PathAccessRootError` distinguish target absence from root failure by the operation that raised the error, not by errno alone. ENOENT keeps `Path does not exist`; ENOTDIR keeps the original Node message verbatim; root-stage errors keep their existing message and map to 500 even for EACCES/EPERM/ELOOP. Target-stage EACCES/EPERM/ELOOP map to 403. Open-stage `ENXIO` (Linux) and `EOPNOTSUPP` (Darwin) map to 415 before a handle exists. Root precedence is checked first.
 14. **Read-only release scope.** No range/sibling-asset server, prompt convention, authentication feature, DNS-rebinding defense, README growth, version bump, or publication action is bundled into this plan. The user-visible implementation receives the approved minor Changeset and a manual daemon-restart note.
