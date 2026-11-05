@@ -125,7 +125,7 @@ try {
   root = await mkdtemp(join(tmpdir(), "pi-file-view-audit-")); const workspacePath = join(root, "workspace"); await mkdir(workspacePath);
   const projects = new ProjectService(new ProjectStore(join(root, "projects.json"))); const project = await projects.add({ path: workspacePath }); const workspaces = new WorkspaceService(); const [workspace] = await workspaces.list(project); assert(workspace);
   const response = () => ({ path: join(root, "config.json"), exists: true, config: {}, effectiveConfig: {}, envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false, sessiondUrl: false } });
-  app = await buildApp({ projects, workspaces, machines: new MachineService(new MachineStore(join(root, "machines.json"))), config: { read: response, write: response, update: response }, sessionDaemon: { request: async () => ({ statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{}' }), connectWebSocket: () => { throw new Error('Unexpected daemon bridge'); } }, hostSpeech: { status: async () => ({ available: false, voices: [] }), speak: async (r) => ({ runId: r.runId, outcome: 'ended' }), stop: async () => undefined, close: async () => undefined }, logger: false, clientDist: false });
+  app = await buildApp({ projects, workspaces, machines: new MachineService(new MachineStore(join(root, "machines.json"))), config: { read: response, write: response, update: response }, sessionDaemon: { request: async () => { protectedCounts.bridge++; return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{}' }; }, connectWebSocket: (path) => { protectedCounts.bridge++; return new WebSocket(mockUrl.replace("http:", "ws:") + path); } }, hostSpeech: { status: async () => ({ available: false, voices: [] }), speak: async (r) => ({ runId: r.runId, outcome: 'ended' }), stop: async () => undefined, close: async () => undefined }, logger: false, clientDist: false });
   // Baseline requests must carry the unmodified production header, so a broken
   // production policy fails this audit. Only the deliberately weakened control
   // policies are injected here.
@@ -141,7 +141,18 @@ try {
     response.setHeader("Access-Control-Allow-Origin", "*"); response.setHeader("Cache-Control", "no-store");
     if (path === "/eventsource") { response.setHeader("Content-Type", "text/event-stream"); response.end("data: ready\n\n"); }
     else if (path === "/frame" || path === "/object") { response.setHeader("Content-Type", "text/html"); response.end(`<script>fetch('/executed-${path.slice(1)}',{mode:'no-cors'})<\/script>`); }
-    else if (path === "/foreign") { response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html><script>fetch(${JSON.stringify(appUrl + "/api/audit/action")},{method:'POST',mode:'no-cors',body:'audit'});const s=new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/audit/socket")});s.onerror=()=>{window.socketFailed=true};window.foreignStarted=true;<\/script>`); }
+    else if (path === "/foreign") {
+      response.setHeader("Content-Type", "text/html");
+      const sessionSocket = JSON.stringify(appUrl.replace("http:", "ws:") + "/api/audit/socket");
+      const eventsSocket = JSON.stringify(appUrl.replace("http:", "ws:") + "/api/events");
+      response.end(`<!doctype html><script>
+const attempts = window.foreignAttempts = { action: false, bridge: false, socket: false, events: false };
+fetch(${JSON.stringify(appUrl + "/api/audit/action")},{method:'POST',mode:'no-cors',body:'audit'}).catch(()=>undefined).finally(()=>{attempts.action=true});
+fetch(${JSON.stringify(appUrl + "/api/sessions")},{method:'POST',mode:'no-cors',body:'{}'}).catch(()=>undefined).finally(()=>{attempts.bridge=true});
+const s=new WebSocket(${sessionSocket});s.onopen=()=>{attempts.socket=true};s.onerror=()=>{window.socketFailed=true;attempts.socket=true};
+const e=new WebSocket(${eventsSocket});e.onopen=()=>{attempts.events=true};e.onerror=()=>{attempts.events=true};
+window.foreignStarted=true;<\/script>`);
+    }
     else if (path === "/resource-script") { response.setHeader("Content-Type", "application/javascript"); response.end(`new Image().src=${JSON.stringify(mockUrl + "/executed-script")}`); }
     else if (path === "/resource-style") { response.setHeader("Content-Type", "text/css"); response.end("#animation { color: rgb(1, 2, 3); }"); }
     else { response.setHeader("Content-Type", "text/plain"); response.end("ok"); }
@@ -174,7 +185,7 @@ try {
   const frames = await cdp.evaluate(sessionId, "(async () => { const a = window.animationFrames; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); return [a,window.animationFrames]; })()"); assert(frames[1] > frames[0]); result.animationProgress = frames;
   const opaque = await cdp.evaluate(sessionId, "window.originEvidence"); assert.equal(opaque.origin, "null"); assert.equal(opaque.storage, false); result.opaqueOrigin = opaque;
   for (const path of ["/fetch", "/xhr", "/eventsource", "/beacon", "/form", "/frame", "/object", "/base-probe", "/executed-frame", "/executed-object", "/executed-worker"]) assert.equal(result.forbidden.requests[path] ?? 0, 0, path);
-  assert.equal(result.forbidden.upgrades["/ws"] ?? 0, 0); assert.equal(result.forbidden.handlers.worker, 0); assert((result.forbidden.requests["/resource-image"] ?? 0) > 0);
+  assert.equal(result.forbidden.upgrades["/ws"] ?? 0, 0); assert.equal(result.forbidden.handlers.worker, 0); assert.equal(result.forbidden.handlers.bridge, 0); assert((result.forbidden.requests["/resource-image"] ?? 0) > 0);
   for (const [policy, probe] of [["connect", "connect"], ["frame", "frame"], ["worker", "worker"], ["object", "object"], ["base", "base"], ["unsandboxed", "connect"]]) {
     const control = await run(policy, probe); result.positiveControls[policy] = control;
     if (policy === "connect") { for (const path of ["/fetch", "/xhr", "/eventsource", "/beacon"]) assert((control.requests[path] ?? 0) > 0, path); assert((control.upgrades["/ws"] ?? 0) > 0); }
@@ -189,8 +200,11 @@ try {
   result.positiveControls.formAllowed = snapshot();
   clearCounts(); await navigate(viewUrl("original", "connect")); await waitFor(cdp, sessionId, "window.auditDone === true");
   await cdp.evaluate(sessionId, `location.href = ${JSON.stringify(mockUrl + "/foreign")}`);
+  await waitFor(cdp, sessionId, "window.foreignAttempts && Object.values(window.foreignAttempts).every(Boolean)");
+  assert.equal(protectedCounts.bridge, 0, "daemon bridge called before cross-origin rejection");
+  assert.equal(protectedCounts.action, 0); assert.equal(protectedCounts.socket, 0);
   const navDeadline = Date.now() + 6000; while (statuses.filter((s) => s.status === 403).length < 2) { assert(Date.now() < navDeadline, "Navigation guard observations missing"); await delay(10); }
-  assert.equal(await cdp.evaluate(sessionId, "location.origin"), mockUrl); assert.equal(protectedCounts.action, 0); assert.equal(protectedCounts.socket, 0); result.navigation = { statuses: [...statuses], handlers: { ...protectedCounts } }; assert(statuses.some((s) => s.path === "/api/audit/action" && s.status === 403)); assert(statuses.some((s) => s.path === "/api/audit/socket" && s.status === 403));
+  assert.equal(await cdp.evaluate(sessionId, "location.origin"), mockUrl); result.navigation = { statuses: [...statuses], handlers: { ...protectedCounts } }; assert(statuses.some((s) => s.path === "/api/audit/action" && s.status === 403)); assert(statuses.some((s) => s.path === "/api/audit/socket" && s.status === 403));
   const browserNavigation = { statuses: [...statuses], handlers: { ...protectedCounts } }; assert(statuses.some(s => s.path === "/api/audit/socket" && s.upgrade === "websocket" && s.origin === mockUrl && s.status === 403));
   const rejectedPost = await fetch(appUrl + "/api/audit/action", { method: "POST", headers: { origin: mockUrl }, body: "observer" });
   assert.equal(rejectedPost.status, 403); assert.equal(await rejectedPost.text(), '{"error":"Cross-origin request rejected"}');
@@ -200,8 +214,8 @@ try {
   result.navigation = { ...browserNavigation, rejectedPost: { status: 403, body: '{"error":"Cross-origin request rejected"}' }, rejectedSocket, foreignSafeGet: { serverStatus: 200, browserRead: safeRead }, bridgeCalls: protectedCounts.bridge };
   assert.equal(protectedCounts.action, 0); assert.equal(protectedCounts.socket, 0); assert.equal(protectedCounts.bridge, 0);
   clearCounts(); await navigate(appUrl + "/api/audit/control");
-  const positive = await cdp.evaluate(sessionId, `(async () => { const action = await fetch('/api/audit/action', {method:'POST',body:'control'}); const socket = await new Promise((resolve,reject) => { const s = new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/audit/socket")}); s.onmessage=()=>{s.close();resolve(101)};s.onerror=reject; }); return {action:action.status,socket}; })()`);
-  assert.deepEqual(positive, { action: 200, socket: 101 }); assert.equal(protectedCounts.action, 1); assert.equal(protectedCounts.socket, 1); result.positiveControls.guard = { ...positive, handlers: { ...protectedCounts } };
+  const positive = await cdp.evaluate(sessionId, `(async () => { const action = await fetch('/api/audit/action', {method:'POST',body:'control'}); const socket = await new Promise((resolve,reject) => { const s = new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/audit/socket")}); s.onmessage=()=>{s.close();resolve(101)};s.onerror=reject; }); const daemonRequest = await fetch('/api/sessions', {method:'POST',headers:{'content-type':'application/json'},body:'{}'}); const daemonSocket = await new Promise((resolve,reject) => { const s = new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/events")}); s.onmessage=()=>{s.close();resolve(101)};s.onerror=reject; }); return {action:action.status,socket,daemonRequest:daemonRequest.status,daemonSocket}; })()`);
+  assert.deepEqual(positive, { action: 200, socket: 101, daemonRequest: 200, daemonSocket: 101 }); assert.equal(protectedCounts.action, 1); assert.equal(protectedCounts.socket, 1); assert.equal(protectedCounts.bridge, 2); result.positiveControls.guard = { ...positive, handlers: { ...protectedCounts } };
   result.passed = true;
 } catch (error) { result.diagnostics.push(error instanceof Error ? error.stack : String(error)); process.exitCode = 1; }
 finally {
