@@ -214,7 +214,11 @@ function common(headers: http.IncomingHttpHeaders): void {
 }
 
 it("streams an exact body without fixed Content-Length and closes the handle", async () => {
-  const fixture = await replyFixture(Buffer.from("hello"));
+  // Seed a stale fixed length so the assertion is about the helper removing it
+  // rather than about Fastify never emitting one for a stream payload.
+  const fixture = await replyFixture(Buffer.from("hello"), "document", "text/html; charset=utf-8", false, {
+    beforeSend: (reply) => { reply.header("content-length", "9999"); },
+  });
   const response = observe(fixture.url);
   try {
     await fixture.entered.promise;
@@ -406,7 +410,10 @@ it("cleans up a send-setup failure", async () => {
 
 it("flushes final compression-negotiated headers before releasing the source", async () => {
   const body = Buffer.alloc(4096, "a");
-  const fixture = await replyFixture(body, "document", "text/html; charset=utf-8", true, { readMode: "holdFirst" });
+  const fixture = await replyFixture(body, "document", "text/html; charset=utf-8", true, {
+    readMode: "holdFirst",
+    beforeSend: (reply) => { reply.header("content-length", "9999"); },
+  });
   const headersSeen = deferred<http.IncomingHttpHeaders>();
   const response = observe(fixture.url, { "accept-encoding": "gzip" }, (incoming) => { headersSeen.resolve(incoming.headers); });
   try {
