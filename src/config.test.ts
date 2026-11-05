@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseSpeechInputConfig, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled, type PiWebUiConfigFileOperations, type SavePiWebUiConfigOptions } from "./config.js";
+import { DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_UPLOADS_FOLDER, agentDirEnvSource, agentSessionDirEnvKeys, effectiveAgentConfig, effectivePiWebUiConfig, examplePiWebUiConfig, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, maxUploadBytes, parseAllowedOriginsConfig, parseSpeechInputConfig, parseUtilityModelsConfig, replacePiWebUiModelTiers, replacePiWebUiUtilityModels, savePiWebUiConfig, spawnSessionsEnabled, subsessionsEnabled, type PiWebUiConfig, type PiWebUiConfigFileOperations, type SavePiWebUiConfigOptions } from "./config.js";
 import { UTILITY_MODEL_SESSION_ONLY } from "./shared/apiTypes.js";
 import type { UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsUpdate } from "./shared/apiTypes.js";
 import type { ModelTierLadder } from "./server/sessions/modelTierRegistry.js";
@@ -1085,5 +1085,53 @@ describe("PI WEBUI utility model Context sentinel", () => {
 
     expect(loaded.config.utilityModels).toBeUndefined();
     expect(loaded.utilityModelsError).toContain("utilityModels.context");
+  });
+});
+
+describe("PI WEBUI allowedOrigins config", () => {
+  it("round-trips normalized allowedOrigins and preserves unrelated keys", async () => {
+    await writeFile(configPath, JSON.stringify({ future: { enabled: true }, port: 9000 }));
+    const input = { port: 9000, allowedOrigins: ["HTTPS://PI.EXAMPLE:443/", "https://pi.example", "http://pi.example:8080/"] };
+
+    savePiWebUiConfig(input, testOptions());
+
+    expect(loadPiWebUiConfig(testOptions()).config).toEqual({ port: 9000, allowedOrigins: ["https://pi.example", "http://pi.example:8080"] });
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ future: { enabled: true }, port: 9000, allowedOrigins: ["https://pi.example", "http://pi.example:8080"] });
+  });
+
+  it("keeps absent and explicit empty allowedOrigins distinct in stored config", async () => {
+    savePiWebUiConfig({}, testOptions());
+    expect(loadPiWebUiConfig(testOptions()).config).not.toHaveProperty("allowedOrigins");
+
+    savePiWebUiConfig({ allowedOrigins: [] }, testOptions());
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toHaveProperty("allowedOrigins", []);
+
+    savePiWebUiConfig({}, testOptions());
+    expect(JSON.parse(await readFile(configPath, "utf8"))).not.toHaveProperty("allowedOrigins");
+  });
+
+  const invalidOriginConfigs: unknown[] = [null, true, 7, {}, "https://host", [1], ["https://host", false],
+    ...["null", "", "*", "/relative", "//host", "ftp://host", "https://u:p@host", "https://@host", "https://host/a", "https://host/a/..", "https://host//", "https://host?", "https://host?q=1", "https://host#", "https://host#p", "https://host\\", "https://ho st", "https://ho\tst", "https://a,https://b", "http://host:99999"].map((s) => [s])];
+
+  it.each(invalidOriginConfigs.map((value, index) => ({ value, index })))("rejects invalid allowedOrigins config value $index without weakening the field", async ({ value }) => {
+    const message = `PI WEBUI config allowedOrigins must be an array of absolute http/https origins without credentials, paths, queries, or fragments: ${configPath}`;
+    await writeFile(configPath, JSON.stringify({ allowedOrigins: value }));
+
+    expect(() => loadPiWebUiConfig(testOptions())).toThrow(message);
+    expect(() => parseAllowedOriginsConfig(value, configPath)).toThrow(message);
+    // Exercise save validation with deliberately untyped input without lying about the production type.
+    const config: PiWebUiConfig = {};
+    Object.assign(config, { allowedOrigins: value });
+    expect(() => savePiWebUiConfig(config, testOptions())).toThrow(message);
+  });
+
+  it("ignores an apparent allowedOrigins environment override", () => {
+    savePiWebUiConfig({ allowedOrigins: ["https://pi.example"] }, testOptions());
+    const options = { ...testOptions(), env: { ...testOptions().env, PI_WEBUI_ALLOWED_ORIGINS: "https://attacker.example" } };
+
+    expect(effectivePiWebUiConfig(options).config.allowedOrigins).toEqual(["https://pi.example"]);
+
+    savePiWebUiConfig({}, testOptions());
+    expect(effectivePiWebUiConfig(options).config).not.toHaveProperty("allowedOrigins");
   });
 });
