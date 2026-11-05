@@ -1,0 +1,468 @@
+schema_version: 1
+source_plan:
+  path: docs/superpowers/plans/2026-11-04-local-file-link-viewer.md
+  sha256: 9838da2704d7cb0167e4a471a123b6f05ccc73522180bb94004904bfb3b10555
+  commit_oid: d8f6081a3fa6de694efa178365f4da47ab19f3e4
+spec:
+  path: docs/superpowers/specs/2026-11-04-local-file-link-viewer-spec.md
+  sha256: af615c210a3b9632802257f0f7d10f8e8e30ab1031a4fe6d41870c1c031f5333
+design:
+  path: docs/superpowers/specs/2026-11-04-local-file-link-viewer-design.md
+  sha256: 7646224c4aabe9993f93bde8cfac8e03f6f1a7853f3def1bf27aae98a171f282
+interfaces:
+  - id: I-01
+    signature: "fileViewKindForPath(path: string): FileViewKind | undefined; MAX_FILE_VIEW_BYTES = 64 * 1024 * 1024; MAX_FILE_VIEW_LABEL = \"64 MB\""
+    digest: 041747385bf6c1b657b2f0e27360ceb55a26b3ac1393f7bd543a3d7b301f89ed
+  - id: I-02
+    signature: "normalizeBrowserOrigin(value: string): string | undefined"
+    digest: 9feff071d1f27d998dedf0491def5a6b0e27254d51c7eb2d5d0494d5d0fb333f
+  - id: I-03
+    signature: "PiWebUiConfigValues.allowedOrigins?: string[]; parseAllowedOriginsConfig(value: unknown): string[] | undefined"
+    digest: 1c3f94dc36cf5eee439cfa45b6ac16a7614fc7332629d93d85651dc4e92b01e2
+  - id: I-04
+    signature: "server config projections expose allowedOrigins and preserve it on omitted updates"
+    digest: a75ae5ae6054e773c4c7c98b7eb461c1e6b83476d30508fa4c23b2eaecab3205
+  - id: I-05
+    signature: "isAllowedBrowserOrigin(context: BrowserOriginContext): boolean; requestOriginFrom(request: FastifyRequest): string | undefined; registerBrowserOriginGuard(app: FastifyInstance, allowedOrigins: readonly string[]): void"
+    digest: f9e12535c6151f3faf3ded68fcede43bd8958eb0c04d9316a24c885ff3187367
+  - id: I-06
+    signature: "createSessionDaemonApp(options: SessionDaemonAppOptions): Promise<FastifyInstance>"
+    digest: 2a46a0b1587088f02e6ab3db7d37cb9a27d1a7d0e870a41490712d7119e5837a
+  - id: I-07
+    signature: "PathAccessTargetNotFoundError; PathAccessRootError"
+    digest: 86fc34937a97fcbb6cabd93e3e92b210660239db57b1046a7c51f7a70a7b7c2d
+  - id: I-08
+    signature: "FileViewError; WorkspaceFileView; WorkspaceFileViewOpener; FileViewDependencies; createWorkspaceFileViewOpener; openWorkspaceFileView"
+    digest: e6e05a60e09130fe41c877dfc9ba1c294e022be03a63c4f3beafa17dc14e2c7c
+  - id: I-09
+    signature: "FILE_VIEW_DOCUMENT_CSP; sendWorkspaceFileView(reply, view, disconnect): Promise<FastifyReply>"
+    digest: 02963497effdb909d881b0310aa94375f9477a3057a8c41299d0492f10ae4f60
+  - id: I-10
+    signature: "GET /projects/:projectId/workspaces/:workspaceId/file/view"
+    digest: 4be286f2c55259139e7057cab55cf674e9f61e9c61791979c92b6e462b8ffb56
+  - id: I-11
+    signature: "TranscriptFileLinkContext; resolveTranscriptFilePreviewUrl(rawTarget: string, context: TranscriptFileLinkContext): string | undefined; transcriptFileLinkContext(sessionCwd: string | undefined, workspaces: readonly Workspace[], machineId: string, appBasePath: string): TranscriptFileLinkContext | undefined"
+    digest: 6521ba73dc76a5be461509a5d8e87bc14f3663d0bbc6e7535c43d06410f35b9f
+  - id: I-12
+    signature: "workspaceFileViewUrl(projectId: string, workspaceId: string, path: string, options?: { machineId?: string }): string"
+    digest: 0ade6eb4ac728467d14a8f2e09439d608e612e3a0e1497fecac824dc47c4ce90
+lanes:
+  - id: shared-config
+    task_ids: [T-001, T-002, T-003, T-004]
+  - id: origin-guard
+    task_ids: [T-005, T-006, T-007, T-008, T-009]
+  - id: file-service
+    task_ids: [T-010, T-011, T-012, T-013, T-014, T-015]
+  - id: client-links
+    task_ids: [T-016, T-017, T-018, T-019, T-020]
+  - id: docs-release
+    task_ids: [T-021, T-022]
+tasks:
+  - id: T-001
+    plan_task: 1
+    title: "Establish shared file kinds and canonical browser origins"
+    implementer_tier: standard
+    lane: shared-config
+    sequence: 1
+    depends_on: []
+    ownership:
+      - "src/shared/fileViewTypes.ts"
+      - "src/shared/browserOrigins.ts"
+      - "src/shared/fileViewTypes.test.ts"
+      - "src/shared/browserOrigins.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-01
+      - I-02
+    consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/shared/fileViewTypes.test.ts", "src/shared/browserOrigins.test.ts"]
+  - id: T-002
+    plan_task: 2
+    title: "Persist the machine-global origin list and prove project-local isolation"
+    implementer_tier: standard
+    lane: shared-config
+    sequence: 2
+    depends_on: [T-001]
+    ownership:
+      - "src/shared/apiTypes.ts"
+      - "src/config.ts"
+      - "src/config.test.ts"
+      - "src/server/workspaces/projectPiWebUiConfig.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-03
+    consumes:
+      - I-02
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/config.test.ts", "src/server/workspaces/projectPiWebUiConfig.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-003
+    plan_task: 3
+    title: "Round-trip and preserve origins through both server config APIs"
+    implementer_tier: standard
+    lane: shared-config
+    sequence: 3
+    depends_on: [T-002]
+    ownership:
+      - "src/server/configRoutes.ts"
+      - "src/server/configRoutes.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-04
+    consumes:
+      - I-02
+      - I-03
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/configRoutes.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-004
+    plan_task: 4
+    title: "Preserve origins through browser parsing and gateway settings drafts"
+    implementer_tier: standard
+    lane: shared-config
+    sequence: 4
+    depends_on: [T-001, T-002, T-003]
+    ownership:
+      - "src/client/src/api/parsers.ts"
+      - "src/client/src/components/settings/settingsConfigDraft.ts"
+      - "src/client/src/api/parsers.test.ts"
+      - "src/client/src/components/settings/settingsConfigDraft.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-02
+      - I-03
+      - I-04
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/parsers.test.ts", "src/client/src/components/settings/settingsConfigDraft.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-005
+    plan_task: 5
+    title: "Implement the exact origin predicate and root request hook"
+    implementer_tier: standard
+    lane: origin-guard
+    sequence: 1
+    depends_on: [T-001, T-004]
+    ownership:
+      - "src/server/http/browserOriginGuard.ts"
+      - "src/server/http/browserOriginGuard.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-05
+    consumes:
+      - I-02
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/http/browserOriginGuard.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-006
+    plan_task: 6
+    title: "Install startup guards in the gateway and production daemon edge"
+    implementer_tier: advanced
+    lane: origin-guard
+    sequence: 2
+    depends_on: [T-003, T-005]
+    ownership:
+      - "src/server/app.ts"
+      - "src/server/sessiond/sessionDaemonApp.ts"
+      - "src/server/sessiond.ts"
+      - "src/server/app.originGuard.test.ts"
+      - "src/server/sessiond/sessionDaemonApp.originGuard.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-06
+    consumes:
+      - I-03
+      - I-05
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/app.originGuard.test.ts", "src/server/sessiond/sessionDaemonApp.originGuard.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-007
+    plan_task: 7
+    title: "Prove every gateway socket and startup activation boundary"
+    implementer_tier: advanced
+    lane: origin-guard
+    sequence: 3
+    depends_on: [T-005, T-006]
+    ownership:
+      - "src/server/app.originGuard.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-05
+      - I-06
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/app.originGuard.test.ts"]
+  - id: T-008
+    plan_task: 8
+    title: "Prove daemon runtime matrices and the real absent-Origin two-hop path"
+    implementer_tier: advanced
+    lane: origin-guard
+    sequence: 4
+    depends_on: [T-005, T-006, T-007]
+    ownership:
+      - "src/server/sessiond/sessionDaemonApp.originGuard.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-05
+      - I-06
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/sessiond/sessionDaemonApp.originGuard.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-009
+    plan_task: 9
+    title: "Preserve configured machine Origin behavior on HTTP and sockets"
+    implementer_tier: standard
+    lane: origin-guard
+    sequence: 5
+    depends_on: [T-005, T-006, T-008]
+    ownership:
+      - "src/server/machines/machineClient.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-05
+      - I-06
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/machines/machineClient.test.ts"]
+  - id: T-010
+    plan_task: 10
+    title: "Distinguish target absence from root failures without changing Explorer messages"
+    implementer_tier: standard
+    lane: file-service
+    sequence: 1
+    depends_on: [T-002]
+    ownership:
+      - "src/server/workspaces/pathAccessPolicy.ts"
+      - "src/server/workspaces/pathAccessPolicy.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-07
+    consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/workspaces/pathAccessPolicy.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-011
+    plan_task: 11
+    title: "Build the authorized handle-backed file-view service"
+    implementer_tier: advanced
+    lane: file-service
+    sequence: 2
+    depends_on: [T-001, T-010]
+    ownership:
+      - "src/server/workspaces/fileViewService.ts"
+      - "src/server/workspaces/fileViewService.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-08
+    consumes:
+      - I-01
+      - I-07
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/workspaces/fileViewService.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-012
+    plan_task: 12
+    title: "Pin platform races, errno stages, and every pre-transfer cleanup path"
+    implementer_tier: advanced
+    lane: file-service
+    sequence: 3
+    depends_on: [T-010, T-011]
+    ownership:
+      - "src/server/workspaces/fileViewService.test.ts"
+      - "src/server/workspaces/fileViewService.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-08
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/workspaces/fileViewService.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-013
+    plan_task: 13
+    title: "Own HTTP byte counting, final-header flush, and stream teardown"
+    implementer_tier: advanced
+    lane: file-service
+    sequence: 4
+    depends_on: [T-011, T-012]
+    ownership:
+      - "src/server/http/fileViewReply.ts"
+      - "src/server/http/fileViewReply.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-09
+    consumes:
+      - I-08
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/http/fileViewReply.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-014
+    plan_task: 14
+    title: "Register read-only local view aliases with exact error and disconnect behavior"
+    implementer_tier: advanced
+    lane: file-service
+    sequence: 5
+    depends_on: [T-003, T-006, T-010, T-011, T-013]
+    ownership:
+      - "src/server/workspaceExplorerRoutes.ts"
+      - "src/server/workspaceExplorerRoutes.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-10
+    consumes:
+      - I-08
+      - I-09
+      - I-10
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/server/workspaceExplorerRoutes.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-015
+    plan_task: 15
+    title: "Federate the GET view and preserve remote response policy and failures"
+    implementer_tier: standard
+    lane: file-service
+    sequence: 6
+    depends_on: [T-003, T-009, T-013, T-014]
+    ownership:
+      - "src/shared/federatedRoutes.ts"
+      - "src/server/machines/machineProxyRoutes.ts"
+      - "src/shared/federatedRoutes.test.ts"
+      - "src/server/app.remoteProxy.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-10
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/shared/federatedRoutes.test.ts", "src/server/app.remoteProxy.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-016
+    plan_task: 16
+    title: "Let file candidates survive Markdown sanitization without admitting active schemes"
+    implementer_tier: standard
+    lane: client-links
+    sequence: 1
+    depends_on: [T-001, T-015]
+    ownership:
+      - "src/client/src/formatting/markdown.ts"
+      - "src/client/src/formatting/markdown.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-02
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/formatting/markdown.test.ts"]
+  - id: T-017
+    plan_task: 17
+    title: "Resolve file candidates through one encoded application URL boundary"
+    implementer_tier: advanced
+    lane: client-links
+    sequence: 2
+    depends_on: [T-001, T-015, T-016]
+    ownership:
+      - "src/client/src/api/urls.ts"
+      - "src/client/src/appUrl.ts"
+      - "src/client/src/transcriptFileLinks.ts"
+      - "src/client/src/api/urls.test.ts"
+      - "src/client/src/transcriptFileLinks.test.ts"
+    exclusive_resources: []
+    produces:
+      - I-11
+      - I-12
+    consumes:
+      - I-01
+      - I-11
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/urls.test.ts", "src/client/src/transcriptFileLinks.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-018
+    plan_task: 18
+    title: "Enhance and restore FormattedText attributes per DOM instance"
+    implementer_tier: standard
+    lane: client-links
+    sequence: 3
+    depends_on: [T-016, T-017]
+    ownership:
+      - "src/client/src/components/FormattedText.ts"
+      - "src/client/src/components/FormattedText.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-11
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/FormattedText.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-019
+    plan_task: 19
+    title: "Forward the resolver through all five ChatView surfaces"
+    implementer_tier: standard
+    lane: client-links
+    sequence: 4
+    depends_on: [T-018]
+    ownership:
+      - "src/client/src/components/ChatView.ts"
+      - "src/client/src/components/ChatView.fileLinks.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-11
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/ChatView.fileLinks.test.ts", "src/client/src/components/ChatView.latex.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-020
+    plan_task: 20
+    title: "Bind session-owned memoized resolvers on the real app template"
+    implementer_tier: advanced
+    lane: client-links
+    sequence: 5
+    depends_on: [T-017, T-018, T-019]
+    ownership:
+      - "src/client/src/components/PiWebUiApp.ts"
+      - "src/client/src/components/PiWebUiApp.fileLinks.test.ts"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-11
+      - I-12
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/components/PiWebUiApp.fileLinks.test.ts", "src/client/src/components/ChatView.fileLinks.test.ts", "src/client/src/components/FormattedText.test.ts"]
+      - argv: ["npm", "run", "typecheck"]
+  - id: T-021
+    plan_task: 21
+    title: "Publish canonical operator guidance and the exact minor Changeset"
+    implementer_tier: standard
+    lane: docs-release
+    sequence: 1
+    depends_on: [T-004, T-009, T-015, T-020]
+    ownership:
+      - "docs/config.md"
+      - "docs/config.html"
+      - "docs/machines.html"
+      - ".changeset/local-file-link-preview.md"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-04
+    validation:
+      - argv: ["git", "diff", "--check"]
+  - id: T-022
+    plan_task: 22
+    title: "Add the executable browser audit and complete integrated verification"
+    implementer_tier: advanced
+    lane: docs-release
+    sequence: 2
+    depends_on: [T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014, T-015, T-016, T-017, T-018, T-019, T-020, T-021]
+    ownership:
+      - "scripts/verify-local-file-link-viewer.mjs"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - I-01
+      - I-05
+      - I-08
+      - I-09
+      - I-11
+      - I-12
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/shared/fileViewTypes.test.ts", "src/shared/browserOrigins.test.ts", "src/client/src/transcriptFileLinks.test.ts", "src/client/src/formatting/markdown.test.ts"]
+      - argv: ["node", "--check", "scripts/verify-local-file-link-viewer.mjs"]

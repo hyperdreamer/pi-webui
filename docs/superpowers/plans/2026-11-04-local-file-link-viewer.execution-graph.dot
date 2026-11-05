@@ -1,0 +1,117 @@
+digraph local_file_link_viewer {
+  rankdir=LR;
+  graph [fontname="Helvetica", bgcolor="white"];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fillcolor="#eef5ff"];
+  edge [fontname="Helvetica", color="#557799"];
+  subgraph cluster_shared_config {
+    label="shared-config";
+    style="rounded"; color="#eef5ff";
+    "T-001" [label="1. Establish shared file kinds and canonical browser origins\nstandard"];
+    "T-002" [label="2. Persist the machine-global origin list and prove project-local isolation\nstandard"];
+    "T-003" [label="3. Round-trip and preserve origins through both server config APIs\nstandard"];
+    "T-004" [label="4. Preserve origins through browser parsing and gateway settings drafts\nstandard"];
+  }
+  subgraph cluster_origin_guard {
+    label="origin-guard";
+    style="rounded"; color="#fdf1e3";
+    "T-005" [label="5. Implement the exact origin predicate and root request hook\nstandard"];
+    "T-006" [label="6. Install startup guards in the gateway and production daemon edge\nadvanced"];
+    "T-007" [label="7. Prove every gateway socket and startup activation boundary\nadvanced"];
+    "T-008" [label="8. Prove daemon runtime matrices and the real absent-Origin two-hop path\nadvanced"];
+    "T-009" [label="9. Preserve configured machine Origin behavior on HTTP and sockets\nstandard"];
+  }
+  subgraph cluster_file_service {
+    label="file-service";
+    style="rounded"; color="#eaf7ee";
+    "T-010" [label="10. Distinguish target absence from root failures without changing Explorer messages\nstandard"];
+    "T-011" [label="11. Build the authorized handle-backed file-view service\nadvanced"];
+    "T-012" [label="12. Pin platform races, errno stages, and every pre-transfer cleanup path\nadvanced"];
+    "T-013" [label="13. Own HTTP byte counting, final-header flush, and stream teardown\nadvanced"];
+    "T-014" [label="14. Register read-only local view aliases with exact error and disconnect behavior\nadvanced"];
+    "T-015" [label="15. Federate the GET view and preserve remote response policy and failures\nstandard"];
+  }
+  subgraph cluster_client_links {
+    label="client-links";
+    style="rounded"; color="#f4ecfb";
+    "T-016" [label="16. Let file candidates survive Markdown sanitization without admitting active schemes\nstandard"];
+    "T-017" [label="17. Resolve file candidates through one encoded application URL boundary\nadvanced"];
+    "T-018" [label="18. Enhance and restore FormattedText attributes per DOM instance\nstandard"];
+    "T-019" [label="19. Forward the resolver through all five ChatView surfaces\nstandard"];
+    "T-020" [label="20. Bind session-owned memoized resolvers on the real app template\nadvanced"];
+  }
+  subgraph cluster_docs_release {
+    label="docs-release";
+    style="rounded"; color="#f5f5f5";
+    "T-021" [label="21. Publish canonical operator guidance and the exact minor Changeset\nstandard"];
+    "T-022" [label="22. Add the executable browser audit and complete integrated verification\nadvanced"];
+  }
+  "T-001" -> "T-002";
+  "T-002" -> "T-003";
+  "T-001" -> "T-004";
+  "T-002" -> "T-004";
+  "T-003" -> "T-004";
+  "T-001" -> "T-005";
+  "T-004" -> "T-005";
+  "T-003" -> "T-006";
+  "T-005" -> "T-006";
+  "T-005" -> "T-007";
+  "T-006" -> "T-007";
+  "T-005" -> "T-008";
+  "T-006" -> "T-008";
+  "T-007" -> "T-008";
+  "T-005" -> "T-009";
+  "T-006" -> "T-009";
+  "T-008" -> "T-009";
+  "T-002" -> "T-010";
+  "T-001" -> "T-011";
+  "T-010" -> "T-011";
+  "T-010" -> "T-012";
+  "T-011" -> "T-012";
+  "T-011" -> "T-013";
+  "T-012" -> "T-013";
+  "T-003" -> "T-014";
+  "T-006" -> "T-014";
+  "T-010" -> "T-014";
+  "T-011" -> "T-014";
+  "T-013" -> "T-014";
+  "T-003" -> "T-015";
+  "T-009" -> "T-015";
+  "T-013" -> "T-015";
+  "T-014" -> "T-015";
+  "T-001" -> "T-016";
+  "T-015" -> "T-016";
+  "T-001" -> "T-017";
+  "T-015" -> "T-017";
+  "T-016" -> "T-017";
+  "T-016" -> "T-018";
+  "T-017" -> "T-018";
+  "T-018" -> "T-019";
+  "T-017" -> "T-020";
+  "T-018" -> "T-020";
+  "T-019" -> "T-020";
+  "T-004" -> "T-021";
+  "T-009" -> "T-021";
+  "T-015" -> "T-021";
+  "T-020" -> "T-021";
+  "T-001" -> "T-022";
+  "T-002" -> "T-022";
+  "T-003" -> "T-022";
+  "T-004" -> "T-022";
+  "T-005" -> "T-022";
+  "T-006" -> "T-022";
+  "T-007" -> "T-022";
+  "T-008" -> "T-022";
+  "T-009" -> "T-022";
+  "T-010" -> "T-022";
+  "T-011" -> "T-022";
+  "T-012" -> "T-022";
+  "T-013" -> "T-022";
+  "T-014" -> "T-022";
+  "T-015" -> "T-022";
+  "T-016" -> "T-022";
+  "T-017" -> "T-022";
+  "T-018" -> "T-022";
+  "T-019" -> "T-022";
+  "T-020" -> "T-022";
+  "T-021" -> "T-022";
+}
