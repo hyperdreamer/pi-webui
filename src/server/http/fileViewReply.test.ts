@@ -418,9 +418,26 @@ it("cleans up a send-setup failure", async () => {
 
 it("flushes final compression-negotiated headers before releasing the source", async () => {
   const body = Buffer.alloc(4096, "a");
+  const events: string[] = [];
+  let replyRaw: http.ServerResponse | undefined;
+  let headersSentAtSourcePipe: boolean | undefined;
   const fixture = await replyFixture(body, "document", "text/html; charset=utf-8", true, {
     readMode: "holdFirst",
-    beforeSend: (reply) => { reply.header("content-length", "9999"); },
+    beforeSend: (reply) => {
+      reply.header("content-length", "9999");
+      replyRaw = reply.raw;
+      const flushHeaders = reply.raw.flushHeaders.bind(reply.raw);
+      vi.spyOn(reply.raw, "flushHeaders").mockImplementation(() => {
+        events.push("flush-headers");
+        flushHeaders();
+      });
+    },
+  });
+  const sourcePipe = fixture.stream.pipe.bind(fixture.stream);
+  const pipeSpy = vi.spyOn(fixture.stream, "pipe").mockImplementation((destination: NodeJS.WritableStream, options?: { end?: boolean | undefined }) => {
+    events.push("source-pipe");
+    headersSentAtSourcePipe = replyRaw?.headersSent;
+    return sourcePipe(destination, options);
   });
   const headersSeen = deferred<http.IncomingHttpHeaders>();
   const response = observe(fixture.url, { "accept-encoding": "gzip" }, (incoming) => { headersSeen.resolve(incoming.headers); });
@@ -431,6 +448,13 @@ it("flushes final compression-negotiated headers before releasing the source", a
     expect(headers["content-encoding"]).toBe("gzip");
     expect(headers["content-security-policy"]).toBe(policy);
     expect(headers["content-length"]).toBeUndefined();
+    // The source must not be released into the counting pipeline until the
+    // final (compression-adjusted) headers have been flushed.
+    expect(fixture.reads).toBe(0);
+    expect(pipeSpy).toHaveBeenCalledOnce();
+    expect(events.filter((event) => event === "flush-headers")).toHaveLength(1);
+    expect(events.indexOf("flush-headers")).toBeLessThan(events.indexOf("source-pipe"));
+    expect(headersSentAtSourcePipe).toBe(true);
     fixture.releaseReads();
     const result = await response.result;
     expect(result.ended).toBe(true);
