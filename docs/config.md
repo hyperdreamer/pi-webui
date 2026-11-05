@@ -25,6 +25,29 @@ The deployment path is not a PI WEBUI config-file key or environment setting. Th
 
 For a nested deployment, redirect the slashless prefix to the trailing-slash URL, strip the prefix before forwarding to PI WEBUI, and proxy authenticated HTTP and WebSocket traffic through the same location. Relative browser and PWA URLs then stay within that prefix. See the [reverse proxy installation guide](https://pi-webui.dev/install#reverse-proxy-prefix) for a complete Nginx example.
 
+<a id="browser-origins"></a>
+### Browser origins
+
+The optional machine-global `allowedOrigins` key trusts additional exact browser origins. Manage it in the global config file or config API; this feature adds no Settings editor for the list. It is unsupported in project-local `.pi-webui/config.json`, and it has no environment override. An apparent `PI_WEBUI_ALLOWED_ORIGINS` variable has no effect.
+
+```json
+{
+  "allowedOrigins": ["https://pi.example", "https://pi.example:8443"]
+}
+```
+
+Each entry must be an absolute HTTP or HTTPS origin with no credentials, path beyond an optional single root slash, query, fragment, wildcard, or origin list. Entries normalize scheme/host case and default ports: `HTTPS://PI.EXAMPLE:443/` becomes `https://pi.example`. Matching includes scheme, host, and effective port. Invalid values reject the entire field.
+
+Omitting the file key or configuring `[]` grants no extra origins. Omission from either config update API preserves the current list; send an explicit `"allowedOrigins": []` to clear it. Both config and effectiveConfig responses show desired values, including a newly saved list, and do not prove that either running guard has activated them.
+
+Browser POST, PUT, PATCH, DELETE, and all WebSocket upgrades are checked whenever Origin is present. Same-origin traffic and explicitly configured exact origins are accepted. `Origin: null`, malformed origins, and foreign origins are rejected with HTTP 403 before an action or socket attachment. Nonbrowser clients with no Origin continue to work. Safe GET/HEAD reads retain existing CORS behavior; this key grants no new cross-origin read access.
+
+A reverse proxy that preserves Host and supplies the correct first X-Forwarded-Proto token needs no extra origin. If it rewrites Host, list the public scheme, authority, and nondefault port on the receiving machine. `allowedHosts` controls Vite development host admission and grants no browser-origin trust.
+
+Installing the guard and changing `allowedOrigins` require restarting the web/API process and manually restarting `pi-webui-sessiond.service` on that machine. Ordinary UI/API autoreload does not restart the long-lived daemon. For this development setup, the daemon command is `systemctl --user restart pi-webui-sessiond.service`; the UI/API owner is `pi-webui-ui-dev.service`. Perform the restart when ready to activate the change.
+
+DNS rebinding remains outside this protection: an attacker hostname whose Host and Origin agree can still match. Browser-origin matching does not implement host admission.
+
 ## Precedence and reloads
 
 Machine-global runtime values are resolved as:
@@ -41,6 +64,7 @@ Process restarts depend on the key:
 
 - `host` / `port`: restart the gateway web/API service or process.
 - `maxUploadBytes`: restart both the web/API process and the session daemon on that machine.
+- `allowedOrigins`: restart both the web/API process and the session daemon on that machine; a saved list is desired configuration until both guards restart.
 - `agent.command` / `agent.dir` / `spawnSessions` / `subsessions`: restart the session daemon on that machine.
 - `modelTiers`: saved settings apply immediately in **Settings → Model tiers**; validates all six ladder rows atomically.
 - `utilityModels`: saved settings apply immediately in **Settings → Utility models**; existing sessions use updated values on their next utility operation.
@@ -141,7 +165,7 @@ Plugins may own separate project files, such as `.pi-webui/tasks.json` for the b
 
 ## Configuration matrix
 
-Rows with JSON key `—` are runtime-only environment variables, not config-file keys. `Global` means machine-global. In Settings, selected-machine-safe global keys (`pathAccess`, `uploads`, `maxUploadBytes`, `agent`, `spawnSessions`, `subsessions`, `modelTiers`, `utilityModels`, and `plugins`) are edited for the selected machine; gateway host/port/allowed-hosts, keyboard shortcuts, and machine registry/tokens stay local.
+Rows with JSON key `—` are runtime-only environment variables, not config-file keys. `Global` means machine-global. In Settings, selected-machine-safe global keys (`pathAccess`, `uploads`, `maxUploadBytes`, `agent`, `spawnSessions`, `subsessions`, `modelTiers`, `utilityModels`, and `plugins`) are edited for the selected machine. The machine-global `allowedOrigins` key is config/API-managed for the selected machine rather than exposed in Settings, while gateway host/port/allowedHosts stay gateway-owned; keyboard shortcuts and machine registry/tokens stay local.
 
 | Config | JSON key | Env var | Scope | Project-local behavior | Applies / restart |
 | --- | --- | --- | --- | --- | --- |
@@ -149,6 +173,7 @@ Rows with JSON key `—` are runtime-only environment variables, not config-file
 | Web/API bind host | `host` | `PI_WEBUI_HOST` | Global | Not supported locally | Restart web/API |
 | Web/API port | `port` | `PI_WEBUI_PORT`, `PORT` | Global | Not supported locally | Restart web/API |
 | Dev-server allowed hosts | `allowedHosts` | `PI_WEBUI_ALLOWED_HOSTS` | Global | Not supported locally | Restart dev web/UI |
+| Extra trusted browser origins | `allowedOrigins` | — | Global (machine) | Not supported locally | Restart web/API and session daemon on that machine |
 | External filesystem roots | `pathAccess.allowedPaths` | — | Global + project | **Merges**: global roots first, then project roots; duplicates removed | Next file request; refresh existing views if needed |
 | Manual file upload default folder | `uploads.defaultFolder` | — | Global + project | **Overrides**: project value wins for workspaces in that project; otherwise global/default applies | New Upload dialogs and direct drag/drop batches after config/workspace refresh |
 | Upload/body limit | `maxUploadBytes` | `PI_WEBUI_MAX_UPLOAD_BYTES` | Global | Not supported locally | Restart web/API and session daemon on that machine |
@@ -218,6 +243,12 @@ When an absolute request is served, PI WEBUI expands `~`, canonicalizes the conf
 In **Settings → General**, external filesystem roots are saved on the selected machine. Gateway host, port, and allowed-hosts fields stay on the gateway config.
 
 This is not a sandbox for the underlying Pi Coding Agent or your OS user. It only controls PI WEBUI UI/API file exposure outside a workspace.
+
+Transcript local-file links and Markdown images open a read-only preview served by the machine that owns the session. Workspace-relative reads stay inside that workspace. Absolute external paths require an allowed root on that machine; global and project-local external roots merge using the same policy as the Files panel.
+
+Previews support HTML/SVG, PDF, raster images, and text/source files up to **64 MB (67,108,864 bytes)**. Unsupported files, nonregular filesystem entries, and directories are rejected; this view does not browse directories or write files. Self-contained HTML works, but sibling local images, scripts, and styles inside HTML do not resolve. Remote PDFs transfer whole, without range seeking.
+
+HTML and SVG can animate under a restricted document policy with an opaque origin. Permitted remote scripts, styles, and images can still load. A document may navigate its own tab; the browser-origin checks described below protect PI WEBUI actions and socket upgrades after navigation.
 
 ### Manual upload defaults
 
