@@ -166,11 +166,44 @@ function sanitizeHtml(html: string): string {
   return template.innerHTML;
 }
 
-function isSafeUrl(url: string): boolean {
-  if (url.startsWith("#") || url.startsWith("/")) return true;
-  try {
-    return ["http:", "https:", "mailto:"].includes(new URL(url).protocol);
-  } catch {
-    return false;
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code < 32 || code === 127) return true;
   }
+  return false;
+}
+
+function decodeFileUrlInspection(value: string): string {
+  try {
+    const decoded = decodeURIComponent(value);
+    for (const run of value.match(/(?:%[0-9a-f]{2})+/giu) ?? []) {
+      const bytes = new TextEncoder().encode(decodeURIComponent(run));
+      const encoded = [...bytes].map((b) => `%${b.toString(16).padStart(2, "0")}`).join("");
+      if (encoded.toLowerCase() !== run.toLowerCase()) return value;
+    }
+    return decoded;
+  } catch { return value; }
+}
+
+function isSafeUrl(url: string): boolean {
+  const raw = url.trim();
+  const inspection = decodeFileUrlInspection(raw);
+  // Control characters can hide an active scheme behind a newline or tab that
+  // the URL parser would strip; a relative reference never contains one.
+  if (hasControlCharacter(url) || hasControlCharacter(inspection)) return false;
+  // Marked URI-encodes a Windows backslash destination, so the drive exception
+  // must run on the decoded inspection copy rather than the raw attribute.
+  if (/^[A-Za-z]:[\\/]/u.test(inspection)) return true;
+  if (/^[#/?]/u.test(raw)) return true;
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/u.exec(raw)?.[1]?.toLowerCase();
+  if (scheme !== undefined) return ["http", "https", "mailto", "file"].includes(scheme);
+  // Decoding may reveal an unsafe scheme, but may not invent a newly permitted one.
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(inspection)) return false;
+  const relative = (value: string) => {
+    const boundary = value.search(/[/?#]/u);
+    const first = boundary === -1 ? value : value.slice(0, boundary);
+    return !first.includes(":");
+  };
+  return relative(raw) && relative(inspection);
 }

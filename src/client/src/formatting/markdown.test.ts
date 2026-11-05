@@ -204,3 +204,89 @@ describe("toSafeMarkdownHtml", () => {
 function parseCallsFor(parse: { mock: { calls: unknown[][] } }, text: string): number {
   return parse.mock.calls.filter((call) => call[0] === text).length;
 }
+/** Render one Markdown link/image and return the actual sanitized element. */
+function markdownAttribute(destination: string, image: boolean): Element {
+  const template = document.createElement("template");
+  template.innerHTML = toSafeMarkdownHtml(`${image ? "!" : ""}[local](<${destination}>)`);
+  const element = template.content.querySelector(image ? "img" : "a");
+  if (element === null) throw new Error("Missing Markdown element");
+  return element;
+}
+
+const safeCandidates = [
+  ["a.html", "a.html"],
+  ["./a.html", "./a.html"],
+  ["../a.html", "../a.html"],
+  ["/ramdisk/a.html", "/ramdisk/a.html"],
+  ["?view=a.html", "?view=a.html"],
+  ["//cdn.example/a.png", "//cdn.example/a.png"],
+  ["C:/Work/a.html", "C:/Work/a.html"],
+  [String.raw`C:\Work\Repo\a.html`, "C:%5CWork%5CRepo%5Ca.html"],
+  ["file:///ramdisk/a.html", "file:///ramdisk/a.html"],
+  ["file://localhost/ramdisk/a.html", "file://localhost/ramdisk/a.html"],
+  ["notes/a:b.txt", "notes/a:b.txt"],
+] as const;
+
+// Marked declines a literal newline inside an angle-bracket destination, so
+// the newline-obfuscated active scheme is written as the equivalent entity and
+// the assertion still checks the actual created DOM attribute.
+const unsafeSchemes: readonly (readonly [label: string, destination: string])[] = [
+  ["javascript:alert(1)", "javascript:alert(1)"],
+  ["JaVaScRiPt:alert(1)", "JaVaScRiPt:alert(1)"],
+  ["data:text/html,hello", "data:text/html,hello"],
+  ["vbscript:msgbox(1)", "vbscript:msgbox(1)"],
+  ["unknown:thing", "unknown:thing"],
+  ["java%09script:alert(1)", "java%09script:alert(1)"],
+  ["java%0Ascript:alert(1)", "java%0Ascript:alert(1)"],
+  ["java\tscript:alert(1)", "java\tscript:alert(1)"],
+  ["java\nscript:alert(1)", "java&#10;script:alert(1)"],
+  ["%6Aavascript%3Aalert(1)", "%6Aavascript%3Aalert(1)"],
+  ["unknown%3Athing", "unknown%3Athing"],
+];
+
+describe("toSafeMarkdownHtml local file destinations", () => {
+  for (const image of [false, true]) {
+    for (const [source, expected] of safeCandidates) {
+      it(`preserves ${source} on ${image ? "src" : "href"}`, () => {
+        expect(markdownAttribute(source, image).getAttribute(image ? "src" : "href")).toBe(expected);
+      });
+    }
+  }
+
+  for (const image of [false, true]) {
+    for (const [label, destination] of unsafeSchemes) {
+      it(`removes ${JSON.stringify(label)} from ${image ? "src" : "href"}`, () => {
+        expect(markdownAttribute(destination, image).hasAttribute(image ? "src" : "href")).toBe(false);
+      });
+    }
+  }
+
+  it("retains external anchor target and rel behavior", () => {
+    for (const target of ["http://example.test/a", "https://example.test/a", "mailto:user@example.test", "#part"]) {
+      const a = markdownAttribute(target, false);
+      expect(a.getAttribute("href")).toBe(target);
+      expect(a.getAttribute("target")).toBe("_blank");
+      expect(a.getAttribute("rel")).toBe("noreferrer noopener");
+    }
+  });
+
+  it("caches only the written file targets", () => {
+    const text = "[local](a.html) ![plot](plot.svg)";
+    const first = toSafeMarkdownHtml(text);
+    expect(toSafeMarkdownHtml(text)).toBe(first);
+    expect(first).toContain('href="a.html"');
+    expect(first).toContain('src="plot.svg"');
+    expect(first).not.toContain("/file/view");
+    expect(first).not.toContain("data-file-preview");
+  });
+
+  it("keeps encoded Windows drive destinations for links and images", () => {
+    for (const image of [false, true]) {
+      const attribute = image ? "src" : "href";
+      expect(markdownAttribute(String.raw`C:\Work\Repo\a.html`, image).getAttribute(attribute)).toBe("C:%5CWork%5CRepo%5Ca.html");
+      const template = document.createElement("template");
+      template.innerHTML = toSafeMarkdownHtml(`${image ? "!" : ""}[local](${String.raw`C:\\Work\\Repo\\a.html`})`);
+      expect(template.content.querySelector(image ? "img" : "a")?.getAttribute(attribute)).toBe("C:%5CWork%5CRepo%5Ca.html");
+    }
+  });
+});
