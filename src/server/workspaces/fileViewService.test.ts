@@ -67,8 +67,8 @@ async function assertClosed(stream: ReadStream): Promise<void> {
 
 interface IdentityRow {
   name: string;
-  before: { dev: number; ino: number | undefined; symlink?: boolean };
-  after: { dev: number; ino: number | undefined };
+  before: { dev: number | undefined; ino: number | undefined; symlink?: boolean };
+  after: { dev: number | undefined; ino: number | undefined };
   opened: boolean;
 }
 
@@ -102,10 +102,13 @@ function fileViewLstat(real: Stats, overrides: Partial<FileViewLstat> = {}): Fil
   return { ...fileViewStat(real), isSymbolicLink: () => false, ...overrides };
 }
 
-/** Model malformed native metadata (such as a missing inode) at the seam. */
-function malformedIdentity<T extends FileViewStat | FileViewLstat>(stat: T, value: { dev: number; ino: number | undefined }): T {
-  const next: T = { ...stat, dev: value.dev, ino: value.ino ?? 1 };
-  if (value.ino === undefined) Object.defineProperty(next, "ino", { value: undefined, enumerable: true });
+/** Model malformed native metadata (a missing device or inode) at the seam. */
+function malformedIdentity<T extends FileViewStat | FileViewLstat>(stat: T, value: { dev: number | undefined; ino: number | undefined }): T {
+  const next: T = { ...stat, dev: value.dev ?? stat.dev, ino: value.ino ?? stat.ino };
+  // `dev`/`ino` are typed as numbers, so a missing value has to be installed
+  // over the copied field to model the malformed native record honestly.
+  if (value.dev === undefined) Object.defineProperty(next, "dev", { value: undefined, enumerable: true, configurable: true });
+  if (value.ino === undefined) Object.defineProperty(next, "ino", { value: undefined, enumerable: true, configurable: true });
   return next;
 }
 
@@ -371,6 +374,14 @@ const identityFailures: IdentityRow[] = [
   { name: "NaN dev", before: { dev: Number.NaN, ino: 7 }, after: { dev: Number.NaN, ino: 7 }, opened: true },
   // `missing inode` deliberately models malformed native metadata at the seam.
   { name: "missing inode", before: { dev: 1, ino: undefined }, after: { dev: 1, ino: undefined }, opened: true },
+  // Device and inode validity are independent guards: each row keeps the other
+  // field conclusive so only its own guard can reject it.
+  { name: "negative device", before: { dev: -1, ino: 7 }, after: { dev: -1, ino: 7 }, opened: true },
+  { name: "fractional device", before: { dev: 1.5, ino: 7 }, after: { dev: 1.5, ino: 7 }, opened: true },
+  { name: "unsafe integer device", before: { dev: 2 ** 53, ino: 7 }, after: { dev: 2 ** 53, ino: 7 }, opened: true },
+  { name: "missing device", before: { dev: undefined, ino: 7 }, after: { dev: undefined, ino: 7 }, opened: true },
+  { name: "negative inode", before: { dev: 1, ino: -1 }, after: { dev: 1, ino: -1 }, opened: true },
+  { name: "fractional inode", before: { dev: 1, ino: 1.5 }, after: { dev: 1, ino: 1.5 }, opened: true },
   { name: "unsafe integer identity", before: { dev: 1, ino: 2 ** 53 }, after: { dev: 1, ino: 2 ** 53 }, opened: true },
 ];
 
