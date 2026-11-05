@@ -188,6 +188,31 @@ describe("settings config drafts", () => {
     })).toEqual({ allowedHosts: ["example.local", "192.168.1.20"] });
   });
 
+  it("preserves populated allowedOrigins while saving unrelated gateway fields", () => {
+    const base = { allowedOrigins: ["https://pi.example"] };
+
+    const result = gatewayServerConfigFromDraft({ host: "127.0.0.1", port: "9000", allowedHostsMode: "all", allowedHostsText: "" }, base);
+
+    expect(result.allowedOrigins).toEqual(["https://pi.example"]);
+    expect(result.allowedOrigins).not.toBe(base.allowedOrigins);
+    expect(result).toMatchObject({ host: "127.0.0.1", port: 9000, allowedHosts: true });
+  });
+
+  it("preserves explicit empty allowedOrigins without synthesizing an absent field", () => {
+    const draft = { host: "", port: "", allowedHostsMode: "list", allowedHostsText: "" } as const;
+    const base = { allowedOrigins: [] };
+
+    const result = gatewayServerConfigFromDraft(draft, base);
+
+    expect(result.allowedOrigins).toEqual([]);
+    expect(result.allowedOrigins).not.toBe(base.allowedOrigins);
+    expect(gatewayServerConfigFromDraft(draft, {})).not.toHaveProperty("allowedOrigins");
+  });
+
+  it("does not add origin changes to selected-machine file-access patches", () => {
+    expect(machineAccessConfigPatchFromDraft({ allowedPathsText: "/tmp", uploadDefaultFolder: "incoming" })).toEqual({ pathAccess: { allowedPaths: ["/tmp"] }, uploads: { defaultFolder: "incoming" } });
+  });
+
   it("builds selected-machine access/upload patches only from selected-machine-safe fields", () => {
     const patch = machineAccessConfigPatchFromDraft({
       allowedPathsText: "/tmp\n~/SDKs\n",

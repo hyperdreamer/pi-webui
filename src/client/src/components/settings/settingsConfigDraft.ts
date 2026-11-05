@@ -175,6 +175,7 @@ function preservedGatewayConfigRemainder(baseConfig: PiWebUiConfigValues): PiWeb
     ...(baseConfig.pathAccess === undefined ? {} : { pathAccess: baseConfig.pathAccess }),
     ...(baseConfig.uploads === undefined ? {} : { uploads: baseConfig.uploads }),
     ...(baseConfig.maxUploadBytes === undefined ? {} : { maxUploadBytes: baseConfig.maxUploadBytes }),
+    ...(baseConfig.allowedOrigins === undefined ? {} : { allowedOrigins: [...baseConfig.allowedOrigins] }),
     ...(baseConfig.spawnSessions === undefined ? {} : { spawnSessions: baseConfig.spawnSessions }),
     ...(baseConfig.subsessions === undefined ? {} : { subsessions: baseConfig.subsessions }),
     ...(baseConfig.agent === undefined ? {} : { agent: baseConfig.agent }),

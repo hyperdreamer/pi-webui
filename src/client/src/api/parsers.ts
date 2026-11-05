@@ -12,6 +12,7 @@ import { MODEL_TIERS, RECENT_PROJECT_LIMIT, UTILITY_MODEL_SLOTS } from "../../..
 import { UTILITY_MODEL_SESSION_ONLY } from "../../../shared/apiTypes";
 import type { ModelTier, ModelTierEntry, ModelTierLadder, ModelTierModelOption, ModelTierRowValidation, ModelTierSettingsResponse, TierModelRef, UtilityModelBinding, UtilityModelOptionV1, UtilityModelOptionV2, UtilityModelSettings, UtilityModelSettingsResponse, UtilityModelSettingsResponseV1, UtilityModelSettingsResponseV2, UtilityModelSettingsResponseV3, UtilityModelSlot, UtilityModelSlotValidation } from "../../../shared/apiTypes";
 import { parseActiveAgentProfileDescriptor } from "../../../shared/activeAgentProfile";
+import { normalizeBrowserOrigin } from "../../../shared/browserOrigins";
 import { parseKnownPiWebUiCapabilities } from "../../../shared/capabilities";
 import { canonicalBcp47LanguageTag, isCanonicalLowercaseUuid } from "../../../shared/speechInput";
 import { isHostSpeechRunId } from "../../../shared/hostSpeech";
@@ -1968,6 +1969,7 @@ function parsePiWebUiConfigValues(value: unknown): PiWebUiConfigValues {
     ...optionalField("host", optionalString(record, "host")),
     ...optionalField("port", optionalNumber(record, "port")),
     ...optionalField("allowedHosts", optionalAllowedHosts(record["allowedHosts"])),
+    ...optionalField("allowedOrigins", optionalAllowedOrigins(record["allowedOrigins"])),
     ...optionalField("shortcuts", optionalShortcuts(record["shortcuts"])),
     ...optionalField("plugins", optionalPlugins(record["plugins"])),
     ...optionalField("pathAccess", optionalPathAccess(record["pathAccess"])),
@@ -2026,6 +2028,20 @@ function optionalAllowedHosts(value: unknown): PiWebUiConfigValues["allowedHosts
   if (value === true) return true;
   if (isStringArray(value)) return value;
   throw new Error("Invalid PI WEBUI allowedHosts field");
+}
+
+function optionalAllowedOrigins(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  const fail = (): never => { throw new Error("Invalid PI WEBUI allowedOrigins field"); };
+  if (!Array.isArray(value)) return fail();
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return fail();
+    const origin = normalizeBrowserOrigin(item);
+    if (origin === undefined) return fail();
+    if (!result.includes(origin)) result.push(origin);
+  }
+  return result;
 }
 
 function optionalPathAccess(value: unknown): PiWebUiConfigValues["pathAccess"] | undefined {

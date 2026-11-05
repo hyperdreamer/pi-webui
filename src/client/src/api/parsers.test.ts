@@ -2041,3 +2041,36 @@ describe("machine parser", () => {
     },
   );
 });
+
+describe("PI WEBUI config allowedOrigins parser", () => {
+  const originsResponse = (config: unknown, effectiveConfig: unknown = config) => ({
+    path: "/tmp/config.json",
+    exists: true,
+    config,
+    effectiveConfig,
+    envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false, sessiondUrl: false },
+  });
+
+  it("accepts optional normalized allowedOrigins in both config and effectiveConfig", () => {
+    for (const [input, expected] of [
+      [{}, undefined],
+      [{ allowedOrigins: ["HTTPS://PI.EXAMPLE:443/", "https://pi.example"] }, ["https://pi.example"]],
+      [{ allowedOrigins: [] }, []],
+    ] as const) {
+      const parsed = parsePiWebUiConfigResponse(originsResponse(input));
+
+      expect(parsed.config.allowedOrigins).toEqual(expected);
+      expect(parsed.effectiveConfig.allowedOrigins).toEqual(expected);
+      expect(parsed.envOverrides).not.toHaveProperty("allowedOrigins");
+    }
+  });
+
+  it("rejects malformed browser allowedOrigins instead of dropping it", () => {
+    const invalid: unknown[] = [null, true, 7, {}, "https://host", [false], ["null"], ["*"], ["//host"], ["file://host"], ["https://@host"], ["https://u:p@host"], ["https://host/a"], ["https://host/a/.."], ["https://host//"], ["https://host?"], ["https://host#"], ["https://host\\"], ["https://ho st"], ["https://ho\tst"], ["https://a,https://b"], ["http://host:99999"]];
+    for (const value of invalid) {
+      for (const field of ["config", "effectiveConfig"]) {
+        expect(() => parsePiWebUiConfigResponse({ ...originsResponse({}), [field]: { allowedOrigins: value } })).toThrow("Invalid PI WEBUI allowedOrigins field");
+      }
+    }
+  });
+});
