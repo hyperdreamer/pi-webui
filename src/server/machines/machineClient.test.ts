@@ -1,5 +1,7 @@
-import { getEventListeners } from "node:events";
+import { getEventListeners, once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
+import { createSessionDaemonApp } from "../sessiond/sessionDaemonApp.js";
 import {
   DEFAULT_REMOTE_HEALTH_TIMEOUT_MS,
   DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
@@ -572,3 +574,87 @@ function onlyFetchCall(fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>): { inp
   if (init === undefined) throw new Error("Expected fetch init");
   return { input, init };
 }
+
+async function awaitMachineMessage(socket: WebSocket): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      once(socket, "message"),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error("Machine socket deadline")); }, 2000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    socket.terminate();
+  }
+}
+
+it("sends no Origin by default for machine HTTP and WebSocket traffic", async () => {
+  const fetcher = vi.fn<typeof fetch>((_input, init) => { expect(new Headers(init?.headers).has("origin")).toBe(false); return Promise.resolve(new Response("{}")); });
+  const app = await createSessionDaemonApp({ logger: false }); const seen: (string | undefined)[] = [];
+  app.get("/socket", { websocket: true }, (s, r) => { seen.push(r.headers.origin); s.send("ready"); });
+  const baseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
+  try {
+    const client = new RemoteMachineClient({ baseUrl }, fetcher); await client.requestJson("POST", "/action", {});
+    const socket = client.connectWebSocket("/socket"); await awaitMachineMessage(socket);
+    expect(seen).toEqual([undefined]);
+  } finally { await app.close(); }
+});
+
+it("preserves a configured machine Origin for HTTP and WebSocket traffic", async () => {
+  const configured = "https://public.example:8443";
+  const fetcher = vi.fn<typeof fetch>((_input, init) => { const h = new Headers(init?.headers); expect(h.get("origin")).toBe(configured); expect(h.has("cookie")).toBe(false); expect(h.get("authorization")).toBe("Bearer machine-token"); return Promise.resolve(new Response("{}")); });
+  const app = await createSessionDaemonApp({ logger: false, allowedOrigins: [configured] }); const seen: (string | undefined)[] = [];
+  app.get("/socket", { websocket: true }, (s, r) => { seen.push(r.headers.origin); expect(r.headers.cookie).toBeUndefined(); s.send("ready"); });
+  const baseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
+  try {
+    const client = new RemoteMachineClient({ baseUrl, token: "machine-token", headers: { oRiGiN: configured, Cookie: "blocked", Authorization: "blocked" } }, fetcher);
+    await client.requestJson("POST", "/action", {});
+    const socket = client.connectWebSocket("/socket"); await awaitMachineMessage(socket); expect(seen).toEqual([configured]);
+  } finally { await app.close(); }
+});
+
+function observeMachineSocket(socket: WebSocket): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    let complete = false; const timer = setTimeout(() => { socket.terminate(); reject(new Error("Machine handshake deadline")); }, 2000);
+    const finish = (status: number, body: string) => { if (complete) return; complete = true; clearTimeout(timer); socket.terminate(); resolve({ status, body }); };
+    socket.once("message", () => { finish(101, ""); });
+    socket.once("unexpected-response", (_request, response) => { const chunks: Buffer[] = []; response.on("data", (chunk: Buffer) => { chunks.push(chunk); }); response.once("end", () => { finish(response.statusCode ?? 0, Buffer.concat(chunks).toString()); }); });
+    socket.on("error", (error) => { if (!complete) { clearTimeout(timer); reject(error); } });
+  });
+}
+
+async function guardedMachine(allowedOrigins: string[]) {
+  const app = await createSessionDaemonApp({ allowedOrigins, logger: false }); const calls = { action: 0, socket: 0 };
+  app.post("/action", () => { calls.action++; return { ok: true }; });
+  app.get("/socket", { websocket: true }, (socket) => { calls.socket++; socket.send("ready"); });
+  const baseUrl = await app.listen({ host: "127.0.0.1", port: 0 }); return { app, baseUrl, calls };
+}
+
+it("configured matching Origin works against an empty remote allowlist", async () => {
+  const f = await guardedMachine([]);
+  try {
+    const client = new RemoteMachineClient({ baseUrl: f.baseUrl, headers: { oRiGiN: f.baseUrl } });
+    expect((await client.requestJson("POST", "/action", {})).statusCode).toBe(200);
+    expect((await observeMachineSocket(client.connectWebSocket("/socket"))).status).toBe(101);
+    expect(f.calls).toEqual({ action: 1, socket: 1 });
+  } finally { await f.app.close(); }
+});
+
+it("configured foreign Origin requires the remote startup allowlist", async () => {
+  const configured = "https://public.example:8443";
+  for (const allowedOrigins of [[], [configured]]) {
+    const f = await guardedMachine(allowedOrigins);
+    try {
+      for (const origin of [configured, "https://public.example:8444", "%%%", "null"]) {
+        const expected = allowedOrigins.length && origin === configured ? 200 : 403; const before = { ...f.calls };
+        const client = new RemoteMachineClient({ baseUrl: f.baseUrl, headers: { Origin: origin } });
+        const response = await client.requestJson("POST", "/action", {}); expect(response.statusCode).toBe(expected);
+        const socket = await observeMachineSocket(client.connectWebSocket("/socket")); expect(socket.status).toBe(expected === 200 ? 101 : 403);
+        if (expected === 403) { expect(response.body).toEqual({ error: "Cross-origin request rejected" }); expect(socket.body).toBe('{"error":"Cross-origin request rejected"}'); expect(f.calls).toEqual(before); }
+        else expect(f.calls).toEqual({ action: before.action + 1, socket: before.socket + 1 });
+      }
+    } finally { await f.app.close(); }
+  }
+});

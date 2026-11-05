@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
-import Fastify from "fastify";
-import fastifyWebsocket from "@fastify/websocket";
 import { WorkspaceActivityService } from "./activity/workspaceActivityService.js";
 import { registerWorkspaceActivityRoutes } from "./activity/workspaceActivityRoutes.js";
 import { SessionEventHub } from "./realtime/sessionEventHub.js";
@@ -18,7 +16,7 @@ import { PiSessionService } from "./sessions/piSessionService.js";
 import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGateway.js";
 import { SessionArchiveStore } from "./sessions/sessionArchiveStore.js";
 import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
-import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
+import { createSessionDaemonApp } from "./sessiond/sessionDaemonApp.js";
 import { SessionDefaultsService } from "./sessions/sessionDefaultsService.js";
 import { registerSessionDefaultsRoutes } from "./sessions/sessionDefaultsRoutes.js";
 import { StarterModelPolicyPreferenceStore } from "./sessions/starterModelPolicyPreferenceStore.js";
@@ -62,12 +60,7 @@ const activeAgentProfile = createActiveAgentProfileDescriptor({
   dir: config.agent.dir,
   sessionDirEnvKeys: agentSessionDirEnvKeys(config.agent.command),
 });
-const app = Fastify({
-  logger: true,
-  ...sessionRouteFastifyOptions,
-  bodyLimit: maxUploadBytes(daemonEnvironment, config),
-});
-await app.register(fastifyWebsocket);
+const app = await createSessionDaemonApp({ allowedOrigins: config.allowedOrigins ?? [], logger: true, bodyLimit: maxUploadBytes(daemonEnvironment, config) });
 
 await runSessionDaemonStartup({
   logger: app.log,
