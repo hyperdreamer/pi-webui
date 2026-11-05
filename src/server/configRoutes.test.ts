@@ -319,6 +319,102 @@ describe("config routes", () => {
   });
 });
 
+describe("config route allowedOrigins", () => {
+  it.each(["/api/config", "/api/machines/local/config"])("exposes normalized allowedOrigins in both config response projections at %s", async (url) => {
+    const put = await app.inject({ method: "PUT", url, payload: { config: { allowedOrigins: ["HTTPS://PI.EXAMPLE:443/", "https://pi.example"] } } });
+
+    expect(put.statusCode).toBe(200);
+    for (const response of [put, await app.inject({ method: "GET", url })]) {
+      const value = response.json<PiWebUiConfigResponse>();
+      expect(value.config.allowedOrigins).toEqual(["https://pi.example"]);
+      expect(value.effectiveConfig.allowedOrigins).toEqual(["https://pi.example"]);
+      expect(value.envOverrides).not.toHaveProperty("allowedOrigins");
+    }
+  });
+
+  it("accepts allowedOrigins in selected-machine patches and preserves it on unrelated patches", async () => {
+    await app.inject({ method: "PUT", url: "/api/machines/local/config", payload: { config: { allowedOrigins: ["https://pi.example"] } } });
+    await app.inject({ method: "PUT", url: "/api/machines/local/config", payload: { config: { pathAccess: { allowedPaths: ["/tmp"] } } } });
+
+    expect(savedConfig.allowedOrigins).toEqual(["https://pi.example"]);
+    expect(service.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves omitted allowedOrigins on a global update and clears only with an explicit empty list", async () => {
+    savedConfig = { port: 8808, allowedOrigins: ["https://pi.example"] };
+
+    await app.inject({ method: "PUT", url: "/api/config", payload: { config: { host: "127.0.0.1" } } });
+    expect(savedConfig).toEqual({ host: "127.0.0.1", allowedOrigins: ["https://pi.example"] });
+
+    const clear = await app.inject({ method: "PUT", url: "/api/config", payload: { config: { allowedOrigins: [] } } });
+    expect(savedConfig.allowedOrigins).toEqual([]);
+    expect(clear.json<PiWebUiConfigResponse>().effectiveConfig.allowedOrigins).toEqual([]);
+  });
+
+  it("clears populated allowedOrigins through the selected-machine API with an explicit empty list", async () => {
+    savedConfig = { port: 8808, allowedOrigins: ["https://pi.example"] };
+
+    const clear = await app.inject({ method: "PUT", url: "/api/machines/local/config", payload: { config: { allowedOrigins: [] } } });
+
+    expect(clear.statusCode).toBe(200);
+    expect(savedConfig).toEqual({ port: 8808, allowedOrigins: [] });
+    const cleared = clear.json<PiWebUiConfigResponse>();
+    expect(cleared.config.allowedOrigins).toEqual([]);
+    expect(cleared.effectiveConfig.allowedOrigins).toEqual([]);
+
+    const read = await app.inject({ method: "GET", url: "/api/machines/local/config" });
+
+    expect(read.statusCode).toBe(200);
+    const readConfig = read.json<PiWebUiConfigResponse>();
+    expect(readConfig.config.allowedOrigins).toEqual([]);
+    expect(readConfig.effectiveConfig.allowedOrigins).toEqual([]);
+  });
+
+  const configAliases = [
+    { alias: "/api/config", prefix: "PI WEBUI config" },
+    { alias: "/api/machines/local/config", prefix: "PI WEBUI selected-machine config" },
+  ];
+  for (const { alias, prefix } of configAliases) {
+    it.each([null, "https://host", ["null"], ["https://host/a/.."], ["https://host?"], ["https://host#"], ["https://@host"], [false]].map((value, index) => ({ value, index })))(
+      `rejects invalid origin payload $index on ${alias} before persistence`,
+      async ({ value }) => {
+        const response = await app.inject({ method: "PUT", url: alias, payload: { config: { allowedOrigins: value } } });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({ error: `${prefix} allowedOrigins must be an array of absolute http/https origins without credentials, paths, queries, or fragments: request` });
+        expect(service.update).not.toHaveBeenCalled();
+        expect(service.write).not.toHaveBeenCalled();
+      },
+    );
+  }
+
+  it("parses allowedOrigins in server-side remote responses using the response source", () => {
+    for (const allowedOrigins of [["HTTPS://PI.EXAMPLE:443/"], []]) {
+      const raw = responseFor({ allowedOrigins }, true);
+
+      const parsed = parsePiWebUiConfigResponseBody(raw, "Remote machine config response");
+
+      expect(parsed.config.allowedOrigins).toEqual(allowedOrigins.length ? ["https://pi.example"] : []);
+      expect(parsed.effectiveConfig.allowedOrigins).toEqual(parsed.config.allowedOrigins);
+    }
+    const raw = responseFor({}, true);
+    for (const field of ["config", "effectiveConfig"] as const) {
+      expect(() => parsePiWebUiConfigResponseBody({ ...raw, [field]: { allowedOrigins: ["null"] } }, "Remote machine config response")).toThrow("PI WEBUI config allowedOrigins must be an array of absolute http/https origins without credentials, paths, queries, or fragments: Remote machine config response");
+    }
+  });
+
+  it("retains allowedOrigins through committed-snapshot projection and speech redaction", () => {
+    const config = { allowedOrigins: ["https://pi.example"] };
+    const snapshot = { loaded: { path: "/tmp/config.json", exists: true, config }, speechInputRevision: "revision" };
+
+    const response = redactSpeechInputConfigResponse(piWebUiConfigResponseFromSnapshot(snapshot, { env: {} }));
+
+    expect(response.config.allowedOrigins).toEqual(["https://pi.example"]);
+    expect(response.effectiveConfig.allowedOrigins).toEqual(["https://pi.example"]);
+    expect(response.config).not.toHaveProperty("speechInput");
+  });
+});
+
 describe("sessiond environment override projection", () => {
   it("uses a trim-aware sessiondUrl override flag", () => {
     const loaded = { path: "/tmp/pi-webui/config.json", exists: false, config: {} };
@@ -397,7 +493,7 @@ describe("config route speech redaction", () => {
       language: "en-US",
       cloud: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini-transcribe", apiKey: "$OPENAI_API_KEY" },
     };
-    savedConfig = { port: 9000, speechInput };
+    savedConfig = { port: 9000, allowedOrigins: ["https://pi.example"], speechInput };
 
     const response = await app.inject({ method: "GET", url: "/api/config" });
 
@@ -406,6 +502,8 @@ describe("config route speech redaction", () => {
     expect(body.config).not.toHaveProperty("speechInput");
     expect(body.effectiveConfig).not.toHaveProperty("speechInput");
     expect(body.config.port).toBe(9000);
+    expect(body.config.allowedOrigins).toEqual(["https://pi.example"]);
+    expect(body.effectiveConfig.allowedOrigins).toEqual(["https://pi.example"]);
     expect(service.read).toHaveBeenCalledOnce();
   });
 

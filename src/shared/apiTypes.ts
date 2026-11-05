@@ -491,6 +491,8 @@ export interface PiWebUiConfigValues {
   host?: string;
   port?: number;
   allowedHosts?: string[] | true;
+  /** Extra exact browser origins trusted by this machine; both HTTP owners restart. */
+  allowedOrigins?: string[];
   shortcuts?: PiWebUiShortcutConfig;
   plugins?: PiWebUiPluginConfigMap;
   /** External filesystem roots PI WEBUI may expose outside a workspace. */

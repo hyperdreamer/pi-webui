@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "no
 import { randomUUID } from "node:crypto";
 import { MODEL_TIERS, UTILITY_MODEL_SESSION_ONLY, type ModelTier, type ModelTierLadder, type PiWebUiAgentDirEnvSource, type PiWebUiConfigValues, type PiWebUiSessiondConfig, type PiWebUiSpeechInputCloudConfig, type PiWebUiSpeechInputConfig, type SpeechInputProviderPreference, type TierModelRef, type UtilityModelBinding, type UtilityModelSettings } from "./shared/apiTypes.js";
 import { isPiCompanionCommand, usesPiCodingAgentStateCompatibility } from "./shared/activeAgentProfile.js";
+import { normalizeBrowserOrigin } from "./shared/browserOrigins.js";
 import { isPiWebUiPluginId, piWebUiPluginIdPattern } from "./shared/pluginIds.js";
 import { isKnownThinkingLevel } from "./shared/thinkingLevels.js";
 
@@ -212,6 +213,7 @@ export function savePiWebUiConfig(config: PiWebUiConfig, options: SavePiWebUiCon
   delete existing["host"];
   delete existing["port"];
   delete existing["allowedHosts"];
+  delete existing["allowedOrigins"];
   delete existing["shortcuts"];
   delete existing["plugins"];
   delete existing["pathAccess"];
@@ -426,6 +428,7 @@ function piWebUiConfigRecord(config: PiWebUiConfig): Record<string, unknown> {
     ...(config.host !== undefined ? { host: config.host } : {}),
     ...(config.port !== undefined ? { port: config.port } : {}),
     ...(config.allowedHosts !== undefined ? { allowedHosts: config.allowedHosts } : {}),
+    ...(config.allowedOrigins !== undefined ? { allowedOrigins: config.allowedOrigins } : {}),
     ...(config.shortcuts !== undefined ? { shortcuts: config.shortcuts } : {}),
     ...(config.plugins !== undefined ? { plugins: config.plugins } : {}),
     ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
@@ -470,6 +473,7 @@ function parsePiWebUiConfig(value: Record<string, unknown>, path: string, option
       ...(value["host"] !== undefined ? { host: parseString(value["host"], "host", path) } : {}),
       ...(value["port"] !== undefined ? { port: parsePort(value["port"], "port", path) } : {}),
       ...(value["allowedHosts"] !== undefined ? { allowedHosts: parseAllowedHosts(value["allowedHosts"], path) } : {}),
+      ...(value["allowedOrigins"] !== undefined ? { allowedOrigins: parseAllowedOriginsConfig(value["allowedOrigins"], path) } : {}),
       ...(value["shortcuts"] !== undefined ? { shortcuts: parseShortcuts(value["shortcuts"], path) } : {}),
       ...(value["plugins"] !== undefined ? { plugins: parsePlugins(value["plugins"], path) } : {}),
       ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
@@ -914,6 +918,19 @@ function parseAllowedHosts(value: unknown, path: string): string[] | true {
 function parseAllowedHostsEnv(value: string): string[] | true {
   if (value === "true") return true;
   return value.split(",").map((host) => host.trim()).filter((host) => host !== "");
+}
+
+export function parseAllowedOriginsConfig(value: unknown, source: string): string[] {
+  const message = `PI WEBUI config allowedOrigins must be an array of absolute http/https origins without credentials, paths, queries, or fragments: ${source}`;
+  if (!Array.isArray(value)) throw new Error(message);
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") throw new Error(message);
+    const origin = normalizeBrowserOrigin(item);
+    if (origin === undefined) throw new Error(message);
+    if (!result.includes(origin)) result.push(origin);
+  }
+  return result;
 }
 
 export function parsePathAccessConfig(value: unknown, path: string): NonNullable<PiWebUiConfigValues["pathAccess"]> {

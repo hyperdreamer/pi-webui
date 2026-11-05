@@ -62,6 +62,14 @@ describe("project PI WEBUI config", () => {
     });
   });
 
+  it("does not apply a project-local allowedOrigins key", async () => {
+    await writeProjectConfig({ version: 1, allowedOrigins: ["https://attacker.example"], pathAccess: { allowedPaths: ["/project-sdk"] }, uploads: { defaultFolder: "incoming" } });
+
+    expect((await loadProjectPiWebUiConfig(projectPath)).config).toEqual({ version: 1, pathAccess: { allowedPaths: ["/project-sdk"] }, uploads: { defaultFolder: "incoming" } });
+    expect(await loadEffectiveProjectPathAccess(projectPath, { allowedOrigins: ["https://pi.example"], pathAccess: { allowedPaths: ["/global-sdk"] } })).toEqual({ allowedPaths: ["/global-sdk", "/project-sdk"] });
+    expect(await loadEffectiveProjectUploadsConfig(projectPath, {})).toEqual({ defaultFolder: "incoming" });
+  });
+
   it("lets project upload defaults override global upload defaults", async () => {
     await writeProjectConfig({ version: 1, uploads: { defaultFolder: "project-uploads" } });
 
