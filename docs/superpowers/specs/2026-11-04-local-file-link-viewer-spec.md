@@ -60,7 +60,7 @@ These exports are consumed by the compositions, route modules, or tests below. D
 | `src/shared/federatedRoutes.ts` | Add exactly `{ method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/file/view" }` to `FEDERATED_HTTP_ROUTES`. No timeout override or new WebSocket route. |
 | `src/server/machines/machineProxyRoutes.ts` | Add lowercase `referrer-policy` to `SAFE_RESPONSE_HEADERS`. Use existing streamed GET cancellation, eager header flush, and upstream error propagation. Config forwarding picks up the shared selected-machine parser/projection changes. Do not forward browser request `Origin` or `Range`. |
 | `src/server/app.ts` | Read and copy the startup `effectiveConfig.allowedOrigins` once through the existing injected config service; register the root guard before all application routes. Keep the config mutation coordinator shared. |
-| `src/server/workspaces/pathAccessPolicy.ts` | Export `PathAccessTargetNotFoundError` and use it for target resolution only: wrap the target `canonicalExistingPath` call in `resolvePathAccessTarget` (workspace branch) and `resolveAllowedTarget` (allowed-root branch) so a target `ENOENT`/`ENOTDIR` becomes that typed error carrying the existing `Path does not exist` message. Workspace-root and allowed-root canonicalization keep their current behavior, and other Explorer routes keep the same message. |
+| `src/server/workspaces/pathAccessPolicy.ts` | Export `PathAccessTargetNotFoundError` and use it for target resolution only: wrap the target `canonicalExistingPath` call in `resolvePathAccessTarget` (workspace branch) and `resolveAllowedTarget` (allowed-root branch) so a target `ENOENT`/`ENOTDIR` becomes that typed error. `ENOENT` keeps the existing `Path does not exist` message; `ENOTDIR` keeps the original Node error message verbatim, so other Explorer routes stay byte-identical. Workspace-root and allowed-root canonicalization keep their current behavior, and other Explorer routes keep the same message. |
 | `src/server/sessiond.ts` | Replace inline Fastify/WebSocket edge construction with `await createSessionDaemonApp({ allowedOrigins: config.allowedOrigins ?? [], logger: true, bodyLimit: maxUploadBytes(daemonEnvironment, config) })`. Keep the existing frozen environment, startup ordering, route registration callback, runtime ownership, listener, and shutdown logic. Remove imports made unused by the extraction. |
 
 `src/server/index.ts`, `RemoteMachineClient`, the daemon client, project-local config schema, and image preview behavior need no production changes. The path-policy module changes only by the typed target-not-found error above. `Origin` configured on a machine record already survives the machine client's configured-header filter; protect that behavior with tests.
@@ -384,7 +384,7 @@ Do not derive ownership from a remote machine's configured URL or from the works
 `openWorkspaceFileView` and factory-created openers follow the same algorithm:
 
 1. Reject absent or exact-empty `path` with the required 400 message. Reject a NUL-containing string with its separate 400 message. Whitespace filenames are not silently trimmed. HTTP non-string and repeated query values are rejected at the route boundary before this typed API.
-2. Call `authorize(rootPath, path, pathAccess)` exactly once, using the existing policy. Retain its `root`, `target`, and `displayPath`. A relative request stays under the canonical workspace. An absolute/home-relative request requires a configured allowed root. Do not independently allow all absolute workspace paths: the client intentionally makes cwd-child paths relative. Catch `PathAccessTargetNotFoundError` and return the target 404 mapping; a missing or invalid workspace/configured root is not that error and stays an infrastructure failure.
+2. Call `authorize(rootPath, path, pathAccess)` exactly once, using the existing policy. Retain its `root`, `target`, and `displayPath`. A relative request stays under the canonical workspace. An absolute/home-relative request requires a configured allowed root. Do not independently allow all absolute workspace paths: the client intentionally makes cwd-child paths relative. Catch `PathAccessTargetNotFoundError` and return the target 404 mapping; map raw authorization-stage errno values through section 6.3. A missing or invalid workspace/configured root is not the typed error and stays an infrastructure failure.
 3. On Windows only, call `lstat(target)` before opening. A final symlink is a 403. A nonregular entry is a 415. Capture dev/ino for comparison after open. Do not pre-stat size on POSIX.
 4. Open the canonical target. On Linux and other POSIX hosts use numeric `constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK`; on Windows use `constants.O_RDONLY`. Constants must not be accidentally replaced by their truthiness or by string `"r"` on POSIX. A POSIX FIFO must not wait for a writer. An existing authorized symlink resolving inside a permitted root remains permitted: authorization returns its canonical destination; no-follow protects the final destination entry from a subsequent swap.
 5. Inside a `try/finally` ownership region, `await handle.stat()`. Require `isFile()` before reading. Require finite, nonnegative safe-integer `size`; inconsistent metadata is a fail-closed 403. A directory/FIFO/device/socket is a 415. If size exceeds `67_108_864`, return 413; exactly that size is allowed.
@@ -502,7 +502,16 @@ Bodies below are exact UTF-8 text with **no terminal newline**. Every file-view 
 
 The file service translates these existing policy errors to 403: `Absolute paths are not allowed`, `Path traversal is not allowed`, `Path escapes workspace`, `Path is outside allowed paths`, and the prefixes `Absolute path is not valid on this host:` / `Path is not absolute:`.
 
-Target resolution is typed. `resolveWorkspacePathAccessTarget` wraps a target `realpath` failure with `PathAccessTargetNotFoundError` (ENOENT or ENOTDIR) when resolving the workspace-relative target or the configured allowed-root target. `PathAccessTargetNotFoundError` maps to the target 404. A missing or invalid workspace root or configured allowed root is never wrapped; it stays an infrastructure/config error and maps to 500. Do not infer a missing target from a cause chain, and do not rewrite the other Explorer routes' catch-all semantics.
+Target resolution is typed. `resolveWorkspacePathAccessTarget` wraps a target `realpath` failure with `PathAccessTargetNotFoundError` (ENOENT or ENOTDIR) when resolving the workspace-relative target or the configured allowed-root target. `PathAccessTargetNotFoundError` maps to the target 404. The typed error preserves the existing message: `Path does not exist` for ENOENT, and the original Node message verbatim for ENOTDIR, so other Explorer routes keep their exact responses. A missing or invalid workspace root or configured allowed root is never wrapped; it stays an infrastructure/config error and maps to 500. Do not infer a missing target from a cause chain, and do not rewrite the other Explorer routes' catch-all semantics.
+
+Authorization-stage failures are mapped before the open:
+
+| Authorization-stage failure | Status and body |
+| --- | --- |
+| `PathAccessTargetNotFoundError` | 404 target message |
+| one of the listed policy-denial messages | 403 policy message |
+| raw `EACCES`, `EPERM`, or `ELOOP` from `realpath` | 403 policy message |
+| missing/invalid workspace root or configured allowed root, and any other error | 500 infrastructure message |
 
 Open-stage failures are mapped after authorization, before a handle exists:
 
@@ -774,7 +783,8 @@ Create a real temporary workspace and a separate allowed root/outside root. Fixt
 - `uses conclusive Windows identity and fstat size` — win32 seam, matching positive inode/dev, different pre-open size, accepted fstat size; open uses O_RDONLY and no `/proc`.
 - `denies <Windows identity failure>` — rows: lstat symlink, dev mismatch, ino mismatch, zero inode, missing/NaN metadata, unsafe integer identity. Assert 403 and whether open must remain uncalled (symlink) or handle closes (post-open failures).
 - `closes every handle on <post-open failure>` — fstat rejection, nonregular metadata, invalid size, oversized, Windows mismatch, Linux lookup failure, unknown kind, and createReadStream throw; primary status/error preserved and close observed once before ownership transfer.
-- `maps permission errors to 403 and unexpected filesystem errors to rejection` — EACCES/EPERM/ELOOP versus EIO; EIO is not misreported as a supported file.
+- `maps authorization-stage permission and loop errors to 403` — real inaccessible-directory EACCES and cyclic-symlink ELOOP raised by the authorizer, before any open; each returns 403 and the open seam records zero calls. A missing-root control remains 500.
+- `maps open-stage permission errors to 403 and unexpected filesystem errors to rejection` — EACCES/EPERM/ELOOP versus EIO at the open seam; EIO is not misreported as a supported file.
 
 Short-stream HTTP assertions belong to the reply test, not a claim that a raw ReadStream EOF knows its previously measured length.
 
@@ -943,7 +953,7 @@ Use the real RemoteMachineClient with an injected fetch boundary for HTTP and a 
 
 - `wrap target ENOENT and ENOTDIR as PathAccessTargetNotFoundError` — both the workspace-relative branch and the configured allowed-root branch; message stays `Path does not exist`.
 - `do not wrap workspace-root or allowed-root canonicalization failures` — missing root and non-directory root keep their existing error and are not the typed target error.
-- `keep existing Explorer error messages unchanged` — the typed error's message is identical, so current routes' 400 responses do not change.
+- `keep existing Explorer error messages unchanged` — ENOENT keeps `Path does not exist`; ENOTDIR keeps the original Node message verbatim. Compare both against the pre-change route bodies so the 400 responses are byte-identical.
 
 ## 11. Browser audit evidence
 
@@ -1063,5 +1073,5 @@ At specification-authoring time these are future implementation checks; this doc
 10. **Pre-stream infrastructure taxonomy.** The design's five FileViewError statuses remain exact; malformed query shape/NUL, missing project/workspace, and unexpected infrastructure failures have explicit boundary messages. Only unexpected errors use generic plain-text 500. Remote transport failures retain existing envelopes.
 11. **Headers beyond the design minimum.** File-view errors also use no-store/no-referrer. Only document success has CSP. Successful previews omit cache validators/range/disposition and fixed length; deterministic error strings may use Fastify's correct length. Existing compression is preserved and counts original file bytes.
 12. **Startup trust is a snapshot.** Gateway reads once via injected config service; daemon uses its existing startup effective config. A valid explicit allowlist can match even when request-origin derivation is unavailable; malformed present Origin can never be treated as absent. Both owners must restart for activation.
-13. **Typed target resolution.** A narrow policy addition, `PathAccessTargetNotFoundError`, distinguishes target ENOENT/ENOTDIR from root failure while preserving existing messages. Open-stage `ENXIO` maps to 415 before a handle exists.
+13. **Typed target resolution.** A narrow policy addition, `PathAccessTargetNotFoundError`, distinguishes target ENOENT/ENOTDIR from root failure. ENOENT keeps `Path does not exist`; ENOTDIR keeps the original Node message verbatim, so existing Explorer responses are unchanged. Authorization-stage EACCES/EPERM/ELOOP map to 403; open-stage `ENXIO` maps to 415 before a handle exists.
 14. **Read-only release scope.** No range/sibling-asset server, prompt convention, authentication feature, DNS-rebinding defense, README growth, version bump, or publication action is bundled into this plan. The user-visible implementation receives the approved minor Changeset and a manual daemon-restart note.
