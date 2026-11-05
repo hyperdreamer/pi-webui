@@ -39,6 +39,8 @@ import { SessionStorageTerminalSelectionMemory } from "../controllers/terminalSe
 import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
 import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
 import { selectedMachineId } from "../controllers/types";
+import { browserAppUrlContext } from "../appUrl";
+import { resolveTranscriptFilePreviewUrl, transcriptFileLinkContext, type TranscriptFileLinkContext } from "../transcriptFileLinks";
 import { StarterModelPolicyPreferenceWriter, type StarterModelPolicyPreferenceWriteScope } from "../controllers/starterModelPolicyPreferenceWriter";
 import { ConfirmedStarterModelPolicyPreferenceWriter, type ConfirmedPreferenceWriteContext } from "../controllers/confirmedStarterModelPolicyPreferenceWriter";
 import { machineSessionKey } from "../machineKeys";
@@ -4811,10 +4813,50 @@ export class PiWebUiApp extends LitElement {
     };
   }
 
+  private fileLinkAppBasePath?: string;
+  private fileLinkResolverMemo: { key: string; resolve: (rawTarget: string) => string | undefined } | undefined;
+
+  /**
+   * Resolve local file targets for the selected session's owning workspace.
+   * Ownership is checked with a syntactically valid pathname before any
+   * browser URL state is read, so detached renders and nonbrowser hosts never
+   * touch `document`.
+   */
+  private fileLinkResolver(state: AppState, session: SessionInfo): ((rawTarget: string) => string | undefined) | undefined {
+    const project = state.selectedProject;
+    if (typeof document === "undefined" || project === undefined) {
+      this.fileLinkResolverMemo = undefined;
+      return undefined;
+    }
+    const workspaces = state.workspaces.filter((candidate) => candidate.projectId === project.id);
+    // The temporary `/` is only an ownership-check input, never a base fallback.
+    const ownership = transcriptFileLinkContext(session.cwd, workspaces, selectedMachineId(state), "/");
+    if (ownership === undefined) {
+      this.fileLinkResolverMemo = undefined;
+      return undefined;
+    }
+    if (this.fileLinkAppBasePath === undefined) {
+      const context = browserAppUrlContext();
+      this.fileLinkAppBasePath = new URL(context.viteBaseUrl, context.documentBaseUrl).pathname;
+    }
+    const context = transcriptFileLinkContext(session.cwd, workspaces, selectedMachineId(state), this.fileLinkAppBasePath);
+    if (context === undefined) {
+      this.fileLinkResolverMemo = undefined;
+      return undefined;
+    }
+    const key = JSON.stringify([session.id, context.cwd, context.projectId, context.workspaceId, context.machineId, context.appBasePath]);
+    if (this.fileLinkResolverMemo?.key !== key) {
+      const pinned: TranscriptFileLinkContext = Object.freeze({ ...context });
+      this.fileLinkResolverMemo = { key, resolve: (raw) => resolveTranscriptFilePreviewUrl(raw, pinned) };
+    }
+    return this.fileLinkResolverMemo.resolve;
+  }
+
   private renderChatView(state: AppState, session: SessionInfo) {
     const localHostSpeech = selectedMachineId(state) === "local" ? this.hostSpeech.snapshot : undefined;
+    const resolveFileLink = this.fileLinkResolver(state, session);
     return html`
-      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .hostSpeechStatus=${localHostSpeech?.status} .activeHostSpeechMessageKey=${localHostSpeech?.active?.messageKey ?? ""} .hostSpeechError=${localHostSpeech?.error ?? ""} .onToggleHostSpeech=${localHostSpeech === undefined ? undefined : this.handleToggleHostSpeech} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())}></chat-view>
+      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .hostSpeechStatus=${localHostSpeech?.status} .activeHostSpeechMessageKey=${localHostSpeech?.active?.messageKey ?? ""} .hostSpeechError=${localHostSpeech?.error ?? ""} .onToggleHostSpeech=${localHostSpeech === undefined ? undefined : this.handleToggleHostSpeech} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())} .resolveFileLink=${resolveFileLink}></chat-view>
     `;
   }
 
