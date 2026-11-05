@@ -352,10 +352,12 @@ PI WEBUI gateway you opened
                 <li>Use bearer tokens or proxy authentication when a remote endpoint needs an extra gate.</li>
               </ul>
               <p>
-                Default federation sends no browser Origin. A custom configured <code>Origin</code> equal to the remote
-                machine's effective request origin works with an empty allowlist. A different valid configured Origin must
-                appear in that remote machine's <code>allowedOrigins</code>; malformed and <code>null</code> origins are
-                denied. Restart both the remote web/API process and session daemon after changing the list. See
+                Default federation sends no browser Origin. For POST/PUT/PATCH/DELETE and WebSocket upgrades, a
+                custom configured <code>Origin</code> equal to the remote machine's effective request origin works with
+                an empty allowlist. A different valid configured Origin must appear in that remote machine's
+                <code>allowedOrigins</code>; malformed and <code>null</code> origins are denied. Safe GET/HEAD reads retain
+                existing CORS behavior; this key grants no new cross-origin read access. Restart both the remote web/API
+                process and session daemon after changing the list. See
                 <a href="config#browser-origins">Browser origins</a>.
               </p>
               <p>
