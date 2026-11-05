@@ -37,6 +37,16 @@ it("uses only the final leaf and does not parse URL suffixes", () => {
   expect(fileViewKindForPath("a.html?x=1")).toBeUndefined();
 });
 
+it.each([
+  { path: "dir/.html", style: "POSIX" },
+  { path: "C:\\dir\\.html", style: "Windows" },
+  { path: "dir\\.html", style: "backslash-relative" },
+  { path: "dir\\sub/.html", style: "mixed separators" },
+  { path: "C:\\dir/.html", style: "mixed separators" },
+])("rejects a dotfile-only final leaf ($path) under $style paths", ({ path }) => {
+  expect(fileViewKindForPath(path)).toBeUndefined();
+});
+
 it("has a MIME type for every shared image extension", () => {
   const expected = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon" };
   for (const [ext, mime] of Object.entries(expected)) expect(imageMimeTypeForPath(`a.${ext}`)).toBe(mime);
