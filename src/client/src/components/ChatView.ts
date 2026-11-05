@@ -430,6 +430,8 @@ export class ChatView extends LitElement {
   @property({ type: Number }) pendingMessageCount = 0;
   @property({ attribute: false }) clientQueuedMessages: QueuedSessionMessage[] = [];
   @property({ attribute: false }) status?: SessionStatus;
+  /** Injected by the app for the selected session's owning workspace; absent disables enhancement. */
+  @property({ attribute: false }) resolveFileLink?: (rawTarget: string) => string | undefined;
   @property({ type: Number }) warningCount = 0;
   @property({ type: Boolean }) warningsExpanded = false;
   @property({ attribute: false }) onToggleWarnings?: () => void;
@@ -1157,7 +1159,7 @@ export class ChatView extends LitElement {
                 </svg>
               </button>
             </div>
-            <formatted-text .text=${message.text}></formatted-text>
+            <formatted-text .text=${message.text} .resolveFileLink=${this.resolveFileLink}></formatted-text>
           </div>
         `)}
       </aside>
@@ -1503,13 +1505,13 @@ export class ChatView extends LitElement {
 
   private renderPart(part: ChatPart, message?: ChatLine, live = false) {
     if (part.type === "text" && message?.role === "bash") return html`<pre class="part shell-output">${part.text}</pre>`;
-    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text} .live=${live}></formatted-text>`;
-    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text} .live=${live}></formatted-text></details>`;
+    if (part.type === "text") return html`<formatted-text class="part" .text=${part.text} .live=${live} .resolveFileLink=${this.resolveFileLink}></formatted-text>`;
+    if (part.type === "thinking") return html`<details class="part"><summary>thinking</summary><formatted-text .text=${part.text} .live=${live} .resolveFileLink=${this.resolveFileLink}></formatted-text></details>`;
     if (part.type === "skillInvocation") return html`
       <details class="part skill-invocation">
         <summary><b>[skill]</b> ${part.name}</summary>
         <small>${part.location}</small>
-        <formatted-text .text=${part.content} .live=${live}></formatted-text>
+        <formatted-text .text=${part.content} .live=${live} .resolveFileLink=${this.resolveFileLink}></formatted-text>
       </details>
     `;
     if (part.type === "skillRead") return html`
@@ -1527,7 +1529,7 @@ export class ChatView extends LitElement {
     if (part.type === "toolResult") return html`
       <details class="part" ?open=${part.isError}>
         <summary>${part.isError ? "✖" : "✓"} ${part.toolName} result</summary>
-        <formatted-text .text=${part.text} .live=${live}></formatted-text>
+        <formatted-text .text=${part.text} .live=${live} .resolveFileLink=${this.resolveFileLink}></formatted-text>
       </details>
     `;
     return null;
