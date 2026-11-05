@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseModelTiersConfig, parsePiWebUiSessiondConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
+import { agentDirEnvSource, hasAgentDirEnvOverride, hasAgentSessionDirEnvOverride, loadPiWebUiConfig, parseAgentConfig, parseAllowedOriginsConfig, parseModelTiersConfig, parsePiWebUiSessiondConfig, parseTtsConfig, parseUploadsConfig, resolveEffectivePiWebUiConfig, type AgentPathHost, type LoadOptions, type PiWebUiConfig } from "../config.js";
 import { PiWebUiConfigMutationBusyError, createPiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationCoordinator, type PiWebUiConfigMutationSnapshot } from "../configMutationCoordinator.js";
 import type { PiWebUiAgentDirEnvSource, PiWebUiConfigEnvOverrides, PiWebUiConfigResponse, PiWebUiConfigValues, PiWebUiSessiondConfig } from "../shared/apiTypes.js";
 import { isPiWebUiPluginId } from "../shared/pluginIds.js";
@@ -17,6 +17,7 @@ export interface PiWebUiConfigService {
 
 export const SELECTED_MACHINE_CONFIG_KEYS = [
   "plugins",
+  "allowedOrigins",
   "pathAccess",
   "uploads",
   "maxUploadBytes",
@@ -120,6 +121,8 @@ export function registerConfigRoutes(app: FastifyInstance, service: PiWebUiConfi
       const requested = parseConfigRequest(body);
       const response = await service.update((current) => ({
         ...requested,
+        ...(requested.allowedOrigins === undefined && current.allowedOrigins !== undefined
+          ? { allowedOrigins: [...current.allowedOrigins] } : {}),
         ...(current.speechInput === undefined ? {} : { speechInput: current.speechInput }),
       }));
       return redactSpeechInputConfigResponse(response);
@@ -193,12 +196,12 @@ function parseReadOnlySessiondConfig(value: unknown, source: string): PiWebUiSes
 }
 
 function parsePiWebUiConfigResponseValues(value: unknown, agentPathHost: AgentPathHost, source: string): PiWebUiConfigValues {
-  const parsed = parseConfigRequest(value, agentPathHost);
+  const parsed = parseConfigRequest(value, agentPathHost, source);
   if (!isRecord(value) || value["sessiond"] === undefined) return parsed;
   return { ...parsed, sessiond: parseReadOnlySessiondConfig(value["sessiond"], source) };
 }
 
-function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "current"): PiWebUiConfig {
+function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "current", allowedOriginsSource = "request"): PiWebUiConfig {
   if (!isRecord(value)) throw new Error("PI WEBUI config update must include a config object");
   const config: PiWebUiConfig = {};
   const host = value["host"];
@@ -223,6 +226,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
     config.port = port;
   }
   if (allowedHosts !== undefined) config.allowedHosts = parseAllowedHostsRequest(allowedHosts);
+  if (value["allowedOrigins"] !== undefined) config.allowedOrigins = parseAllowedOriginsConfig(value["allowedOrigins"], allowedOriginsSource);
   if (shortcuts !== undefined) config.shortcuts = parseShortcutsRequest(shortcuts);
   if (plugins !== undefined) config.plugins = parsePluginsRequest(plugins);
   if (pathAccess !== undefined) config.pathAccess = parsePathAccessRequest(pathAccess);
@@ -245,6 +249,7 @@ function parseConfigRequest(value: unknown, agentPathHost: AgentPathHost = "curr
 function pickSelectedMachineConfig(config: PiWebUiConfigValues): PiWebUiConfig {
   return {
     ...(config.plugins !== undefined ? { plugins: config.plugins } : {}),
+    ...(config.allowedOrigins !== undefined ? { allowedOrigins: [...config.allowedOrigins] } : {}),
     ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
     ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
     ...(config.maxUploadBytes !== undefined ? { maxUploadBytes: config.maxUploadBytes } : {}),
