@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { WriteWorkspaceFileOptions } from "../shared/apiTypes.js";
 import type { PiWebUiConfigService } from "./configRoutes.js";
-import type { ProjectService } from "./projects/projectService.js";
+import { FileViewError, openWorkspaceFileView, type WorkspaceFileViewOpener } from "./workspaces/fileViewService.js";
+import { ProjectNotFoundError, type ProjectService } from "./projects/projectService.js";
+import { createReplyDisconnectScope } from "./http/replyDisconnect.js";
+import { sendWorkspaceFileView } from "./http/fileViewReply.js";
 import { deleteWorkspaceFile, moveWorkspaceFile, readWorkspaceFile, resolveWorkspaceFileMutationPath, writeWorkspaceFile } from "./workspaces/fileContentService.js";
 import { isAbsoluteishFileSuggestionQuery, listFileSuggestions, listPathSuggestions } from "./workspaces/fileSuggestions.js";
 import { listWorkspaceTree } from "./workspaces/fileTreeService.js";
@@ -21,6 +24,7 @@ export interface WorkspaceExplorerRouteOptions {
   config?: Pick<PiWebUiConfigService, "read">;
   taskPathGate?: WorkspaceTasksWorkspacePathGate;
   taskFiles?: WorkspaceTasksWorkspaceFileResolver;
+  openFileView?: WorkspaceFileViewOpener;
 }
 
 export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceService, prefix = "/api", options: WorkspaceExplorerRouteOptions = {}): void {
@@ -163,6 +167,44 @@ export function registerWorkspaceExplorerRoutes(app: FastifyInstance, projects: 
         .send(preview.stream);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get<{ Params: { projectId: string; workspaceId: string }; Querystring: { path?: unknown } }>(`${prefix}/projects/:projectId/workspaces/:workspaceId/file/view`, async (request, reply) => {
+    const plain = (status: number, message: string) => reply.code(status).type("text/plain; charset=utf-8").header("Cache-Control", "no-store").header("X-Content-Type-Options", "nosniff").header("Referrer-Policy", "no-referrer").send(message);
+    const path = request.query.path;
+    if (path !== undefined && typeof path !== "string") return plain(400, "path query parameter must be a single string");
+    if (path === undefined || path === "") return plain(400, "path query parameter is required");
+    if (path.includes("\0")) return plain(400, "path query parameter must not contain NUL bytes");
+    const disconnect = createReplyDisconnectScope(reply);
+    const abandoned = () => disconnect.signal.aborted || reply.raw.destroyed;
+    if (abandoned()) { disconnect.dispose(); return reply; }
+    try {
+      let context: Awaited<ReturnType<typeof resolveWorkspaceContext>>;
+      try { context = await resolveWorkspaceContext(projects, workspaces, request.params.projectId, request.params.workspaceId); }
+      catch (error) {
+        disconnect.dispose(); if (abandoned()) return await reply;
+        if (error instanceof ProjectNotFoundError) return await plain(404, "Project not found");
+        if (error instanceof Error && error.message === "Workspace not found") return await plain(404, "Workspace not found");
+        throw error;
+      }
+      if (abandoned()) { disconnect.dispose(); return await reply; }
+      const access = await pathAccessForWorkspaceContext(context, options.config);
+      if (abandoned()) { disconnect.dispose(); return await reply; }
+      const view = await (options.openFileView ?? openWorkspaceFileView)(context.root, path, access);
+      if (abandoned()) {
+        view.stream.on("error", (error) => { request.log.error({ err: error }, "abandoned file view failed"); });
+        view.stream.destroy();
+        disconnect.dispose();
+        return await reply;
+      }
+      return await sendWorkspaceFileView(reply, view, disconnect);
+    } catch (error) {
+      disconnect.dispose(); if (abandoned()) return reply;
+      if (reply.raw.headersSent) { reply.raw.destroy(error instanceof Error ? error : new Error(String(error))); return reply; }
+      if (error instanceof FileViewError) return await plain(error.status, error.message);
+      request.log.error({ err: error }, "unable to preview workspace file");
+      return plain(500, "Unable to preview this file.");
     }
   });
 
