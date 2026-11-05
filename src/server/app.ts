@@ -14,6 +14,7 @@ import { loadEffectiveProjectUploadsConfig } from "./workspaces/projectPiWebUiCo
 import { normalizeRequestCwd } from "./workingDirectory.js";
 import { listDirectorySuggestions } from "./projects/directorySuggestions.js";
 import { SessionDaemonClient } from "../sessiond/sessionDaemonClient.js";
+import { registerBrowserOriginGuard } from "./http/browserOriginGuard.js";
 import { registerSessionProxyRoutes, type SessionProxyDaemon } from "./sessiond/sessionProxyRoutes.js";
 import { sessionRouteFastifyOptions } from "./sessions/sessionRouteFastifyOptions.js";
 import { registerWorkspaceExplorerRoutes } from "./workspaceExplorerRoutes.js";
@@ -317,6 +318,8 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
   // create no filesystem state in the real data directory.
   const configMutationCoordinator = sharedConfigMutationCoordinator(deps.configMutationCoordinator);
   const configService = deps.config ?? createFilePiWebUiConfigService(undefined, configMutationCoordinator);
+  const allowedOrigins = [...((await configService.read()).effectiveConfig.allowedOrigins ?? [])];
+  registerBrowserOriginGuard(app, allowedOrigins);
   const workspaceTasks = deps.workspaceTasks ?? createWorkspaceTasksComposition({
     configMutationCoordinator,
     projects,
