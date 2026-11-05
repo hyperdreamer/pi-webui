@@ -47,10 +47,17 @@ interface ConfigReadState {
   reads: number;
 }
 
+interface HeldPhase {
+  entered: Deferred<undefined>;
+  gate: Deferred<undefined>;
+}
+
 interface ExplorerFixtureOptions {
   openFileView?: WorkspaceFileViewOpener;
   onRequest?: (reply: FastifyReply) => void;
   requireProjectError?: Error;
+  holdContext?: HeldPhase;
+  holdConfig?: HeldPhase;
 }
 
 interface ExplorerFixture {
@@ -62,6 +69,7 @@ interface ExplorerFixture {
   outsideFile: string;
   config: ConfigReadState;
   logs: string[];
+  nextViewSettlement(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -302,6 +310,68 @@ describe("workspace explorer file view route", () => {
     }
   });
 
+  for (const alias of aliases) {
+    it(`stops after a disconnect during context resolution through ${alias}`, async () => {
+      const held = heldPhase();
+      const opened = vi.fn<WorkspaceFileViewOpener>();
+      const disconnected = deferred<undefined>();
+      const fixture = await explorerFixture({
+        openFileView: opened,
+        holdContext: held,
+        onRequest: (reply) => { reply.raw.once("close", () => { disconnected.resolve(undefined); }); },
+      });
+      const url = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+      const settled = fixture.nextViewSettlement();
+      const observation = observeGet(`${url}${viewPath(fixture, "a.html", alias)}`);
+      try {
+        await held.entered.promise;
+        observation.destroy();
+        await disconnected.promise;
+        held.gate.resolve(undefined);
+        await settled;
+
+        expect(fixture.config.reads).toBe(0);
+        expect(opened).not.toHaveBeenCalled();
+        const result = await observation.result;
+        expect(result.status).toBe(0);
+        expect(result.ended).toBe(false);
+      } finally {
+        held.gate.resolve(undefined);
+        await fixture.close();
+      }
+    });
+
+    it(`stops after a disconnect during config resolution through ${alias}`, async () => {
+      const held = heldPhase();
+      const opened = vi.fn<WorkspaceFileViewOpener>();
+      const disconnected = deferred<undefined>();
+      const fixture = await explorerFixture({
+        openFileView: opened,
+        holdConfig: held,
+        onRequest: (reply) => { reply.raw.once("close", () => { disconnected.resolve(undefined); }); },
+      });
+      const url = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+      const settled = fixture.nextViewSettlement();
+      const observation = observeGet(`${url}${viewPath(fixture, "a.html", alias)}`);
+      try {
+        await held.entered.promise;
+        observation.destroy();
+        await disconnected.promise;
+        held.gate.resolve(undefined);
+        await settled;
+
+        expect(fixture.config.reads).toBe(1);
+        expect(opened).not.toHaveBeenCalled();
+        const result = await observation.result;
+        expect(result.status).toBe(0);
+        expect(result.ended).toBe(false);
+      } finally {
+        held.gate.resolve(undefined);
+        await fixture.close();
+      }
+    });
+  }
+
   it("keeps validation failures free of workspace and opener work", async () => {
     const opened = vi.fn<WorkspaceFileViewOpener>();
     const fixture = await explorerFixture({ openFileView: opened });
@@ -337,6 +407,18 @@ class ThrowingProjectService extends ProjectService {
   }
 }
 
+class HeldProjectService extends ProjectService {
+  constructor(private readonly delegate: ProjectService, private readonly hold: HeldPhase) {
+    super(new ProjectStore("/dev/null"));
+  }
+
+  override async requireProject(id: string): Promise<Project> {
+    this.hold.entered.resolve(undefined);
+    await this.hold.gate.promise;
+    return this.delegate.requireProject(id);
+  }
+}
+
 async function explorerFixture(options: ExplorerFixtureOptions = {}): Promise<ExplorerFixture> {
   const tempDir = await realpath(await mkdtemp(join(tmpdir(), "workspace-explorer-view-")));
   tempDirs.push(tempDir);
@@ -360,9 +442,11 @@ async function explorerFixture(options: ExplorerFixtureOptions = {}): Promise<Ex
   const project = await baseProjects.add({ path: root });
   const workspace = (await workspaces.list(project))[0];
   if (workspace === undefined) throw new Error("Fixture project has no workspace");
-  const projects = options.requireProjectError === undefined
-    ? baseProjects
-    : new ThrowingProjectService(options.requireProjectError);
+  const projects = options.requireProjectError !== undefined
+    ? new ThrowingProjectService(options.requireProjectError)
+    : options.holdContext !== undefined
+      ? new HeldProjectService(baseProjects, options.holdContext)
+      : baseProjects;
 
   const config: ConfigReadState = { value: {}, error: undefined, reads: 0 };
   const logs: string[] = [];
@@ -376,12 +460,28 @@ async function explorerFixture(options: ExplorerFixtureOptions = {}): Promise<Ex
     const onRequest = options.onRequest;
     app.addHook("onRequest", async (_request, reply) => { onRequest(reply); });
   }
+  const viewSettlements: Deferred<undefined>[] = [];
+  app.addHook("onRoute", (route) => {
+    if (typeof route.url !== "string" || !route.url.endsWith("/file/view")) return;
+    const handler = route.handler;
+    route.handler = async function (request, reply) {
+      try {
+        return await handler.call(this, request, reply);
+      } finally {
+        viewSettlements.shift()?.resolve(undefined);
+      }
+    };
+  });
   const routeOptions: WorkspaceExplorerRouteOptions = {
     config: {
-      read: () => {
+      read: async () => {
         config.reads += 1;
-        if (config.error !== undefined) return Promise.reject(config.error);
-        return Promise.resolve(configResponse(config.value));
+        if (options.holdConfig !== undefined) {
+          options.holdConfig.entered.resolve(undefined);
+          await options.holdConfig.gate.promise;
+        }
+        if (config.error !== undefined) throw config.error;
+        return configResponse(config.value);
       },
     },
     ...(options.openFileView === undefined ? {} : { openFileView: options.openFileView }),
@@ -398,6 +498,11 @@ async function explorerFixture(options: ExplorerFixtureOptions = {}): Promise<Ex
     outsideFile,
     config,
     logs,
+    nextViewSettlement: () => {
+      const settlement = deferred<undefined>();
+      viewSettlements.push(settlement);
+      return settlement.promise;
+    },
     close: () => app.close(),
   };
 }
@@ -457,6 +562,10 @@ function deferred<T>(): Deferred<T> {
     resolve = promiseResolve;
   });
   return { promise, resolve };
+}
+
+function heldPhase(): HeldPhase {
+  return { entered: deferred<undefined>(), gate: deferred<undefined>() };
 }
 
 interface ObservedResponse {
