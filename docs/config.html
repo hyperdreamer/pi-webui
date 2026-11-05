@@ -92,6 +92,7 @@
             <strong>On this page</strong>
             <a href="#files">Config files</a>
             <a href="#deployment-paths">Deployment paths</a>
+            <a href="#browser-origins">Browser origins</a>
             <a href="#precedence">Precedence and reloads</a>
             <a href="#global-config">Global config</a>
             <a href="#project-config">Project config</a>
@@ -166,6 +167,57 @@
               </p>
             </section>
 
+            <section class="doc-section" id="browser-origins">
+              <h2>Browser origins</h2>
+              <p>
+                The optional machine-global <code>allowedOrigins</code> key trusts additional exact browser origins.
+                Manage it in the global config file or config API; this feature adds no Settings editor for the list. It
+                is unsupported in project-local <code>.pi-webui/config.json</code>, and it has no environment override.
+                An apparent <code>PI_WEBUI_ALLOWED_ORIGINS</code> variable has no effect.
+              </p>
+              <div class="code-card">
+                <pre><code class="language-json">{
+  "allowedOrigins": ["https://pi.example", "https://pi.example:8443"]
+}</code></pre>
+              </div>
+              <p>
+                Each entry must be an absolute HTTP or HTTPS origin with no credentials, path beyond an optional single
+                root slash, query, fragment, wildcard, or origin list. Entries normalize scheme/host case and default
+                ports: <code>HTTPS://PI.EXAMPLE:443/</code> becomes <code>https://pi.example</code>. Matching includes
+                scheme, host, and effective port. Invalid values reject the entire field.
+              </p>
+              <p>
+                Omitting the file key or configuring <code>[]</code> grants no extra origins. Omission from either config
+                update API preserves the current list; send an explicit <code>"allowedOrigins": []</code> to clear it.
+                Both config and effectiveConfig responses show desired values, including a newly saved list, and do not
+                prove that either running guard has activated them.
+              </p>
+              <p>
+                Browser POST, PUT, PATCH, DELETE, and all WebSocket upgrades are checked whenever Origin is present.
+                Same-origin traffic and explicitly configured exact origins are accepted. <code>Origin: null</code>,
+                malformed origins, and foreign origins are rejected with HTTP 403 before an action or socket attachment.
+                Nonbrowser clients with no Origin continue to work. Safe GET/HEAD reads retain existing CORS behavior;
+                this key grants no new cross-origin read access.
+              </p>
+              <p>
+                A reverse proxy that preserves Host and supplies the correct first X-Forwarded-Proto token needs no extra
+                origin. If it rewrites Host, list the public scheme, authority, and nondefault port on the receiving
+                machine. <code>allowedHosts</code> controls Vite development host admission and grants no browser-origin
+                trust.
+              </p>
+              <p>
+                Installing the guard and changing <code>allowedOrigins</code> require restarting the web/API process and
+                manually restarting <code>pi-webui-sessiond.service</code> on that machine. Ordinary UI/API autoreload
+                does not restart the long-lived daemon. For this development setup, the daemon command is
+                <code>systemctl --user restart pi-webui-sessiond.service</code>; the UI/API owner is
+                <code>pi-webui-ui-dev.service</code>. Perform the restart when ready to activate the change.
+              </p>
+              <p>
+                DNS rebinding remains outside this protection: an attacker hostname whose Host and Origin agree can still
+                match. Browser-origin matching does not implement host admission.
+              </p>
+            </section>
+
             <section id="precedence">
               <h2>Precedence and reloads</h2>
               <p>Machine-global runtime values are resolved in this order:</p>
@@ -186,6 +238,7 @@
               <ul>
                 <li><code>host</code> / <code>port</code>: restart the gateway web/API service or process.</li>
                 <li><code>maxUploadBytes</code>: restart both the web/API process and the session daemon on that machine.</li>
+                <li><code>allowedOrigins</code>: restart both the web/API process and the session daemon on that machine; a saved list is desired configuration until both guards restart.</li>
                 <li><code>agent.command</code> / <code>agent.dir</code> / <code>spawnSessions</code> / <code>subsessions</code>: restart the session daemon on that machine.</li>
                 <li><code>modelTiers</code>: saved settings apply immediately in <strong>Settings → Model tiers</strong>; validates all six ladder rows atomically.</li>
                 <li><code>utilityModels</code>: saved settings apply immediately in <strong>Settings → Utility models</strong>; existing sessions use updated values on their next utility operation.</li>
@@ -322,8 +375,10 @@
                 <code>—</code> are runtime-only environment variables, not config-file keys. <code>Global</code> means
                 machine-global. In Settings, selected-machine-safe global keys (<code>pathAccess</code>, <code>uploads</code>,
                 <code>maxUploadBytes</code>, <code>agent</code>, <code>spawnSessions</code>, <code>subsessions</code>,
-                <code>modelTiers</code>, <code>utilityModels</code>, and <code>plugins</code>) are edited for the selected machine; gateway host/port/allowed-hosts,
-                keyboard shortcuts, and machine registry/tokens stay local.
+                <code>modelTiers</code>, <code>utilityModels</code>, and <code>plugins</code>) are edited for the selected machine.
+                The machine-global <code>allowedOrigins</code> key is config/API-managed for the selected machine rather than
+                exposed in Settings, while gateway host/port/allowedHosts stay gateway-owned; keyboard shortcuts and machine
+                registry/tokens stay local.
               </p>
               <div class="table-scroll" role="region" aria-label="PI WEBUI configuration matrix" tabindex="0">
                 <table class="config-matrix">
@@ -363,6 +418,7 @@
                       <td>Not supported locally</td>
                       <td>Restart dev web/UI</td>
                     </tr>
+                    <tr><td>Extra trusted browser origins</td><td><code>allowedOrigins</code></td><td>—</td><td>Global (machine)</td><td>Not supported locally</td><td>Restart web/API and session daemon on that machine</td></tr>
                     <tr>
                       <td>External filesystem roots</td>
                       <td><code>pathAccess.allowedPaths</code></td>
@@ -617,6 +673,24 @@
                 This is not a sandbox for the underlying Pi Coding Agent or your OS user. It only controls PI WEBUI UI/API
                 file exposure outside a workspace. Add only roots you trust PI WEBUI to list and read through the browser UI.
               </div>
+              <p>
+                Transcript local-file links and Markdown images open a read-only preview served by the machine that owns
+                the session. Workspace-relative reads stay inside that workspace. Absolute external paths require an
+                allowed root on that machine; global and project-local external roots merge using the same policy as the
+                Files panel.
+              </p>
+              <p>
+                Previews support HTML/SVG, PDF, raster images, and text/source files up to
+                <strong>64 MB (67,108,864 bytes)</strong>. Unsupported files, nonregular filesystem entries, and
+                directories are rejected; this view does not browse directories or write files. Self-contained HTML
+                works, but sibling local images, scripts, and styles inside HTML do not resolve. Remote PDFs transfer
+                whole, without range seeking.
+              </p>
+              <p>
+                HTML and SVG can animate under a restricted document policy with an opaque origin. Permitted remote
+                scripts, styles, and images can still load. A document may navigate its own tab; the browser-origin
+                checks described below protect PI WEBUI actions and socket upgrades after navigation.
+              </p>
             </section>
 
             <section id="manual-uploads">
