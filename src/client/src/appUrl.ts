@@ -27,7 +27,7 @@ export function resolveAppWebSocketUrl(path: string, context: AppUrlContext = br
   return url.toString();
 }
 
-function browserAppUrlContext(): AppUrlContext {
+export function browserAppUrlContext(): AppUrlContext {
   return {
     viteBaseUrl: import.meta.env.BASE_URL,
     documentBaseUrl: document.baseURI,
