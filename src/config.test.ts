@@ -1110,6 +1110,20 @@ describe("PI WEBUI allowedOrigins config", () => {
     expect(JSON.parse(await readFile(configPath, "utf8"))).not.toHaveProperty("allowedOrigins");
   });
 
+  it.each(["https://%2A.example", "https://a%2Cb.example", "https://＊.example", "https://a，b.example"])(
+    "rejects a save containing %s without changing the existing config file bytes",
+    async (allowedOrigin) => {
+      savePiWebUiConfig({ port: 8808, allowedOrigins: ["https://pi.example"] }, testOptions());
+      const original = await readFile(configPath);
+      const message = `PI WEBUI config allowedOrigins must be an array of absolute http/https origins without credentials, paths, queries, or fragments: ${configPath}`;
+
+      expect(() => savePiWebUiConfig({ port: 9000, allowedOrigins: [allowedOrigin] }, testOptions())).toThrow(message);
+
+      expect(await readFile(configPath)).toEqual(original);
+      expect(loadPiWebUiConfig(testOptions()).config).toEqual({ port: 8808, allowedOrigins: ["https://pi.example"] });
+    },
+  );
+
   const invalidOriginConfigs: unknown[] = [null, true, 7, {}, "https://host", [1], ["https://host", false],
     ...["null", "", "*", "/relative", "//host", "ftp://host", "https://u:p@host", "https://@host", "https://host/a", "https://host/a/..", "https://host//", "https://host?", "https://host?q=1", "https://host#", "https://host#p", "https://host\\", "https://ho st", "https://ho\tst", "https://a,https://b", "http://host:99999"].map((s) => [s])];
 
