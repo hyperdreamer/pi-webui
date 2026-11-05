@@ -1,10 +1,11 @@
 import { writeFile } from "node:fs/promises";
+import http from "node:http";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { RemoteMachineRequestError, type MachineClient } from "./machines/machineClient.js";
 import { REMOTE_HTTP_ROUTES } from "./machines/machineProxyRoutes.js";
-import { SESSION_REORDER_SESSION_ID_MAX_LENGTH } from "../shared/apiTypes.js";
+import { SESSION_REORDER_SESSION_ID_MAX_LENGTH, type PiWebUiConfigResponse } from "../shared/apiTypes.js";
 import { PI_PACKAGE_MUTATION_PROXY_TIMEOUT_MS, PI_PACKAGE_PLUGINS_OPERATION_PROXY_TIMEOUT_MS, SESSION_TREE_NAVIGATION_PROXY_TIMEOUT_MS, FEDERATED_HTTP_ROUTES } from "../shared/federatedRoutes.js";
 import { WORKSPACE_TASKS_MOVE_BODY_LIMIT_BYTES, WORKSPACE_TASKS_REPLACE_BODY_LIMIT_BYTES } from "../shared/workspaceTasksApi.js";
 import { appTestContext, fakeRemoteClient, registerAppTestHooks } from "./app.testSupport.js";
@@ -14,6 +15,8 @@ registerAppTestHooks();
 // `expect.any` is typed `any` by vitest; the matcher is asserted at the assertion site.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const REPLY_OWNED_SIGNAL = expect.objectContaining({ signal: expect.any(AbortSignal) });
+
+const documentPolicy = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' http: https:; style-src 'unsafe-inline' http: https:; img-src http: https: data: blob:; font-src http: https: data:; media-src http: https: data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; worker-src 'none'; object-src 'none'";
 
 const TASK_ROUTE_SPECS = [
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/workspace-tasks" },
@@ -480,6 +483,183 @@ describe("buildApp remote machine proxy routes", () => {
     expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/workspaces/w1/file/preview?path=diagram.svg", undefined, REPLY_OWNED_SIGNAL);
   });
 
+  it("forwards file view bytes and every required document header from a nonlocal machine", async () => {
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": documentPolicy,
+        "set-cookie": "secret=blocked",
+      },
+      body: Readable.from([Buffer.from("<p>remote</p>")]),
+    }));
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({
+      url: `/api/machines/${encodeURIComponent(machineId)}/projects/p%20%2F%3F/workspaces/w%20%3F%2F/file/view?path=dir%2Fa+%3F%23%25%2B.html`,
+      headers: { range: "bytes=0-1", origin: "https://browser.example" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("<p>remote</p>");
+    expect(response.headers["content-security-policy"]).toBe(documentPolicy);
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(response.headers["content-length"]).toBeUndefined();
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(request.mock.calls[0]?.slice(0, 3)).toEqual(["GET", "/api/projects/p%20%2F%3F/workspaces/w%20%3F%2F/file/view?path=dir%2Fa+%3F%23%25%2B.html", undefined]);
+    expect(request.mock.calls[0]?.[3]).toEqual(REPLY_OWNED_SIGNAL);
+  });
+
+  const fileViewFailures = [
+    [400, "path query parameter is required"],
+    [403, "PI WEBUI is not allowed to read this path. Add its root under Settings → General → External path access."],
+    [404, "File not found: missing.html"],
+    [413, "File is too large to preview (limit 64 MB)."],
+    [415, "This file type cannot be previewed in PI WEBUI."],
+    [500, "Unable to preview this file."],
+  ] as const;
+
+  it.each(fileViewFailures)("forwards the exact plain-text file view failure for %i", async (statusCode, body) => {
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "set-cookie": "secret=blocked",
+      },
+      body: Readable.from([body]),
+    }));
+    const machineId = await addRemoteMachine(request);
+
+    const response = await appTestContext.app.inject({ url: `/api/machines/${machineId}/projects/p1/workspaces/w1/file/view?path=missing.html` });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.body).toBe(body);
+    expect(response.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["content-security-policy"]).toBeUndefined();
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("preserves an interrupted upstream file view as an interrupted downstream transfer", async () => {
+    const source = new Readable({ read: () => { /* chunks are pushed by the test */ } });
+    const request = vi.fn<MachineClient["request"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": documentPolicy,
+      },
+      body: source,
+    }));
+    const machineId = await addRemoteMachine(request);
+    const baseUrl = await appTestContext.app.listen({ host: "127.0.0.1", port: 0 });
+    const headers = deferred<http.IncomingHttpHeaders>();
+    const observation = observeRemoteHttp(
+      `${baseUrl}/api/machines/${machineId}/projects/p1/workspaces/w1/file/view?path=a.html`,
+      (incoming) => { headers.resolve(incoming.headers); },
+    );
+    source.push("<p>partial");
+    try {
+      const received = await headers.promise;
+      expect(received["content-security-policy"]).toBe(documentPolicy);
+      expect(received["referrer-policy"]).toBe("no-referrer");
+
+      source.destroy(new Error("upstream body failed"));
+
+      const result = await observation.result;
+      expect(result.aborted).toBe(true);
+      expect(result.ended).toBe(false);
+      expect(result.bytes.toString()).not.toContain("{");
+      expect(result.bytes.toString()).not.toContain("Remote machine unavailable");
+    } finally {
+      source.destroy();
+    }
+  });
+
+  it("preserves allowedOrigins through remote selected-machine config reads and writes", async () => {
+    const rows: { raw: string[]; expected: string[] }[] = [
+      { raw: ["HTTPS://PI.EXAMPLE:443/"], expected: ["https://pi.example"] },
+      { raw: [], expected: [] },
+    ];
+    for (const row of rows) {
+      const getRequest = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+        body: remoteMachineConfigResponseBody(row.expected),
+      }));
+      const machineId = await addRemoteMachine(vi.fn<MachineClient["request"]>());
+      appTestContext.remoteClient = fakeRemoteClient({ requestJson: getRequest });
+
+      const read = await appTestContext.app.inject({ method: "GET", url: `/api/machines/${machineId}/config` });
+
+      expect(read.statusCode).toBe(200);
+      const readConfig = read.json<PiWebUiConfigResponse>();
+      expect(readConfig.config.allowedOrigins).toEqual(row.expected);
+      expect(readConfig.effectiveConfig.allowedOrigins).toEqual(row.expected);
+      expect(getRequest).toHaveBeenCalledWith("GET", "/api/machines/local/config", undefined, REPLY_OWNED_SIGNAL);
+
+      const putRequest = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+        body: remoteMachineConfigResponseBody(row.expected),
+      }));
+      appTestContext.remoteClient = fakeRemoteClient({ requestJson: putRequest });
+
+      const write = await appTestContext.app.inject({ method: "PUT", url: `/api/machines/${machineId}/config`, payload: { config: { allowedOrigins: row.raw } } });
+
+      expect(write.statusCode).toBe(200);
+      const writtenConfig = write.json<PiWebUiConfigResponse>();
+      expect(writtenConfig.config.allowedOrigins).toEqual(row.expected);
+      expect(writtenConfig.effectiveConfig.allowedOrigins).toEqual(row.expected);
+      expect(putRequest).toHaveBeenCalledWith("PUT", "/api/machines/local/config", { config: { allowedOrigins: row.expected } });
+    }
+
+    const malformed = remoteMachineConfigResponseBody([]);
+    malformed.effectiveConfig = { allowedOrigins: ["null"] };
+    const malformedRequest = vi.fn<MachineClient["requestJson"]>(() => Promise.resolve({
+      statusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: malformed,
+    }));
+    const malformedMachine = await addRemoteMachine(vi.fn<MachineClient["request"]>());
+    appTestContext.remoteClient = fakeRemoteClient({ requestJson: malformedRequest });
+
+    const malformedRead = await appTestContext.app.inject({ method: "GET", url: `/api/machines/${malformedMachine}/config` });
+
+    expect(malformedRead.statusCode).toBe(502);
+    expect(malformedRead.json()).toMatchObject({ error: "Remote machine unavailable" });
+    expect(malformedRead.body).toContain("Remote machine config response");
+  });
+
+  it("keeps file view gateway failures in the JSON envelope", async () => {
+    const missing = await appTestContext.app.inject({ url: "/api/machines/missing/projects/p1/workspaces/w1/file/view?path=a.html" });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: "Machine not found" });
+
+    const offlineId = await addRemoteMachine(vi.fn<MachineClient["request"]>(() => Promise.reject(new RemoteMachineRequestError("connection refused", 502))));
+    const offline = await appTestContext.app.inject({ url: `/api/machines/${offlineId}/projects/p1/workspaces/w1/file/view?path=a.html` });
+    expect(offline.statusCode).toBe(502);
+    expect(offline.json()).toEqual({ error: "Remote machine unavailable", machineId: offlineId, statusCode: 502, detail: "connection refused" });
+
+    const timeoutId = await addRemoteMachine(vi.fn<MachineClient["request"]>(() => Promise.reject(new RemoteMachineRequestError("timed out", 504))));
+    const timeout = await appTestContext.app.inject({ url: `/api/machines/${timeoutId}/projects/p1/workspaces/w1/file/view?path=a.html` });
+    expect(timeout.statusCode).toBe(504);
+    expect(timeout.json()).toEqual({ error: "Remote machine timeout", machineId: timeoutId, statusCode: 504, detail: "timed out" });
+  });
+
   it("proxies remote workspace file writes as raw request bodies", async () => {
     const addResponse = await appTestContext.app.inject({ method: "POST", url: "/api/machines", payload: { name: "Remote", baseUrl: "https://remote.example.test/" } });
     const remote = addResponse.json<{ id: string }>();
@@ -824,4 +1004,77 @@ async function writeRemoteMachine(machineId: string): Promise<void> {
       updatedAt: "2026-05-25T00:00:00.000Z",
     }],
   }), "utf8");
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+function remoteMachineConfigResponseBody(allowedOrigins: string[]): PiWebUiConfigResponse {
+  const config = { allowedOrigins, maxUploadBytes: 1024 };
+  return {
+    path: "/home/remote/.config/pi-webui/config.json",
+    exists: true,
+    config,
+    effectiveConfig: config,
+    envOverrides: {
+      host: false,
+      port: false,
+      allowedHosts: false,
+      spawnSessions: false,
+      subsessions: false,
+      agentCommand: false,
+      agentDir: false,
+      agentSessionDir: false,
+      sessiondUrl: false,
+    },
+  };
+}
+
+interface ObservedRemoteResponse {
+  ended: boolean;
+  aborted: boolean;
+  bytes: Buffer;
+  headers: http.IncomingHttpHeaders;
+  status: number;
+}
+
+/** Real HTTP observation so an interrupted upstream transfer can be seen as an
+ * incomplete downstream response, which inject() cannot represent. */
+function observeRemoteHttp(url: string, onHeaders?: (response: http.IncomingMessage) => void) {
+  let request: http.ClientRequest | undefined;
+  const result = new Promise<ObservedRemoteResponse>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let settled = false;
+    let response: http.IncomingMessage | undefined;
+    const finish = (ended: boolean, aborted: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve({ ended, aborted, bytes: Buffer.concat(chunks), headers: response?.headers ?? {}, status: response?.statusCode ?? 0 });
+    };
+    const deadline = setTimeout(() => {
+      request?.destroy();
+      reject(new Error("HTTP observation deadline"));
+    }, 3_000);
+    request = http.get(url, (incoming) => {
+      response = incoming;
+      onHeaders?.(incoming);
+      incoming.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+      incoming.once("end", () => { finish(true, false); });
+      incoming.once("aborted", () => { finish(false, true); });
+      incoming.once("error", () => { finish(false, true); });
+    });
+    request.on("error", () => { finish(false, true); });
+  });
+  return { result, destroy: () => { request?.destroy(); } };
 }

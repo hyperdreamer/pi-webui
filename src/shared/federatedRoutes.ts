@@ -69,6 +69,7 @@ export const FEDERATED_HTTP_ROUTES = [
   { method: "DELETE", path: "/projects/:projectId/workspaces/:workspaceId/file" },
   { method: "POST", path: "/projects/:projectId/workspaces/:workspaceId/file/move" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/file/preview" },
+  { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/file/view" },
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/files" },
   ...WORKSPACE_TASKS_FEDERATED_HTTP_ROUTES,
   { method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/git/status" },

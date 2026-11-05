@@ -19,6 +19,7 @@ const SAFE_RESPONSE_HEADERS = new Set([
   "etag",
   "content-security-policy",
   "x-content-type-options",
+  "referrer-policy",
 ]);
 
 export function registerMachineProxyRoutes(app: FastifyInstance, machines = new MachineService()): void {
