@@ -244,6 +244,15 @@ const unsafeSchemes: readonly (readonly [label: string, destination: string])[] 
   ["unknown%3Athing", "unknown%3Athing"],
 ];
 
+// Percent-encoded controls hide a relative filename or an allowed-scheme path
+// from the scheme and relative-reference rules, so only the control-character
+// rejection can remove these; Marked creates the element before sanitizing.
+const controlBearingDestinations: readonly (readonly [label: string, destination: string])[] = [
+  ["relative filename with encoded tab", "local%09.html"],
+  ["relative filename with encoded newline", "local%0A.html"],
+  ["allowed https path with encoded DEL", "https://outside.example/a%7F.html"],
+];
+
 describe("toSafeMarkdownHtml local file destinations", () => {
   for (const image of [false, true]) {
     for (const [source, expected] of safeCandidates) {
@@ -256,6 +265,14 @@ describe("toSafeMarkdownHtml local file destinations", () => {
   for (const image of [false, true]) {
     for (const [label, destination] of unsafeSchemes) {
       it(`removes ${JSON.stringify(label)} from ${image ? "src" : "href"}`, () => {
+        expect(markdownAttribute(destination, image).hasAttribute(image ? "src" : "href")).toBe(false);
+      });
+    }
+  }
+
+  for (const image of [false, true]) {
+    for (const [label, destination] of controlBearingDestinations) {
+      it(`removes ${label} from ${image ? "src" : "href"}`, () => {
         expect(markdownAttribute(destination, image).hasAttribute(image ? "src" : "href")).toBe(false);
       });
     }
