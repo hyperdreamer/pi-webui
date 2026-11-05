@@ -403,6 +403,14 @@ it("cleans up a send-setup failure", async () => {
     expect(result.status).toBe(500);
     await vi.waitFor(() => { expect(fixture.stream.closed).toBe(true); });
     expect(fixture.disposed).toBe(1);
+    // The fixture retains the payload through its pass-through send spy, so
+    // this is the real counting transform the helper handed to Fastify.
+    const counter = fixture.sent[0];
+    expect(counter).toBeInstanceOf(Transform);
+    if (counter instanceof Transform) {
+      expect(counter.destroyed).toBe(true);
+      await vi.waitFor(() => { expect(counter.closed).toBe(true); });
+    }
   } finally {
     await fixture.close();
   }
