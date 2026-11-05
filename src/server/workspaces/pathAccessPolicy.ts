@@ -34,6 +34,31 @@ export interface PathAccessPolicyOptions {
   homeDir?: string;
 }
 
+/**
+ * Target-stage resolution failure: the requested path (or, for allowed roots,
+ * its configured destination) does not exist. Kept separate from root-stage
+ * failures so callers can map absence to a 404 without inspecting messages or
+ * cause chains.
+ */
+export class PathAccessTargetNotFoundError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PathAccessTargetNotFoundError";
+  }
+}
+
+/**
+ * Root-stage resolution failure: the workspace root or a configured allowed
+ * root cannot be canonicalized or is not a directory. Always an infrastructure
+ * error, never a missing-target result.
+ */
+export class PathAccessRootError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PathAccessRootError";
+  }
+}
+
 export async function createPathAccessPolicy(workspaceRootPath: string, pathAccess: PiWebUiPathAccessConfig | undefined, options: PathAccessPolicyOptions = {}): Promise<PathAccessPolicy> {
   return {
     workspaceRoot: await canonicalDirectory(workspaceRootPath, "Workspace path"),
@@ -53,7 +78,7 @@ export async function resolvePathAccessTarget(policy: PathAccessPolicy, requeste
   if (isAbsoluteishPath(request)) return resolveAllowedTarget(policy, request, options);
 
   const displayPath = normalizeRelativePath(request);
-  const target = await canonicalExistingPath(resolve(policy.workspaceRoot, displayPath));
+  const target = await canonicalExistingPath(resolve(policy.workspaceRoot, displayPath), "Path does not exist", true);
   ensureInside(policy.workspaceRoot, target, "Path escapes workspace");
   return { kind: "workspace", root: policy.workspaceRoot, target, displayPath };
 }
@@ -77,7 +102,7 @@ async function resolveAllowedTarget(policy: PathAccessPolicy, request: string, o
   if (policy.allowedRoots.length === 0) throw new Error("Absolute paths are not allowed");
 
   const displayPath = expandAbsoluteishPath(request, options, `Path is not absolute: ${request}`);
-  const target = await canonicalExistingPath(displayPath);
+  const target = await canonicalExistingPath(displayPath, "Path does not exist", true);
   const root = policy.allowedRoots.find((allowedRoot) => isInsideOrSame(allowedRoot.realPath, target));
   if (root === undefined) throw new Error("Path is outside allowed paths");
   return { kind: "allowed", root: root.realPath, target, displayPath };
@@ -93,17 +118,26 @@ function expandAbsoluteishPath(path: string, options: PathAccessPolicyOptions, r
 }
 
 async function canonicalDirectory(path: string, label: string): Promise<string> {
-  const canonical = await canonicalExistingPath(path, `${label} does not exist`);
-  const result = await stat(canonical);
-  if (!result.isDirectory()) throw new Error(`${label} must be a directory`);
-  return canonical;
+  try {
+    const canonical = await canonicalExistingPath(path, `${label} does not exist`);
+    const result = await stat(canonical);
+    if (!result.isDirectory()) throw new Error(`${label} must be a directory`);
+    return canonical;
+  } catch (error) {
+    throw new PathAccessRootError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
 }
 
-async function canonicalExistingPath(path: string, missingMessage = "Path does not exist"): Promise<string> {
+async function canonicalExistingPath(path: string, missingMessage = "Path does not exist", targetStage = false): Promise<string> {
   try {
     return await realpath(path);
   } catch (error) {
-    if (isNodeErrorWithCode(error, "ENOENT")) throw new Error(missingMessage, { cause: error });
+    const code = isNodeErrorWithCode(error, "ENOENT") ? "ENOENT" : isNodeErrorWithCode(error, "ENOTDIR") ? "ENOTDIR" : undefined;
+    if (targetStage && code !== undefined) {
+      const message = code === "ENOENT" ? missingMessage : error instanceof Error ? error.message : String(error);
+      throw new PathAccessTargetNotFoundError(message, { cause: error });
+    }
+    if (code === "ENOENT") throw new Error(missingMessage, { cause: error });
     throw error;
   }
 }
