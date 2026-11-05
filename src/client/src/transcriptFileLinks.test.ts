@@ -44,6 +44,7 @@ function workspace(id: string, path: string, projectId = "project /?"): Workspac
 
 const candidates = [
   ["root cwd child HTML", "/ramdisk/pelican-bicycle.html", "pelican-bicycle.html", ""],
+  ["padded accepted candidate", "  /ramdisk/a.html  ", "a.html", ""],
   ["cwd child unknown extension", "/ramdisk/output.unknown", "output.unknown", ""],
   ["cwd exact root", "/ramdisk", ".", ""],
   ["relative HTML", "a.html", "a.html", ""],
@@ -94,6 +95,13 @@ it.each([
   "file:/ramdisk/a.html",
   String.raw`\\server\share\a.pdf`,
 ])("declines %s", (raw) => {
+  expect(resolveTranscriptFilePreviewUrl(raw, context)).toBeUndefined();
+});
+
+it.each([
+  ["percent-encoded network path", "%2F%2Fcdn.example/a.svg"],
+  ["mixed slash network path", String.raw`/\server/share/a.pdf`],
+])("declines %s after normalization", (_label, raw) => {
   expect(resolveTranscriptFilePreviewUrl(raw, context)).toBeUndefined();
 });
 
@@ -151,6 +159,10 @@ it("recognizes Windows paths before schemes and compares drive paths case-insens
   }
   expect(resolved("C:/Work/Repo2/a.html", { cwd: "C:/Work/Repo" }).searchParams.get("path")).toBe("C:/Work/Repo2/a.html");
   expect(resolved("/Ramdisk/a.html", { cwd: "/ramdisk" }).searchParams.get("path")).toBe("/Ramdisk/a.html");
+});
+
+it("preserves the cwd-child remainder's case for Windows drive paths", () => {
+  expect(resolved(String.raw`C:\Work\Repo\a.HTML`, { cwd: "c:/work/repo/" }).searchParams.get("path")).toBe("a.HTML");
 });
 
 it("preserves filesystem roots during cwd comparison", () => {
