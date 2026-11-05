@@ -126,7 +126,10 @@ try {
   const projects = new ProjectService(new ProjectStore(join(root, "projects.json"))); const project = await projects.add({ path: workspacePath }); const workspaces = new WorkspaceService(); const [workspace] = await workspaces.list(project); assert(workspace);
   const response = () => ({ path: join(root, "config.json"), exists: true, config: {}, effectiveConfig: {}, envOverrides: { host: false, port: false, allowedHosts: false, spawnSessions: false, subsessions: false, agentCommand: false, agentDir: false, agentSessionDir: false, sessiondUrl: false } });
   app = await buildApp({ projects, workspaces, machines: new MachineService(new MachineStore(join(root, "machines.json"))), config: { read: response, write: response, update: response }, sessionDaemon: { request: async () => ({ statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{}' }), connectWebSocket: () => { throw new Error('Unexpected daemon bridge'); } }, hostSpeech: { status: async () => ({ available: false, voices: [] }), speak: async (r) => ({ runId: r.runId, outcome: 'ended' }), stop: async () => undefined, close: async () => undefined }, logger: false, clientDist: false });
-  app.addHook("onSend", async (request, reply, payload) => { const policy = new URL(request.url, "http://private.invalid").searchParams.get("auditPolicy"); if (policy && Object.hasOwn(policies, policy) && request.url.includes("/file/view?")) reply.header("Content-Security-Policy", policies[policy]); return payload; });
+  // Baseline requests must carry the unmodified production header, so a broken
+  // production policy fails this audit. Only the deliberately weakened control
+  // policies are injected here.
+  app.addHook("onSend", async (request, reply, payload) => { const policy = new URL(request.url, "http://private.invalid").searchParams.get("auditPolicy"); if (policy && policy !== "original" && Object.hasOwn(policies, policy) && request.url.includes("/file/view?")) reply.header("Content-Security-Policy", policies[policy]); return payload; });
   app.addHook("onResponse", async (request, reply) => { if (["/api/audit/action", "/api/audit/socket", "/api/audit/control"].some(path => request.url.startsWith(path))) statuses.push({ path: request.url, status: reply.statusCode, origin: request.headers.origin, upgrade: request.headers.upgrade ?? null }); });
   app.post("/api/audit/action", () => { protectedCounts.action++; return { ok: true }; });
   app.get("/api/audit/socket", { websocket: true }, (socket) => { trackSocket(socket); protectedCounts.socket++; socket.send("ready"); });
@@ -154,7 +157,7 @@ try {
   cdpSocket = new WebSocket(`ws://127.0.0.1:${port}${endpoint}`); await onceBounded(cdpSocket, "open", "CDP connection deadline"); const cdp = new Cdp(cdpSocket);
   result.browserVersion = await cdp.send("Browser.getVersion"); const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" }); const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true }); await cdp.send("Page.enable", {}, sessionId); await cdp.send("Runtime.enable", {}, sessionId);
   const route = `${appUrl}/api/projects/${encodeURIComponent(project.id)}/workspaces/${encodeURIComponent(workspace.id)}/file/view`;
-  const viewUrl = (policy, probe = "all") => `${route}?${new URLSearchParams({ path: "audit.html", auditPolicy: policy, probe })}`;
+  const viewUrl = (policy, probe = "all") => `${route}?${new URLSearchParams({ path: "audit.html", ...(policy === "original" ? {} : { auditPolicy: policy }), probe })}`;
   const headers = await fetch(viewUrl("original")); assert.equal(headers.status, 200); assert.equal(headers.headers.get("content-security-policy"), POLICY); assert.equal(headers.headers.get("content-length"), null); assert.equal(headers.headers.get("referrer-policy"), "no-referrer"); result.headers = Object.fromEntries(headers.headers); await headers.arrayBuffer();
   const navigate = async (url) => { await cdp.send("Page.navigate", { url }, sessionId); await waitFor(cdp, sessionId, `location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`); };
   const run = async (policy, probe) => {
