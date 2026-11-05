@@ -20,7 +20,12 @@ export async function createSessionDaemonApp(options: SessionDaemonAppOptions = 
     ...sessionRouteFastifyOptions,
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
-  registerBrowserOriginGuard(app, options.allowedOrigins);
+  // The installed WebSocket plugin must observe the upgrade before the guard
+  // replies: its onResponse hook destroys a rejected upgrade's raw socket, so
+  // registering the guard first would leak one held connection per denial. The
+  // guard still rejects in onRequest, before any route handler, bridge, or
+  // runtime attachment.
   await app.register(fastifyWebsocket);
+  registerBrowserOriginGuard(app, options.allowedOrigins);
   return app;
 }
