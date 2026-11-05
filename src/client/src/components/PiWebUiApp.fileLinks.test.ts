@@ -74,15 +74,46 @@ function isRenderChatView(value: unknown): value is RenderChatView {
   return typeof value === "function";
 }
 
-async function chat(app: PiWebUiApp, state: AppState, selected: SessionInfo = session): Promise<ChatView> {
+function renderChatTemplate(app: PiWebUiApp, state: AppState, selected: SessionInfo = session): TemplateResult {
   Reflect.set(app, "state", state);
   const boundary: unknown = Reflect.get(app, "renderChatView");
   if (!isRenderChatView(boundary)) throw new Error("PiWebUiApp.renderChatView is not callable");
-  render(boundary.call(app, state, selected), container);
+  return boundary.call(app, state, selected);
+}
+
+async function mountChat(template: TemplateResult): Promise<ChatView> {
+  render(template, container);
   const child = container.querySelector<ChatView>("chat-view");
   if (child === null) throw new Error("Missing real chat-view template");
   await child.updateComplete;
   return child;
+}
+
+async function chat(app: PiWebUiApp, state: AppState, selected: SessionInfo = session): Promise<ChatView> {
+  return mountChat(renderChatTemplate(app, state, selected));
+}
+
+/** Observe reads of the effective browser base without replacing the document. */
+function observeDocumentBaseUri(): { reads: () => number; restore: () => void } {
+  let reads = 0;
+  const descriptor = Object.getOwnPropertyDescriptor(document, "baseURI");
+  Object.defineProperty(document, "baseURI", {
+    configurable: true,
+    get() {
+      reads += 1;
+      return "https://gateway.example/tools/pi/";
+    },
+  });
+  return {
+    reads: () => reads,
+    restore: () => {
+      if (descriptor === undefined) {
+        Reflect.deleteProperty(document, "baseURI");
+      } else {
+        Object.defineProperty(document, "baseURI", descriptor);
+      }
+    },
+  };
 }
 
 it("binds selected remote session workspace and machine ownership to the rendered chat view", async () => {
@@ -222,20 +253,47 @@ it("binds undefined for an empty session cwd", async () => {
   expect(child.resolveFileLink).toBeUndefined();
 });
 
-it("does not read browser URL state before a document and complete ownership exist", async () => {
-  vi.stubGlobal("document", undefined);
+it("renders the real chat boundary before a document exists and reads no browser URL state", async () => {
+  const state = stateFixture();
   let app: PiWebUiApp;
+  let template: TemplateResult;
+  vi.stubGlobal("document", undefined);
   try {
     app = new PiWebUiApp();
+    template = renderChatTemplate(app, state);
   } finally {
     vi.unstubAllGlobals();
     vi.stubGlobal("matchMedia", desktopMediaQuery);
   }
 
+  const detached = await mountChat(template);
+  expect(detached.resolveFileLink).toBeUndefined();
+
+  // Restoring globals after the boundary must not retroactively bind the
+  // already-created template; a later real render binds normally.
+  const restored = await chat(app, state);
+  expect(restored.resolveFileLink?.("/second/a.html")).toContain("/workspaces/workspace%20%3F%2F/file/view?path=a.html");
+});
+
+it("does not read document.baseURI while ownership is incomplete", async () => {
   const noOwnership = stateFixture();
   noOwnership.workspaces = [workspace("other", "/unmatched")];
-  expect((await chat(app, noOwnership)).resolveFileLink).toBeUndefined();
+  const observation = observeDocumentBaseUri();
+  let template: TemplateResult;
+  try {
+    template = renderChatTemplate(new PiWebUiApp(), noOwnership);
+    expect(observation.reads()).toBe(0);
+  } finally {
+    observation.restore();
+  }
+  expect((await mountChat(template)).resolveFileLink).toBeUndefined();
 
-  const restored = await chat(app, stateFixture());
-  expect(restored.resolveFileLink?.("/second/a.html")).toContain("/workspaces/workspace%20%3F%2F/file/view?path=a.html");
+  // Positive control: complete ownership does read the effective browser base.
+  const controlObservation = observeDocumentBaseUri();
+  try {
+    renderChatTemplate(new PiWebUiApp(), stateFixture());
+    expect(controlObservation.reads()).toBeGreaterThan(0);
+  } finally {
+    controlObservation.restore();
+  }
 });
