@@ -351,6 +351,25 @@ describe("config route allowedOrigins", () => {
     expect(clear.json<PiWebUiConfigResponse>().effectiveConfig.allowedOrigins).toEqual([]);
   });
 
+  it("clears populated allowedOrigins through the selected-machine API with an explicit empty list", async () => {
+    savedConfig = { port: 8808, allowedOrigins: ["https://pi.example"] };
+
+    const clear = await app.inject({ method: "PUT", url: "/api/machines/local/config", payload: { config: { allowedOrigins: [] } } });
+
+    expect(clear.statusCode).toBe(200);
+    expect(savedConfig).toEqual({ port: 8808, allowedOrigins: [] });
+    const cleared = clear.json<PiWebUiConfigResponse>();
+    expect(cleared.config.allowedOrigins).toEqual([]);
+    expect(cleared.effectiveConfig.allowedOrigins).toEqual([]);
+
+    const read = await app.inject({ method: "GET", url: "/api/machines/local/config" });
+
+    expect(read.statusCode).toBe(200);
+    const readConfig = read.json<PiWebUiConfigResponse>();
+    expect(readConfig.config.allowedOrigins).toEqual([]);
+    expect(readConfig.effectiveConfig.allowedOrigins).toEqual([]);
+  });
+
   const configAliases = [
     { alias: "/api/config", prefix: "PI WEBUI config" },
     { alias: "/api/machines/local/config", prefix: "PI WEBUI selected-machine config" },
