@@ -52,3 +52,9 @@ export function workspaceImagePreviewUrl(projectId: string, workspaceId: string,
   const prefix = `api/machines/${encodeURIComponent(options?.machineId ?? "local")}`;
   return resolveAppUrl(`${prefix}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/file/preview?${params.toString()}`);
 }
+
+/** Read-only preview URL for a workspace file, resolved once at the browser boundary. */
+export function workspaceFileViewUrl(projectId: string, workspaceId: string, path: string, options?: { machineId?: string }): string {
+  const params = new URLSearchParams({ path });
+  return resolveAppUrl(`api/machines/${encodeURIComponent(options?.machineId ?? "local")}/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/file/view?${params.toString()}`);
+}
