@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { markdownHtmlCacheSize, setDefaultRenderMathForTesting } from "../formatting/markdown";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { markdownHtmlCacheSize, setDefaultRenderMathForTesting, toSafeMarkdownHtml } from "../formatting/markdown";
 import { FormattedText, LIVE_PLAIN_TEXT_MIN_CHARS, shouldRenderLivePlainText } from "./FormattedText";
 
 const fakeMathRenderer = (tex: string, options: { displayMode: boolean }): string =>
@@ -201,5 +201,156 @@ describe("FormattedText large live tail", () => {
     await element.updateComplete;
 
     expect(formattedContainer(element).querySelector(".code-block-wrapper .code-copy-button")).not.toBeNull();
+  });
+});
+
+const fileMarkdown = "[local](a.html) ![local](plot.svg) [external](https://outside.example/a.html)";
+
+function fileNodes(element: FormattedText): { a: HTMLAnchorElement; img: HTMLImageElement } {
+  const root = formattedContainer(element);
+  const a = root.querySelector<HTMLAnchorElement>('a[href]:not([href^="https://outside.example"])');
+  const img = root.querySelector<HTMLImageElement>("img");
+  if (a === null || img === null) throw new Error("Missing file nodes");
+  return { a, img };
+}
+
+function resolver(prefix: string) {
+  return vi.fn((raw: string) => (["a.html", "plot.svg", "other.html"].includes(raw) ? `${prefix}${raw}` : undefined));
+}
+
+describe("FormattedText file link enhancement", () => {
+  it("rewrites file anchor and image attributes and marks only matches", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    element.resolveFileLink = resolver("https://gateway.example/A/");
+    await element.updateComplete;
+
+    const { a, img } = fileNodes(element);
+    expect(a.getAttribute("href")).toBe("https://gateway.example/A/a.html");
+    expect(img.getAttribute("src")).toBe("https://gateway.example/A/plot.svg");
+    expect(a.dataset["filePreview"]).toBe("true");
+    expect(img.dataset["filePreview"]).toBe("true");
+    expect(a.target).toBe("_blank");
+    expect(a.rel).toBe("noreferrer noopener");
+    const external = formattedContainer(element).querySelector('a[href="https://outside.example/a.html"]');
+    expect(external?.hasAttribute("data-file-preview")).toBe(false);
+  });
+
+  it("keeps the same elements while resolving A then B from the original targets", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    const nodes = fileNodes(element);
+    const first = resolver("https://gateway.example/A/");
+    const second = resolver("https://gateway.example/B/");
+
+    element.resolveFileLink = first;
+    await element.updateComplete;
+    element.resolveFileLink = second;
+    await element.updateComplete;
+
+    expect(fileNodes(element)).toEqual(nodes);
+    expect(fileNodes(element).a).toBe(nodes.a);
+    expect(fileNodes(element).img).toBe(nodes.img);
+    expect(first).toHaveBeenCalledWith("a.html");
+    expect(second).toHaveBeenCalledWith("a.html");
+    expect(second).toHaveBeenCalledWith("plot.svg");
+    expect(second.mock.calls.flat()).not.toContain("https://gateway.example/A/a.html");
+    expect(nodes.a.getAttribute("href")).toBe("https://gateway.example/B/a.html");
+  });
+
+  it("restores original attributes when a replacement resolver declines", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    const nodes = fileNodes(element);
+
+    for (const next of [resolver("https://gateway.example/A/"), resolver("https://gateway.example/B/"), () => undefined]) {
+      element.resolveFileLink = next;
+      await element.updateComplete;
+    }
+
+    expect(fileNodes(element).a).toBe(nodes.a);
+    expect(nodes.a.getAttribute("href")).toBe("a.html");
+    expect(nodes.img.getAttribute("src")).toBe("plot.svg");
+    expect(nodes.a.hasAttribute("data-file-preview")).toBe(false);
+    expect(nodes.img.hasAttribute("data-file-preview")).toBe(false);
+  });
+
+  it("restores original attributes when the resolver disappears", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    const nodes = fileNodes(element);
+    element.resolveFileLink = resolver("https://gateway.example/B/");
+    await element.updateComplete;
+
+    Reflect.set(element, "resolveFileLink", undefined);
+    await element.updateComplete;
+
+    expect(nodes.a.getAttribute("href")).toBe("a.html");
+    expect(nodes.img.getAttribute("src")).toBe("plot.svg");
+    expect(nodes.a.hasAttribute("data-file-preview")).toBe(false);
+
+    element.resolveFileLink = resolver("https://gateway.example/A/");
+    await element.updateComplete;
+    expect(nodes.a.getAttribute("href")).toBe("https://gateway.example/A/a.html");
+  });
+
+  it("restores a throwing element and continues enhancing its siblings", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    element.resolveFileLink = resolver("https://gateway.example/A/");
+    await element.updateComplete;
+    element.resolveFileLink = (raw) => {
+      if (raw === "a.html") throw new Error("resolver failure");
+      return raw === "plot.svg" ? "https://gateway.example/B/plot.svg" : undefined;
+    };
+    await element.updateComplete;
+
+    const { a, img } = fileNodes(element);
+    expect(a.getAttribute("href")).toBe("a.html");
+    expect(a.hasAttribute("data-file-preview")).toBe(false);
+    expect(img.getAttribute("src")).toBe("https://gateway.example/B/plot.svg");
+  });
+
+  it("isolates two workspace resolvers sharing cached Markdown", async () => {
+    const a = await mountFormattedText(fileMarkdown, false);
+    const b = await mountFormattedText(fileMarkdown, false);
+
+    a.resolveFileLink = resolver("https://gateway.example/A/");
+    b.resolveFileLink = resolver("https://gateway.example/B/");
+    await Promise.all([a.updateComplete, b.updateComplete]);
+
+    expect(fileNodes(a).a.getAttribute("href")).toBe("https://gateway.example/A/a.html");
+    expect(fileNodes(b).a.getAttribute("href")).toBe("https://gateway.example/B/a.html");
+    const cached = toSafeMarkdownHtml(fileMarkdown);
+    expect(cached).toContain('href="a.html"');
+    expect(cached).toContain('src="plot.svg"');
+    expect(cached).not.toContain("/file/view");
+    expect(cached).not.toContain("gateway.example");
+  });
+
+  it("records new originals after Markdown replaces nodes", async () => {
+    const element = await mountFormattedText(fileMarkdown, false);
+    element.resolveFileLink = resolver("https://gateway.example/A/");
+    await element.updateComplete;
+    const old = fileNodes(element).a;
+
+    element.text = "[other](other.html) ![local](plot.svg)";
+    await element.updateComplete;
+
+    const current = fileNodes(element).a;
+    expect(current).not.toBe(old);
+    Reflect.set(element, "resolveFileLink", undefined);
+    await element.updateComplete;
+    expect(current.getAttribute("href")).toBe("other.html");
+  });
+
+  it("enhances links when a live plain-text tail settles without changing plain-text rendering", async () => {
+    const text = "[local](a.html) $x";
+    const element = await mountFormattedText(text, true);
+    element.resolveFileLink = resolver("https://gateway.example/A/");
+    await element.updateComplete;
+
+    expect(formattedContainer(element).textContent).toBe(text);
+    expect(formattedContainer(element).querySelector("a")).toBeNull();
+
+    element.live = false;
+    await element.updateComplete;
+
+    expect(formattedContainer(element).querySelector("a")?.getAttribute("href")).toBe("https://gateway.example/A/a.html");
   });
 });

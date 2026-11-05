@@ -37,6 +37,12 @@ export class FormattedText extends LitElement {
    */
   @property({ type: Boolean }) live = false;
 
+  /** Injected resolver from the owning session workspace; absent means no enhancement. */
+  @property({ attribute: false })
+  resolveFileLink?: (rawTarget: string) => string | undefined;
+
+  private readonly originalFileLinks = new WeakMap<Element, { attribute: "href" | "src"; original: string }>();
+
   /** Set when a cold-start retry re-render must bypass the literal-fallback cache entry. */
   private retryMathRender = false;
   /** One subscription per element; the retry promise never resolves if the engine fails to load. */
@@ -77,6 +83,7 @@ export class FormattedText extends LitElement {
 
   override updated(): void {
     this.enhanceCodeBlocks();
+    this.enhanceFileLinks();
     // CHTML draws every glyph through CSS, and document-head rules cannot
     // reach a shadow root: deliver the stylesheet into the root that just
     // rendered so MathJax output is actually visible. Idempotent per root.
@@ -84,6 +91,26 @@ export class FormattedText extends LitElement {
       installMathJaxStyles(this.renderRoot);
     }
     this.scheduleMathRetry();
+  }
+
+  private enhanceFileLinks(): void {
+    this.renderRoot.querySelectorAll("a[href], img[src]").forEach((element) => {
+      let original = this.originalFileLinks.get(element);
+      if (original === undefined) {
+        const attribute = element.tagName === "A" ? "href" : "src";
+        const value = element.getAttribute(attribute);
+        if (value === null) return;
+        original = { attribute, original: value };
+        this.originalFileLinks.set(element, original);
+      }
+      let resolved: string | undefined;
+      // One resolver failure is a non-match for that element only; its siblings
+      // still enhance and the written attribute is restored below.
+      try { resolved = this.resolveFileLink?.(original.original); } catch { resolved = undefined; }
+      element.setAttribute(original.attribute, resolved ?? original.original);
+      if (resolved === undefined) element.removeAttribute("data-file-preview");
+      else element.setAttribute("data-file-preview", "true");
+    });
   }
 
   private enhanceCodeBlocks(): void {
