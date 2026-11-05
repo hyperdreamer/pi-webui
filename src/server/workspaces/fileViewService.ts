@@ -128,14 +128,22 @@ async function releaseOwnedResources(handle: FileViewHandle, constructed: ReadSt
     return;
   }
   if (constructed.closed) return;
+  let streamError: Error | undefined;
   const observed = new Promise<void>((resolve) => {
-    // Observe late stream errors so cleanup cannot create an unhandled event;
-    // close still settles the wait.
-    constructed.once("error", () => undefined);
-    constructed.once("close", () => { resolve(); });
+    // Observe teardown errors so cleanup cannot create an unhandled event. The
+    // failure is retained, not ignored: it is reported after close so the
+    // caller can attach it to the primary rejection instead of reporting a
+    // successful cleanup.
+    const onError = (error: Error): void => { streamError = error; };
+    constructed.once("error", onError);
+    constructed.once("close", () => {
+      constructed.removeListener("error", onError);
+      resolve();
+    });
   });
   constructed.destroy();
   await observed;
+  if (streamError !== undefined) throw streamError;
 }
 
 export function createWorkspaceFileViewOpener(overrides: Partial<FileViewDependencies> = {}): WorkspaceFileViewOpener {

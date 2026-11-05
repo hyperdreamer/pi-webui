@@ -605,6 +605,43 @@ it("preserves the primary failure when cleanup close rejects", async () => {
   }
 });
 
+it("retains a constructed-stream teardown error in the aggregate cause", async () => {
+  const handle = await open(join(root, "zero.html"), "r");
+  const real = await handle.stat();
+  const stream = handle.createReadStream({ start: 0, end: 0, autoClose: true });
+  const cleanupError: NodeJS.ErrnoException = new Error("auto-close failed while releasing the stream");
+  cleanupError.code = "CLEANUP_CLOSE_FAILED";
+  const destroy = stream.destroy.bind(stream);
+  // Model a stream whose auto-close teardown emits a failure of its own while
+  // the service releases a construction that never transferred ownership.
+  vi.spyOn(stream, "destroy").mockImplementation((error?: Error) => {
+    destroy(error ?? cleanupError);
+    return stream;
+  });
+  const originalPush = stream.push.bind(stream);
+  vi.spyOn(stream, "push").mockImplementation((chunk: unknown, encoding?: BufferEncoding) => {
+    if (chunk === null) throw new Error("EOF setup failed");
+    return originalPush(chunk, encoding);
+  });
+  const opener = createWorkspaceFileViewOpener({
+    open: () => Promise.resolve(viewHandle(handle, {
+      stat: () => Promise.resolve(fileViewStat(real, { size: 0 })),
+      createReadStream: () => stream,
+    })),
+  });
+  const error = await opener(root, "zero.html").catch((reason: unknown) => reason);
+  expect(error).toBeInstanceOf(Error);
+  if (!(error instanceof Error)) return;
+  expect(error.message).toBe("EOF setup failed");
+  expect(stream.closed).toBe(true);
+  const cause = error.cause;
+  expect(cause).toBeInstanceOf(AggregateError);
+  if (cause instanceof AggregateError) {
+    expect(cause.message).toBe("File-view cleanup failed");
+    expect(cause.errors).toContain(cleanupError);
+  }
+});
+
 it("maps authorization-stage target permission and loop errors to 403", async (context) => {
   if (process.platform === "win32") {
     context.skip();
