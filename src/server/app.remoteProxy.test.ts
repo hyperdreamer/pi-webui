@@ -567,23 +567,34 @@ describe("buildApp remote machine proxy routes", () => {
     const machineId = await addRemoteMachine(request);
     const baseUrl = await appTestContext.app.listen({ host: "127.0.0.1", port: 0 });
     const headers = deferred<http.IncomingHttpHeaders>();
+    const firstData = deferred<undefined>();
     const observation = observeRemoteHttp(
       `${baseUrl}/api/machines/${machineId}/projects/p1/workspaces/w1/file/view?path=a.html`,
-      (incoming) => { headers.resolve(incoming.headers); },
+      {
+        onHeaders: (incoming) => { headers.resolve(incoming.headers); },
+        onData: () => { firstData.resolve(undefined); },
+      },
     );
+    // The data barrier may fail before the observation deadline does; absorb that
+    // branch so a buffering regression is reported by the barrier, not as an
+    // unhandled rejection.
+    void observation.result.catch(() => undefined);
     source.push("<p>partial");
     try {
       const received = await headers.promise;
       expect(received["content-security-policy"]).toBe(documentPolicy);
       expect(received["referrer-policy"]).toBe("no-referrer");
+      // Downstream evidence: a proxy that buffers the whole upstream body would
+      // never deliver these bytes before the upstream fails.
+      await withinDeadline(firstData.promise, "downstream partial file view body");
 
       source.destroy(new Error("upstream body failed"));
 
       const result = await observation.result;
+      expect(result.status).toBe(200);
       expect(result.aborted).toBe(true);
       expect(result.ended).toBe(false);
-      expect(result.bytes.toString()).not.toContain("{");
-      expect(result.bytes.toString()).not.toContain("Remote machine unavailable");
+      expect(result.bytes).toEqual(Buffer.from("<p>partial"));
     } finally {
       source.destroy();
     }
@@ -1019,6 +1030,20 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+async function withinDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error(`${description} deadline`)); }, 2_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function remoteMachineConfigResponseBody(allowedOrigins: string[]): PiWebUiConfigResponse {
   const config = { allowedOrigins, maxUploadBytes: 1024 };
   return {
@@ -1048,9 +1073,14 @@ interface ObservedRemoteResponse {
   status: number;
 }
 
+interface RemoteHttpObservationCallbacks {
+  onHeaders?: (response: http.IncomingMessage) => void;
+  onData?: (chunk: Buffer) => void;
+}
+
 /** Real HTTP observation so an interrupted upstream transfer can be seen as an
  * incomplete downstream response, which inject() cannot represent. */
-function observeRemoteHttp(url: string, onHeaders?: (response: http.IncomingMessage) => void) {
+function observeRemoteHttp(url: string, callbacks: RemoteHttpObservationCallbacks = {}) {
   let request: http.ClientRequest | undefined;
   const result = new Promise<ObservedRemoteResponse>((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -1068,8 +1098,11 @@ function observeRemoteHttp(url: string, onHeaders?: (response: http.IncomingMess
     }, 3_000);
     request = http.get(url, (incoming) => {
       response = incoming;
-      onHeaders?.(incoming);
-      incoming.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+      callbacks.onHeaders?.(incoming);
+      incoming.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        callbacks.onData?.(chunk);
+      });
       incoming.once("end", () => { finish(true, false); });
       incoming.once("aborted", () => { finish(false, true); });
       incoming.once("error", () => { finish(false, true); });
