@@ -40,6 +40,19 @@ const policies = {
   unsandboxed: POLICY.replace("sandbox allow-scripts; ", ""),
 };
 result.policies = policies;
+// Deliberately wrong production policy for the baseline-oracle negative control.
+// A baseline assertion that accepts this value cannot detect a weakened policy.
+const WRONG_BASELINE_POLICY = "sandbox allow-scripts; default-src * data: blob: 'unsafe-inline'; connect-src *";
+// The baseline request carries no auditPolicy parameter and must arrive with the
+// unmodified production header. Every injected policy is recorded here so the
+// audit can prove the override hook never touched a baseline/original request.
+const policyOverride = { baselineRequests: 0, baselineWrites: 0, applications: [] };
+const baselineOverrides = () => policyOverride.applications.filter((entry) => entry.requested === null || entry.requested === "original");
+function assertProductionBaseline(headers, label) {
+  assert.equal(headers.get("content-security-policy"), POLICY, `${label}: production CSP baseline mismatch`);
+  assert.equal(headers.get("content-length"), null, `${label}: file view must not precompute content-length`);
+  assert.equal(headers.get("referrer-policy"), "no-referrer", `${label}: file view must keep referrer-policy no-referrer`);
+}
 class Cdp {
   constructor(socket) {
     this.socket = socket; this.sequence = 0; this.pending = new Map();
@@ -128,13 +141,30 @@ try {
   app = await buildApp({ projects, workspaces, machines: new MachineService(new MachineStore(join(root, "machines.json"))), config: { read: response, write: response, update: response }, sessionDaemon: { request: async () => { protectedCounts.bridge++; return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: '{}' }; }, connectWebSocket: (path) => { protectedCounts.bridge++; return new WebSocket(mockUrl.replace("http:", "ws:") + path); } }, hostSpeech: { status: async () => ({ available: false, voices: [] }), speak: async (r) => ({ runId: r.runId, outcome: 'ended' }), stop: async () => undefined, close: async () => undefined }, logger: false, clientDist: false });
   // Baseline requests must carry the unmodified production header, so a broken
   // production policy fails this audit. Only the deliberately weakened control
-  // policies are injected here.
-  app.addHook("onSend", async (request, reply, payload) => { const policy = new URL(request.url, "http://private.invalid").searchParams.get("auditPolicy"); if (policy && policy !== "original" && Object.hasOwn(policies, policy) && request.url.includes("/file/view?")) reply.header("Content-Security-Policy", policies[policy]); return payload; });
+  // policies are injected here, and each application is recorded so the audit
+  // can prove a baseline/original request was never rewritten.
+  app.addHook("onSend", async (request, reply, payload) => {
+    const url = new URL(request.url, "http://private.invalid");
+    if (!url.pathname.includes("/file/view")) return payload;
+    const baseline = !url.searchParams.has("auditPolicy");
+    const requested = url.searchParams.get("auditPolicy");
+    if (baseline) policyOverride.baselineRequests++;
+    if (requested !== null && requested !== "original" && Object.hasOwn(policies, requested)) {
+      reply.header("Content-Security-Policy", policies[requested]);
+      policyOverride.applications.push({ requested, path: url.pathname });
+      if (baseline || requested === "original") policyOverride.baselineWrites++;
+    }
+    return payload;
+  });
   app.addHook("onResponse", async (request, reply) => { if (["/api/audit/action", "/api/audit/socket", "/api/audit/control"].some(path => request.url.startsWith(path))) statuses.push({ path: request.url, status: reply.statusCode, origin: request.headers.origin, upgrade: request.headers.upgrade ?? null }); });
   app.post("/api/audit/action", () => { protectedCounts.action++; return { ok: true }; });
   app.get("/api/audit/socket", { websocket: true }, (socket) => { trackSocket(socket); protectedCounts.socket++; socket.send("ready"); });
   app.get("/api/audit/worker", (_request, reply) => { protectedCounts.worker++; return reply.type("application/javascript").send(`fetch(${JSON.stringify("WORKER_MARKER")}, {mode:'no-cors'}).then(() => postMessage('done')).catch(() => postMessage('failed'));` .replace(JSON.stringify("WORKER_MARKER"), JSON.stringify(mockUrl + "/executed-worker"))); });
   app.get("/api/audit/control", (_r, reply) => reply.type("text/html").send("<!doctype html><title>same-origin control</title>"));
+  // Probe-only response with a deliberately wrong production policy. It never
+  // passes through the policy override hook and exists only for the baseline
+  // oracle self-check below.
+  app.get("/api/audit/baseline-probe", (_request, reply) => reply.type("text/html").header("Content-Security-Policy", WRONG_BASELINE_POLICY).send("<!doctype html><title>baseline oracle probe</title>"));
   appUrl = await app.listen({ host: "127.0.0.1", port: 0 });
   mock = http.createServer((request, response) => {
     const path = new URL(request.url, "http://private.invalid").pathname; increment(counts, path);
@@ -169,7 +199,29 @@ window.foreignStarted=true;<\/script>`);
   result.browserVersion = await cdp.send("Browser.getVersion"); const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" }); const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true }); await cdp.send("Page.enable", {}, sessionId); await cdp.send("Runtime.enable", {}, sessionId);
   const route = `${appUrl}/api/projects/${encodeURIComponent(project.id)}/workspaces/${encodeURIComponent(workspace.id)}/file/view`;
   const viewUrl = (policy, probe = "all") => `${route}?${new URLSearchParams({ path: "audit.html", ...(policy === "original" ? {} : { auditPolicy: policy }), probe })}`;
-  const headers = await fetch(viewUrl("original")); assert.equal(headers.status, 200); assert.equal(headers.headers.get("content-security-policy"), POLICY); assert.equal(headers.headers.get("content-length"), null); assert.equal(headers.headers.get("referrer-policy"), "no-referrer"); result.headers = Object.fromEntries(headers.headers); await headers.arrayBuffer();
+  const baselineSelfCheck = async () => {
+    // Self-check stage, fail closed: the probe's deliberately wrong production
+    // policy must be rejected by the same assertion used for the real baseline.
+    const probe = await fetch(appUrl + "/api/audit/baseline-probe"); assert.equal(probe.status, 200, "Baseline oracle probe was not served");
+    const probePolicy = probe.headers.get("content-security-policy"); await probe.arrayBuffer();
+    assert.equal(probePolicy, WRONG_BASELINE_POLICY, "Baseline oracle probe did not deliver the deliberately wrong policy");
+    let rejected = null; try { assertProductionBaseline(probe.headers, "baseline oracle negative control"); } catch (error) { rejected = error instanceof Error ? error.message : String(error); }
+    if (rejected === null) throw new Error("Baseline oracle self-check failed: a deliberately wrong production CSP was accepted");
+    if (!rejected.includes("production CSP baseline mismatch")) throw new Error(`Baseline oracle self-check failed: the wrong production CSP was not rejected by the CSP comparison (${rejected})`);
+    // Positive baseline: request the real production response without any
+    // auditPolicy parameter, prove the override observer saw it, and prove the
+    // observer recorded no override application for it.
+    const url = viewUrl("original"); assert.equal(new URL(url).searchParams.has("auditPolicy"), false, "Baseline request must not carry an auditPolicy override");
+    const observed = policyOverride.baselineRequests; const response = await fetch(url); assert.equal(response.status, 200);
+    assert.equal(policyOverride.baselineRequests, observed + 1, "Baseline request bypassed the policy override observer");
+    assert.equal(policyOverride.baselineWrites, 0, "Baseline request was rewritten by the policy override hook");
+    assert.deepEqual(baselineOverrides(), [], "Baseline request was rewritten by the policy override hook");
+    assertProductionBaseline(response.headers, "production baseline");
+    result.headers = Object.fromEntries(response.headers);
+    result.baseline = { url, policy: response.headers.get("content-security-policy"), baselineRequests: policyOverride.baselineRequests, baselineWrites: policyOverride.baselineWrites, overrideApplications: [...policyOverride.applications], negativeControl: { policy: probePolicy, rejected } };
+    await response.arrayBuffer();
+  };
+  await baselineSelfCheck();
   const navigate = async (url) => { await cdp.send("Page.navigate", { url }, sessionId); await waitFor(cdp, sessionId, `location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`); };
   const run = async (policy, probe) => {
     clearCounts(); await navigate(viewUrl(policy, probe)); await waitFor(cdp, sessionId, "window.auditDone === true");
@@ -216,6 +268,10 @@ window.foreignStarted=true;<\/script>`);
   clearCounts(); await navigate(appUrl + "/api/audit/control");
   const positive = await cdp.evaluate(sessionId, `(async () => { const action = await fetch('/api/audit/action', {method:'POST',body:'control'}); const socket = await new Promise((resolve,reject) => { const s = new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/audit/socket")}); s.onmessage=()=>{s.close();resolve(101)};s.onerror=reject; }); const daemonRequest = await fetch('/api/sessions', {method:'POST',headers:{'content-type':'application/json'},body:'{}'}); const daemonSocket = await new Promise((resolve,reject) => { const s = new WebSocket(${JSON.stringify(appUrl.replace("http:", "ws:") + "/api/events")}); s.onmessage=()=>{s.close();resolve(101)};s.onerror=reject; }); return {action:action.status,socket,daemonRequest:daemonRequest.status,daemonSocket}; })()`);
   assert.deepEqual(positive, { action: 200, socket: 101, daemonRequest: 200, daemonSocket: 101 }); assert.equal(protectedCounts.action, 1); assert.equal(protectedCounts.socket, 1); assert.equal(protectedCounts.bridge, 2); result.positiveControls.guard = { ...positive, handlers: { ...protectedCounts } };
+  const finalOverrides = baselineOverrides();
+  result.policyOverride = { baselineRequests: policyOverride.baselineRequests, baselineWrites: policyOverride.baselineWrites, baselineOverrides: finalOverrides, applications: [...policyOverride.applications] };
+  assert.equal(policyOverride.baselineWrites, 0, "Policy override hook rewrote a baseline request during the audit");
+  assert.deepEqual(finalOverrides, [], "Policy override hook rewrote a baseline request during the audit");
   result.passed = true;
 } catch (error) { result.diagnostics.push(error instanceof Error ? error.stack : String(error)); process.exitCode = 1; }
 finally {
