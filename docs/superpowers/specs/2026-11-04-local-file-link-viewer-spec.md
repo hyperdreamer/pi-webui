@@ -60,9 +60,10 @@ These exports are consumed by the compositions, route modules, or tests below. D
 | `src/shared/federatedRoutes.ts` | Add exactly `{ method: "GET", path: "/projects/:projectId/workspaces/:workspaceId/file/view" }` to `FEDERATED_HTTP_ROUTES`. No timeout override or new WebSocket route. |
 | `src/server/machines/machineProxyRoutes.ts` | Add lowercase `referrer-policy` to `SAFE_RESPONSE_HEADERS`. Use existing streamed GET cancellation, eager header flush, and upstream error propagation. Config forwarding picks up the shared selected-machine parser/projection changes. Do not forward browser request `Origin` or `Range`. |
 | `src/server/app.ts` | Read and copy the startup `effectiveConfig.allowedOrigins` once through the existing injected config service; register the root guard before all application routes. Keep the config mutation coordinator shared. |
+| `src/server/workspaces/pathAccessPolicy.ts` | Export `PathAccessTargetNotFoundError` and use it for target resolution only: wrap the target `canonicalExistingPath` call in `resolvePathAccessTarget` (workspace branch) and `resolveAllowedTarget` (allowed-root branch) so a target `ENOENT`/`ENOTDIR` becomes that typed error carrying the existing `Path does not exist` message. Workspace-root and allowed-root canonicalization keep their current behavior, and other Explorer routes keep the same message. |
 | `src/server/sessiond.ts` | Replace inline Fastify/WebSocket edge construction with `await createSessionDaemonApp({ allowedOrigins: config.allowedOrigins ?? [], logger: true, bodyLimit: maxUploadBytes(daemonEnvironment, config) })`. Keep the existing frozen environment, startup ordering, route registration callback, runtime ownership, listener, and shutdown logic. Remove imports made unused by the extraction. |
 
-`src/server/index.ts`, `RemoteMachineClient`, the daemon client, path-policy modules, project-local config schema, and image preview behavior need no production changes. `Origin` configured on a machine record already survives the machine client's configured-header filter; protect that behavior with tests.
+`src/server/index.ts`, `RemoteMachineClient`, the daemon client, project-local config schema, and image preview behavior need no production changes. The path-policy module changes only by the typed target-not-found error above. `Origin` configured on a machine record already survives the machine client's configured-header filter; protect that behavior with tests.
 
 ### 2.3 Test, audit, documentation, and release files
 
@@ -152,7 +153,7 @@ resolveFileLink?: (rawTarget: string) => string | undefined;
 import type { ReadStream, Stats } from "node:fs";
 import type { PiWebUiPathAccessConfig } from "../../shared/apiTypes.js";
 import type { FileViewKind } from "../../shared/fileViewTypes.js";
-import type { resolveWorkspacePathAccessTarget } from "./pathAccessPolicy.js";
+import { PathAccessTargetNotFoundError, resolveWorkspacePathAccessTarget } from "./pathAccessPolicy.js";
 
 export class FileViewError extends Error {
   readonly status: 400 | 403 | 404 | 413 | 415;
@@ -383,7 +384,7 @@ Do not derive ownership from a remote machine's configured URL or from the works
 `openWorkspaceFileView` and factory-created openers follow the same algorithm:
 
 1. Reject absent or exact-empty `path` with the required 400 message. Reject a NUL-containing string with its separate 400 message. Whitespace filenames are not silently trimmed. HTTP non-string and repeated query values are rejected at the route boundary before this typed API.
-2. Call `authorize(rootPath, path, pathAccess)` exactly once, using the existing policy. Retain its `root`, `target`, and `displayPath`. A relative request stays under the canonical workspace. An absolute/home-relative request requires a configured allowed root. Do not independently allow all absolute workspace paths: the client intentionally makes cwd-child paths relative.
+2. Call `authorize(rootPath, path, pathAccess)` exactly once, using the existing policy. Retain its `root`, `target`, and `displayPath`. A relative request stays under the canonical workspace. An absolute/home-relative request requires a configured allowed root. Do not independently allow all absolute workspace paths: the client intentionally makes cwd-child paths relative. Catch `PathAccessTargetNotFoundError` and return the target 404 mapping; a missing or invalid workspace/configured root is not that error and stays an infrastructure failure.
 3. On Windows only, call `lstat(target)` before opening. A final symlink is a 403. A nonregular entry is a 415. Capture dev/ino for comparison after open. Do not pre-stat size on POSIX.
 4. Open the canonical target. On Linux and other POSIX hosts use numeric `constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK`; on Windows use `constants.O_RDONLY`. Constants must not be accidentally replaced by their truthiness or by string `"r"` on POSIX. A POSIX FIFO must not wait for a writer. An existing authorized symlink resolving inside a permitted root remains permitted: authorization returns its canonical destination; no-follow protects the final destination entry from a subsequent swap.
 5. Inside a `try/finally` ownership region, `await handle.stat()`. Require `isFile()` before reading. Require finite, nonnegative safe-integer `size`; inconsistent metadata is a fail-closed 403. A directory/FIFO/device/socket is a 415. If size exceeds `67_108_864`, return 413; exactly that size is allowed.
@@ -499,7 +500,20 @@ Bodies below are exact UTF-8 text with **no terminal newline**. Every file-view 
 
 `<path>` is the once-query-decoded request value, with no HTML interpolation/escaping because the response is plain text. Do not reflect canonical server paths instead. The status is chosen in the algorithm's stage order, not by inspecting extension before authorization.
 
-The file service translates these existing policy errors to 403: `Absolute paths are not allowed`, `Path traversal is not allowed`, `Path escapes workspace`, `Path is outside allowed paths`, and the prefixes `Absolute path is not valid on this host:` / `Path is not absolute:`. Node `EACCES`, `EPERM`, and `ELOOP` during authorization/open map to 403. The existing `Path does not exist` error (with optional ENOENT cause) and target-open `ENOENT`/`ENOTDIR` map to target 404. Do not map every arbitrary cause-chain ENOENT to missing target: an invalid/missing configured allowed directory or workspace root is an infrastructure/config error and maps to 500. Use the operation stage and the existing policy's specific error, not an unrestricted message substring.
+The file service translates these existing policy errors to 403: `Absolute paths are not allowed`, `Path traversal is not allowed`, `Path escapes workspace`, `Path is outside allowed paths`, and the prefixes `Absolute path is not valid on this host:` / `Path is not absolute:`.
+
+Target resolution is typed. `resolveWorkspacePathAccessTarget` wraps a target `realpath` failure with `PathAccessTargetNotFoundError` (ENOENT or ENOTDIR) when resolving the workspace-relative target or the configured allowed-root target. `PathAccessTargetNotFoundError` maps to the target 404. A missing or invalid workspace root or configured allowed root is never wrapped; it stays an infrastructure/config error and maps to 500. Do not infer a missing target from a cause chain, and do not rewrite the other Explorer routes' catch-all semantics.
+
+Open-stage failures are mapped after authorization, before a handle exists:
+
+| Open-stage errno | Status and body |
+| --- | --- |
+| `ENOENT`, `ENOTDIR` | 404 target message |
+| `ENXIO` (a Unix-domain socket target on Linux/macOS) | 415 nonregular message |
+| `ELOOP`, `EACCES`, `EPERM` | 403 policy message |
+| any other errno | 500 infrastructure message |
+
+`ENXIO` is the POSIX socket/device refusal produced by the required nonblocking open. It must be handled in the pre-handle branch. Map only the documented errno set; an unknown error is 500 and is never treated as previewable.
 
 Unknown workspace is currently an ordinary `Error("Workspace not found")` from `resolveWorkspaceContext`; recognize it only in that context-resolution catch. Do not rewrite the shared helper or change other explorer routes' catch-all semantics.
 
@@ -743,6 +757,8 @@ Create a real temporary workspace and a separate allowed root/outside root. Fixt
 - `denies traversal, unconfigured absolute paths and symlink escapes` — each 403/message, no successful stream. Test a real inside-to-outside symlink on supported hosts.
 - `reads an absolute path only through a configured allowed root` — positive allowed-root file and negative near-prefix sibling; do not accidentally grant absolute workspace paths without allowlisting.
 - `maps a missing target to 404 while retaining the request path` — exact body message for a relative target.
+- `maps a target below a regular-file ancestor to 404` — request `ordinary.txt/child.html` where `ordinary.txt` is a regular file; the policy's typed target error produces the 404 message. A missing workspace-root control produces 500, not 404.
+- `rejects a real Unix-domain socket target with 415` — POSIX-only fixture named with a supported extension; the nonblocking open fails with `ENXIO` before any handle exists, producing the 415 message. Skip on Windows and record the skip.
 - `rejects oversized files after handle measurement and accepts the exact cap` — fstat cap+1 fails 413/close; a bounded fake handle with exact cap is admitted without allocating 64 MB in the test.
 - `rejects directories and unknown extensions with 415` — directories with a supported-looking name and ordinary unknown files; handles closed after open.
 - `uses no-follow and nonblocking flags on <POSIX platform>` — Linux and darwin seam rows assert each flag is present and O_RDONLY semantics. Replacing flags with `r`/O_RDONLY alone fails.
@@ -923,6 +939,12 @@ Use the real RemoteMachineClient with an injected fetch boundary for HTTP and a 
 - `configured matching Origin works against an empty remote allowlist` — real guarded remote app whose request origin equals configured origin; HTTP action and socket accepted with counters.
 - `configured foreign Origin requires the remote startup allowlist` — empty remote list yields exact HTTP/handshake 403 and no service/attach, listed remote list accepts, different port still rejects. Do not satisfy this case using only a guard predicate mock.
 
+### 10.23 `src/server/workspaces/pathAccessPolicy.test.ts` (extend)
+
+- `wrap target ENOENT and ENOTDIR as PathAccessTargetNotFoundError` — both the workspace-relative branch and the configured allowed-root branch; message stays `Path does not exist`.
+- `do not wrap workspace-root or allowed-root canonicalization failures` — missing root and non-directory root keep their existing error and are not the typed target error.
+- `keep existing Explorer error messages unchanged` — the typed error's message is identical, so current routes' 400 responses do not change.
+
 ## 11. Browser audit evidence
 
 This is an executable acceptance probe, not a Vitest string/header substitute. Add the repo-local script named in section 2.3 and archive its script version, stdout JSON, browser version, and any diagnostics with the implementation audit report. Do not modify production guards/CSP to expose a test bypass.
@@ -1006,7 +1028,7 @@ Use one plan with the following sequential tasks. Each task includes its meaning
 
 1. **Shared contracts and config round-trip.** Add file kinds/origin normalizer, config type/parser/serializer, both server projections and update semantics, browser parser, settings preservation, and project-local no-effect coverage. Run the focused shared/config/parser/draft tests. This establishes the valid startup snapshot contract before a guard consumes it.
 2. **Origin guard in both compositions.** Add predicate/hook, gateway startup read, daemon edge factory and production usage. Complete gateway/daemon HTTP and socket matrices, activation tests, two-hop test, and machine configured-header tests. Keep actual session runtime startup/listener ownership intact.
-3. **Authorized file service.** Add the default/injected opener and error taxonomy. Complete real-file and platform-matrix tests, including bounded FIFO and explicit race barriers. Do not weaken the existing path access policy.
+3. **Authorized file service.** Add the typed target-not-found error to the path policy, the default/injected opener, and the error taxonomy. Complete real-file and platform-matrix tests, including bounded FIFO, Unix-socket refusal, below-a-regular-file target, and explicit race barriers. Add only the typed error; do not weaken the policy.
 4. **HTTP streaming and federation.** Add reply adapter, local view registration, exact headers/errors, federated GET and proxy response-header allowlist. Complete reply/route/federation/remote-stream tests before exposing generated links.
 5. **Client recognition and DOM lifecycle.** Add URL helper/resolver, sanitizer survival, per-element rewrite/restoration, all five ChatView bindings, and memoized app binding. Complete resolver/sanitizer/helper/DOM/component boundary cases. Audit changed production client URL-bearing code against AGENTS.md.
 6. **Operator docs and release fragment.** Update the three canonical pages, insert config-matrix row, add exact minor Changeset and restart handoff note. Inspect paired Markdown/HTML claims and links.
@@ -1041,4 +1063,5 @@ At specification-authoring time these are future implementation checks; this doc
 10. **Pre-stream infrastructure taxonomy.** The design's five FileViewError statuses remain exact; malformed query shape/NUL, missing project/workspace, and unexpected infrastructure failures have explicit boundary messages. Only unexpected errors use generic plain-text 500. Remote transport failures retain existing envelopes.
 11. **Headers beyond the design minimum.** File-view errors also use no-store/no-referrer. Only document success has CSP. Successful previews omit cache validators/range/disposition and fixed length; deterministic error strings may use Fastify's correct length. Existing compression is preserved and counts original file bytes.
 12. **Startup trust is a snapshot.** Gateway reads once via injected config service; daemon uses its existing startup effective config. A valid explicit allowlist can match even when request-origin derivation is unavailable; malformed present Origin can never be treated as absent. Both owners must restart for activation.
-13. **Read-only release scope.** No range/sibling-asset server, prompt convention, authentication feature, DNS-rebinding defense, README growth, version bump, or publication action is bundled into this plan. The user-visible implementation receives the approved minor Changeset and a manual daemon-restart note.
+13. **Typed target resolution.** A narrow policy addition, `PathAccessTargetNotFoundError`, distinguishes target ENOENT/ENOTDIR from root failure while preserving existing messages. Open-stage `ENXIO` maps to 415 before a handle exists.
+14. **Read-only release scope.** No range/sibling-asset server, prompt convention, authentication feature, DNS-rebinding defense, README growth, version bump, or publication action is bundled into this plan. The user-visible implementation receives the approved minor Changeset and a manual daemon-restart note.
