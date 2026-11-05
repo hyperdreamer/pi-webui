@@ -116,6 +116,57 @@ it("binds undefined when session cwd or selected-project ownership has no match"
   }
 });
 
+it("replaces resolver identity for adjacent transitions with other tuple fields held fixed", async () => {
+  // cwd plus its matching workspace path change; every id stays fixed.
+  const cwdApp = new PiWebUiApp();
+  const first = (await chat(cwdApp, stateFixture())).resolveFileLink;
+  expect(first).toBeDefined();
+  expect(new URL(first?.("/second/a.html") ?? "").searchParams.get("path")).toBe("a.html");
+
+  const movedState: AppState = {
+    ...stateFixture(),
+    workspaces: [workspace("workspace ?/", "/third"), workspace("first", "/first")],
+  };
+  const movedSession = { ...session, cwd: "/third" };
+  const moved = (await chat(cwdApp, movedState, movedSession)).resolveFileLink;
+  expect(moved).not.toBe(first);
+  const movedUrl = new URL(moved?.("/third/a.html") ?? "");
+  expect(movedUrl.pathname).toContain("/workspaces/workspace%20%3F%2F/file/view");
+  expect(movedUrl.searchParams.get("path")).toBe("a.html");
+
+  // project ownership changes; session, cwd, workspace, and machine ids stay fixed.
+  const projectApp = new PiWebUiApp();
+  const projectFirst = (await chat(projectApp, stateFixture())).resolveFileLink;
+  const projectState: AppState = {
+    ...stateFixture(),
+    selectedProject: { id: "another-project", name: "another", path: "/first", createdAt: "2026-11-04T00:00:00.000Z" },
+    workspaces: [workspace("workspace ?/", "/second", "another-project"), workspace("first", "/first", "another-project")],
+  };
+  const project = (await chat(projectApp, projectState)).resolveFileLink;
+  expect(project).not.toBe(projectFirst);
+  const projectUrl = new URL(project?.("/second/a.html") ?? "");
+  expect(projectUrl.pathname).toContain("/projects/another-project/");
+  expect(projectUrl.searchParams.get("path")).toBe("a.html");
+
+  // Exact A -> unavailable -> A must clear the memo so the second A is fresh.
+  for (const becomeUnavailable of [
+    (state: AppState) => { state.selectedProject = undefined; },
+    (state: AppState) => { state.workspaces = [workspace("other", "/unmatched")]; },
+  ]) {
+    const app = new PiWebUiApp();
+    const state = stateFixture();
+    const original = (await chat(app, state)).resolveFileLink;
+    expect(original).toBeDefined();
+    const unavailable = stateFixture();
+    becomeUnavailable(unavailable);
+    expect((await chat(app, unavailable)).resolveFileLink).toBeUndefined();
+    const reenabled = (await chat(app, state)).resolveFileLink;
+    expect(reenabled).toBeDefined();
+    expect(reenabled).not.toBe(original);
+    expect(new URL(reenabled?.("/second/a.html") ?? "").searchParams.get("path")).toBe("a.html");
+  }
+});
+
 it("reuses resolver identity only while its complete ownership tuple is equal", async () => {
   const app = new PiWebUiApp();
   const state = stateFixture();
