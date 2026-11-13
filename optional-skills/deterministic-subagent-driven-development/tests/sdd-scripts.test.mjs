@@ -132,7 +132,12 @@ describe.skipIf(!hasOriginal)("composition with the original skill's scripts", (
     const { root } = makeGitRepository();
     const planPath = join(root, "plan.md");
     writeFileSync(planPath, CANONICAL_PLAN);
-    const outPath = join(root, "task-2-brief.md");
+
+    // Write the brief into the ignored SDD workspace, which is where a real run
+    // puts it. `task-brief` confines OUTFILE to the plan's pinned run root, so
+    // a path beside the plan is refused outright.
+    const workspace = runOriginal("sdd-workspace", [planPath], root).stdout.trim();
+    const outPath = join(workspace, "task-2-brief.md");
 
     const extracted = runOriginal("task-brief", [planPath, "2", outPath], root);
     expect(extracted.status).toBe(0);
