@@ -43,12 +43,13 @@ const defaultOverloadResyncScheduler: OverloadResyncScheduler = (run, delayMs) =
 export interface SessionEventSocket {
   connect(
     session: SessionRef,
-    onEvent: (event: SessionUiEvent) => void,
+    onEvent: (event: SessionUiEvent, socketIncarnation: number) => void,
     onReconnect?: () => void,
     machineId?: string,
     onInitialOpen?: () => void,
+    onIncarnation?: (socketIncarnation: number) => void,
   ): void;
-  setHandler(onEvent: (event: SessionUiEvent) => void): void;
+  setHandler(onEvent: (event: SessionUiEvent, socketIncarnation: number) => void): void;
   close(): void;
 }
 
@@ -56,7 +57,9 @@ export interface SessionNotificationSessionBridge {
   prepareSelectedSession(session: SessionInfo, machineId: string): void;
   clearSelectedSession(): void;
   refreshSelectedSession(session: SessionRef, machineId: string): Promise<void>;
-  applyInboxEvent(machineId: string, event: SessionNotificationInboxEvent): void;
+  observeSocketIncarnation(session: SessionRef, machineId: string, socketIncarnation: number): void;
+  ensurePostSubscriptionRefresh(session: SessionRef, machineId: string, socketIncarnation: number): Promise<void>;
+  applyInboxEvent(machineId: string, event: SessionNotificationInboxEvent, socketIncarnation?: number): void;
   shouldFilterLegacyNotification(machineId: string, notificationId: string | undefined): boolean;
 }
 
@@ -119,7 +122,7 @@ interface BulkSessionMutationResult {
   generatedAt?: string;
 }
 
-type ClientPendingStartSessionInfo = SessionInfo & { clientPendingStart: true; machineId: string };
+export type ClientPendingStartSessionInfo = SessionInfo & { clientPendingStart: true; machineId: string };
 
 type QueuedPendingSessionSendInput =
   | { type: "prompt"; text: string; streamingBehavior?: "steer" | "followUp" | undefined; attachments?: PromptAttachment[] | undefined; delivery: PromptAttachmentDelivery }
@@ -552,6 +555,11 @@ export class SessionController {
       ...this.clearSelectedModelPolicyState(),
     });
     let buffered: JoinEventCollector | undefined;
+    let routeSelectedEvent: (
+      event: SessionUiEvent,
+      socketIncarnation: number,
+      forward: (event: SessionUiEvent) => void,
+    ) => void = () => undefined;
     try {
       if (session.archived === true) {
         const page = await this.api.messages(session, { limit: MESSAGE_PAGE_SIZE }, selectedMachineId(this.getState()), this.selectionLoad.signal);
@@ -565,9 +573,23 @@ export class SessionController {
       const refreshTarget: SelectedSessionRefreshTarget = { session, machineId, selectionSeq: seq };
       let joinBuffer = new JoinEventCollector(this.maxJoinBufferedEvents);
       buffered = joinBuffer;
+      routeSelectedEvent = (
+        event: SessionUiEvent,
+        socketIncarnation: number,
+        forward: (event: SessionUiEvent) => void,
+      ): void => {
+        if (event.type === "notifications.inbox") {
+          this.notifications?.applyInboxEvent(machineId, event, socketIncarnation);
+          return;
+        }
+        if (event.type === "session.subscribed") {
+          void this.notifications?.ensurePostSubscriptionRefresh(session, machineId, socketIncarnation);
+        }
+        forward(event);
+      };
       this.socket.connect(
         session,
-        (event) => { joinBuffer.push(event); },
+        (event, socketIncarnation) => { routeSelectedEvent(event, socketIncarnation, (forwarded) => { joinBuffer.push(forwarded); }); },
         () => {
           // A reconnect may land on a restarted daemon whose sequence numbers begin again, and
           // anything still buffered from the previous stream belongs to that stream. Replacing the
@@ -576,16 +598,19 @@ export class SessionController {
           joinBuffer = new JoinEventCollector(this.maxJoinBufferedEvents);
           buffered = joinBuffer;
           this.resetExtensionBaseline();
-          void this.refreshSelectedSession(session.id);
+          const reconnectTarget = this.selectedSessionRefreshTarget(session.id);
+          if (reconnectTarget !== undefined) void this.refreshSelectedSessionTarget(reconnectTarget, false);
         },
         machineId,
-        () => { void this.notifications?.refreshSelectedSession(session, machineId); },
+        undefined,
+        (socketIncarnation) => { this.notifications?.observeSocketIncarnation(session, machineId, socketIncarnation); },
       );
+      void this.notifications?.refreshSelectedSession(session, machineId);
       await this.requestSelectedSessionRefresh(refreshTarget);
       if (!this.isCurrentRefreshTarget(refreshTarget)) return;
       void this.refreshAvailableThinkingLevels();
       this.applyJoinBufferedEvents(joinBuffer, refreshTarget);
-      this.socket.setHandler((event) => { this.applyEvent(event); });
+      this.socket.setHandler((event, socketIncarnation) => { routeSelectedEvent(event, socketIncarnation, (forwarded: SessionUiEvent) => { this.applyEvent(forwarded, socketIncarnation); }); });
       this.onSelectedSessionReady?.({ machineId, session });
       if (options?.updateUrl !== false) this.updateUrl();
     } catch (error) {
@@ -610,7 +635,7 @@ export class SessionController {
       // refresh this would otherwise resync through has just failed.
       if (buffered !== undefined) {
         if (!buffered.overflowed) for (const event of buffered.drain()) this.applyEvent(event);
-        this.socket.setHandler((event) => { this.applyEvent(event); });
+        this.socket.setHandler((event, socketIncarnation) => { routeSelectedEvent(event, socketIncarnation, (forwarded: SessionUiEvent) => { this.applyEvent(forwarded, socketIncarnation); }); });
       }
       this.setState({ error: String(error) });
       if (options?.propagateRefreshError === true) throw error;
@@ -1744,8 +1769,11 @@ export class SessionController {
     };
   }
 
-  private refreshSelectedSessionTarget(target: SelectedSessionRefreshTarget): Promise<void> {
-    return this.requestSelectedSessionRefresh(target).catch((error: unknown) => {
+  private refreshSelectedSessionTarget(target: SelectedSessionRefreshTarget, includeNotifications = true): Promise<void> {
+    const notificationRefresh = includeNotifications
+      ? this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve()
+      : Promise.resolve();
+    return Promise.all([this.requestSelectedSessionRefresh(target), notificationRefresh]).then(() => undefined).catch((error: unknown) => {
       if (isLoadCancellation(error)) return;
       if (this.isCurrentRefreshTarget(target)) this.setState({ error: String(error) });
     });
@@ -1787,7 +1815,6 @@ export class SessionController {
           // rather than being mistaken for already-included state.
           return { entries: [], seq: undefined, readRevision: undefined };
         }),
-        this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve(),
       ]);
       if (!this.isCurrentRefreshTarget(target)) return;
       // Seed the in-flight partial assistant message on top of committed history
@@ -2341,12 +2368,12 @@ export class SessionController {
     });
   }
 
-  private applyEvent(event: SessionUiEvent) {
+  private applyEvent(event: SessionUiEvent, socketIncarnation?: number) {
     // Notification revisions use their own join snapshot. Handle them before the
     // transcript watermark so a notification event sharing an already-seeded
     // transcript sequence cannot be lost.
     if (event.type === "notifications.inbox") {
-      this.notifications?.applyInboxEvent(selectedMachineId(this.getState()), event);
+      this.notifications?.applyInboxEvent(selectedMachineId(this.getState()), event, socketIncarnation);
       return;
     }
     if (event.type === "command.output" && this.notifications?.shouldFilterLegacyNotification(selectedMachineId(this.getState()), event.notificationId) === true) return;
@@ -2625,8 +2652,12 @@ function replacePendingSessionInList(sessions: readonly SessionInfo[], pendingSe
   return next;
 }
 
-function isClientPendingStartSessionInfo(session: SessionInfo | undefined): session is ClientPendingStartSessionInfo {
-  return session !== undefined && "clientPendingStart" in session && session.clientPendingStart === true;
+export function isClientPendingStartSessionInfo(session: SessionInfo | undefined): session is ClientPendingStartSessionInfo {
+  return session !== undefined
+    && "clientPendingStart" in session
+    && session.clientPendingStart === true
+    && "machineId" in session
+    && typeof session.machineId === "string";
 }
 
 function creatingPendingSessionActivity(sessionId: string, queuedCount = 0): SessionActivity {

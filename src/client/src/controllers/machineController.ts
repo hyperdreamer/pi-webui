@@ -16,12 +16,18 @@ interface MachineMutationOwnership {
   isCurrent?: () => boolean;
 }
 
+export interface MachineRefreshOwnership {
+  isCurrent(): boolean;
+  onError?(error: unknown): void;
+}
+
 function callerOwnsUi(ownership: MachineMutationOwnership): boolean {
   return ownership.isCurrent?.() ?? true;
 }
 
 export class MachineController {
   private readonly runtimeRefreshSeqByMachine = new Map<string, number>();
+  private readonly healthRefreshSeqByMachine = new Map<string, number>();
 
   constructor(private readonly getState: GetState, private readonly setState: SetState, private readonly updateUrl: UpdateUrl, private readonly projects: Pick<ProjectController, "loadProjects">) {}
 
@@ -143,27 +149,41 @@ export class MachineController {
     }
   }
 
-  async refreshMachineHealth(machineId = this.getState().selectedMachine?.id ?? "local"): Promise<MachineHealth | undefined> {
+  async refreshMachineHealth(
+    machineId = this.getState().selectedMachine?.id ?? "local",
+    ownership?: MachineRefreshOwnership,
+  ): Promise<MachineHealth | undefined> {
+    const seq = (this.healthRefreshSeqByMachine.get(machineId) ?? 0) + 1;
+    this.healthRefreshSeqByMachine.set(machineId, seq);
     try {
       const health = await api.health(machineId);
+      if (this.healthRefreshSeqByMachine.get(machineId) !== seq || ownership !== undefined && !ownership.isCurrent()) return undefined;
       this.setState({ machineStatuses: { ...this.getState().machineStatuses, [health.machineId]: health } });
       return health;
     } catch (error) {
-      this.setState({ error: String(error) });
+      if (this.healthRefreshSeqByMachine.get(machineId) !== seq || ownership !== undefined && !ownership.isCurrent()) return undefined;
+      if (ownership?.onError !== undefined) ownership.onError(error);
+      else this.setState({ error: String(error) });
       return undefined;
     }
   }
 
-  async refreshMachineRuntime(machineId = this.getState().selectedMachine?.id ?? "local"): Promise<MachineRuntime | undefined> {
+  async refreshMachineRuntime(
+    machineId = this.getState().selectedMachine?.id ?? "local",
+    ownership?: MachineRefreshOwnership,
+  ): Promise<MachineRuntime | undefined> {
     const seq = (this.runtimeRefreshSeqByMachine.get(machineId) ?? 0) + 1;
     this.runtimeRefreshSeqByMachine.set(machineId, seq);
     try {
       const runtime = await api.runtime(machineId, true);
-      if (this.runtimeRefreshSeqByMachine.get(machineId) !== seq) return undefined;
+      if (this.runtimeRefreshSeqByMachine.get(machineId) !== seq || ownership !== undefined && !ownership.isCurrent()) return undefined;
       this.setState({ machineRuntimes: { ...this.getState().machineRuntimes, [runtime.machineId]: runtime } });
       return runtime;
     } catch (error) {
-      if (this.runtimeRefreshSeqByMachine.get(machineId) === seq) this.setState({ error: String(error) });
+      if (this.runtimeRefreshSeqByMachine.get(machineId) === seq && (ownership === undefined || ownership.isCurrent())) {
+        if (ownership?.onError !== undefined) ownership.onError(error);
+        else this.setState({ error: String(error) });
+      }
       return undefined;
     }
   }

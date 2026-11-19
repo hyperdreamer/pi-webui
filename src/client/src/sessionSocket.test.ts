@@ -171,6 +171,31 @@ describe("socket instance isolation", () => {
     expect(newHandler).toHaveBeenCalledOnce();
   });
 
+  it("reports a fresh socket incarnation at construction and event delivery", async () => {
+    const socket = new SessionSocket();
+    const observedIncarnations: number[] = [];
+    const deliveredIncarnations: number[] = [];
+    const target = { id: "session-1", cwd: "/repo" };
+
+    socket.connect(
+      target,
+      (_event, incarnation) => { deliveredIncarnations.push(incarnation); },
+      undefined,
+      "machine-a",
+      undefined,
+      (incarnation) => { observedIncarnations.push(incarnation); },
+    );
+
+    expect(observedIncarnations).toEqual([1]);
+    const created = FakeWebSocket.instances[0];
+    if (created === undefined) throw new Error("expected session socket");
+    created.onmessage?.({ data: JSON.stringify(inboxEvent()) });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(deliveredIncarnations).toEqual([1]);
+  });
+
   it("does not attribute a queued global frame to a replacement machine", async () => {
     const socket = new RealtimeSocket();
     const oldHandler = vi.fn();

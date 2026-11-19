@@ -55,29 +55,36 @@ export class FakeSocket implements SessionEventSocket {
 
 export class EmitSocket implements SessionEventSocket {
   readonly connectedSessionIds: string[] = [];
-  private handler: ((event: SessionUiEvent) => void) | undefined;
+  private handler: ((event: SessionUiEvent, socketIncarnation: number) => void) | undefined;
   private onInitialOpen: (() => void) | undefined;
   private onReconnect: (() => void) | undefined;
+  private onIncarnation: ((socketIncarnation: number) => void) | undefined;
+  private socketIncarnation = 0;
+  private nextSocketIncarnation = 0;
 
   connect(
     session: SessionRef,
-    onEvent: (event: SessionUiEvent) => void,
+    onEvent: (event: SessionUiEvent, socketIncarnation: number) => void,
     _onReconnect?: () => void,
     _machineId?: string,
     onInitialOpen?: () => void,
+    onIncarnation?: (socketIncarnation: number) => void,
   ): void {
     this.connectedSessionIds.push(session.id);
     this.handler = onEvent;
     this.onInitialOpen = onInitialOpen;
     this.onReconnect = _onReconnect;
+    this.onIncarnation = onIncarnation;
+    this.socketIncarnation = ++this.nextSocketIncarnation;
+    this.onIncarnation?.(this.socketIncarnation);
   }
 
-  setHandler(onEvent: (event: SessionUiEvent) => void): void {
+  setHandler(onEvent: (event: SessionUiEvent, socketIncarnation: number) => void): void {
     this.handler = onEvent;
   }
 
   emit(event: SessionUiEvent): void {
-    this.handler?.(event);
+    this.handler?.(event, this.socketIncarnation);
   }
 
   open(): void {
@@ -86,12 +93,15 @@ export class EmitSocket implements SessionEventSocket {
 
   /** Model a socket that dropped and came back, which is how a daemon restart is observed. */
   reconnect(): void {
+    this.socketIncarnation = ++this.nextSocketIncarnation;
+    this.onIncarnation?.(this.socketIncarnation);
     this.onReconnect?.();
   }
 
   close(): void {
     this.handler = undefined;
     this.onInitialOpen = undefined;
+    this.onIncarnation = undefined;
   }
 }
 

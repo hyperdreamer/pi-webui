@@ -41,6 +41,8 @@ describe("SessionController notification event boundary", () => {
       prepareSelectedSession: vi.fn(),
       clearSelectedSession: vi.fn(),
       refreshSelectedSession,
+      observeSocketIncarnation: vi.fn(),
+      ensurePostSubscriptionRefresh: vi.fn(() => Promise.resolve()),
       applyInboxEvent: vi.fn(),
       shouldFilterLegacyNotification: vi.fn(() => true),
     };
@@ -65,8 +67,7 @@ describe("SessionController notification event boundary", () => {
     expect(refreshSelectedSession).toHaveBeenCalledOnce();
 
     socket.open();
-    expect(refreshSelectedSession).toHaveBeenCalledTimes(2);
-    expect(refreshSelectedSession).toHaveBeenLastCalledWith(oldSession, "local");
+    expect(refreshSelectedSession).toHaveBeenCalledOnce();
   });
 
   it("handles inbox events before transcript watermarking and filters only marked legacy output with support", async () => {
@@ -77,6 +78,8 @@ describe("SessionController notification event boundary", () => {
       prepareSelectedSession: vi.fn(),
       clearSelectedSession: vi.fn(),
       refreshSelectedSession: vi.fn(() => Promise.resolve()),
+      observeSocketIncarnation: vi.fn(),
+      ensurePostSubscriptionRefresh: vi.fn(() => Promise.resolve()),
       applyInboxEvent,
       shouldFilterLegacyNotification: vi.fn((_machineId, notificationId) => notificationId !== undefined),
     };
@@ -98,7 +101,7 @@ describe("SessionController notification event boundary", () => {
     socket.emit({ ...inboxEvent(), seq: 50 });
     socket.emit({ type: "command.output", level: "info", message: "legacy duplicate", notificationId: "daemon-a:1", seq: 101 });
 
-    expect(applyInboxEvent).toHaveBeenCalledExactlyOnceWith("local", expect.objectContaining({ type: "notifications.inbox" }));
+    expect(applyInboxEvent).toHaveBeenCalledExactlyOnceWith("local", expect.objectContaining({ type: "notifications.inbox" }), 1);
     expect(state.messages).toEqual([]);
 
     socket.emit({ type: "command.output", level: "info", message: "ordinary extension output", seq: 102 });
@@ -113,6 +116,8 @@ describe("SessionController notification event boundary", () => {
       prepareSelectedSession: vi.fn(),
       clearSelectedSession: vi.fn(),
       refreshSelectedSession: vi.fn(() => Promise.resolve()),
+      observeSocketIncarnation: vi.fn(),
+      ensurePostSubscriptionRefresh: vi.fn(() => Promise.resolve()),
       applyInboxEvent: vi.fn(),
       shouldFilterLegacyNotification: vi.fn(() => false),
     };

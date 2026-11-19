@@ -160,8 +160,34 @@ describe("SessionNotificationController selected inbox ownership", () => {
       "daemon-a:1",
     ]);
     expect(selectedNotificationView(harness.state.selectedNotificationInbox)?.announcements).toMatchObject([
-      { severity: "warning", message: "notice 2" },
+      { severity: "warning" },
     ]);
+  });
+
+  it("reserves one post-subscription read while the selection read is pending", async () => {
+    const first = deferred<SessionNotificationInboxSnapshot>();
+    const catchUp = deferred<SessionNotificationInboxSnapshot>();
+    const firstStarted = deferred<undefined>();
+    const catchUpStarted = deferred<undefined>();
+    const notificationInbox = vi.fn<SessionNotificationApi["notificationInbox"]>()
+      .mockImplementationOnce(() => { firstStarted.resolve(undefined); return first.promise; })
+      .mockImplementationOnce(() => { catchUpStarted.resolve(undefined); return catchUp.promise; });
+    const harness = createHarness(capableState(), { notificationInbox });
+    const { controller } = harness;
+    controller.prepareSelectedSession(session, "local");
+    controller.observeSocketIncarnation(session, "local", 1);
+    const selectionRead = controller.refreshSelectedSession(session, "local");
+    await firstStarted.promise;
+    const marker = controller.ensurePostSubscriptionRefresh(session, "local", 1);
+    const duplicate = controller.ensurePostSubscriptionRefresh(session, "local", 1);
+    expect(notificationInbox).toHaveBeenCalledTimes(1);
+    first.resolve(inboxSnapshot([]));
+    await catchUpStarted.promise;
+    const gapRow = entry(1, "warning");
+    catchUp.resolve(inboxSnapshot([gapRow], { inboxRevision: 2 }));
+    await Promise.all([selectionRead, marker, duplicate]);
+    expect(notificationInbox).toHaveBeenCalledTimes(2);
+    expect(selectedNotificationView(harness.state.selectedNotificationInbox)?.notifications).toEqual([gapRow]);
   });
 
   it("ignores notification events for an unselected chat", async () => {

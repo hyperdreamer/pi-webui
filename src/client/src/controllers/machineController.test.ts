@@ -37,6 +37,12 @@ const offlineHealth: MachineHealth = {
   error: "Remote machine request timed out",
 };
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
 describe("MachineController", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -214,6 +220,32 @@ describe("MachineController", () => {
     await first;
 
     expect(state.machineRuntimes["local"]).toMatchObject({ checkedAt: "new", capabilities: [] });
+  });
+
+  it("keeps the newest owned health observation and suppresses superseded errors", async () => {
+    let state: AppState = { ...initialAppState(), machines: [localMachine], selectedMachine: localMachine, error: "prior" };
+    const setState = (patch: Partial<AppState>) => { state = { ...state, ...patch }; };
+    const first = deferred<MachineHealth>();
+    const second = deferred<MachineHealth>();
+    vi.spyOn(api, "health")
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const controller = new MachineController(() => state, setState, vi.fn(), { loadProjects: vi.fn() });
+
+    const firstRead = controller.refreshMachineHealth("local");
+    const secondRead = controller.refreshMachineHealth("local");
+    second.resolve({ machineId: "local", ok: true, checkedAt: "new", status: "online" });
+    await secondRead;
+    first.resolve({ machineId: "local", ok: false, checkedAt: "old", status: "offline" });
+    await firstRead;
+
+    expect(state.machineStatuses["local"]).toMatchObject({ checkedAt: "new", ok: true });
+
+    const owner = { isCurrent: () => false, onError: vi.fn() };
+    vi.spyOn(api, "health").mockRejectedValueOnce(new Error("superseded"));
+    await controller.refreshMachineHealth("local", owner);
+    expect(owner.onError).not.toHaveBeenCalled();
+    expect(state.error).toBe("prior");
   });
 
   it("selects the fallback machine after deleting the selected machine by default", async () => {
