@@ -18,11 +18,37 @@ The navigation header has no reload control. In installed-app/PWA display mode, 
 
 | Window width | Reload location |
 | --- | --- |
-| 1181px and wider | Activity Rail, immediately above Settings |
+| 1181px and wider | Activity Rail fixed controls, immediately above the notification bell |
 | 761–1180px | Context bar; also in the Activity Rail drawer when it is open |
 | 760px and narrower | Context bar |
 
-These reload controls are not shown in an ordinary browser tab. The rail reload action has a fixed position and does not participate in rail reordering.
+At 1181px and wider, the fixed controls appear in this order when reload is visible: **Full page reload**, notification bell, then **Settings**. Reload and the notification bell remain outside rail reordering. These reload controls are not shown in an ordinary browser tab.
+
+## Selected-session notifications
+
+The Activity Rail has a fixed notification bell immediately above **Settings**. The bell stays outside the reorderable core controls and plugin ordering. On compact layouts, the bell remains in the compact Activity Rail, and its launcher remains available while the rail is closed.
+
+The bell and compact launcher always refer to the selected session. A fresh inbox shows the selected session's title, using the existing title fallback when the session has no name, and its full notification count. The badge hides a zero count and displays counts above 99 as `99+`. The full count includes retained notifications and older notifications that the bounded inbox has discarded.
+
+On desktop, activating the bell opens a scrollable flyout beside the Activity Rail. The flyout does not resize or dim the chat. On compact layouts, activating the bell closes the rail and opens the same inbox in a viewport-filling modal sheet. The sheet provides the selected-session title, notification rows, overflow indication, and dismissal actions in one visible list. Opening, closing, viewing, or changing layout does not dismiss notifications. Escape and the close control close the open surface. Clicking outside the desktop flyout closes it while leaving the clicked destination usable.
+
+The selected session determines the state shown by the bell and surface:
+
+| Selected-session state | What appears | Recovery |
+| --- | --- | --- |
+| No eligible session, including a pending or archived session | Disabled bell with no count or rows | Select an eligible session |
+| Machine is explicitly offline | Enabled bell with an offline explanation; no count, rows, or dismissal controls | **Retry** rechecks machine health. If the machine remains offline, the check ends in the offline state with no inbox request. If reachable, it checks capability and reads the inbox only when support is established. A later retry or reconnection can resume recovery |
+| Notification capability is unknown, including a failed negotiation without applicable accepted support | Capability-unavailable explanation with **Retry**; no count, rows, or dismissal controls | **Retry** runs capability recovery, then reads the inbox only when support is established |
+| Runtime does not support the notification inbox | Unsupported-runtime explanation with no inbox retry | Existing legacy command output remains available |
+| Supported and reachable with a fresh inbox | Current rows and full count, or an explicit empty state | A failed background refresh leaves a matching fresh inbox visible while it remains valid. Use the row controls or **Clear all** for intentional dismissal |
+| A current inbox read is pending without a fresh view | Loading state with no old rows or count | Wait for the current read to finish |
+| No matching fresh view and data is stale, missing, or a refresh failed | Unavailable explanation with **Retry** and no current count or rows | **Retry** refreshes the selected session |
+
+A transient capability negotiation failure preserves accepted support for the current runtime.
+
+Each visible row keeps its severity, received time, message, truncation notice when applicable, and labelled dismiss control. **Clear all** applies to the selected session. Dismissals are optimistic. When a current dismissal fails, its optimistic change is rolled back and the failure is reported. The inbox is reconciled with the latest authoritative state and refreshed when eligible. Notifications still present in the authoritative inbox can return unless another pending dismissal keeps them hidden. If the daemon applied the dismissal before its response was lost, the subsequent snapshot determines the final result. Notifications that arrive after **Clear all** begins remain visible. Only an explicit dismissal action initiates a dismissal request.
+
+The session daemon owns the notification inbox in memory. Switching sessions does not dismiss either session's notifications. Stopping or archiving a session, replacing its runtime, or restarting the session daemon may clear notifications under the existing lifecycle rules. The Activity Rail does not add a permanent notification history. The notification list moves out of the notices above chat, while unrelated session warnings, speech errors, action-blocking errors, and legacy command output remain in their existing contexts.
 
 ## Developer verification
 
