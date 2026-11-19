@@ -1,0 +1,19 @@
+digraph sidebar_notifications {
+  rankdir=LR;
+  node [shape=box];
+  subgraph cluster_core {
+    label="core";
+    "T-001" [label="Task 1: Derive notification availability and presentation\nAdvanced"];
+    "T-002" [label="Task 2: Make inbox recovery and mutations generation-safe\nCapable"];
+    "T-003" [label="Task 3: Move the inbox into the Activity Rail\nCapable"];
+    "T-004" [label="Task 4: Verify responsive behavior and accessibility in Chromium\nCapable"];
+  }
+  subgraph cluster_documentation {
+    label="documentation";
+    "T-005" [label="Task 5: Update navigation guidance and release notes\nStandard"];
+  }
+  "T-001" -> "T-002";
+  "T-001" -> "T-003";
+  "T-002" -> "T-003";
+  "T-003" -> "T-004";
+}

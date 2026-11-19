@@ -1,0 +1,210 @@
+source_plan:
+  path: docs/superpowers/plans/2026-11-18-sidebar-notifications.md
+  sha256: c05f4b3b08a2927a967b1354c466cdc09d6b4fc217d406c8795593e9f2147ce4
+  commit_oid: 0de584724c5b6b0c7d334f456f938e9b898cf88f
+  validated_at: '2026-11-19T11:33:49.085Z'
+  parsed_tasks:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+schema_version: 1
+design:
+  path: docs/superpowers/specs/2026-11-18-sidebar-notifications-design.md
+  sha256: 94fa9dbf037ce2a9d2feaac1b3ca963632ff0920255f54f6df62270677a7ed3b
+  commit_oid: 12090ebd76e8862133b0d648ee63ced686e25852
+specification:
+  path: docs/superpowers/specs/2026-11-18-sidebar-notifications-spec.md
+  sha256: e051e830e37bfcb269ad3b3c1bbb82a1fa1b730a0bcaf4eefb4d1132ee33c645
+  commit_oid: cd7455a49d7a0b711a748293e30ad7db143e75f8
+tasks:
+  - id: T-001
+    plan_task: 1
+    lane: core
+    sequence: 1
+    title: "Derive notification availability and presentation"
+    implementer_tier: advanced
+    depends_on: []
+    owns:
+      - "src/client/src/notificationPresentation.ts"
+      - "src/client/src/notificationPresentation.test.ts"
+    exclusive_resources: []
+    produces:
+      - id: notification-presentation
+        signature: "deriveNotificationPresentation(input: NotificationPresentationInputs): NotificationPresentation export type NotificationCapability = \"unknown\" | \"supported\" | \"unsupported\"; export type NotificationOperation = \"idle\" | \"checking-health\" | \"checking-capability\" | \"loading-inbox\";  export interface AcceptedNotificationSupport {   runtimeGeneration: number;   daemonInstanceId?: string; }  export interface NotificationOperationRecord {   target: SessionNotificationTarget;   selectionGeneration: number;   kind: Exclude<NotificationOperation, \"idle\">; }  export interface NotificationPresentationInputs {   selectedSession: SessionInfo | undefined;   selectedMachine: Machine | undefined;   machineHealth: MachineHealth | undefined;   machineRuntime: MachineRuntime | undefined;   acceptedSupport: AcceptedNotificationSupport | undefined;   runtimeGeneration: number;   selectionGeneration: number;   inbox: SelectedSessionNotificationInbox | undefined;   operation: NotificationOperationRecord | undefined;   isClientPendingStart: boolean; }  export type NotificationPresentation =   | { kind: \"ineligible\" }   | { kind: \"offline\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"capability-unavailable\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"unsupported\"; target: SessionNotificationTarget }   | { kind: \"loading\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"unavailable\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"fresh\"; target: SessionNotificationTarget; view: SelectedSessionNotificationView; operation: NotificationOperation };"
+        sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+    consumes: []
+    interfaces:
+      produces:
+        - id: notification-presentation
+          signature: "deriveNotificationPresentation(input: NotificationPresentationInputs): NotificationPresentation export type NotificationCapability = \"unknown\" | \"supported\" | \"unsupported\"; export type NotificationOperation = \"idle\" | \"checking-health\" | \"checking-capability\" | \"loading-inbox\";  export interface AcceptedNotificationSupport {   runtimeGeneration: number;   daemonInstanceId?: string; }  export interface NotificationOperationRecord {   target: SessionNotificationTarget;   selectionGeneration: number;   kind: Exclude<NotificationOperation, \"idle\">; }  export interface NotificationPresentationInputs {   selectedSession: SessionInfo | undefined;   selectedMachine: Machine | undefined;   machineHealth: MachineHealth | undefined;   machineRuntime: MachineRuntime | undefined;   acceptedSupport: AcceptedNotificationSupport | undefined;   runtimeGeneration: number;   selectionGeneration: number;   inbox: SelectedSessionNotificationInbox | undefined;   operation: NotificationOperationRecord | undefined;   isClientPendingStart: boolean; }  export type NotificationPresentation =   | { kind: \"ineligible\" }   | { kind: \"offline\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"capability-unavailable\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"unsupported\"; target: SessionNotificationTarget }   | { kind: \"loading\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"unavailable\"; target: SessionNotificationTarget; operation: NotificationOperation }   | { kind: \"fresh\"; target: SessionNotificationTarget; view: SelectedSessionNotificationView; operation: NotificationOperation };"
+          sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+      consumes: []
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/notificationPresentation.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-002
+    plan_task: 2
+    lane: core
+    sequence: 2
+    title: "Make inbox recovery and mutations generation-safe"
+    implementer_tier: capable
+    depends_on: [T-001]
+    owns:
+      - "src/client/src/controllers/sessionNotificationController.ts"
+      - "src/client/src/controllers/sessionController.ts"
+      - "src/client/src/controllers/machineController.ts"
+      - "src/client/src/sessionSocket.ts"
+      - "src/client/src/controllers/sessionController.testSupport.ts"
+      - "src/client/src/sessionNotifications.ts"
+      - "src/client/src/controllers/sessionNotificationController.test.ts"
+      - "src/client/src/controllers/sessionController.notifications.test.ts"
+      - "src/client/src/controllers/machineController.test.ts"
+      - "src/client/src/sessionSocket.test.ts"
+      - "src/client/src/sessionNotifications.test.ts"
+    exclusive_resources: []
+    produces:
+      - id: notification-controller
+        signature: "// SessionNotificationController get selectionGeneration(): number get inboxOperation(): NotificationOperationRecord | undefined get failureMessage(): string | undefined runtimeGenerationFor(machineId: string): number acceptedSupportFor(machineId: string): AcceptedNotificationSupport | undefined refreshSelectedSession(session: SessionRef, machineId: string): Promise<void> observeSocketIncarnation(session: SessionRef, machineId: string, socketIncarnation: number): void ensurePostSubscriptionRefresh(session: SessionRef, machineId: string, socketIncarnation: number): Promise<void> applyInboxEvent(machineId: string, event: SessionNotificationInboxEvent, socketIncarnation?: number): void dismissNotification(notificationId: string): Promise<void> dismissAll(): Promise<void>  export interface MachineRefreshOwnership {   isCurrent(): boolean;   onError?(error: unknown): void; }  refreshMachineHealth(machineId?: string, ownership?: MachineRefreshOwnership): Promise<MachineHealth | undefined> refreshMachineRuntime(machineId?: string, ownership?: MachineRefreshOwnership): Promise<MachineRuntime | undefined>  export function isClientPendingStartSessionInfo(session: SessionInfo | undefined): session is ClientPendingStartSessionInfo;"
+        sha256: 86b0073e093c3add85a973143e86e63cae4aaa15134cbbc28c1c1c4c5c3d326b
+    consumes:
+      - producer_task: T-001
+        interface_id: notification-presentation
+        sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+    interfaces:
+      produces:
+        - id: notification-controller
+          signature: "// SessionNotificationController get selectionGeneration(): number get inboxOperation(): NotificationOperationRecord | undefined get failureMessage(): string | undefined runtimeGenerationFor(machineId: string): number acceptedSupportFor(machineId: string): AcceptedNotificationSupport | undefined refreshSelectedSession(session: SessionRef, machineId: string): Promise<void> observeSocketIncarnation(session: SessionRef, machineId: string, socketIncarnation: number): void ensurePostSubscriptionRefresh(session: SessionRef, machineId: string, socketIncarnation: number): Promise<void> applyInboxEvent(machineId: string, event: SessionNotificationInboxEvent, socketIncarnation?: number): void dismissNotification(notificationId: string): Promise<void> dismissAll(): Promise<void>  export interface MachineRefreshOwnership {   isCurrent(): boolean;   onError?(error: unknown): void; }  refreshMachineHealth(machineId?: string, ownership?: MachineRefreshOwnership): Promise<MachineHealth | undefined> refreshMachineRuntime(machineId?: string, ownership?: MachineRefreshOwnership): Promise<MachineRuntime | undefined>  export function isClientPendingStartSessionInfo(session: SessionInfo | undefined): session is ClientPendingStartSessionInfo;"
+          sha256: 86b0073e093c3add85a973143e86e63cae4aaa15134cbbc28c1c1c4c5c3d326b
+      consumes:
+        - producer_task: T-001
+          interface_id: notification-presentation
+          sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/controllers/sessionNotificationController.test.ts", "src/client/src/controllers/sessionController.notifications.test.ts", "src/client/src/controllers/sessionController.extensionEntries.test.ts", "src/client/src/controllers/machineController.test.ts", "src/client/src/sessionSocket.test.ts", "src/client/src/sessionNotifications.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "typecheck"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-003
+    plan_task: 3
+    lane: core
+    sequence: 3
+    title: "Move the inbox into the Activity Rail"
+    implementer_tier: capable
+    depends_on: [T-001, T-002]
+    owns:
+      - "src/client/src/components/SessionNotificationTray.ts"
+      - "src/client/src/components/SessionNotificationTray.test.ts"
+      - "src/client/src/components/PiWebUiApp.notifications.test.ts"
+      - "src/client/src/components/ActivityRail.ts"
+      - "src/client/src/components/ChatView.ts"
+      - "src/client/src/components/PiWebUiApp.ts"
+      - "src/client/src/components/appShell/AppContextBar.ts"
+      - "src/client/src/components/shared.ts"
+      - "src/client/src/sessionNotifications.ts"
+      - "src/client/src/sessionNotifications.test.ts"
+      - "src/client/src/components/ActivityRail.test.ts"
+      - "src/client/src/components/ActivityRail.compactFocus.test.ts"
+      - "src/client/src/components/ChatView.test.ts"
+      - "src/client/src/components/PiWebUiApp.activityRail.test.ts"
+      - "src/client/src/components/PiWebUiApp.activityRail.focus.test.ts"
+      - "src/client/src/components/appShell/AppContextBar.test.ts"
+    exclusive_resources: []
+    produces:
+      - id: notification-surface
+        signature: "interface NotificationTrayInputs {   presentation: NotificationPresentation;   sessionTitle: string;   errorMessage: string | undefined;   mode: \"flyout\" | \"sheet\";   open: boolean;   focusIntent: NotificationSurfaceFocusIntent | undefined;   onDismiss(notificationId: string): void;   onDismissAll(): void;   onRetry(): void;   onClose(): void; }  type NotificationFocusTarget =   | { kind: \"notification\"; notificationId: string }   | { kind: \"header\" };  type NotificationSurfaceFocusIntent = {   token: number;   surfaceGeneration: number;   selectionGeneration: number;   target: SessionNotificationTarget;   destination: \"heading\" | \"equivalent-control\" | \"trigger\";   control?: { role: \"dismiss\" | \"clear-all\" | \"retry\" | \"close\"; notificationId?: string }; }; button.icon-button.notifications-button button.activity-rail-action-button region dialog polite assertive"
+        sha256: 6785d25f48f03c4b3a243f13799ec100bbbd205e83713ea1272d2cb051a15c12
+    consumes:
+      - producer_task: T-001
+        interface_id: notification-presentation
+        sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+      - producer_task: T-002
+        interface_id: notification-controller
+        sha256: 86b0073e093c3add85a973143e86e63cae4aaa15134cbbc28c1c1c4c5c3d326b
+    interfaces:
+      produces:
+        - id: notification-surface
+          signature: "interface NotificationTrayInputs {   presentation: NotificationPresentation;   sessionTitle: string;   errorMessage: string | undefined;   mode: \"flyout\" | \"sheet\";   open: boolean;   focusIntent: NotificationSurfaceFocusIntent | undefined;   onDismiss(notificationId: string): void;   onDismissAll(): void;   onRetry(): void;   onClose(): void; }  type NotificationFocusTarget =   | { kind: \"notification\"; notificationId: string }   | { kind: \"header\" };  type NotificationSurfaceFocusIntent = {   token: number;   surfaceGeneration: number;   selectionGeneration: number;   target: SessionNotificationTarget;   destination: \"heading\" | \"equivalent-control\" | \"trigger\";   control?: { role: \"dismiss\" | \"clear-all\" | \"retry\" | \"close\"; notificationId?: string }; }; button.icon-button.notifications-button button.activity-rail-action-button region dialog polite assertive"
+          sha256: 6785d25f48f03c4b3a243f13799ec100bbbd205e83713ea1272d2cb051a15c12
+      consumes:
+        - producer_task: T-001
+          interface_id: notification-presentation
+          sha256: 034507d0a160c19c881b6aeaf8f563941bfa101e4393be2153aa345e801db334
+        - producer_task: T-002
+          interface_id: notification-controller
+          sha256: 86b0073e093c3add85a973143e86e63cae4aaa15134cbbc28c1c1c4c5c3d326b
+    validation:
+      - argv: ["npm", "test", "--", "--run", "src/client/src/sessionNotifications.test.ts", "src/client/src/components/SessionNotificationTray.test.ts", "src/client/src/components/PiWebUiApp.notifications.test.ts", "src/client/src/components/ActivityRail.test.ts", "src/client/src/components/ActivityRail.compactFocus.test.ts", "src/client/src/components/ChatView.test.ts", "src/client/src/components/PiWebUiApp.activityRail.test.ts", "src/client/src/components/PiWebUiApp.activityRail.focus.test.ts", "src/client/src/components/appShell/AppContextBar.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "typecheck"]
+        cwd: lane
+        timeout_seconds: 300
+  - id: T-004
+    plan_task: 4
+    lane: core
+    sequence: 4
+    title: "Verify responsive behavior and accessibility in Chromium"
+    implementer_tier: capable
+    depends_on: [T-003]
+    owns:
+      - "scripts/verify-sidebar-notifications.mjs"
+      - "scripts/verify-narrow-navigation-header.mjs"
+      - "package.json"
+    exclusive_resources: []
+    produces: []
+    consumes:
+      - producer_task: T-003
+        interface_id: notification-surface
+        sha256: 6785d25f48f03c4b3a243f13799ec100bbbd205e83713ea1272d2cb051a15c12
+    interfaces:
+      produces: []
+      consumes:
+        - producer_task: T-003
+          interface_id: notification-surface
+          sha256: 6785d25f48f03c4b3a243f13799ec100bbbd205e83713ea1272d2cb051a15c12
+    validation:
+      - argv: ["npm", "run", "verify:sidebar-notifications"]
+        cwd: lane
+        timeout_seconds: 2400
+      - argv: ["npm", "run", "verify:narrow-navigation-header"]
+        cwd: lane
+        timeout_seconds: 2400
+      - argv: ["npm", "test", "--", "--run", "src/client/src/api/clients.test.ts", "src/client/src/api/parsers.test.ts"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "verify"]
+        cwd: lane
+        timeout_seconds: 2400
+  - id: T-005
+    plan_task: 5
+    lane: documentation
+    sequence: 1
+    title: "Update navigation guidance and release notes"
+    implementer_tier: standard
+    depends_on: []
+    owns:
+      - "docs/navigation-panel.md"
+      - ".changeset/sidebar-notifications.md"
+    exclusive_resources: []
+    produces: []
+    consumes: []
+    interfaces:
+      produces: []
+      consumes: []
+    validation:
+      - argv: ["git", "diff", "--check"]
+        cwd: lane
+        timeout_seconds: 300
+      - argv: ["npm", "run", "changeset", "--", "status"]
+        cwd: lane
+        timeout_seconds: 300
+lanes:
+  - id: core
+    task_ids: [T-001, T-002, T-003, T-004]
+  - id: documentation
+    task_ids: [T-005]
