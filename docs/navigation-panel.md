@@ -37,14 +37,16 @@ The selected session determines the state shown by the bell and surface:
 | Selected-session state | What appears | Recovery |
 | --- | --- | --- |
 | No eligible session, including a pending or archived session | Disabled bell with no count or rows | Select an eligible session |
-| Machine is explicitly offline | Enabled bell with an offline explanation; no count, rows, or dismissal controls | **Retry** checks the machine again and waits for it to become reachable before reading the inbox |
-| Notification capability is unknown or capability negotiation failed | Capability-unavailable explanation with **Retry**; no count, rows, or dismissal controls | **Retry** runs capability recovery, then reads the inbox only when support is established |
+| Machine is explicitly offline | Enabled bell with an offline explanation; no count, rows, or dismissal controls | **Retry** rechecks machine health. If the machine remains offline, the check ends in the offline state with no inbox request. If reachable, it checks capability and reads the inbox only when support is established. A later retry or reconnection can resume recovery |
+| Notification capability is unknown, including a failed negotiation without applicable accepted support | Capability-unavailable explanation with **Retry**; no count, rows, or dismissal controls | **Retry** runs capability recovery, then reads the inbox only when support is established |
 | Runtime does not support the notification inbox | Unsupported-runtime explanation with no inbox retry | Existing legacy command output remains available |
-| Supported and reachable with a fresh inbox | Current rows and full count, or an explicit empty state | Use the row controls or **Clear all** for intentional dismissal |
+| Supported and reachable with a fresh inbox | Current rows and full count, or an explicit empty state | A failed background refresh leaves a matching fresh inbox visible while it remains valid. Use the row controls or **Clear all** for intentional dismissal |
 | A current inbox read is pending without a fresh view | Loading state with no old rows or count | Wait for the current read to finish |
-| Data is stale, missing, or a refresh failed | Unavailable explanation with **Retry** and no current count or rows | **Retry** refreshes the selected session |
+| No matching fresh view and data is stale, missing, or a refresh failed | Unavailable explanation with **Retry** and no current count or rows | **Retry** refreshes the selected session |
 
-Each visible row keeps its severity, received time, message, truncation notice when applicable, and labelled dismiss control. **Clear all** applies to the selected session. Dismissals are optimistic. If an action fails, the affected notifications return and the surface reports the failure. Notifications that arrive after **Clear all** begins remain visible. Only an explicit dismissal action changes the inbox.
+A transient capability negotiation failure preserves accepted support for the current runtime.
+
+Each visible row keeps its severity, received time, message, truncation notice when applicable, and labelled dismiss control. **Clear all** applies to the selected session. Dismissals are optimistic. When a current dismissal fails, its optimistic change is rolled back and the failure is reported. The inbox is reconciled with the latest authoritative state and refreshed when eligible. Notifications still present in the authoritative inbox can return unless another pending dismissal keeps them hidden. If the daemon applied the dismissal before its response was lost, the subsequent snapshot determines the final result. Notifications that arrive after **Clear all** begins remain visible. Only an explicit dismissal action initiates a dismissal request.
 
 The session daemon owns the notification inbox in memory. Switching sessions does not dismiss either session's notifications. Stopping or archiving a session, replacing its runtime, or restarting the session daemon may clear notifications under the existing lifecycle rules. The Activity Rail does not add a permanent notification history. The notification list moves out of the notices above chat, while unrelated session warnings, speech errors, action-blocking errors, and legacy command output remain in their existing contexts.
 
