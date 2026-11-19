@@ -191,13 +191,37 @@ describe("deriveNotificationPresentation", () => {
       machineRuntime: undefined,
       acceptedSupport: { runtimeGeneration: 4, daemonInstanceId: "d1" },
       inbox: mismatchedDaemonInbox,
-    }))).toEqual({ kind: "capability-unavailable", target: targetA, operation: "idle" });
+    }))).toEqual({ kind: "unavailable", target: targetA, operation: "idle" });
 
     expect(deriveNotificationPresentation(inputs({
       machineRuntime: undefined,
       acceptedSupport: { runtimeGeneration: 4, daemonInstanceId: "d2" },
       inbox: mismatchedDaemonInbox,
     })).kind).toBe("fresh");
+  });
+
+  it("rejects a fresh inbox from a daemon that conflicts with current accepted evidence", () => {
+    const result = deriveNotificationPresentation(inputs({
+      acceptedSupport: { runtimeGeneration: 4, daemonInstanceId: "d2" },
+      inbox: freshInbox(),
+    }));
+
+    expect(result).toEqual({ kind: "unavailable", target: targetA, operation: "idle" });
+    expect(result).not.toHaveProperty("view");
+  });
+
+  it("keeps replacement support and the admitted loading state despite stale old-daemon data", () => {
+    const staleOldDaemonInbox = { ...freshInbox(), status: "stale" as const };
+    const operation = { target: targetA, selectionGeneration: 7, kind: "loading-inbox" as const };
+
+    for (const machineRuntime of [undefined, unsupportedRuntime]) {
+      expect(deriveNotificationPresentation(inputs({
+        machineRuntime,
+        acceptedSupport: { runtimeGeneration: 4, daemonInstanceId: "d2" },
+        inbox: staleOldDaemonInbox,
+        operation,
+      }))).toEqual({ kind: "loading", target: targetA, operation: "loading-inbox" });
+    }
   });
 
   it("does not use stale accepted evidence or failed and absent runtime negotiation", () => {

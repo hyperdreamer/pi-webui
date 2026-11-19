@@ -73,7 +73,7 @@ export function deriveNotificationPresentation(input: NotificationPresentationIn
   }
 
   const runtime = input.machineRuntime?.machineId === selectedMachine.id ? input.machineRuntime : undefined;
-  const acceptedSupport = hasCurrentAcceptedSupport(input, target);
+  const acceptedSupport = hasCurrentAcceptedSupport(input);
   const runtimeSupportsNotifications = runtime?.ok === true
     && supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsNotifications);
 
@@ -93,7 +93,12 @@ export function deriveNotificationPresentation(input: NotificationPresentationIn
   }
 
   const inboxMatchesTarget = input.inbox !== undefined && notificationTargetsEqual(input.inbox, target);
-  const view = inboxMatchesTarget ? selectedNotificationView(input.inbox) : undefined;
+  const acceptedDaemonId = input.acceptedSupport?.runtimeGeneration === input.runtimeGeneration
+    ? input.acceptedSupport.daemonInstanceId
+    : undefined;
+  const inboxMatchesAcceptedDaemon = acceptedDaemonId === undefined
+    || input.inbox?.daemonInstanceId === acceptedDaemonId;
+  const view = inboxMatchesTarget && inboxMatchesAcceptedDaemon ? selectedNotificationView(input.inbox) : undefined;
   if (view !== undefined && notificationTargetsEqual(view, target)) {
     return { kind: "fresh", target, view, operation: currentOperation ?? "idle" };
   }
@@ -112,19 +117,8 @@ function operationForTarget(input: NotificationPresentationInputs, target: Sessi
   return operation.kind;
 }
 
-function hasCurrentAcceptedSupport(input: NotificationPresentationInputs, target: SessionNotificationTarget): boolean {
-  const acceptedSupport = input.acceptedSupport;
-  if (acceptedSupport?.runtimeGeneration !== input.runtimeGeneration) return false;
-
-  const inbox = input.inbox;
-  if (acceptedSupport.daemonInstanceId !== undefined
-    && inbox !== undefined
-    && notificationTargetsEqual(inbox, target)
-    && inbox.daemonInstanceId !== undefined
-    && acceptedSupport.daemonInstanceId !== inbox.daemonInstanceId) {
-    return false;
-  }
-  return true;
+function hasCurrentAcceptedSupport(input: NotificationPresentationInputs): boolean {
+  return input.acceptedSupport?.runtimeGeneration === input.runtimeGeneration;
 }
 
 function isMachineReachable(machine: Machine, health: MachineHealth | undefined): boolean {
