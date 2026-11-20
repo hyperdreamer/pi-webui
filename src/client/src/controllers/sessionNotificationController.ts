@@ -17,6 +17,7 @@ import {
   type SessionRef,
 } from "../../../shared/apiTypes";
 import type { AcceptedNotificationSupport, NotificationOperationRecord } from "../notificationPresentation";
+import { isClientPendingStartSessionInfo } from "./sessionController";
 import type { GetState, SetState } from "./types";
 
 export interface SessionNotificationApi {
@@ -33,24 +34,22 @@ export interface SessionNotificationControllerDependencies {
 }
 
 interface SelectedJoin {
-  generation: number;
-  target: SessionNotificationTarget;
+  socketIncarnation: number | undefined;
   events: SessionNotificationInboxEvent[];
 }
 
 interface SelectedRefreshOperation {
-  id: number;
   generation: number;
+  runtimeGeneration: number;
   target: SessionNotificationTarget;
   promise: Promise<void>;
   trailing: boolean;
-  socketIncarnation: number | undefined;
-  markerSeenAtAdmission: boolean;
 }
 
 interface SocketCoverage {
+  incarnation: number;
   markerSeen: boolean;
-  readAdmission?: { operationId: number; markerSeen: boolean };
+  postMarkerAdmission?: SelectedRefreshOperation;
 }
 
 type MutationKind = "notification" | "all";
@@ -87,15 +86,13 @@ export class SessionNotificationController {
   private readonly acceptedSupportByMachine = new Map<string, AcceptedNotificationSupport>();
   private readonly runtimeGenerationByMachine = new Map<string, number>();
   private readonly runtimeIdentityByMachine = new Map<string, string>();
-  private readonly knownMachineIds = new Set<string>();
   private selectedTarget: SessionNotificationTarget | undefined;
   private selectedGeneration = 0;
   private selectedJoin: SelectedJoin | undefined;
   private selectedRefresh: SelectedRefreshOperation | undefined;
   private authoritativeInbox: SelectedSessionNotificationInbox | undefined;
   private announcementCursor: AnnouncementCursor | undefined;
-  private currentSocketIncarnation: number | undefined;
-  private readonly socketCoverage = new Map<number, SocketCoverage>();
+  private socketCoverage: SocketCoverage | undefined;
   private readonly retiredDaemonIds = new Set<string>();
   private nextOperationId = 0;
   private readonly mutationOperations = new Map<number, MutationOperation>();
@@ -119,8 +116,8 @@ export class SessionNotificationController {
 
   get inboxOperation(): NotificationOperationRecord | undefined {
     const operation = this.selectedRefresh;
-    if (operation === undefined) return undefined;
-    if (operation.generation !== this.selectedGeneration || !this.isCurrentTarget(operation.target, operation.generation)) return undefined;
+    if (operation === undefined || this.selectedJoin?.socketIncarnation !== this.socketCoverage?.incarnation) return undefined;
+    if (!this.isCurrentRefresh(operation)) return undefined;
     return { target: operation.target, selectionGeneration: operation.generation, kind: "loading-inbox" };
   }
 
@@ -129,7 +126,6 @@ export class SessionNotificationController {
   }
 
   runtimeGenerationFor(machineId: string): number {
-    this.knownMachineIds.add(machineId);
     const generation = this.runtimeGenerationByMachine.get(machineId);
     if (generation !== undefined) return generation;
     this.runtimeGenerationByMachine.set(machineId, 0);
@@ -150,8 +146,7 @@ export class SessionNotificationController {
     this.selectedRefresh = undefined;
     this.authoritativeInbox = undefined;
     this.announcementCursor = undefined;
-    this.currentSocketIncarnation = undefined;
-    this.socketCoverage.clear();
+    this.socketCoverage = undefined;
     this.retiredDaemonIds.clear();
     this.acceptedSupportByMachine.clear();
     this.mutationOperations.clear();
@@ -176,25 +171,18 @@ export class SessionNotificationController {
 
   refreshSelectedSession(session: SessionRef, machineId: string): Promise<void> {
     const target = this.selectedTarget;
-    if (!this.machineConfigured(machineId) || !this.isCurrentSessionRef(target, session, machineId) || !this.machineSupportsNotifications(machineId) || !this.machineIsReachable(machineId)) return Promise.resolve();
-    if (this.isCheckingEnvironment(target, this.selectedGeneration)) return Promise.resolve();
-
-    const existing = this.selectedRefresh;
-    if (existing?.generation === this.selectedGeneration && notificationTargetsEqual(existing.target, target)) return existing.promise;
+    if (!this.isCurrentSessionRef(target, session, machineId) || !this.canRead(target, this.selectedGeneration)) return Promise.resolve();
+    if (this.selectedRefresh !== undefined) return this.selectedRefresh.promise;
 
     this.ensureSelectedProjection(target);
     const operation: SelectedRefreshOperation = {
-      id: ++this.nextOperationId,
       generation: this.selectedGeneration,
+      runtimeGeneration: this.runtimeGenerationFor(machineId),
       target,
       promise: Promise.resolve(),
       trailing: false,
-      socketIncarnation: this.currentSocketIncarnation,
-      markerSeenAtAdmission: this.markerSeenFor(this.currentSocketIncarnation),
     };
     this.selectedRefresh = operation;
-    this.recordReadAdmission(operation);
-    this.publishProjection();
     operation.promise = this.runSelectedRefresh(operation).finally(() => {
       if (this.selectedRefresh === operation) {
         this.selectedRefresh = undefined;
@@ -206,25 +194,21 @@ export class SessionNotificationController {
 
   observeSocketIncarnation(session: SessionRef, machineId: string, socketIncarnation: number): void {
     if (!this.isCurrentSessionRef(this.selectedTarget, session, machineId)) return;
-    this.currentSocketIncarnation = socketIncarnation;
-    this.socketCoverage.set(socketIncarnation, { markerSeen: false });
-    this.retainCurrentSocketCoverage();
+    if (this.socketCoverage !== undefined && this.socketCoverage.incarnation >= socketIncarnation) return;
+    this.socketCoverage = { incarnation: socketIncarnation, markerSeen: false };
+    if (this.selectedRefresh !== undefined) this.onProjectionChange();
   }
 
   ensurePostSubscriptionRefresh(session: SessionRef, machineId: string, socketIncarnation: number): Promise<void> {
-    const target = this.selectedTarget;
-    if (!this.isCurrentSessionRef(target, session, machineId)) return Promise.resolve();
-    if (this.currentSocketIncarnation !== undefined && this.currentSocketIncarnation !== socketIncarnation) return Promise.resolve();
-    this.currentSocketIncarnation = socketIncarnation;
-    const coverage = this.socketCoverage.get(socketIncarnation) ?? { markerSeen: false };
+    if (!this.isCurrentSessionRef(this.selectedTarget, session, machineId)) return Promise.resolve();
+    this.socketCoverage ??= { incarnation: socketIncarnation, markerSeen: false };
+    const coverage = this.socketCoverage;
+    if (coverage.incarnation !== socketIncarnation) return Promise.resolve();
     coverage.markerSeen = true;
-    this.socketCoverage.set(socketIncarnation, coverage);
-    const operation = this.selectedRefresh;
-    if (operation?.generation === this.selectedGeneration && notificationTargetsEqual(operation.target, target)) {
-      if (operation.socketIncarnation === socketIncarnation && !operation.markerSeenAtAdmission) operation.trailing = true;
-      return operation.promise;
+    if (coverage.postMarkerAdmission !== undefined) {
+      return this.selectedRefresh === coverage.postMarkerAdmission ? coverage.postMarkerAdmission.promise : Promise.resolve();
     }
-    if (!this.machineSupportsNotifications(machineId) || !this.machineIsReachable(machineId) || this.isCheckingEnvironment(target, this.selectedGeneration)) return Promise.resolve();
+    // The marker remains owed while the slot is occupied or admission is blocked.
     return this.refreshSelectedSession(session, machineId);
   }
 
@@ -232,16 +216,13 @@ export class SessionNotificationController {
     const target = this.selectedTarget;
     if (target?.machineId !== machineId) return;
     if (target.sessionId !== event.summary.sessionId || target.cwd !== event.summary.cwd) return;
-    if (socketIncarnation !== undefined && this.currentSocketIncarnation !== undefined && socketIncarnation !== this.currentSocketIncarnation) return;
-    if (this.retiredDaemonIds.has(event.daemonInstanceId)) return;
+    const currentSocket = this.socketCoverage?.incarnation;
+    if (socketIncarnation !== undefined && currentSocket !== undefined && socketIncarnation !== currentSocket) return;
+    if (!this.machineConfigured(machineId) || !this.machineIsReachable(machineId) || this.retiredDaemonIds.has(event.daemonInstanceId)) return;
 
-    const current = this.authoritativeInbox;
-    if (current?.daemonInstanceId !== undefined && current.daemonInstanceId !== event.daemonInstanceId) {
-      this.retireDaemon(event.daemonInstanceId);
-    }
-    this.acceptSupport(machineId, event.daemonInstanceId);
+    const replaced = this.observeDaemon(target, event.daemonInstanceId);
     const join = this.selectedJoin;
-    if (join?.generation === this.selectedGeneration && notificationTargetsEqual(join.target, target)) {
+    if (join !== undefined && join.socketIncarnation === currentSocket) {
       join.events.push(event);
       if (event.delta.kind === "resync" && this.selectedRefresh !== undefined) this.selectedRefresh.trailing = true;
       return;
@@ -252,7 +233,7 @@ export class SessionNotificationController {
       if (this.selectedRefresh !== undefined) this.selectedRefresh.trailing = true;
       else this.scheduleSelectedRefresh(target);
     }
-    if (!result.changed) return;
+    if (!result.changed && !replaced) return;
     const next = result.needsRefresh ? result.value : this.acceptLiveAnnouncement(result.value, event);
     this.authoritativeInbox = next;
     this.publishProjection();
@@ -261,7 +242,7 @@ export class SessionNotificationController {
   syncEnvironment(previous: AppState, next: AppState): void {
     if (this.disposed) return;
     this.updateRuntimeGenerations(previous, next);
-    if (previous.machines !== next.machines) this.pruneRemovedMachines(next.machines);
+    if (previous.machines !== next.machines) this.pruneRemovedMachines(previous.machines, next.machines);
 
     const environmentChanged = previous.machines !== next.machines
       || previous.machineStatuses !== next.machineStatuses
@@ -269,6 +250,7 @@ export class SessionNotificationController {
     const selected = this.selectedTarget;
     if (!environmentChanged || selected === undefined) return;
     if (!this.machineConfigured(selected.machineId)) {
+      this.retireRefresh();
       this.retireMutationsForUnavailableTarget();
       this.markSelectedStale(selected);
       return;
@@ -278,13 +260,14 @@ export class SessionNotificationController {
       && this.machineIsReachableInState(previous, selected.machineId);
     const eligible = this.machineSupportsNotifications(selected.machineId) && this.machineIsReachable(selected.machineId);
     if (!eligible) {
+      this.retireRefresh();
       this.retireMutationsForUnavailableTarget();
       this.markSelectedStale(selected);
       return;
     }
 
     this.ensureSelectedProjection(selected);
-    if (!wasEligible || this.getState().selectedNotificationInbox?.status !== "fresh") {
+    if (!wasEligible || this.hasOwedSubscriptionRead() || this.getState().selectedNotificationInbox?.status !== "fresh") {
       void this.refreshSelectedSession({ id: selected.sessionId, cwd: selected.cwd }, selected.machineId);
     }
   }
@@ -346,91 +329,124 @@ export class SessionNotificationController {
   }
 
   private async runSelectedRefresh(operation: SelectedRefreshOperation): Promise<void> {
+    const { target } = operation;
     do {
       operation.trailing = false;
-      const join: SelectedJoin = { generation: operation.generation, target: operation.target, events: [] };
+      const coverage = this.socketCoverage;
+      const join: SelectedJoin = { socketIncarnation: coverage?.incarnation, events: [] };
+      const base = this.authoritativeInbox;
+      const daemonAtAdmission = this.observedDaemon(target.machineId);
       this.selectedJoin = join;
-      const coverage = this.socketCoverage.get(operation.socketIncarnation ?? -1);
-      if (coverage !== undefined) coverage.readAdmission = { operationId: operation.id, markerSeen: operation.markerSeenAtAdmission };
+      if (coverage?.markerSeen === true) coverage.postMarkerAdmission = operation;
       try {
-        const snapshot = await this.api.notificationInbox({ id: operation.target.sessionId, cwd: operation.target.cwd }, operation.target.machineId);
-        if (!this.isCurrentTarget(operation.target, operation.generation)) return;
-        if (this.retiredDaemonIds.has(snapshot.daemonInstanceId)) {
-          operation.trailing = true;
+        this.publishProjection();
+        const snapshot = await this.api.notificationInbox({ id: target.sessionId, cwd: target.cwd }, target.machineId);
+        if (!this.ownsRefreshPass(operation, join)) continue;
+        const observedDaemon = this.observedDaemon(target.machineId);
+        if (this.retiredDaemonIds.has(snapshot.daemonInstanceId)
+          || (daemonAtAdmission !== observedDaemon && snapshot.daemonInstanceId !== observedDaemon)) {
+          this.markSelectedStale(target);
+          operation.trailing = daemonAtAdmission !== observedDaemon;
           continue;
         }
-        if (!this.machineSupportsNotifications(operation.target.machineId) || !this.machineIsReachable(operation.target.machineId)) {
-          this.markSelectedStale(operation.target);
-          return;
+        if (snapshot.summary.sessionId !== target.sessionId || snapshot.summary.cwd !== target.cwd) {
+          throw new Error("Notification inbox snapshot does not match the selected session");
         }
-
-        const previousDaemon = this.authoritativeInbox?.daemonInstanceId;
-        const establishedSameDaemon = this.authoritativeInbox?.status === "fresh"
-          && this.authoritativeInbox.summary !== undefined
-          && previousDaemon === snapshot.daemonInstanceId;
-        const replacement = previousDaemon !== undefined && previousDaemon !== snapshot.daemonInstanceId;
-        let validatedJoin = this.authoritativeInbox;
-        if (establishedSameDaemon && validatedJoin !== undefined) {
-          for (const event of [...join.events].sort((left, right) => left.summary.inboxRevision - right.summary.inboxRevision)) {
-            const result = applySelectedNotificationEvent(validatedJoin, operation.target, event);
-            if (result.needsRefresh) operation.trailing = true;
-            if (result.changed && !result.needsRefresh) validatedJoin = this.acceptLiveAnnouncement(result.value, event);
-          }
-        }
-        if (replacement) this.retireDaemon(snapshot.daemonInstanceId, false);
-        this.acceptSupport(operation.target.machineId, snapshot.daemonInstanceId);
-        const current = this.authoritativeInbox;
-        let inbox = current === undefined || shouldInstallSelectedSnapshot(current, operation.target, snapshot)
-          ? installSelectedNotificationSnapshot(current, operation.target, snapshot)
-          : current;
-        if (current === undefined || replacement || !establishedSameDaemon || inbox.daemonInstanceId !== current.daemonInstanceId) this.establishAnnouncementBaseline(inbox);
-        if (establishedSameDaemon && validatedJoin !== undefined) inbox = { ...inbox, announcements: validatedJoin.announcements };
-        for (const event of [...join.events].sort((left, right) => left.summary.inboxRevision - right.summary.inboxRevision)) {
-          const result = applySelectedNotificationEvent(inbox, operation.target, event);
-          if (result.needsRefresh) operation.trailing = true;
-          if (!result.changed) continue;
-          inbox = { ...result.value, announcements: inbox.announcements };
-          if (!establishedSameDaemon) inbox = this.acceptLiveAnnouncement(inbox, event);
-        }
-        this.absorbSnapshotIntoAnnouncementCursor(inbox);
-        this.authoritativeInbox = inbox;
-        this.failure = undefined;
-        this.publishProjection();
+        this.installRefreshSnapshot(operation, base, snapshot, join.events);
       } catch (error) {
-        if (this.isCurrentTarget(operation.target, operation.generation)) {
-          const current = this.authoritativeInbox;
-          if (current === undefined || selectedNotificationView(current) === undefined) this.markSelectedStale(operation.target);
-          this.failure = `Failed to refresh notifications for session ${operation.target.sessionId}: ${errorMessage(error)}`;
-          this.setState({ error: this.failure });
-          this.onBackgroundError(`Failed to refresh notifications for session ${operation.target.sessionId}`, error);
-          this.publishProjection();
-        }
-        return;
+        if (!this.ownsRefreshPass(operation, join)) continue;
+        this.reconcileFailedJoin(target, base, join.events);
+        this.failure = `Failed to refresh notifications for session ${target.sessionId}: ${errorMessage(error)}`;
+        this.setState({ error: this.failure });
+        this.onBackgroundError(`Failed to refresh notifications for session ${target.sessionId}`, error);
+        this.publishProjection();
+        // A failed invalidation remains available for Retry. A subscription
+        // marker still needs its first admission even if the pre-marker read failed.
+        operation.trailing = false;
       } finally {
         if (this.selectedJoin === join) this.selectedJoin = undefined;
       }
-    } while (operation.trailing && this.isCurrentTarget(operation.target, operation.generation) && this.machineIsReachable(operation.target.machineId));
+    } while ((operation.trailing || this.hasOwedSubscriptionRead())
+      && this.isCurrentRefresh(operation) && this.canRead(target, operation.generation));
+  }
+
+  private installRefreshSnapshot(
+    operation: SelectedRefreshOperation,
+    base: SelectedSessionNotificationInbox | undefined,
+    snapshot: SessionNotificationInboxSnapshot,
+    events: readonly SessionNotificationInboxEvent[],
+  ): void {
+    const { target } = operation;
+    const ordered = orderedDaemonEvents(events, snapshot.daemonInstanceId);
+    // The snapshot can already contain a live addition received during the read.
+    const validated = base?.status === "fresh" && base.daemonInstanceId === snapshot.daemonInstanceId
+      ? this.replayJoin(base, target, ordered, true)
+      : undefined;
+    this.observeDaemon(target, snapshot.daemonInstanceId, operation);
+    const current = this.authoritativeInbox;
+    let inbox = current === undefined || shouldInstallSelectedSnapshot(current, target, snapshot)
+      ? installSelectedNotificationSnapshot(current, target, snapshot)
+      : current;
+    this.absorbSnapshotIntoAnnouncementCursor(inbox);
+    if (validated !== undefined) inbox = { ...inbox, announcements: validated.inbox.announcements };
+    const replay = this.replayJoin(inbox, target, ordered, validated === undefined);
+    this.authoritativeInbox = replay.inbox;
+    operation.trailing ||= replay.needsRefresh;
+    this.failure = undefined;
+    this.publishProjection();
+  }
+
+  private reconcileFailedJoin(
+    target: SessionNotificationTarget,
+    base: SelectedSessionNotificationInbox | undefined,
+    events: readonly SessionNotificationInboxEvent[],
+  ): void {
+    const current = this.authoritativeInbox;
+    if (base?.status !== "fresh" || current?.status !== "fresh" || base.daemonInstanceId !== current.daemonInstanceId) {
+      this.markSelectedStale(target);
+      return;
+    }
+    const ordered = orderedDaemonEvents(events, base.daemonInstanceId);
+    const validated = this.replayJoin(base, target, ordered, true);
+    // Preserve any newer mutation response installed during the read.
+    this.authoritativeInbox = this.replayJoin({ ...current, announcements: validated.inbox.announcements }, target, ordered, false).inbox;
+  }
+
+  private replayJoin(
+    base: SelectedSessionNotificationInbox,
+    target: SessionNotificationTarget,
+    events: readonly SessionNotificationInboxEvent[],
+    announce: boolean,
+  ): { inbox: SelectedSessionNotificationInbox; needsRefresh: boolean } {
+    let inbox = base;
+    for (const event of events) {
+      const result = applySelectedNotificationEvent(inbox, target, event);
+      if (result.needsRefresh) return { inbox: result.value, needsRefresh: true };
+      if (result.changed) inbox = announce ? this.acceptLiveAnnouncement(result.value, event) : result.value;
+    }
+    return { inbox, needsRefresh: false };
   }
 
   private finishMutation(operation: MutationOperation, snapshot: SessionNotificationInboxSnapshot): void {
     if (!this.isCurrentMutation(operation)) return;
+    if (snapshot.summary.sessionId !== operation.target.sessionId || snapshot.summary.cwd !== operation.target.cwd) {
+      throw new Error("Notification inbox snapshot does not match the selected session");
+    }
     this.mutationOperations.delete(operation.id);
     if (!this.machineSupportsNotifications(operation.target.machineId) || !this.machineIsReachable(operation.target.machineId)) {
       this.markSelectedStale(operation.target);
       this.publishProjection();
       return;
     }
-    if (this.authoritativeInbox?.daemonInstanceId !== undefined && this.authoritativeInbox.daemonInstanceId !== snapshot.daemonInstanceId) {
-      this.retireDaemon(snapshot.daemonInstanceId, false);
-      this.acceptSupport(operation.target.machineId, snapshot.daemonInstanceId);
-      this.authoritativeInbox = installSelectedNotificationSnapshot(undefined, operation.target, snapshot);
-      this.establishAnnouncementBaseline(this.authoritativeInbox);
+    const current = this.authoritativeInbox;
+    if (this.retiredDaemonIds.has(snapshot.daemonInstanceId)) {
       this.publishProjection();
       return;
     }
-    const current = this.authoritativeInbox;
+    this.observeDaemon(operation.target, snapshot.daemonInstanceId);
     if (current !== undefined && shouldInstallSelectedSnapshot(current, operation.target, snapshot)) {
-      this.authoritativeInbox = installSelectedNotificationSnapshot(current, operation.target, snapshot);
+      this.authoritativeInbox = installSelectedNotificationSnapshot(this.authoritativeInbox, operation.target, snapshot);
+      this.absorbSnapshotIntoAnnouncementCursor(this.authoritativeInbox);
     }
     this.failure = undefined;
     this.publishProjection();
@@ -484,8 +500,9 @@ export class SessionNotificationController {
   }
 
   private scheduleSelectedRefresh(target: SessionNotificationTarget): void {
+    const generation = this.selectedGeneration;
     queueMicrotask(() => {
-      if (!this.disposed && this.isCurrentTarget(target, this.selectedGeneration)) void this.refreshSelectedSession({ id: target.sessionId, cwd: target.cwd }, target.machineId);
+      if (this.isCurrentTarget(target, generation)) void this.refreshSelectedSession({ id: target.sessionId, cwd: target.cwd }, target.machineId);
     });
   }
 
@@ -503,27 +520,23 @@ export class SessionNotificationController {
     if (cursor === undefined || !notificationTargetsEqual(cursor.target, targetFromInbox(inbox)) || cursor.daemonInstanceId !== event.daemonInstanceId) return inbox;
     if (notification.order <= cursor.highestOrder || cursor.recentIds.includes(notification.id)) return inbox;
     cursor.highestOrder = notification.order;
-    cursor.recentIds = [...cursor.recentIds.filter((id) => id !== notification.id), notification.id].slice(-SESSION_NOTIFICATION_LIMIT);
+    cursor.recentIds = [...cursor.recentIds, notification.id].slice(-SESSION_NOTIFICATION_LIMIT);
     return { ...inbox, announcements: [...inbox.announcements, { id: announcementId(inbox, notification.id), severity: notification.severity }].slice(-SESSION_NOTIFICATION_LIMIT) };
   }
 
   private absorbSnapshotIntoAnnouncementCursor(inbox: SelectedSessionNotificationInbox): void {
+    if (inbox.daemonInstanceId === undefined) return;
+    const highestOrder = Math.max(inbox.dismissThrough.order, ...inbox.notifications.map((notification) => notification.order));
     const cursor = this.announcementCursor;
-    if (cursor === undefined || inbox.daemonInstanceId === undefined || cursor.daemonInstanceId !== inbox.daemonInstanceId || !notificationTargetsEqual(cursor.target, targetFromInbox(inbox))) return;
-    cursor.highestOrder = Math.max(cursor.highestOrder, inbox.dismissThrough.order, ...inbox.notifications.map((notification) => notification.order));
-    cursor.recentIds = [...new Set([...cursor.recentIds, ...inbox.notifications.map((notification) => notification.id)])].slice(-SESSION_NOTIFICATION_LIMIT);
-  }
-  private establishAnnouncementBaseline(inbox: SelectedSessionNotificationInbox): void {
-    if (inbox.daemonInstanceId === undefined) {
-      this.announcementCursor = undefined;
+    if (cursor?.daemonInstanceId === inbox.daemonInstanceId && notificationTargetsEqual(cursor.target, inbox)) {
+      cursor.highestOrder = Math.max(cursor.highestOrder, highestOrder);
       return;
     }
-    const orders = inbox.notifications.map((notification) => notification.order);
     this.announcementCursor = {
       target: targetFromInbox(inbox),
       daemonInstanceId: inbox.daemonInstanceId,
-      highestOrder: Math.max(inbox.dismissThrough.order, ...orders, 0),
-      recentIds: inbox.notifications.map((notification) => notification.id).slice(-SESSION_NOTIFICATION_LIMIT),
+      highestOrder,
+      recentIds: [],
     };
   }
 
@@ -535,20 +548,54 @@ export class SessionNotificationController {
     this.onProjectionChange();
   }
 
-  private retireDaemon(nextDaemon: string, reserveTrailingRead = true): void {
-    const machineId = this.selectedTarget?.machineId;
-    if (machineId === undefined) return;
-    const currentDaemon = this.authoritativeInbox?.daemonInstanceId;
-    if (currentDaemon === undefined || currentDaemon === nextDaemon) return;
-    this.retiredDaemonIds.add(currentDaemon);
-    if (reserveTrailingRead && this.selectedRefresh !== undefined) this.selectedRefresh.trailing = true;
-    this.advanceRuntimeGeneration(machineId);
-    this.acceptedSupportByMachine.delete(machineId);
-    this.mutationOperations.clear();
-    this.announcementCursor = undefined;
-    const target = this.selectedTarget;
-    if (target !== undefined) this.authoritativeInbox = { ...loadingSelectedNotificationInbox(target), status: "stale" };
-    this.onProjectionChange();
+  private observedDaemon(machineId: string): string | undefined {
+    return this.acceptedSupportFor(machineId)?.daemonInstanceId ?? this.authoritativeInbox?.daemonInstanceId;
+  }
+
+  private observeDaemon(target: SessionNotificationTarget, nextDaemon: string, owner?: SelectedRefreshOperation): boolean {
+    const currentDaemon = this.observedDaemon(target.machineId);
+    const replaced = currentDaemon !== undefined && currentDaemon !== nextDaemon;
+    if (replaced) {
+      this.retiredDaemonIds.add(currentDaemon);
+      this.announcementCursor = undefined;
+      this.mutationOperations.clear();
+      this.authoritativeInbox = { ...loadingSelectedNotificationInbox(target), status: "stale" };
+      this.advanceRuntimeGeneration(target.machineId, owner);
+    }
+    this.acceptSupport(target.machineId, nextDaemon);
+    return replaced;
+  }
+
+  private retireRefresh(): void {
+    this.selectedRefresh = undefined;
+    this.selectedJoin = undefined;
+  }
+
+  private isCurrentRefresh(operation: SelectedRefreshOperation): boolean {
+    return this.selectedRefresh === operation
+      && this.isCurrentTarget(operation.target, operation.generation)
+      && this.runtimeGenerationFor(operation.target.machineId) === operation.runtimeGeneration;
+  }
+
+  private ownsRefreshPass(operation: SelectedRefreshOperation, join: SelectedJoin): boolean {
+    return this.isCurrentRefresh(operation)
+      && this.selectedJoin === join
+      && join.socketIncarnation === this.socketCoverage?.incarnation
+      && this.machineConfigured(operation.target.machineId)
+      && this.machineSupportsNotifications(operation.target.machineId)
+      && this.machineIsReachable(operation.target.machineId);
+  }
+
+  private canRead(target: SessionNotificationTarget, generation: number): boolean {
+    return this.isCurrentTarget(target, generation)
+      && this.machineConfigured(target.machineId)
+      && this.machineSupportsNotifications(target.machineId)
+      && this.machineIsReachable(target.machineId)
+      && !this.isCheckingEnvironment(target, generation);
+  }
+
+  private hasOwedSubscriptionRead(): boolean {
+    return this.socketCoverage?.markerSeen === true && this.socketCoverage.postMarkerAdmission === undefined;
   }
 
   private retireSelection(): void {
@@ -558,8 +605,7 @@ export class SessionNotificationController {
     this.selectedRefresh = undefined;
     this.authoritativeInbox = undefined;
     this.announcementCursor = undefined;
-    this.currentSocketIncarnation = undefined;
-    this.socketCoverage.clear();
+    this.socketCoverage = undefined;
     this.retiredDaemonIds.clear();
     this.mutationOperations.clear();
     this.failure = undefined;
@@ -569,23 +615,6 @@ export class SessionNotificationController {
     if (this.selectedTarget === undefined) return;
     for (const [id, operation] of this.mutationOperations.entries()) {
       if (operation.generation === this.selectedGeneration && notificationTargetsEqual(operation.target, this.selectedTarget)) this.mutationOperations.delete(id);
-    }
-  }
-
-  private recordReadAdmission(operation: SelectedRefreshOperation): void {
-    const coverage = this.socketCoverage.get(operation.socketIncarnation ?? -1);
-    if (coverage !== undefined) coverage.readAdmission = { operationId: operation.id, markerSeen: operation.markerSeenAtAdmission };
-  }
-
-  private markerSeenFor(socketIncarnation: number | undefined): boolean {
-    return socketIncarnation !== undefined && this.socketCoverage.get(socketIncarnation)?.markerSeen === true;
-  }
-
-  private retainCurrentSocketCoverage(): void {
-    if (this.socketCoverage.size <= 4) return;
-    const current = this.currentSocketIncarnation;
-    for (const incarnation of this.socketCoverage.keys()) {
-      if (incarnation !== current && this.socketCoverage.size > 4) this.socketCoverage.delete(incarnation);
     }
   }
 
@@ -644,35 +673,29 @@ export class SessionNotificationController {
       if (runtime?.ok !== true) continue;
       const identity = runtimeIdentity(runtime);
       if (identity === undefined) continue;
-      const prior = this.runtimeIdentityByMachine.get(machineId);
-      if (prior === undefined) {
-        this.runtimeIdentityByMachine.set(machineId, identity);
-        continue;
-      }
-      if (prior !== identity) {
-        this.runtimeIdentityByMachine.set(machineId, identity);
-        this.advanceRuntimeGeneration(machineId);
-      }
+      const previousRuntime = previous.machineRuntimes[machineId];
+      const prior = this.runtimeIdentityByMachine.get(machineId)
+        ?? (previousRuntime === undefined ? undefined : runtimeIdentity(previousRuntime));
+      this.runtimeIdentityByMachine.set(machineId, identity);
+      if (prior !== undefined && prior !== identity) this.advanceRuntimeGeneration(machineId);
     }
   }
 
-  private advanceRuntimeGeneration(machineId: string): void {
-    this.knownMachineIds.add(machineId);
+  private advanceRuntimeGeneration(machineId: string, owner?: SelectedRefreshOperation): void {
     this.runtimeGenerationByMachine.set(machineId, this.runtimeGenerationFor(machineId) + 1);
     this.acceptedSupportByMachine.delete(machineId);
     if (this.selectedTarget?.machineId === machineId) {
+      if (this.selectedRefresh !== owner) this.retireRefresh();
+      if (owner !== undefined) owner.runtimeGeneration = this.runtimeGenerationFor(machineId);
       this.mutationOperations.clear();
-      this.announcementCursor = undefined;
       this.markSelectedStale(this.selectedTarget);
     }
     this.onProjectionChange();
   }
 
-  private pruneRemovedMachines(machines: readonly Machine[]): void {
+  private pruneRemovedMachines(previousMachines: readonly Machine[], machines: readonly Machine[]): void {
     const machineIds = new Set(machines.map((machine) => machine.id));
-    if (machineIds.size === 0) machineIds.add("local");
-    const knownMachineIds = new Set([...this.knownMachineIds, ...this.acceptedSupportByMachine.keys(), ...this.runtimeGenerationByMachine.keys(), ...this.runtimeIdentityByMachine.keys()]);
-    for (const machineId of knownMachineIds) {
+    for (const { id: machineId } of previousMachines) {
       if (!machineIds.has(machineId)) {
         this.advanceRuntimeGeneration(machineId);
         this.runtimeIdentityByMachine.delete(machineId);
@@ -683,14 +706,6 @@ export class SessionNotificationController {
 
 function isEligibleSession(session: SessionInfo, machineId: string): boolean {
   return machineId !== "" && session.id !== "" && session.cwd !== "" && session.archived !== true && !isClientPendingStartSessionInfo(session);
-}
-
-function isClientPendingStartSessionInfo(session: SessionInfo | undefined): boolean {
-  return session !== undefined
-    && "clientPendingStart" in session
-    && session.clientPendingStart === true
-    && "machineId" in session
-    && typeof session.machineId === "string";
 }
 
 function targetFromInbox(inbox: SelectedSessionNotificationInbox): SessionNotificationTarget {
@@ -706,6 +721,11 @@ function shouldInstallSelectedSnapshot(
     || current.daemonInstanceId !== snapshot.daemonInstanceId
     || current.summary === undefined
     || snapshot.summary.inboxRevision >= current.summary.inboxRevision;
+}
+
+function orderedDaemonEvents(events: readonly SessionNotificationInboxEvent[], daemonInstanceId: string | undefined): SessionNotificationInboxEvent[] {
+  return events.filter((event) => event.daemonInstanceId === daemonInstanceId)
+    .sort((left, right) => left.summary.inboxRevision - right.summary.inboxRevision);
 }
 
 function announcementId(inbox: SelectedSessionNotificationInbox, notificationId: string): string {

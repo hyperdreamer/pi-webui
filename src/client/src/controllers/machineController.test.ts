@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, type Machine, type MachineHealth } from "../api";
+import { api, type Machine, type MachineHealth, type MachineRuntime } from "../api";
 import { initialAppState, type AppState } from "../appState";
 import { MachineController } from "./machineController";
 
@@ -37,10 +37,11 @@ const offlineHealth: MachineHealth = {
   error: "Remote machine request timed out",
 };
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve };
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe("MachineController", () => {
@@ -246,6 +247,67 @@ describe("MachineController", () => {
     await controller.refreshMachineHealth("local", owner);
     expect(owner.onError).not.toHaveBeenCalled();
     expect(state.error).toBe("prior");
+  });
+
+  it.each([
+    ["health", "success"],
+    ["health", "failure"],
+    ["runtime", "success"],
+    ["runtime", "failure"],
+  ] as const)("suppresses an owned %s %s after the selected owner changes", async (kind, outcome) => {
+    let state: AppState = { ...initialAppState(), machines: [localMachine], selectedMachine: localMachine, error: "current selection error" };
+    const pending = deferred<MachineHealth & MachineRuntime>();
+    vi.spyOn(api, kind).mockReturnValueOnce(pending.promise);
+    const controller = new MachineController(() => state, (patch) => { state = { ...state, ...patch }; }, vi.fn(), { loadProjects: vi.fn() });
+    let current = true;
+    const owner = { isCurrent: () => current, onError: vi.fn() };
+    const reading = kind === "health" ? controller.refreshMachineHealth("local", owner) : controller.refreshMachineRuntime("local", owner);
+    current = false;
+    if (outcome === "success") pending.resolve({ machineId: "local", ok: true, checkedAt: "retired", status: "online", capabilities: [] });
+    else pending.reject(new Error("retired owner failure"));
+    expect(await reading).toBeUndefined();
+    expect(state.machineStatuses).toEqual({});
+    expect(state.machineRuntimes).toEqual({});
+    expect(state.error).toBe("current selection error");
+    expect(owner.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["health", "runtime"] as const)("routes a current owned %s error to its caller and preserves the unowned global error path", async (kind) => {
+    let state: AppState = { ...initialAppState(), machines: [localMachine], selectedMachine: localMachine, error: "prior" };
+    const error = new Error("current recovery failed");
+    vi.spyOn(api, kind).mockRejectedValue(error);
+    const controller = new MachineController(() => state, (patch) => { state = { ...state, ...patch }; }, vi.fn(), { loadProjects: vi.fn() });
+    const owner = { isCurrent: () => true, onError: vi.fn() };
+    const owned = kind === "health" ? controller.refreshMachineHealth("local", owner) : controller.refreshMachineRuntime("local", owner);
+    expect(await owned).toBeUndefined();
+    expect(owner.onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(state.error).toBe("prior");
+    const unowned = kind === "health" ? controller.refreshMachineHealth("local") : controller.refreshMachineRuntime("local");
+    expect(await unowned).toBeUndefined();
+    expect(state.error).toBe("Error: current recovery failed");
+  });
+
+  it.each([
+    ["health", "success"],
+    ["health", "failure"],
+    ["runtime", "success"],
+    ["runtime", "failure"],
+  ] as const)("preserves a newer %s observation when a superseded request ends in %s", async (kind, outcome) => {
+    let state: AppState = { ...initialAppState(), machines: [localMachine], selectedMachine: localMachine, error: "prior" };
+    const older = deferred<MachineHealth & MachineRuntime>();
+    const newer: MachineHealth & MachineRuntime = { machineId: "local", ok: true, checkedAt: "new", status: "online", capabilities: [] };
+    vi.spyOn(api, kind).mockReturnValueOnce(older.promise).mockResolvedValueOnce(newer);
+    const controller = new MachineController(() => state, (patch) => { state = { ...state, ...patch }; }, vi.fn(), { loadProjects: vi.fn() });
+    const owner = { isCurrent: () => true, onError: vi.fn() };
+    const first = kind === "health" ? controller.refreshMachineHealth("local", owner) : controller.refreshMachineRuntime("local", owner);
+    const second = kind === "health" ? controller.refreshMachineHealth("local", owner) : controller.refreshMachineRuntime("local", owner);
+    expect(await second).toEqual(newer);
+    if (outcome === "success") older.resolve({ ...newer, checkedAt: "old", ok: false, status: "offline" });
+    else older.reject(new Error("superseded request failure"));
+    expect(await first).toBeUndefined();
+    expect(kind === "health" ? state.machineStatuses["local"] : state.machineRuntimes["local"]).toEqual(newer);
+    expect(state.error).toBe("prior");
+    expect(owner.onError).not.toHaveBeenCalled();
   });
 
   it("selects the fallback machine after deleting the selected machine by default", async () => {
