@@ -5,7 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityRail } from "./ActivityRail";
 import { templateEventHandlerAfterMarker, templateText, templateClickHandlerForText, templateValueAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
 import { type ReorderableRailItem } from "../activityRailOrder";
+import type { NotificationPresentation } from "../notificationPresentation";
+import type { SelectedSessionNotificationView, SessionNotificationTarget } from "../sessionNotifications";
 import type { ActivityRailDisplayItem } from "../plugins/activityRail";
+
+const notificationTarget: SessionNotificationTarget = { machineId: "local", sessionId: "session-1", cwd: "/repo" };
+
+function notificationPresentation(total: number): NotificationPresentation {
+  const retainedCount = Math.min(total, 100);
+  const discardedCount = Math.max(total - 100, 0);
+  const view: SelectedSessionNotificationView = {
+    ...notificationTarget,
+    daemonInstanceId: "daemon-a",
+    notifications: [],
+    retainedCount,
+    discardedCount,
+    dismissThrough: { order: 0, overflowWatermark: discardedCount },
+    pendingDismissedIds: new Set(),
+    dismissAllPending: false,
+    announcements: [],
+  };
+  return { kind: "fresh", target: notificationTarget, view, operation: "idle" };
+}
 
 async function mountRail(configure: (rail: ActivityRail) => void = () => undefined): Promise<ActivityRail> {
   const rail = new ActivityRail();
@@ -25,6 +46,19 @@ function reloadButton(rail: ActivityRail): HTMLButtonElement {
   const button = railRoot(rail).querySelector<HTMLButtonElement>(".rail-reload-button");
   if (button === null) throw new Error("Expected the rail reload button");
   return button;
+}
+
+function notificationButton(rail: ActivityRail): HTMLButtonElement {
+  const button = railRoot(rail).querySelector<HTMLButtonElement>("button.icon-button.notifications-button");
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+  if (button === null) throw new Error("Expected the fixed notification bell");
+  return button;
+}
+
+function expectReloadBellSettingsOrder(rail: ActivityRail): void {
+  const bell = notificationButton(rail);
+  expect(reloadButton(rail).nextElementSibling).toBe(bell);
+  expect(bell.nextElementSibling).toBe(railRoot(rail).querySelector("button.settings-button"));
 }
 
 type DesktopMediaListener = (event: MediaQueryListEvent) => void;
@@ -559,17 +593,17 @@ describe("ActivityRail", () => {
       expect(icon.getAttribute("focusable")).toBe("false");
     });
 
-    it("keeps reload in one fixed slot between the spacer and settings", async () => {
+    it("keeps reload in one fixed slot between the spacer and Notifications", async () => {
       const rail = await mountRail((instance) => { instance.showReload = true; });
 
       expect(railRoot(rail).querySelector(".rail-spacer")?.nextElementSibling).toBe(reloadButton(rail));
-      expect(reloadButton(rail).nextElementSibling).toBe(railRoot(rail).querySelector(".settings-button"));
+      expectReloadBellSettingsOrder(rail);
 
       rail.railOrder = ["info", "history", "git-update-manager", "terminal", "theme", "system-prompt"];
       await rail.updateComplete;
 
       expect(railRoot(rail).querySelector(".rail-spacer")?.nextElementSibling).toBe(reloadButton(rail));
-      expect(reloadButton(rail).nextElementSibling).toBe(railRoot(rail).querySelector(".settings-button"));
+      expectReloadBellSettingsOrder(rail);
     });
 
     it("keeps reload in the fixed slot with and without plugin controls", async () => {
@@ -579,13 +613,14 @@ describe("ActivityRail", () => {
       });
 
       expect(reloadButton(rail).previousElementSibling?.className).toBe("rail-spacer");
+      expectReloadBellSettingsOrder(rail);
       expect(rail.shadowRoot?.querySelectorAll(".rail-plugin-separator")).toHaveLength(1);
 
       rail.pluginItems = [];
       await rail.updateComplete;
 
       expect(railRoot(rail).querySelector(".rail-spacer")?.nextElementSibling).toBe(reloadButton(rail));
-      expect(reloadButton(rail).nextElementSibling).toBe(railRoot(rail).querySelector(".settings-button"));
+      expectReloadBellSettingsOrder(rail);
     });
 
     it("renders reload in the compact drawer using the same fixed slot", async () => {
@@ -597,7 +632,37 @@ describe("ActivityRail", () => {
 
       expect(rail.shadowRoot?.querySelectorAll(".rail-reload-button")).toHaveLength(1);
       expect(railRoot(rail).querySelector(".rail-spacer")?.nextElementSibling).toBe(reloadButton(rail));
-      expect(reloadButton(rail).nextElementSibling).toBe(railRoot(rail).querySelector(".settings-button"));
+      expectReloadBellSettingsOrder(rail);
+    });
+
+    it("renders effective notification count badges at the required boundaries", async () => {
+      for (const total of [0, 1, 99, 100, 103]) {
+        const rail = await mountRail((instance) => {
+          instance.notificationPresentation = notificationPresentation(total);
+          instance.notificationSessionTitle = "Build session";
+        });
+        const bell = notificationButton(rail);
+        expect(bell.getAttribute("aria-label")).toContain(`${String(total)} notifications`);
+        const badge = railRoot(rail).querySelector(".rail-badge");
+        if (total === 0) expect(badge).toBeNull();
+        else expect(badge?.textContent).toBe(total > 99 ? "99+" : String(total));
+        document.body.replaceChildren();
+      }
+    });
+
+    it("keeps the disabled bell between the spacer and Settings and out of drag ordering", async () => {
+      const onRailOrderChange = vi.fn();
+      const rail = await mountRail((instance) => { instance.onRailOrderChange = onRailOrderChange; });
+      const bell = notificationButton(rail);
+      expect(railRoot(rail).querySelector(".rail-spacer")?.nextElementSibling).toBe(bell);
+      expect(bell.nextElementSibling).toBe(railRoot(rail).querySelector("button.settings-button"));
+      expect(bell.disabled).toBe(true);
+      expect(bell.getAttribute("aria-expanded")).toBe("false");
+      expect(bell.hasAttribute("data-rail-item")).toBe(false);
+      expect(bell.hasAttribute("draggable")).toBe(false);
+      bell.dispatchEvent(new Event("dragstart", { bubbles: true }));
+      railRoot(rail).querySelector(".info-button")?.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      expect(onRailOrderChange).not.toHaveBeenCalled();
     });
 
     it("excludes reload from ordering attributes, drag metadata, and railOrder", async () => {

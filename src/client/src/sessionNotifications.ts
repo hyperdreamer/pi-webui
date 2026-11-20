@@ -224,18 +224,6 @@ export function notificationTargetKey(target: SessionNotificationTarget): string
   return JSON.stringify([target.machineId, target.cwd, target.sessionId]);
 }
 
-export function notificationTrayIsCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget): boolean {
-  return collapsedTargetKeys.has(notificationTargetKey(target));
-}
-
-export function setNotificationTrayCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget, collapsed: boolean): ReadonlySet<string> {
-  const next = new Set(collapsedTargetKeys);
-  const key = notificationTargetKey(target);
-  if (collapsed) next.add(key);
-  else next.delete(key);
-  return next;
-}
-
 export function notificationInboxOverflowLabel(discardedCount: number): string {
   return `${String(discardedCount)} older ${discardedCount === 1 ? "notification" : "notifications"} not shown.`;
 }

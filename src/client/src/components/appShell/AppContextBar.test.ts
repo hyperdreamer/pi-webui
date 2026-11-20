@@ -35,7 +35,7 @@ describe("AppContextBar activity rail launcher", () => {
     contextBar.onToggleActivityRail = onToggleActivityRail;
 
     const template = contextBar.render();
-    expect(templateText(template)).toContain('aria-label="Open activity rail"');
+    expect(templateText(template)).toContain('aria-label="Open activity rail.');
     // The node test environment has no DOM; this narrowly exercises the labelled
     // public template callback rather than a component implementation detail.
     templateClickHandlerForText(template, "Open activity rail")(eventFromCurrentTarget(launcher));
@@ -49,7 +49,7 @@ describe("AppContextBar activity rail launcher", () => {
     contextBar.onToggleActivityRail = vi.fn();
     contextBar.activityRailOpen = true;
 
-    expect(templateText(contextBar.render())).toContain('aria-label="Close activity rail"');
+    expect(templateText(contextBar.render())).toContain('aria-label="Close activity rail.');
   });
 });
 

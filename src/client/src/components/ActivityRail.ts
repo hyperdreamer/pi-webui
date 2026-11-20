@@ -1,6 +1,8 @@
 import { LitElement, css, html, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { ACTIVITY_RAIL_DESKTOP_MEDIA_QUERY } from "../appShell/appShellController";
+import type { NotificationPresentation } from "../notificationPresentation";
+import { notificationInboxTotalCount } from "../sessionNotifications";
 import { DEFAULT_RAIL_ORDER, type ReorderableRailItem } from "../activityRailOrder";
 import type { ActivityRailDisplayItem } from "../plugins/activityRail";
 import type { QualifiedContributionId } from "../plugins/types";
@@ -36,6 +38,12 @@ export class ActivityRail extends LitElement {
   @property({ attribute: false }) onCloseCompact?: () => void;
   @property({ attribute: false }) onReload?: () => void;
   @property({ type: Boolean }) showReload = false;
+  @property({ attribute: false }) notificationPresentation: NotificationPresentation = { kind: "ineligible" };
+  @property() notificationSessionTitle = "Selected session";
+  @property({ type: Boolean }) notificationSurfaceOpen = false;
+  @property({ attribute: false }) notificationSurface?: HTMLElement;
+  @property({ attribute: false }) onToggleNotifications?: (source: HTMLButtonElement, event: MouseEvent) => void;
+  @property({ attribute: false }) onCompactDialogChange?: (dialog: HTMLElement | undefined) => void;
 
   private desktopMedia: MediaQueryList | undefined;
   private dragItem: ReorderableRailItem | undefined;
@@ -58,6 +66,11 @@ export class ActivityRail extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    const dialog = this.renderRoot.querySelector<HTMLElement>(".compact-rail-dialog");
+    this.onCompactDialogChange?.(dialog?.isConnected === true ? dialog : undefined);
+    const surface = this.notificationSurface?.isConnected === true ? [this.notificationSurface] : null;
+    const button = this.renderRoot.querySelector<HTMLButtonElement>("button.notifications-button");
+    if (button !== null && button.ariaControlsElements !== surface) button.ariaControlsElements = surface;
     if (!changed.has("compactOpen") || !this.compactOpen || this.isDesktopRailLayout()) return;
     this.renderRoot.querySelector<HTMLButtonElement>(".compact-rail-close")?.focus();
   }
@@ -90,6 +103,44 @@ export class ActivityRail extends LitElement {
   private readonly openInfo = (): void => { this.invokeCoreAction(this.onOpenInfo); };
   private readonly openSettings = (): void => { this.invokeCoreAction(this.onOpenSettings); };
   private readonly reloadApp = (): void => { this.invokeCoreAction(this.onReload); };
+  private readonly toggleNotifications = (event: MouseEvent): void => {
+    const source = event.currentTarget;
+    if (typeof HTMLButtonElement === "undefined" || !(source instanceof HTMLButtonElement) || source.disabled) return;
+    this.onToggleNotifications?.(source, event);
+  };
+
+  private notificationAccessibleName(): string {
+    const presentation = this.notificationPresentation;
+    const state = presentation.kind === "fresh"
+      ? `${String(notificationInboxTotalCount(presentation.view))} notifications`
+      : presentation.kind === "ineligible"
+        ? "unavailable for this session"
+        : presentation.kind === "offline"
+          ? "unavailable while the machine is offline"
+          : presentation.kind === "unsupported"
+            ? "unsupported by this runtime"
+            : presentation.kind === "capability-unavailable"
+              ? "notification support unavailable"
+              : presentation.kind === "loading"
+                ? "notifications loading"
+                : "notifications unavailable";
+    return `${this.notificationSessionTitle}: ${state}. ${this.notificationSurfaceOpen ? "Close notifications" : "Open notifications"}`;
+  }
+
+  private renderNotificationButton(): TemplateResult {
+    const presentation = this.notificationPresentation;
+    const count = presentation.kind === "fresh" ? notificationInboxTotalCount(presentation.view) : undefined;
+    const label = this.notificationAccessibleName();
+    return html`
+      <button type="button" class="icon-button notifications-button" title=${label} aria-label=${label} aria-expanded=${String(this.notificationSurfaceOpen)} ?disabled=${presentation.kind === "ineligible"} @click=${this.toggleNotifications}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
+          <path d="M10 21h4"></path>
+        </svg>
+        ${count === undefined || count === 0 ? nothing : html`<span class="rail-badge" aria-hidden="true">${count > 99 ? "99+" : String(count)}</span>`}
+      </button>
+    `;
+  }
 
   private readonly openPluginActivity = (id: QualifiedContributionId, source: EventTarget | null): void => {
     this.closeCompactBeforeAction();
@@ -435,6 +486,7 @@ export class ActivityRail extends LitElement {
       `}
       <div class="rail-spacer"></div>
       ${this.showReload ? this.renderReloadButton() : nothing}
+      ${this.renderNotificationButton()}
       ${this.renderSettingsButton()}
     `;
   }
