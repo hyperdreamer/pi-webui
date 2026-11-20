@@ -5724,6 +5724,8 @@ export class PiWebUiApp extends LitElement {
       >
         <session-notification-tray
           ?hidden=${!this.notificationSurfaceOpen}
+          aria-hidden=${String(!this.notificationSurfaceOpen)}
+          ?inert=${!this.notificationSurfaceOpen}
           .presentation=${this.notificationPresentation()}
           .sessionTitle=${this.notificationSessionTitle()}
           .mode=${this.appShell.isDesktopActivityRailLayout ? "flyout" : "sheet"}

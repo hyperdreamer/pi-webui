@@ -412,6 +412,43 @@ async function accessibility() {
     (node) => !node.ignored
   );
 }
+function assertClosedTrayAccessibility(tree, label) {
+  const content = tree.filter((node) => {
+    const name = String(node.name?.value ?? "");
+    return /private message/i.test(name)
+      || name.startsWith("Dismiss notification:")
+      || name === "Clear all notifications"
+      || name === "Close notifications";
+  });
+  assert.deepEqual(
+    content.map((node) => ({ role: node.role?.value, name: node.name?.value })),
+    [],
+    `${label} must exclude closed notification messages and actions from the accessibility tree`
+  );
+  assert.ok(
+    !tree.some((node) =>
+      ["region", "dialog"].includes(node.role?.value) && /Alpha/.test(node.name?.value ?? "")
+    ),
+    `${label} must exclude the closed tray host from the accessibility tree`
+  );
+}
+function assertOpenTrayAccessibility(tree, label) {
+  assert.equal(
+    tree.filter((node) => node.role?.value === "StaticText" && /private message/i.test(node.name?.value ?? "")).length,
+    100,
+    `${label} must expose all 100 notification messages in the accessibility tree`
+  );
+  assert.equal(
+    tree.filter((node) => node.role?.value === "button" && String(node.name?.value ?? "").startsWith("Dismiss notification:")).length,
+    100,
+    `${label} must expose all 100 notification dismiss actions in the accessibility tree`
+  );
+  assert.ok(
+    tree.some((node) => node.role?.value === "button" && node.name?.value === "Clear all notifications")
+      && tree.some((node) => node.role?.value === "button" && node.name?.value === "Close notifications"),
+    `${label} must expose its header actions in the accessibility tree`
+  );
+}
 function assertOrder(state) {
   const spacerIndex = state.order.indexOf("rail-spacer");
   assert.ok(spacerIndex >= 0, "missing rail spacer");
@@ -444,6 +481,7 @@ async function desktopChecks() {
     assert.match(closed.bellLabel, /103/);
     assert.match(closed.bellLabel, /Alpha/);
     assert.equal(closed.bellExpanded, "false");
+    assertClosedTrayAccessibility(await accessibility(), `desktop ${width}px before opening`);
     await call("swapPlacement");
     const reversed = await call("inspect");
     assert.throws(() => assertOrder(reversed), /Notifications/);
@@ -479,6 +517,7 @@ async function desktopChecks() {
     );
     await scrollList();
     const tree = await accessibility();
+    assertOpenTrayAccessibility(tree, `desktop ${width}px`);
     const region = tree.find(
       (node) =>
         node.role?.value === "region" && /Alpha/.test(node.name?.value ?? "")
@@ -531,6 +570,9 @@ async function desktopChecks() {
       "composer must remain interactive"
     );
     await call("clearComposer");
+    assertClosedTrayAccessibility(await accessibility(), `desktop ${width}px after closing`);
+    await call("focus", "row");
+    assert.equal((await call("inspect")).active, "composer", "closed tray controls must leave composer focus intact");
     assert.equal(await call("requestCount"), requests, "closing the tray must not request notifications");
   }
 }
@@ -554,6 +596,7 @@ async function compactChecks() {
         /Alpha/.test(node.name?.value ?? "")
     );
     assert.ok(compactLauncherAx, "compact launcher's full accessible name is missing");
+    assertClosedTrayAccessibility(closedTree, `compact ${width}px before opening`);
     const controlledSurfaceAx = closedTree.find(
       (node) =>
         node.role?.value === "group" &&
@@ -614,6 +657,7 @@ async function compactChecks() {
     }
     await scrollList();
     const tree = await accessibility();
+    assertOpenTrayAccessibility(tree, `compact ${width}px`);
     assert.ok(
       tree.some(
         (node) =>
@@ -672,6 +716,18 @@ async function compactChecks() {
     );
     assert.equal(state.active, "launcher");
     assert.equal(state.shellInert, false);
+    const closedAfterEscape = await accessibility();
+    assertClosedTrayAccessibility(closedAfterEscape, `compact ${width}px after closing`);
+    const restoredLauncher = closedAfterEscape.find((node) => node.backendDOMNodeId === compactLauncherAx.backendDOMNodeId);
+    assert.ok(restoredLauncher, "closing the sheet must restore the compact launcher to the accessibility tree");
+    assert.ok(
+      restoredLauncher.properties?.find((property) => property.name === "controls")?.value?.relatedNodes?.some(
+        (node) => node.backendDOMNodeId === controlledSurfaceAx.backendDOMNodeId
+      ),
+      "closing the sheet must retain the compact launcher accessibility relationship"
+    );
+    await call("focus", "row");
+    assert.equal((await call("inspect")).active, "launcher", "closed tray controls must leave launcher focus intact");
   }
 }
 
