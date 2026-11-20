@@ -17,6 +17,7 @@ const entry = `${route}entry.ts`;
 const entryId = "virtual:sidebar-notifications/entry.ts";
 const timeoutMs = 30_000;
 const deadlineMs = 180_000;
+const mobileSafeAreaInsets = { top: 24, right: 16, bottom: 30, left: 12 };
 const chrome = process.env.CHROME_BIN || findChrome();
 if (!chrome || !existsSync(chrome)) {
   console.error(
@@ -72,7 +73,7 @@ async function main() {
       if (new URL(request.url ?? "/", "http://localhost").pathname === route) {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end(
-          `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"><script type="module" src="${entry}"></script></body></html>`
+          `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body style="margin:0"><script type="module" src="${entry}"></script></body></html>`
         );
         return;
       }
@@ -327,13 +328,18 @@ async function waitFor(label, expression) {
     `Timed out waiting for ${label}. Page errors: ${JSON.stringify(pageErrors)}`
   );
 }
-async function viewport(width, height) {
+async function viewport(
+  width,
+  height,
+  safeAreaInsets = { top: 0, right: 0, bottom: 0, left: 0 }
+) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width,
     height,
     deviceScaleFactor: 1,
     mobile: false,
   });
+  await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: safeAreaInsets });
   await call("settle");
 }
 async function clickAt(point) {
@@ -458,7 +464,8 @@ async function desktopChecks() {
       "desktop tray must not resize chat"
     );
     assert.equal(opened.bellExpanded, "true");
-    assert.equal(opened.controlsTray, true);
+    assert.equal(opened.controlsTray, true, "desktop bell must retain its tray element reference");
+    assert.equal(opened.controlsSurface, true, "desktop bell must expose the AX surface relationship");
     assert.equal(opened.listCount, 1);
     assert.equal(opened.longMessageFits, true, "desktop long message must wrap without clipping");
     assert.equal(await call("requestCount"), requests, "opening the tray must not request notifications");
@@ -489,14 +496,20 @@ async function desktopChecks() {
     assert.ok(bell, "full bell name missing from accessibility tree");
     assert.equal(bell.properties?.find((property) => property.name === "expanded")?.value?.value, true, "bell must expose its expanded state");
     assert.ok(tree.some((node) => node.name?.value === "Covered background sentinel"), "desktop background must remain accessible");
+    const controlledSurface = tree.find(
+      (node) =>
+        node.role?.value === "group" &&
+        node.name?.value === "Notifications for Alpha"
+    );
+    assert.ok(controlledSurface, "desktop notification surface is missing from accessibility tree");
     const controls =
       bell.properties?.find((property) => property.name === "controls")?.value
         ?.relatedNodes ?? [];
     assert.ok(
       controls.some(
-        (node) => node.backendDOMNodeId === region.backendDOMNodeId
+        (node) => node.backendDOMNodeId === controlledSurface.backendDOMNodeId
       ),
-      `bell accessibility relationship does not resolve to the tray: ${JSON.stringify(
+      `bell accessibility relationship does not resolve to the notification surface: ${JSON.stringify(
         controls
       )}`
     );
@@ -527,19 +540,37 @@ async function compactChecks() {
     [1180, 900],
     [390, 844],
   ]) {
-    await viewport(width, height);
+    await viewport(width, height, width === 390 ? mobileSafeAreaInsets : undefined);
     let state = await call("inspect");
     assert.match(state.launcherLabel, /103/);
+    assert.equal(state.controlsTray, true, "compact launcher must retain its tray element reference");
+    assert.equal(state.controlsSurface, true, "compact launcher must reference its notification surface element");
     const closedTree = await accessibility();
+    const compactLauncherAx = closedTree.find(
+      (node) =>
+        node.role?.value === "button" &&
+        /activity rail/i.test(node.name?.value ?? "") &&
+        /103/.test(node.name?.value ?? "") &&
+        /Alpha/.test(node.name?.value ?? "")
+    );
+    assert.ok(compactLauncherAx, "compact launcher's full accessible name is missing");
+    const controlledSurfaceAx = closedTree.find(
+      (node) =>
+        node.role?.value === "group" &&
+        node.name?.value === "Notifications for Alpha"
+    );
     assert.ok(
-      closedTree.some(
-        (node) =>
-          node.role?.value === "button" &&
-          /activity rail/i.test(node.name?.value ?? "") &&
-          /103/.test(node.name?.value ?? "") &&
-          /Alpha/.test(node.name?.value ?? "")
+      controlledSurfaceAx,
+      "compact notification surface is missing from the closed accessibility tree"
+    );
+    const compactControls =
+      compactLauncherAx.properties?.find((property) => property.name === "controls")
+        ?.value?.relatedNodes ?? [];
+    assert.ok(
+      compactControls.some(
+        (node) => node.backendDOMNodeId === controlledSurfaceAx.backendDOMNodeId
       ),
-      "compact launcher's full accessible name is missing"
+      `compact launcher accessibility relationship does not resolve to the notification surface: ${JSON.stringify({ compactControls, controlledSurfaceAx, tree: closedTree.filter((node) => /Notifications for Alpha/.test(node.name?.value ?? "")) })}`
     );
     await click("launcher");
     await click("bell");
@@ -553,7 +584,8 @@ async function compactChecks() {
     assert.equal(state.modal, true);
     assert.equal(state.shellInert, true);
     assert.equal(state.active, "heading");
-    assert.equal(state.controlsTray, true);
+    assert.equal(state.controlsTray, true, "compact launcher must retain its open tray element reference");
+    assert.equal(state.controlsSurface, true, "compact launcher must retain its open AX surface relationship");
     assert.ok(
       Math.abs(state.sheetRect.left) <= 1 &&
         Math.abs(state.sheetRect.top) <= 1 &&
@@ -567,7 +599,19 @@ async function compactChecks() {
       "compact list must scroll"
     );
     assert.ok(state.actionsVisible, "compact header controls must be visible");
-    assert.equal(await call("safeAreaPaddingMatches"), true, "sheet padding must follow the browser safe-area insets");
+    if (width === 390) {
+      const safeArea = await call("safeAreaMetrics");
+      assert.ok(Object.values(mobileSafeAreaInsets).every((inset) => inset > 0), "mobile safe-area test insets must all be nonzero");
+      assert.deepEqual(safeArea.sheetPadding, mobileSafeAreaInsets, "sheet padding must match all four configured safe-area insets");
+      assert.ok(safeArea.surfaceBounds, "safe-area sheet bounds are missing");
+      for (const [label, bounds] of Object.entries(safeArea.controls)) {
+        assert.ok(bounds, `${label} control bounds are missing`);
+        assert.ok(bounds.left >= safeArea.surfaceBounds.left + mobileSafeAreaInsets.left - 1, `${label} overlaps the left safe area`);
+        assert.ok(bounds.right <= safeArea.surfaceBounds.right - mobileSafeAreaInsets.right + 1, `${label} overlaps the right safe area`);
+        assert.ok(bounds.top >= safeArea.surfaceBounds.top + mobileSafeAreaInsets.top - 1, `${label} overlaps the top safe area`);
+        assert.ok(bounds.bottom <= safeArea.surfaceBounds.bottom - mobileSafeAreaInsets.bottom + 1, `${label} overlaps the bottom safe area`);
+      }
+    }
     await scrollList();
     const tree = await accessibility();
     assert.ok(
@@ -585,16 +629,24 @@ async function compactChecks() {
     assert.ok(backgroundPoint, "background pointer sentinel is missing");
     await clickAt(backgroundPoint);
     assert.equal(
+      (await call("inspect")).open,
+      true,
+      "covered background pointer must leave the sheet open"
+    );
+    assert.equal(
       (await call("inspect")).backgroundPointers,
       0,
       "covered background received a pointer event"
     );
+    await call("focus", "heading");
     await call("focus", "sentinel");
+    const afterBackgroundFocus = await call("inspect");
     assert.equal(
-      (await call("inspect")).activeInside,
+      afterBackgroundFocus.activeInside,
       true,
-      "covered background accepted focus"
+      `covered background accepted focus: ${JSON.stringify(afterBackgroundFocus)}`
     );
+    assert.equal(afterBackgroundFocus.active, "heading", "covered background focus attempt must leave focus in the sheet");
     await key("Tab", 8);
     assert.equal(
       (await call("inspect")).activeEnabledInside,
@@ -966,7 +1018,7 @@ app.state = { ...initialAppState(), machines, selectedMachine: machines[0], sele
 document.body.append(app);
 const sentinel = document.createElement("button");
 sentinel.textContent = "Covered background sentinel";
-sentinel.style.cssText = "position:absolute;right:8px;bottom:8px;width:10px;height:10px;padding:0";
+sentinel.style.cssText = "position:absolute;left:100px;top:200px;width:10px;height:10px;padding:0";
 sentinel.addEventListener("pointerdown", () => { backgroundPointers++; });
 app.updateComplete.then(() => app.shadowRoot.querySelector(".shell")?.append(sentinel));
 
@@ -1018,7 +1070,7 @@ function inspect() {
     bellLabel: bell?.getAttribute("aria-label"),
     bellExpanded: bell?.getAttribute("aria-expanded"),
     launcherLabel: launcher?.getAttribute("aria-label"),
-    open: !surface?.hidden,
+    open: surface?.dataset.open === "true",
     role: panel?.getAttribute("role"),
     modal: panel?.getAttribute("aria-modal") === "true",
     shellInert: shell?.inert,
@@ -1029,6 +1081,7 @@ function inspect() {
     activeInside: focus?.getRootNode() === root,
     activeEnabledInside: focus?.getRootNode() === root && focus.isConnected && !focus.disabled,
     controlsTray: (window.innerWidth >= 1181 ? bell : launcher)?.ariaControlsElements?.includes(panel) === true,
+    controlsSurface: (window.innerWidth >= 1181 ? bell : launcher)?.ariaControlsElements?.includes(surface) === true,
     rowCount: root?.querySelectorAll(".notification-row").length ?? 0,
     rowDisabled: root?.querySelector(".notification-row-dismiss")?.disabled ?? null,
     stateText: root?.querySelector(".notification-state")?.textContent ?? null,
@@ -1096,16 +1149,28 @@ window.__notificationsFixture = {
         && box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight;
     });
   },
-  safeAreaPaddingMatches() {
-    const probe = document.createElement("div");
-    probe.style.padding = "env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
-    document.body.append(probe);
-    const expected = getComputedStyle(probe);
-    const actual = getComputedStyle(app.shadowRoot.querySelector(".notification-surface"));
-    const sides = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
-    const matches = sides.every((side) => expected[side] === actual[side]);
-    probe.remove();
-    return matches;
+  safeAreaMetrics() {
+    const surface = app.shadowRoot.querySelector(".notification-surface");
+    const actual = getComputedStyle(surface);
+    const list = tray()?.shadowRoot?.querySelector(".notification-list");
+    const originalScrollTop = list?.scrollTop ?? 0;
+    if (list) list.scrollTop = list.scrollHeight;
+    const controls = {
+      close: rect(tray()?.shadowRoot?.querySelector(".notification-close")),
+      bottomRowDismiss: rect(list?.querySelector(".notification-row:last-child .notification-row-dismiss")),
+    };
+    if (list) list.scrollTop = originalScrollTop;
+    const pixels = (value) => Number.parseFloat(value);
+    return {
+      sheetPadding: {
+        top: pixels(actual.paddingTop),
+        right: pixels(actual.paddingRight),
+        bottom: pixels(actual.paddingBottom),
+        left: pixels(actual.paddingLeft),
+      },
+      surfaceBounds: rect(surface),
+      controls,
+    };
   },
   hit(name) {
     const node = element(name);

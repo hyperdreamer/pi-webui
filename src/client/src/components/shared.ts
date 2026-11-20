@@ -145,7 +145,7 @@ export const appStyles = css`
     .shell.workspace-panel-collapsed > workspace-panel { display: none; }
   }
   @media (max-width: 1180px) {
-    .shell > activity-rail { position: absolute; width: 0; height: 0; min-height: 0; }
+    .shell > activity-rail { position: absolute; z-index: 6; width: 0; height: 0; min-height: 0; }
     .shell { grid-template-columns: var(--navigation-panel-width) 1px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     .shell.navigation-panel-collapsed { --navigation-panel-width: 0px; }
     .shell.navigation-panel-collapsed > aside { display: none; }
@@ -204,11 +204,12 @@ export const appStyles = css`
   .empty { margin: auto; color: var(--pi-muted); }
   .error { padding: 10px 16px; border-bottom: 1px solid var(--pi-border); color: var(--pi-danger); }
   .notification-surface { position: fixed; z-index: 75; display: block; min-width: 0; min-height: 0; }
-  .notification-surface[hidden] { display: none !important; }
   .notification-surface.desktop { top: 12px; bottom: 12px; left: 52px; width: min(420px, calc(100vw - 64px)); pointer-events: auto; }
   .notification-surface.desktop session-notification-tray { height: 100%; }
   .notification-surface.sheet { inset: 0; display: grid; place-items: stretch; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background: var(--pi-overlay); }
   .notification-surface.sheet session-notification-tray { width: 100%; height: 100%; }
+  .notification-surface[data-open="false"] { inset: 0 auto auto -10000px; display: block; width: 1px; height: 1px; padding: 0; overflow: hidden; pointer-events: none; background: transparent; }
+  .notification-surface[hidden] { display: block !important; }
   .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; clip-path: inset(50%) !important; white-space: nowrap !important; border: 0 !important; }
   .notification-live span { display: block; }
   @media (max-width: 520px) { .notification-surface.desktop { left: 8px; width: calc(100vw - 16px); } }

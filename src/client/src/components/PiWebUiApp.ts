@@ -30,6 +30,7 @@ import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActiv
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
 import { SessionController, isClientPendingStartSessionInfo, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
+import "./SessionNotificationTray";
 import { HostSpeechController } from "../controllers/hostSpeechController";
 import { resolveAssistantSpeechSource } from "../hostSpeechText";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
@@ -3880,7 +3881,7 @@ export class PiWebUiApp extends LitElement {
   }
 
   private notificationSurfaceElement(): HTMLElement | undefined {
-    const surface = this.renderRoot.querySelector<HTMLElement>(".notification-surface");
+    const surface = this.shadowRoot?.querySelector<HTMLElement>(".notification-surface");
     return surface?.isConnected === true ? surface : undefined;
   }
 
@@ -3991,6 +3992,17 @@ export class PiWebUiApp extends LitElement {
     if (!desktop && this.notificationSurfaceOpen) this.compactRailOpen = false;
     this.syncNotificationBackgroundIsolation();
     this.syncNotificationControlRelations();
+    const root = this.shadowRoot;
+    if (root !== null) {
+      const contextBar = root.querySelector("app-context-bar");
+      const activityRail = root.querySelector("activity-rail");
+      void Promise.all([
+        contextBar instanceof AppContextBar ? contextBar.updateComplete : undefined,
+        activityRail instanceof HTMLElement && "updateComplete" in activityRail ? activityRail.updateComplete : undefined,
+      ]).then(() => {
+        if (this.isConnected && this.shadowRoot === root) this.syncNotificationControlRelations();
+      });
+    }
   }
 
   private syncNotificationControlRelations(): void {
@@ -3998,9 +4010,18 @@ export class PiWebUiApp extends LitElement {
     if (root === null) return;
     const surface = this.notificationSurfaceSemanticElement();
     if (surface === undefined) return;
+    const accessibilitySurface = this.notificationSurfaceElement();
+    const controlledSurfaces = accessibilitySurface === undefined || accessibilitySurface === surface
+      ? [surface]
+      : [surface, accessibilitySurface];
     const contextBar = root.querySelector("app-context-bar");
+    const contextSurface = this.notificationSurfaceOpen ? surface : this.compactRailDialog ?? surface;
     if (contextBar instanceof AppContextBar) {
-      contextBar.controlledSurface = this.notificationSurfaceOpen ? surface : this.compactRailDialog ?? surface;
+      contextBar.controlledSurface = contextSurface;
+      const launcher = contextBar.shadowRoot?.querySelector<HTMLButtonElement>(".activity-rail-action-button");
+      if (launcher !== null && launcher !== undefined) {
+        launcher.ariaControlsElements = contextSurface === surface ? controlledSurfaces : [contextSurface];
+      }
     }
     const hosts = [this.renderRoot.querySelector("activity-rail")];
     for (const host of hosts) {
@@ -4008,7 +4029,7 @@ export class PiWebUiApp extends LitElement {
       Reflect.set(host, "notificationSurface", surface);
       const buttons = host.shadowRoot?.querySelectorAll<HTMLButtonElement>(".notifications-button, .activity-rail-action-button") ?? [];
       for (const button of buttons) {
-        button.ariaControlsElements = [surface];
+        button.ariaControlsElements = controlledSurfaces;
       }
     }
   }
@@ -5693,8 +5714,16 @@ export class PiWebUiApp extends LitElement {
         ${keyed(this.recentProjectDialogGeneration, this.renderRecentProjectDialog())}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .speechInputSettings=${this.speechInputSettings} .speechInputSettingsRequestSeq=${this.speechInputSettingsRequestSeq} .isSpeechInputSettingsRequestCurrent=${this.isSpeechInputSettingsRequestCurrent} .showHostSpeechSettings=${selectedMachineId(state) === "local"} .hostSpeechStatus=${selectedMachineId(state) === "local" ? this.hostSpeech.snapshot.status : undefined} .hostSpeechStatusLoading=${selectedMachineId(state) === "local" && this.hostSpeech.snapshot.loadingStatus} .onReloadHostSpeech=${selectedMachineId(state) === "local" ? () => this.hostSpeech.refreshStatus() : undefined} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onSpeechInputSettingsLoaded=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsLoaded(response); }} .onSpeechInputSettingsSaved=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsSaved(response); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
       </div>
-      <div class=${`notification-surface ${this.appShell.isDesktopActivityRailLayout ? "desktop" : "sheet"}`} ?hidden=${!this.notificationSurfaceOpen} @pointerdown=${this.onNotificationSurfacePointerDown}>
+      <div
+        class=${`notification-surface ${this.appShell.isDesktopActivityRailLayout ? "desktop" : "sheet"}`}
+        ?hidden=${!this.notificationSurfaceOpen}
+        data-open=${String(this.notificationSurfaceOpen)}
+        role="group"
+        aria-label=${`Notifications for ${this.notificationSessionTitle()}`}
+        @pointerdown=${this.onNotificationSurfacePointerDown}
+      >
         <session-notification-tray
+          ?hidden=${!this.notificationSurfaceOpen}
           .presentation=${this.notificationPresentation()}
           .sessionTitle=${this.notificationSessionTitle()}
           .mode=${this.appShell.isDesktopActivityRailLayout ? "flyout" : "sheet"}
