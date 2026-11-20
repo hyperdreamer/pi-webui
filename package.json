@@ -38,6 +38,7 @@
     "build:plugins": "tsc -p tsconfig.plugins.json && node scripts/build-plugins.mjs",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "verify:narrow-navigation-header": "node scripts/verify-narrow-navigation-header.mjs",
+    "verify:sidebar-notifications": "node scripts/verify-sidebar-notifications.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:cached": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/pi-webui/typecheck.tsbuildinfo",
     "knip": "knip",
