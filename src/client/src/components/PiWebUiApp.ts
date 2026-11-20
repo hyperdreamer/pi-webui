@@ -219,6 +219,11 @@ interface NotificationEnvironmentOperation {
   kind: "checking-health" | "checking-capability";
 }
 
+interface NotificationEnvironmentFailure {
+  kind: NotificationEnvironmentOperation["kind"];
+  message: string;
+}
+
 export interface PiWebUiAppDependencies {
   speechInputApi?: Pick<typeof speechInputApi, "settings">;
   createSpeechInputSettingsChannel?: (onRevision: (revision: string) => void) => SpeechInputSettingsChannelLike;
@@ -590,7 +595,7 @@ export class PiWebUiApp extends LitElement {
   @state() private notificationSurfaceOpen = false;
   @state() private notificationFocusIntent: NotificationSurfaceFocusIntent | undefined;
   @state() private notificationEnvironmentOperation: NotificationEnvironmentOperation | undefined;
-  @state() private notificationEnvironmentError: string | undefined;
+  @state() private notificationEnvironmentError: NotificationEnvironmentFailure | undefined;
   private notificationEnvironmentRetry: Promise<void> | undefined;
   private notificationAnnouncementScope: string | undefined;
   private notificationEnvironmentSelectionGeneration = 0;
@@ -888,6 +893,21 @@ export class PiWebUiApp extends LitElement {
     const previousPolicyComposerScope = activePolicyComposerScope(previous);
     const previousStarterSelectionScope = starterModelPolicySelectionScope(previous);
     this.state = next;
+    if (this.notificationEnvironmentError !== undefined && selectedChatIdentity(previous) === selectedChatIdentity(next)) {
+      const machineId = selectedMachineId(next);
+      const health = next.machineStatuses[machineId];
+      const runtime = next.machineRuntimes[machineId];
+      const inbox = next.selectedNotificationInbox;
+      const session = next.selectedSession;
+      const healthRecovered = this.notificationEnvironmentError.kind === "checking-health"
+        && health !== previous.machineStatuses[machineId]
+        && health?.ok === true && health.status !== "offline" && health.status !== "error";
+      const capabilityRecovered = this.notificationEnvironmentError.kind === "checking-capability"
+        && runtime !== previous.machineRuntimes[machineId] && runtime?.ok === true;
+      const inboxRecovered = inbox !== previous.selectedNotificationInbox && inbox?.status === "fresh"
+        && inbox.machineId === machineId && inbox.sessionId === session?.id && inbox.cwd === session.cwd;
+      if (healthRecovered || capabilityRecovered || inboxRecovered) this.notificationEnvironmentError = undefined;
+    }
     this.synchronizeFileNavigation(previous, next);
     if (previousStarterSelectionScope !== starterModelPolicySelectionScope(this.state)) {
       this.starterModelPolicySelectionGeneration += 1;
@@ -4178,7 +4198,7 @@ export class PiWebUiApp extends LitElement {
       isCurrent: () => this.isCurrentNotificationEnvironmentOperation(operation),
       onError: (error) => {
         if (!ownership.isCurrent()) return;
-        this.notificationEnvironmentError = `Unable to check notification availability: ${errorMessage(error)}`;
+        this.notificationEnvironmentError = { kind: operation.kind, message: `Unable to check notification availability: ${errorMessage(error)}` };
         this.requestUpdate();
       },
     };
@@ -4186,7 +4206,7 @@ export class PiWebUiApp extends LitElement {
       const health = await this.machines.refreshMachineHealth(target.machineId, ownership);
       if (!ownership.isCurrent()) return;
       if (health?.ok !== true || health.status === "offline" || health.status === "error") {
-        this.notificationEnvironmentError ??= "Notifications remain unavailable while this machine is offline.";
+        this.notificationEnvironmentError ??= { kind: "checking-health", message: "Notifications remain unavailable while this machine is offline." };
         return;
       }
       operation.kind = "checking-capability";
@@ -4196,13 +4216,13 @@ export class PiWebUiApp extends LitElement {
       const runtime = await this.machines.refreshMachineRuntime(target.machineId, ownership);
       if (!ownership.isCurrent()) return;
       if (runtime?.ok !== true) {
-        this.notificationEnvironmentError ??= "Notification support could not be checked. Retry to try again.";
+        this.notificationEnvironmentError ??= { kind: "checking-capability", message: "Notification support could not be checked. Retry to try again." };
         return;
       }
       const supported = supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsNotifications)
         || this.notifications.acceptedSupportFor(target.machineId) !== undefined;
       if (!supported) {
-        this.notificationEnvironmentError = "This runtime does not support session notifications.";
+        this.notificationEnvironmentError = { kind: "checking-capability", message: "This runtime does not support session notifications." };
         return;
       }
     }
@@ -5680,7 +5700,7 @@ export class PiWebUiApp extends LitElement {
           .mode=${this.appShell.isDesktopActivityRailLayout ? "flyout" : "sheet"}
           .open=${this.notificationSurfaceOpen}
           .focusIntent=${this.notificationFocusIntent}
-          .errorMessage=${this.notificationEnvironmentError ?? this.notifications.failureMessage}
+          .errorMessage=${this.notificationEnvironmentError?.message ?? this.notifications.failureMessage}
           .onValidateFocusIntent=${this.validateNotificationFocus}
           .onDismiss=${this.dismissNotificationFromTray}
           .onDismissAll=${this.dismissAllNotificationsFromTray}
