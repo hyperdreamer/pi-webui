@@ -1669,12 +1669,15 @@ async function runRefreshPlacement(cdp, fixtureUrlIgnored, state, count) {
             assert.equal(opened.contextButtonVisible, true, "the context-bar refresh button must stay visible while the drawer is open");
             const spacerIndex = opened.railChildren.indexOf("rail-spacer");
             const reloadIndex = opened.railChildren.indexOf("icon-button rail-reload-button");
+            const bellIndex = opened.railChildren.indexOf("icon-button notifications-button");
             const settingsIndex = opened.railChildren.indexOf("icon-button settings-button");
             assert.ok(spacerIndex >= 0, `the rail spacer is missing from ${JSON.stringify(opened.railChildren)}`);
             assert.ok(reloadIndex >= 0, `the rail refresh control is missing from ${JSON.stringify(opened.railChildren)}`);
+            assert.ok(bellIndex >= 0, "missing Notifications button");
             assert.ok(settingsIndex >= 0, `the rail settings control is missing from ${JSON.stringify(opened.railChildren)}`);
             assert.equal(reloadIndex, spacerIndex + 1, `the rail refresh control must sit directly after the spacer: ${JSON.stringify(opened.railChildren)}`);
-            assert.equal(settingsIndex, reloadIndex + 1, `the rail refresh control must sit directly before settings: ${JSON.stringify(opened.railChildren)}`);
+            assert.equal(bellIndex, reloadIndex + 1, `Notifications must sit directly after reload: ${JSON.stringify(opened.railChildren)}`);
+            assert.equal(settingsIndex, bellIndex + 1, `Settings must sit directly after Notifications: ${JSON.stringify(opened.railChildren)}`);
           }
         });
         count("REFRESH");
@@ -2185,7 +2188,7 @@ function refreshState() {
       ? []
       : Array.prototype.slice.call(control.shadowRoot.querySelectorAll(".app-refresh-button"));
   });
-  const launcher = contextRoot === null ? null : contextRoot.querySelector('button[aria-label="Open activity rail"]');
+  const launcher = contextRoot === null ? null : contextRoot.querySelector("button.activity-rail-action-button");
   const rail = root.querySelector("activity-rail");
   const railRoot = rail === null ? null : rail.shadowRoot;
   const railReloads = railRoot === null ? [] : Array.prototype.slice.call(railRoot.querySelectorAll(".rail-reload-button"));

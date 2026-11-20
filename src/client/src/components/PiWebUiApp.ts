@@ -1,4 +1,5 @@
 import { LitElement, html, type TemplateResult } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { keyed } from "lit/directives/keyed.js";
 import { customElement, query, state } from "lit/decorators.js";
 import { configApi, effectiveWorkspaceUploadFolder, modelTiersApi, projectsApi, sessionsApi, speechInputApi, terminalsApi, workspacesApi, workspaceEffectiveUploadFolder, type GitStatusResponse, type Machine, type MachineHealth, type PiWebUiConfigValues, type PiWebUiShortcutConfig, type Project, type RecentProjectEntry, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupRequest, type SessionInfo, type SessionReorderRequest, type SessionTreeNavigateResult, type SessionTreeSummaryChoice, type SpeechInputSettingsResponse, type TerminalCommandRun, type TerminalUiEvent, type Workspace } from "../api";
@@ -13,6 +14,7 @@ import { thinkingLevelOptions, type ThinkingLevelOption } from "./thinkingLevelO
 import { initialAppState, type AppState, type SessionListFailure } from "../appState";
 import { isSessionActive } from "../../../shared/activity";
 import { PI_WEBUI_CAPABILITIES, supportsPiWebUiCapability } from "../../../shared/capabilities";
+import { SESSION_NOTIFICATION_LIMIT } from "../../../shared/apiTypes";
 import { ActivityController } from "../controllers/activityController";
 import { AuthController } from "../controllers/authController";
 import { FileExplorerController } from "../controllers/fileExplorerController";
@@ -20,14 +22,15 @@ import { GitController } from "../controllers/gitController";
 import { LearnedSkillsController } from "../controllers/learnedSkillsController";
 import { MemoryController } from "../controllers/memoryController";
 import { gitUpdateManagerChangeCount } from "../gitUpdateManagerChanges";
-import { MachineController } from "../controllers/machineController";
+import { MachineController, type MachineRefreshOwnership } from "../controllers/machineController";
 import { ProjectController } from "../controllers/projectController";
 import { ProjectCatalogController } from "../controllers/projectCatalogController";
 import { RecentProjectController } from "../controllers/recentProjectController";
 import { ProjectActivityOwnershipCoordinator } from "../controllers/projectActivityOwnershipCoordinator";
 import { PiWebUiStatusController } from "../controllers/piWebUiStatusController";
-import { SessionController, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
+import { SessionController, isClientPendingStartSessionInfo, type StarterModelPolicyConfirmedEvent, type StarterModelPolicySubstitutionEvent } from "../controllers/sessionController";
 import { SessionNotificationController } from "../controllers/sessionNotificationController";
+import "./SessionNotificationTray";
 import { HostSpeechController } from "../controllers/hostSpeechController";
 import { resolveAssistantSpeechSource } from "../hostSpeechText";
 import { WorkspaceController, canDeleteWorkspace } from "../controllers/workspaceController";
@@ -45,10 +48,13 @@ import { StarterModelPolicyPreferenceWriter, type StarterModelPolicyPreferenceWr
 import { ConfirmedStarterModelPolicyPreferenceWriter, type ConfirmedPreferenceWriteContext } from "../controllers/confirmedStarterModelPolicyPreferenceWriter";
 import { machineSessionKey } from "../machineKeys";
 import { sessionCleanupRequestKey, sessionCleanupUnavailableMessage } from "../sessionCleanupUi";
-import { selectedNotificationView } from "../sessionNotifications";
-import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPersistence } from "../sessionPersistence";
+import { deriveNotificationPresentation, type NotificationPresentation } from "../notificationPresentation";
+import { notificationFocusTargetAfterDismiss, notificationAnnouncementLabel, notificationTargetKey, type SessionNotificationAnnouncement, type SessionNotificationTarget } from "../sessionNotifications";
+import { sessionLabel } from "../sessionLabels";
 import { SessionUnreadController } from "../sessionUnread";
 import { initialSessionWarningVisibilityState, reconcileSessionWarningVisibility, toggleSessionWarnings } from "../sessionWarningVisibility";
+import { SessionNotificationTray, type NotificationSurfaceControl, type NotificationSurfaceFocusIntent } from "./SessionNotificationTray";
+import { hasAuthoritativeSessionPersistence as runtimeHasAuthoritativeSessionPersistence } from "../sessionPersistence";
 import { RealtimeSocket, type BrowserRealtimeEvent } from "../sessionSocket";
 import type { ActivityRailContext, LocalContributionId, PiWebUiPluginRegistration, PluginContributionIdentity, PluginId, PluginMachine, PluginPromptEditor, QualifiedActivityRailContribution, QualifiedContributionId, QualifiedThemeContribution, QualifiedThemePairContribution, QualifiedWorkspacePanelContribution, PluginRuntimeContext, TerminalCommandRunsInternalRuntime, WorkspaceFiles, WorkspaceHost, WorkspaceLabelContext, WorkspaceLabelItem, WorkspacePanelContext, WorkspacePanelTerminal, WorkspaceTasksPanelBridge } from "../plugins/types";
 import { isActivityRailItemVisible, visibleActivityRailItems, type ActivityRailDisplayItem, type ReportActivityRailError } from "../plugins/activityRail";
@@ -105,7 +111,7 @@ import "./RecentProjectsPanel";
 import "./RecentProjectDialog";
 import type { RecentProjectDialog, RecentProjectDialogView } from "./RecentProjectDialog";
 import "./TerminalPanel";
-import "./appShell/AppContextBar";
+import { AppContextBar } from "./appShell/AppContextBar";
 import "./appShell/AppMobileMainTabs";
 import type { AppMobileMainTab, AppMobileMainTabIcon } from "./appShell/AppMobileMainTabs";
 import { shouldShowMachinesSection, type AppNavigationPanel, type NavigationFocusTarget } from "./appShell/AppNavigationPanel";
@@ -203,6 +209,22 @@ interface ActiveActivityRailItem extends ResolvedActivityRailItem {
   generation: number;
 }
 
+interface NotificationSurfaceState {
+  focusControl: NotificationSurfaceControl | undefined;
+  focusInside: boolean;
+}
+
+interface NotificationEnvironmentOperation {
+  target: SessionNotificationTarget;
+  selectionGeneration: number;
+  kind: "checking-health" | "checking-capability";
+}
+
+interface NotificationEnvironmentFailure {
+  kind: NotificationEnvironmentOperation["kind"];
+  message: string;
+}
+
 export interface PiWebUiAppDependencies {
   speechInputApi?: Pick<typeof speechInputApi, "settings">;
   createSpeechInputSettingsChannel?: (onRevision: (revision: string) => void) => SpeechInputSettingsChannelLike;
@@ -222,6 +244,7 @@ export class PiWebUiApp extends LitElement {
   @query("app-navigation-panel") private navigationPanel?: AppNavigationPanel;
   @query("#navigation-panel") private navigationPanelFrame?: HTMLElement;
   @query("#workspace-panel") private workspacePanelFrame?: HTMLElement;
+  @query("session-notification-tray") private notificationTray?: SessionNotificationTray;
 
   constructor(dependencies: PiWebUiAppDependencies = {}) {
     super();
@@ -253,7 +276,15 @@ export class PiWebUiApp extends LitElement {
   private readonly notifications = new SessionNotificationController(
     () => this.state,
     (patch) => { this.setState(patch); },
-    { onBackgroundError: (message, error) => { console.warn(message, error); } },
+    {
+      onBackgroundError: (message, error) => { console.warn(message, error); },
+      onProjectionChange: () => { this.requestUpdate(); },
+      isCheckingEnvironment: (target, selectionGeneration) => {
+        const operation = this.notificationEnvironmentOperation;
+        return operation?.selectionGeneration === selectionGeneration
+          && notificationTargetKey(operation.target) === notificationTargetKey(target);
+      },
+    },
   );
   private readonly hostSpeech = new HostSpeechController({
     onStateChange: () => {
@@ -562,7 +593,23 @@ export class PiWebUiApp extends LitElement {
   @state() private terminalTabHidden = this.initialWorkspaceTabVisibility.terminalHidden;
   @state() private infoTabHidden = this.initialWorkspaceTabVisibility.infoHidden;
   @state() private railOrder: ReorderableRailItem[] = readRailOrder() ?? [...DEFAULT_RAIL_ORDER];
+  @state() private notificationSurfaceOpen = false;
+  @state() private notificationFocusIntent: NotificationSurfaceFocusIntent | undefined;
+  @state() private notificationEnvironmentOperation: NotificationEnvironmentOperation | undefined;
+  @state() private notificationEnvironmentError: NotificationEnvironmentFailure | undefined;
+  private notificationEnvironmentRetry: Promise<void> | undefined;
+  private notificationAnnouncementScope: string | undefined;
+  private notificationEnvironmentSelectionGeneration = 0;
+  private notificationSurfaceGeneration = 0;
+  private notificationFocusToken = 0;
+  private notificationRestoreFocusTarget: HTMLElement | undefined;
+  private notificationRestoreFocusAllowed = true;
+  private notificationLastDesktopLayout: boolean | undefined;
+  @state() private notificationAnnouncements: SessionNotificationAnnouncement[] = [];
+  private readonly seenNotificationAnnouncementIds = new Set<string>();
+  private readonly isolatedNotificationBackground = new Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>();
   @state() private compactRailOpen = false;
+  @state() private compactRailDialog: HTMLElement | undefined;
   private compactActivityRailLauncher: HTMLElement | undefined;
   @state() private activeActivityRailId: QualifiedContributionId | undefined;
   private activeActivityRailGeneration = 0;
@@ -592,6 +639,24 @@ export class PiWebUiApp extends LitElement {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
+    if (this.notificationSurfaceOpen) {
+      this.notificationFocusToken += 1;
+      const insideNotificationSurface = this.notificationEventInside(event);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.closeNotificationSurface(true);
+        return;
+      }
+      if (!this.appShell.isDesktopActivityRailLayout) {
+        if (!insideNotificationSurface) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+        return;
+      }
+      if (insideNotificationSurface) return;
+    }
     if (event.key === "Escape" && this.promptEditor?.cancelSpeechInput() === true) {
       event.preventDefault();
       event.stopPropagation();
@@ -608,6 +673,7 @@ export class PiWebUiApp extends LitElement {
     this.toggleAttribute("pwa-display-mode", this.appShell.isPwaDisplayMode);
     this.syncSessionWarningVisibility();
     this.syncStarterNotice();
+    this.syncNotificationAnnouncements();
   }
 
   protected override updated(): void {
@@ -616,6 +682,7 @@ export class PiWebUiApp extends LitElement {
     // deduplicates acknowledgements for the observed completion order.
     this.committedChatIdentity = selectedChatIdentity(this.state);
     this.syncSelectedSessionReadState();
+    this.syncNotificationSurface();
     if (this.compactRailOpen && this.appShell.isDesktopActivityRailLayout) this.closeCompactActivityRail();
     const activeActivityRailId = this.activeActivityRailId;
     if (activeActivityRailId !== undefined && this.activeActivityRailItem() === undefined) {
@@ -747,6 +814,8 @@ export class PiWebUiApp extends LitElement {
     window.addEventListener("resize", this.onTerminalModalViewportResize);
     this.browserResume.connect();
     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
+    window.addEventListener("pointerdown", this.onNotificationPointerDown, true);
+    window.addEventListener("focusin", this.onNotificationFocusIn, true);
     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
     this.applyPreferredTheme(false);
     this.connectRealtime();
@@ -775,6 +844,14 @@ export class PiWebUiApp extends LitElement {
     window.removeEventListener("resize", this.onTerminalModalViewportResize);
     this.browserResume.disconnect();
     window.removeEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
+    window.removeEventListener("pointerdown", this.onNotificationPointerDown, true);
+    window.removeEventListener("focusin", this.onNotificationFocusIn, true);
+    this.notificationEnvironmentOperation = undefined;
+    this.notificationEnvironmentError = undefined;
+    this.notificationEnvironmentRetry = undefined;
+    this.restoreNotificationBackgroundIsolation();
+    this.notificationSurfaceOpen = false;
+    this.notificationFocusIntent = undefined;
     this.systemLightThemeMedia?.removeEventListener("change", this.onSystemLightThemeChange);
     this.keyboard.reset();
     this.auth.dispose();
@@ -817,6 +894,21 @@ export class PiWebUiApp extends LitElement {
     const previousPolicyComposerScope = activePolicyComposerScope(previous);
     const previousStarterSelectionScope = starterModelPolicySelectionScope(previous);
     this.state = next;
+    if (this.notificationEnvironmentError !== undefined && selectedChatIdentity(previous) === selectedChatIdentity(next)) {
+      const machineId = selectedMachineId(next);
+      const health = next.machineStatuses[machineId];
+      const runtime = next.machineRuntimes[machineId];
+      const inbox = next.selectedNotificationInbox;
+      const session = next.selectedSession;
+      const healthRecovered = this.notificationEnvironmentError.kind === "checking-health"
+        && health !== previous.machineStatuses[machineId]
+        && health?.ok === true && health.status !== "offline" && health.status !== "error";
+      const capabilityRecovered = this.notificationEnvironmentError.kind === "checking-capability"
+        && runtime !== previous.machineRuntimes[machineId] && runtime?.ok === true;
+      const inboxRecovered = inbox !== previous.selectedNotificationInbox && inbox?.status === "fresh"
+        && inbox.machineId === machineId && inbox.sessionId === session?.id && inbox.cwd === session.cwd;
+      if (healthRecovered || capabilityRecovered || inboxRecovered) this.notificationEnvironmentError = undefined;
+    }
     this.synchronizeFileNavigation(previous, next);
     if (previousStarterSelectionScope !== starterModelPolicySelectionScope(this.state)) {
       this.starterModelPolicySelectionGeneration += 1;
@@ -837,6 +929,10 @@ export class PiWebUiApp extends LitElement {
     this.handleStarterModelPolicyCapabilityChange(previous, this.state);
     if (machineActivitySubscriptionInputsChanged(previous, this.state)) this.syncMachineActivitySubscriptions();
     this.notifications.syncEnvironment(previous, this.state);
+    if (selectedChatIdentity(previous) !== selectedChatIdentity(this.state)) this.resetNotificationAnnouncementScope();
+    if (previous.selectedNotificationInbox?.daemonInstanceId !== this.state.selectedNotificationInbox?.daemonInstanceId) {
+      this.resetNotificationAnnouncementScope();
+    }
     if (previous.selectedProject?.name !== this.state.selectedProject?.name) this.syncWindowTitle();
     this.synchronizeProjectCatalogPolling();
     const policyComposerScope = activePolicyComposerScope(this.state);
@@ -3727,6 +3823,11 @@ export class PiWebUiApp extends LitElement {
     this.compactRailOpen = !this.compactRailOpen;
   };
 
+  private readonly handleCompactRailDialogChange = (dialog: HTMLElement | undefined): void => {
+    if (this.compactRailDialog === dialog) return;
+    this.compactRailDialog = dialog;
+  };
+
   private restoreActivityRailFocus(source: HTMLElement): void {
     if (source.isConnected) {
       source.focus();
@@ -3745,6 +3846,433 @@ export class PiWebUiApp extends LitElement {
     const launcher = contextBar?.shadowRoot?.querySelector<HTMLElement>(".activity-rail-action-button");
     return launcher?.isConnected === true ? launcher : undefined;
   }
+
+  private notificationPresentation(): NotificationPresentation {
+    const machineId = selectedMachineId(this.state);
+    return deriveNotificationPresentation({
+      selectedSession: this.state.selectedSession,
+      selectedMachine: this.state.selectedMachine,
+      machineHealth: this.state.machineStatuses[machineId],
+      machineRuntime: this.state.machineRuntimes[machineId],
+      acceptedSupport: this.notifications.acceptedSupportFor(machineId),
+      runtimeGeneration: this.notifications.runtimeGenerationFor(machineId),
+      selectionGeneration: this.notifications.selectionGeneration,
+      inbox: this.state.selectedNotificationInbox,
+      operation: this.notificationEnvironmentOperation ?? this.notifications.inboxOperation,
+      isClientPendingStart: isClientPendingStartSessionInfo(this.state.selectedSession),
+    });
+  }
+
+  private notificationSessionTitle(): string {
+    const session = this.state.selectedSession;
+    return session === undefined ? "Selected session" : sessionLabel(session);
+  }
+
+  private notificationSurfaceSemanticElement(): HTMLElement | undefined {
+    const surface = this.notificationTray;
+    return surface?.isConnected === true ? surface : undefined;
+  }
+
+  private notificationEventInside(event: Event): boolean {
+    const path = event.composedPath();
+    const surface = this.notificationSurfaceElement();
+    return (surface !== undefined && path.includes(surface))
+      || path.some((entry) => entry instanceof HTMLElement && (entry.matches(".notifications-button") || entry.matches(".activity-rail-action-button")));
+  }
+
+  private notificationSurfaceElement(): HTMLElement | undefined {
+    const surface = this.shadowRoot?.querySelector<HTMLElement>(".notification-surface");
+    return surface?.isConnected === true ? surface : undefined;
+  }
+
+  private readonly onNotificationPointerDown = (event: PointerEvent): void => {
+    this.notificationFocusToken += 1;
+    if (!this.notificationSurfaceOpen) return;
+    if (this.notificationEventInside(event)) {
+      const surface = this.notificationSurfaceElement();
+      if (surface !== undefined && event.composedPath().includes(surface)) this.captureNotificationFocusIntent();
+      return;
+    }
+    this.notificationRestoreFocusAllowed = false;
+    this.closeNotificationSurface(false);
+  };
+
+  private readonly onNotificationFocusIn = (event: FocusEvent): void => {
+    this.notificationFocusToken += 1;
+    if (!this.notificationSurfaceOpen) return;
+    const path = event.composedPath();
+    const surface = this.notificationSurfaceElement();
+    if (surface !== undefined && path.includes(surface)) {
+      this.captureNotificationFocusIntent();
+      return;
+    }
+    const isLauncher = path.some((entry) => entry instanceof HTMLElement && entry.matches(".notifications-button, .activity-rail-action-button"));
+    if (isLauncher) return;
+    this.notificationFocusIntent = undefined;
+    this.notificationRestoreFocusAllowed = false;
+  };
+
+  private captureNotificationFocusIntent(): void {
+    const presentation = this.notificationPresentation();
+    if (presentation.kind === "ineligible") return;
+    const control = this.notificationTray?.focusedControl();
+    this.notificationFocusIntent = {
+      token: this.notificationFocusToken,
+      surfaceGeneration: this.notificationSurfaceGeneration,
+      selectionGeneration: this.notifications.selectionGeneration,
+      target: presentation.target,
+      destination: control === undefined ? "heading" : "equivalent-control",
+      ...(control === undefined ? {} : { control }),
+    };
+  }
+
+  private readonly onNotificationSurfacePointerDown = (event: PointerEvent): void => {
+    if (event.target === event.currentTarget && !this.appShell.isDesktopActivityRailLayout) this.closeNotificationSurface(true);
+  };
+
+  private notificationFocusState(): NotificationSurfaceState {
+    const tray = this.notificationTray;
+    const active = tray?.shadowRoot?.activeElement;
+    return {
+      focusControl: tray?.focusedControl(),
+      focusInside: active instanceof HTMLElement,
+    };
+  }
+
+  private notificationFocusIntentFor(control?: NotificationSurfaceControl): NotificationSurfaceFocusIntent | undefined {
+    const presentation = this.notificationPresentation();
+    if (presentation.kind === "ineligible") return undefined;
+    return {
+      token: ++this.notificationFocusToken,
+      surfaceGeneration: this.notificationSurfaceGeneration,
+      selectionGeneration: this.notifications.selectionGeneration,
+      target: presentation.target,
+      destination: control === undefined ? "heading" : "equivalent-control",
+      ...(control === undefined ? {} : { control }),
+    };
+  }
+
+  private validateNotificationFocusIntent(intent: NotificationSurfaceFocusIntent): boolean {
+    if (!this.notificationSurfaceOpen || this.notificationFocusIntent?.token !== intent.token) return false;
+    if (intent.surfaceGeneration !== this.notificationSurfaceGeneration
+      || intent.selectionGeneration !== this.notifications.selectionGeneration
+      || intent.token !== this.notificationFocusToken) return false;
+    const presentation = this.notificationPresentation();
+    return presentation.kind !== "ineligible" && notificationTargetKey(presentation.target) === notificationTargetKey(intent.target);
+  }
+
+  private syncNotificationSurface(): void {
+    if (this.notificationEnvironmentSelectionGeneration !== this.notifications.selectionGeneration) {
+      this.notificationEnvironmentSelectionGeneration = this.notifications.selectionGeneration;
+      this.notificationEnvironmentOperation = undefined;
+      this.notificationEnvironmentError = undefined;
+      this.notificationEnvironmentRetry = undefined;
+    }
+    const desktop = this.appShell.isDesktopActivityRailLayout;
+    if (this.notificationLastDesktopLayout !== undefined && this.notificationLastDesktopLayout !== desktop && this.notificationSurfaceOpen) {
+      const prior = this.notificationFocusState();
+      this.notificationSurfaceGeneration += 1;
+      this.notificationFocusIntent = undefined;
+      this.scheduleNotificationFocusIntent(prior.focusInside ? prior.focusControl : undefined);
+      this.notificationRestoreFocusTarget = this.currentNotificationLauncher();
+    }
+    this.notificationLastDesktopLayout = desktop;
+    const presentation = this.notificationPresentation();
+    if (this.notificationSurfaceOpen && presentation.kind === "ineligible") {
+      const shouldFallback = this.notificationFocusIntent !== undefined;
+      this.closeNotificationSurface(false);
+      if (shouldFallback) this.scheduleNotificationFocusFallback();
+    } else if (this.notificationSurfaceOpen && this.hasBlockingAppModal()) {
+      this.closeNotificationSurface(false);
+    } else if (this.notificationSurfaceOpen && presentation.kind !== "ineligible" && this.notificationFocusIntent !== undefined
+      && notificationTargetKey(this.notificationFocusIntent.target) !== notificationTargetKey(presentation.target)) {
+      this.notificationSurfaceGeneration += 1;
+      this.scheduleNotificationFocusIntent();
+    }
+    if (!desktop && this.notificationSurfaceOpen) this.compactRailOpen = false;
+    this.syncNotificationBackgroundIsolation();
+    this.syncNotificationControlRelations();
+    const root = this.shadowRoot;
+    if (root !== null) {
+      const contextBar = root.querySelector("app-context-bar");
+      const activityRail = root.querySelector("activity-rail");
+      void Promise.all([
+        contextBar instanceof AppContextBar ? contextBar.updateComplete : undefined,
+        activityRail instanceof HTMLElement && "updateComplete" in activityRail ? activityRail.updateComplete : undefined,
+      ]).then(() => {
+        if (this.isConnected && this.shadowRoot === root) this.syncNotificationControlRelations();
+      });
+    }
+  }
+
+  private syncNotificationControlRelations(): void {
+    const root = this.shadowRoot;
+    if (root === null) return;
+    const surface = this.notificationSurfaceSemanticElement();
+    if (surface === undefined) return;
+    const accessibilitySurface = this.notificationSurfaceElement();
+    const controlledSurfaces = accessibilitySurface === undefined || accessibilitySurface === surface
+      ? [surface]
+      : [surface, accessibilitySurface];
+    const contextBar = root.querySelector("app-context-bar");
+    const contextSurface = this.notificationSurfaceOpen ? surface : this.compactRailDialog ?? surface;
+    if (contextBar instanceof AppContextBar) {
+      contextBar.controlledSurface = contextSurface;
+      const launcher = contextBar.shadowRoot?.querySelector<HTMLButtonElement>(".activity-rail-action-button");
+      if (launcher !== null && launcher !== undefined) {
+        launcher.ariaControlsElements = contextSurface === surface ? controlledSurfaces : [contextSurface];
+      }
+    }
+    const hosts = [this.renderRoot.querySelector("activity-rail")];
+    for (const host of hosts) {
+      if (!(host instanceof HTMLElement)) continue;
+      Reflect.set(host, "notificationSurface", surface);
+      const buttons = host.shadowRoot?.querySelectorAll<HTMLButtonElement>(".notifications-button, .activity-rail-action-button") ?? [];
+      for (const button of buttons) {
+        button.ariaControlsElements = controlledSurfaces;
+      }
+    }
+  }
+
+  private syncNotificationBackgroundIsolation(): void {
+    const root = this.shadowRoot;
+    if (root === null) return;
+    const shell = root.querySelector<HTMLElement>(".shell");
+    if (shell === null) return;
+    const shouldIsolate = this.notificationSurfaceOpen && !this.appShell.isDesktopActivityRailLayout;
+    if (shouldIsolate && !this.isolatedNotificationBackground.has(shell)) {
+      this.isolatedNotificationBackground.set(shell, { inert: shell.inert, ariaHidden: shell.getAttribute("aria-hidden") });
+      shell.inert = true;
+      shell.setAttribute("aria-hidden", "true");
+    } else if (!shouldIsolate) {
+      this.restoreNotificationBackgroundIsolation();
+    }
+  }
+
+  private restoreNotificationBackgroundIsolation(): void {
+    for (const [element, previous] of this.isolatedNotificationBackground) {
+      element.inert = previous.inert;
+      if (previous.ariaHidden === null) element.removeAttribute("aria-hidden");
+      else element.setAttribute("aria-hidden", previous.ariaHidden);
+    }
+    this.isolatedNotificationBackground.clear();
+  }
+
+  private hasBlockingAppModal(): boolean {
+    return this.activeActivityRailId !== undefined
+      || this.settingsSection !== undefined
+      || this.state.treeDialog !== undefined
+      || this.state.modelDialog !== undefined
+      || this.state.thinkingDialog !== undefined
+      || this.state.commandDialog !== undefined
+      || this.state.actionPaletteOpen
+      || this.projectBrowserOpen
+      || this.statisticsProject !== undefined
+      || this.sessionBrowserOpen
+      || this.state.projectDialogOpen
+      || this.state.machineDialogOpen
+      || this.sessionCleanupDialog !== undefined
+      || this.historyWindow !== undefined
+      || this.modelsConfigDialogOpen
+      || this.skillsConfigDialogOpen
+      || this.pluginsConfigDialogOpen
+      || this.systemPromptDialogOpen
+      || this.state.themeDialog !== undefined
+      || this.state.authDialog !== undefined
+      || this.gitUpdateManagerPanelOpen
+      || this.terminalModalOpen
+      || this.recentProjectDialogEntry !== undefined;
+  }
+
+  private openNotificationSurface(source: HTMLElement, event: MouseEvent): void {
+    if (this.notificationPresentation().kind === "ineligible") return;
+    if (this.notificationSurfaceOpen) {
+      this.closeNotificationSurface(true);
+      return;
+    }
+    const desktop = this.appShell.isDesktopActivityRailLayout;
+    this.notificationSurfaceGeneration += 1;
+    this.notificationFocusToken += 1;
+    if (desktop) {
+      this.notificationRestoreFocusTarget = source;
+    } else {
+      this.notificationRestoreFocusTarget = this.currentCompactActivityRailLauncher();
+      this.compactActivityRailLauncher = this.notificationRestoreFocusTarget;
+      this.compactRailOpen = false;
+    }
+    this.notificationSurfaceOpen = true;
+    this.notificationRestoreFocusAllowed = true;
+    if (desktop) {
+      this.notificationFocusIntent = event.detail === 0 ? this.notificationFocusIntentFor() : undefined;
+    } else {
+      this.notificationFocusIntent = this.notificationFocusIntentFor();
+      this.syncNotificationBackgroundIsolation();
+    }
+  }
+
+  private closeNotificationSurface(restoreFocus: boolean): void {
+    if (!this.notificationSurfaceOpen) return;
+    const shouldRestoreFocus = restoreFocus && this.notificationRestoreFocusAllowed;
+    const target = shouldRestoreFocus ? this.currentNotificationLauncher() ?? this.notificationRestoreFocusTarget : undefined;
+    this.notificationSurfaceGeneration += 1;
+    const focusToken = ++this.notificationFocusToken;
+    this.notificationFocusIntent = undefined;
+    this.notificationSurfaceOpen = false;
+    this.notificationRestoreFocusTarget = undefined;
+    this.notificationRestoreFocusAllowed = true;
+    void this.updateComplete.then(() => {
+      if (!shouldRestoreFocus || this.notificationSurfaceOpen || this.notificationFocusToken !== focusToken || this.hasBlockingAppModal()) return;
+      if (target?.isConnected === true && !(target instanceof HTMLButtonElement && target.disabled)) {
+        target.focus();
+        return;
+      }
+      this.restoreNotificationFocusFallback();
+    });
+  }
+
+  private currentNotificationLauncher(): HTMLElement | undefined {
+    if (this.appShell.isDesktopActivityRailLayout) {
+      const button = this.renderRoot.querySelector("activity-rail")?.shadowRoot?.querySelector<HTMLButtonElement>(".notifications-button");
+      return button?.isConnected === true && !button.disabled ? button : undefined;
+    }
+    const launcher = this.currentCompactActivityRailLauncher();
+    return launcher?.isConnected === true && !launcher.hasAttribute("disabled") ? launcher : undefined;
+  }
+
+  private scheduleNotificationFocusIntent(control?: NotificationSurfaceControl): void {
+    const surfaceGeneration = this.notificationSurfaceGeneration;
+    const selectionGeneration = this.notifications.selectionGeneration;
+    const desktop = this.appShell.isDesktopActivityRailLayout;
+    const focusToken = ++this.notificationFocusToken;
+    void this.updateComplete.then(() => {
+      if (!this.notificationSurfaceOpen
+        || this.notificationSurfaceGeneration !== surfaceGeneration
+        || this.notifications.selectionGeneration !== selectionGeneration
+        || this.appShell.isDesktopActivityRailLayout !== desktop
+        || this.notificationFocusToken !== focusToken) return;
+      if (!desktop) this.syncNotificationBackgroundIsolation();
+      this.notificationFocusIntent = this.notificationFocusIntentFor(control);
+    });
+  }
+
+  private scheduleNotificationFocusFallback(): void {
+    const focusToken = this.notificationFocusToken;
+    void this.updateComplete.then(() => {
+      if (!this.notificationSurfaceOpen && this.notificationFocusToken === focusToken && !this.hasBlockingAppModal()) this.restoreNotificationFocusFallback();
+    });
+  }
+
+  private restoreNotificationFocusFallback(): void {
+    const desktop = this.appShell.isDesktopActivityRailLayout;
+    const railButton = this.renderRoot.querySelector("activity-rail")?.shadowRoot?.querySelector<HTMLButtonElement>(".notifications-button");
+    if (desktop && railButton?.isConnected === true && !railButton.disabled) {
+      railButton.focus();
+      return;
+    }
+    const launcher = this.currentCompactActivityRailLauncher();
+    if (launcher !== undefined && !launcher.hasAttribute("disabled")) {
+      launcher.focus();
+      return;
+    }
+    this.renderRoot.querySelector<HTMLElement>("main")?.focus();
+  }
+
+  private readonly toggleNotificationsFromRail = (source: HTMLButtonElement, event: MouseEvent): void => {
+    this.openNotificationSurface(source, event);
+  };
+
+  private readonly closeNotificationsFromTray = (): void => {
+    this.closeNotificationSurface(true);
+  };
+
+  private async retryNotifications(): Promise<void> {
+    if (this.notificationEnvironmentRetry !== undefined) return this.notificationEnvironmentRetry;
+    const presentation = this.notificationPresentation();
+    if (presentation.kind === "ineligible" || presentation.kind === "unsupported" || presentation.kind === "fresh" || presentation.kind === "loading") return;
+    const target = presentation.target;
+    const operation: NotificationEnvironmentOperation = {
+      target,
+      selectionGeneration: this.notifications.selectionGeneration,
+      kind: presentation.kind === "offline" ? "checking-health" : "checking-capability",
+    };
+    this.notificationEnvironmentOperation = operation;
+    this.notificationEnvironmentError = undefined;
+    const run = this.runNotificationEnvironmentRetry(operation, presentation.kind);
+    this.notificationEnvironmentRetry = run;
+    try {
+      await run;
+    } finally {
+      if (this.notificationEnvironmentRetry === run) this.notificationEnvironmentRetry = undefined;
+      if (this.notificationEnvironmentOperation === operation) {
+        this.notificationEnvironmentOperation = undefined;
+        this.requestUpdate();
+      }
+    }
+  }
+
+  private async runNotificationEnvironmentRetry(
+    operation: NotificationEnvironmentOperation,
+    initialKind: NotificationPresentation["kind"],
+  ): Promise<void> {
+    const { target } = operation;
+    const ownership: MachineRefreshOwnership = {
+      isCurrent: () => this.isCurrentNotificationEnvironmentOperation(operation),
+      onError: (error) => {
+        if (!ownership.isCurrent()) return;
+        this.notificationEnvironmentError = { kind: operation.kind, message: `Unable to check notification availability: ${errorMessage(error)}` };
+        this.requestUpdate();
+      },
+    };
+    if (initialKind === "offline") {
+      const health = await this.machines.refreshMachineHealth(target.machineId, ownership);
+      if (!ownership.isCurrent()) return;
+      if (health?.ok !== true || health.status === "offline" || health.status === "error") {
+        this.notificationEnvironmentError ??= { kind: "checking-health", message: "Notifications remain unavailable while this machine is offline." };
+        return;
+      }
+      operation.kind = "checking-capability";
+      this.requestUpdate();
+    }
+    if (initialKind === "offline" || initialKind === "capability-unavailable") {
+      const runtime = await this.machines.refreshMachineRuntime(target.machineId, ownership);
+      if (!ownership.isCurrent()) return;
+      if (runtime?.ok !== true) {
+        this.notificationEnvironmentError ??= { kind: "checking-capability", message: "Notification support could not be checked. Retry to try again." };
+        return;
+      }
+      const supported = supportsPiWebUiCapability(runtime, PI_WEBUI_CAPABILITIES.sessionsNotifications)
+        || this.notifications.acceptedSupportFor(target.machineId) !== undefined;
+      if (!supported) {
+        this.notificationEnvironmentError = { kind: "checking-capability", message: "This runtime does not support session notifications." };
+        return;
+      }
+    }
+    if (!ownership.isCurrent()) return;
+    this.notificationEnvironmentOperation = undefined;
+    await this.notifications.refreshSelectedSession({ id: target.sessionId, cwd: target.cwd }, target.machineId);
+  }
+
+  private isCurrentNotificationEnvironmentOperation(operation: NotificationEnvironmentOperation): boolean {
+    const machine = this.state.selectedMachine;
+    const session = this.state.selectedSession;
+    return this.notificationEnvironmentOperation === operation
+      && this.notifications.selectionGeneration === operation.selectionGeneration
+      && machine !== undefined
+      && session !== undefined
+      && session.archived !== true
+      && !isClientPendingStartSessionInfo(session)
+      && notificationTargetKey({ machineId: machine.id, sessionId: session.id, cwd: session.cwd }) === notificationTargetKey(operation.target);
+  }
+
+  private readonly validateNotificationFocus = (intent: NotificationSurfaceFocusIntent): boolean => this.validateNotificationFocusIntent(intent);
+
+  private readonly dismissNotificationFromTray = (notificationId: string): void => {
+    this.handleDismissNotification(notificationId);
+  };
+
+  private readonly dismissAllNotificationsFromTray = (): void => {
+    this.handleDismissAllNotifications();
+  };
 
   private async deleteWorkspace(workspace = this.state.selectedWorkspace): Promise<void> {
     if (workspace === undefined) return;
@@ -4734,10 +5262,19 @@ export class PiWebUiApp extends LitElement {
   };
 
   private readonly handleDismissNotification = (notificationId: string): void => {
+    const presentation = this.notificationPresentation();
+    const activeControl = this.notificationTray?.focusedControl();
+    if (presentation.kind === "fresh" && activeControl?.role === "dismiss" && activeControl.notificationId === notificationId) {
+      const focusTarget = notificationFocusTargetAfterDismiss(presentation.view.notifications, notificationId);
+      this.notificationFocusIntent = focusTarget.kind === "header"
+        ? this.notificationFocusIntentFor()
+        : this.notificationFocusIntentFor({ role: "dismiss", notificationId: focusTarget.notificationId });
+    }
     void this.notifications.dismissNotification(notificationId);
   };
 
   private readonly handleDismissAllNotifications = (): void => {
+    this.notificationFocusIntent = this.notificationFocusIntentFor();
     void this.notifications.dismissAll();
   };
 
@@ -4856,7 +5393,7 @@ export class PiWebUiApp extends LitElement {
     const localHostSpeech = selectedMachineId(state) === "local" ? this.hostSpeech.snapshot : undefined;
     const resolveFileLink = this.fileLinkResolver(state, session);
     return html`
-      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .hostSpeechStatus=${localHostSpeech?.status} .activeHostSpeechMessageKey=${localHostSpeech?.active?.messageKey ?? ""} .hostSpeechError=${localHostSpeech?.error ?? ""} .onToggleHostSpeech=${localHostSpeech === undefined ? undefined : this.handleToggleHostSpeech} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())} .resolveFileLink=${resolveFileLink}></chat-view>
+      <chat-view .sessionId=${session.id} .sessionInfo=${session} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .warningCount=${this.sessionWarningVisibility.warningCount} .warningsExpanded=${this.sessionWarningVisibility.warningCount > 0 && !this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .activity=${state.activity} .canClearServerQueue=${this.canClearServerQueue()} .onClearServerQueue=${this.handleClearServerQueue} .canMessageActions=${this.canMessageActions() && session.archived !== true} .onEditFromHere=${this.handleEditFromHere} .onForkFromHere=${this.handleForkFromHere} .hostSpeechStatus=${localHostSpeech?.status} .activeHostSpeechMessageKey=${localHostSpeech?.active?.messageKey ?? ""} .hostSpeechError=${localHostSpeech?.error ?? ""} .onToggleHostSpeech=${localHostSpeech === undefined ? undefined : this.handleToggleHostSpeech} .onDismissWarning=${this.handleDismissWarning} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())} .resolveFileLink=${resolveFileLink}></chat-view>
     `;
   }
 
@@ -4873,6 +5410,10 @@ export class PiWebUiApp extends LitElement {
         .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
         .onShowActions=${() => { this.setState({ actionPaletteOpen: true }); }}
         .activityRailOpen=${this.compactRailOpen}
+        .notificationPresentation=${this.notificationPresentation()}
+        .notificationSessionTitle=${this.notificationSessionTitle()}
+        .controlledSurface=${this.notificationSurfaceOpen ? this.notificationSurfaceSemanticElement() : this.compactRailDialog ?? this.notificationSurfaceSemanticElement()}
+        .controlledSurfaceOpen=${this.notificationSurfaceOpen || this.compactRailOpen}
         .onToggleActivityRail=${this.toggleCompactActivityRail}
       ></app-context-bar>
     `;
@@ -5014,6 +5555,36 @@ export class PiWebUiApp extends LitElement {
     `;
   }
 
+  private resetNotificationAnnouncementScope(): void {
+    this.notificationAnnouncementScope = undefined;
+    this.seenNotificationAnnouncementIds.clear();
+    this.notificationAnnouncements = [];
+  }
+
+  private syncNotificationAnnouncements(): void {
+    const inbox = this.state.selectedNotificationInbox;
+    const scope = inbox === undefined ? "none" : JSON.stringify([notificationTargetKey(inbox), inbox.daemonInstanceId]);
+    if (scope !== this.notificationAnnouncementScope) {
+      this.notificationAnnouncementScope = scope;
+      this.seenNotificationAnnouncementIds.clear();
+      for (const announcement of inbox?.announcements ?? []) this.seenNotificationAnnouncementIds.add(announcement.id);
+      this.notificationAnnouncements = [];
+      return;
+    }
+    const next = (inbox?.announcements ?? []).filter((announcement) => !this.seenNotificationAnnouncementIds.has(announcement.id));
+    if (next.length === 0) return;
+    for (const announcement of next) this.seenNotificationAnnouncementIds.add(announcement.id);
+    this.notificationAnnouncements = [...this.notificationAnnouncements, ...next].slice(-SESSION_NOTIFICATION_LIMIT);
+  }
+
+  private renderNotificationAnnouncements() {
+    const current = this.notificationAnnouncements;
+    return html`
+      <div class="visually-hidden notification-live" aria-live="polite" aria-atomic="false">${repeat(current.filter((announcement) => announcement.severity !== "error"), (announcement) => announcement.id, (announcement) => html`<span data-announcement-id=${announcement.id}>${notificationAnnouncementLabel(announcement)}</span>`)}</div>
+      <div class="visually-hidden notification-live" aria-live="assertive" aria-atomic="false">${repeat(current.filter((announcement) => announcement.severity === "error"), (announcement) => announcement.id, (announcement) => html`<span data-announcement-id=${announcement.id}>${notificationAnnouncementLabel(announcement)}</span>`)}</div>
+    `;
+  }
+
   override render() {
     const state = this.state;
     const showCompact = state.selectedSession !== undefined
@@ -5022,6 +5593,7 @@ export class PiWebUiApp extends LitElement {
     const activeActivity = this.activeActivityRailItem();
     const activePolicy = this.activeModelPolicyInputs(state);
     return html`
+      ${this.renderNotificationAnnouncements()}
       <div class=${this.panelCollapse.shellClass(state.mainView)} style=${this.panelResize.shellStyle({ navigation: this.resizablePanelConstraints("navigation"), workspace: this.resizablePanelConstraints("workspace") })}>
         <activity-rail
           .onOpenTerminal=${this.handleOpenTerminalFromRail}
@@ -5046,14 +5618,20 @@ export class PiWebUiApp extends LitElement {
           .onOpenPluginActivity=${(id: QualifiedContributionId, source: HTMLElement) => {
             this.openActivityRailItem(id, () => { this.restoreActivityRailFocus(source); });
           }}
+          .notificationPresentation=${this.notificationPresentation()}
+          .notificationSessionTitle=${this.notificationSessionTitle()}
+          .notificationSurfaceOpen=${this.notificationSurfaceOpen}
+          .notificationSurface=${this.notificationSurfaceSemanticElement()}
           .compactOpen=${this.compactRailOpen}
+          .onToggleNotifications=${this.toggleNotificationsFromRail}
           .onCloseCompact=${this.closeCompactActivityRail}
+          .onCompactDialogChange=${this.handleCompactRailDialogChange}
         ></activity-rail>
         <aside id="navigation-panel">
           ${this.appShell.isMobileNavigationLayout ? null : this.renderNavigationPanel()}
         </aside>
         ${this.renderNavigationPanelEdgeControl()}
-        <main class=${mainViewClass(state.mainView)}>
+        <main tabindex="-1" class=${mainViewClass(state.mainView)}>
           ${this.renderContextBar()}
           ${this.renderMobileMainTabs()}
           ${state.error ? html`<div class="error">${state.error}</div>` : null}
@@ -5135,6 +5713,31 @@ export class PiWebUiApp extends LitElement {
         ${this.terminalModalOpen ? this.renderTerminalModal() : null}
         ${keyed(this.recentProjectDialogGeneration, this.renderRecentProjectDialog())}
         ${this.settingsSection !== undefined ? html`<settings-dialog .section=${this.settingsSection} .machine=${state.selectedMachine} .machineRuntime=${this.selectedMachineRuntime()} .actions=${this.getDefaultActions()} .speechInputSettings=${this.speechInputSettings} .speechInputSettingsRequestSeq=${this.speechInputSettingsRequestSeq} .isSpeechInputSettingsRequestCurrent=${this.isSpeechInputSettingsRequestCurrent} .showHostSpeechSettings=${selectedMachineId(state) === "local"} .hostSpeechStatus=${selectedMachineId(state) === "local" ? this.hostSpeech.snapshot.status : undefined} .hostSpeechStatusLoading=${selectedMachineId(state) === "local" && this.hostSpeech.snapshot.loadingStatus} .onReloadHostSpeech=${selectedMachineId(state) === "local" ? () => this.hostSpeech.refreshStatus() : undefined} .onNavigate=${(section: SettingsSection) => { this.navigateSettings(section); }} .onClose=${() => { this.closeSettings(); }} .onConfigSaved=${(config: PiWebUiConfigValues) => { this.applyClientConfig(config); }} .onSpeechInputSettingsLoaded=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsLoaded(response); }} .onSpeechInputSettingsSaved=${(response: SpeechInputSettingsResponse) => { this.handleSpeechInputSettingsSaved(response); }} .onModelTiersSaved=${(machineId: string, response: ModelTierSettingsResponse) => { this.handleModelTiersSaved(machineId, response); }} .onRefreshMachineRuntime=${async (machineId: string) => { await this.machines.refreshMachineRuntime(machineId); }}></settings-dialog>` : null}
+      </div>
+      <div
+        class=${`notification-surface ${this.appShell.isDesktopActivityRailLayout ? "desktop" : "sheet"}`}
+        ?hidden=${!this.notificationSurfaceOpen}
+        data-open=${String(this.notificationSurfaceOpen)}
+        role="group"
+        aria-label=${`Notifications for ${this.notificationSessionTitle()}`}
+        @pointerdown=${this.onNotificationSurfacePointerDown}
+      >
+        <session-notification-tray
+          ?hidden=${!this.notificationSurfaceOpen}
+          aria-hidden=${String(!this.notificationSurfaceOpen)}
+          ?inert=${!this.notificationSurfaceOpen}
+          .presentation=${this.notificationPresentation()}
+          .sessionTitle=${this.notificationSessionTitle()}
+          .mode=${this.appShell.isDesktopActivityRailLayout ? "flyout" : "sheet"}
+          .open=${this.notificationSurfaceOpen}
+          .focusIntent=${this.notificationFocusIntent}
+          .errorMessage=${this.notificationEnvironmentError?.message ?? this.notifications.failureMessage}
+          .onValidateFocusIntent=${this.validateNotificationFocus}
+          .onDismiss=${this.dismissNotificationFromTray}
+          .onDismissAll=${this.dismissAllNotificationsFromTray}
+          .onRetry=${() => this.retryNotifications()}
+          .onClose=${this.closeNotificationsFromTray}
+        ></session-notification-tray>
       </div>
     `;
   }

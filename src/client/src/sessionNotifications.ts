@@ -20,7 +20,6 @@ export interface SessionNotificationTarget {
 export interface SessionNotificationAnnouncement {
   id: string;
   severity: SessionNotificationSeverity;
-  message: string;
 }
 
 export interface SelectedSessionNotificationInbox extends SessionNotificationTarget {
@@ -116,7 +115,6 @@ export function applySelectedNotificationEvent(
   }
 
   let notifications: SessionNotification[];
-  let announcement: SessionNotificationAnnouncement | undefined;
   switch (event.delta.kind) {
     case "added": {
       const delta = event.delta;
@@ -127,11 +125,6 @@ export function applySelectedNotificationEvent(
         .filter((notification) => notification.id !== delta.evictedNotificationId)
         .sort((left, right) => right.order - left.order)
         .slice(0, SESSION_NOTIFICATION_LIMIT);
-      announcement = {
-        id: `${event.daemonInstanceId}:${String(event.summary.inboxRevision)}:${delta.notification.id}`,
-        severity: delta.notification.severity,
-        message: delta.notification.message,
-      };
       break;
     }
     case "dismissed": {
@@ -150,9 +143,6 @@ export function applySelectedNotificationEvent(
     || event.dismissThrough.overflowWatermark < event.summary.discardedCount) {
     return { value: { ...current, status: "stale" }, needsRefresh: true, changed: true };
   }
-  const announcements = announcement === undefined
-    ? current.announcements
-    : [...current.announcements, announcement].slice(-SESSION_NOTIFICATION_LIMIT);
   return {
     value: {
       ...current,
@@ -162,7 +152,7 @@ export function applySelectedNotificationEvent(
       summary: event.summary,
       notifications,
       dismissThrough: event.dismissThrough,
-      announcements,
+      announcements: current.announcements,
     },
     needsRefresh: false,
     changed: true,
@@ -232,18 +222,6 @@ export function notificationFocusTargetAfterDismiss(notifications: readonly Sess
 
 export function notificationTargetKey(target: SessionNotificationTarget): string {
   return JSON.stringify([target.machineId, target.cwd, target.sessionId]);
-}
-
-export function notificationTrayIsCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget): boolean {
-  return collapsedTargetKeys.has(notificationTargetKey(target));
-}
-
-export function setNotificationTrayCollapsed(collapsedTargetKeys: ReadonlySet<string>, target: SessionNotificationTarget, collapsed: boolean): ReadonlySet<string> {
-  const next = new Set(collapsedTargetKeys);
-  const key = notificationTargetKey(target);
-  if (collapsed) next.add(key);
-  else next.delete(key);
-  return next;
 }
 
 export function notificationInboxOverflowLabel(discardedCount: number): string {

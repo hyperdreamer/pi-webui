@@ -14,11 +14,8 @@ import {
   notificationInboxOverflowLabel,
   notificationInboxTotalCount,
   notificationMessageTruncationLabel,
-  notificationTargetKey,
   notificationTrayHeading,
-  notificationTrayIsCollapsed,
   selectedNotificationView,
-  setNotificationTrayCollapsed,
   type SessionNotificationAnnouncement,
   type SessionNotificationTarget,
 } from "./sessionNotifications";
@@ -84,9 +81,9 @@ describe("selected notification projection", () => {
 
     expect(first.needsRefresh).toBe(false);
     expect(inbox.notifications.map((entry) => entry.id)).toEqual(["daemon-a:2", "daemon-a:1"]);
-    expect(inbox.announcements).toEqual([{ id: "daemon-a:2:daemon-a:2", severity: "warning", message: "notice 2" }]);
+    expect(inbox.announcements).toEqual([]);
     expect(duplicate.changed).toBe(false);
-    expect(duplicate.value.announcements).toHaveLength(1);
+    expect(duplicate.value.announcements).toHaveLength(0);
   });
 
   it("marks gaps and resync deltas stale and clears old-daemon contents", () => {
@@ -116,7 +113,7 @@ describe("selected notification projection", () => {
       ...installSelectedNotificationSnapshot(undefined, target, snapshot()),
       optimisticDismissedIds: ["daemon-a:1"],
       optimisticDismissAllThrough: { order: 99, overflowWatermark: 12 },
-      announcements: [{ id: "old-announcement", severity: "error" as const, message: "old" }],
+      announcements: [{ id: "old-announcement", severity: "error" as const }],
     };
     const restarted = installSelectedNotificationSnapshot(current, target, snapshot([notification(1)], { daemonInstanceId: "daemon-b" }));
 
@@ -159,17 +156,6 @@ describe("notification presentation helpers", () => {
     expect(notificationFocusTargetAfterDismiss([notification(1)], "daemon-a:1")).toEqual({ kind: "header" });
   });
 
-  it("retains collapse state by exact machine, cwd, and session identity", () => {
-    const collapsed = setNotificationTrayCollapsed(new Set(), target, true);
-
-    expect(notificationTrayIsCollapsed(collapsed, target)).toBe(true);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, machineId: "remote" })).toBe(false);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, cwd: "/other" })).toBe(false);
-    expect(notificationTrayIsCollapsed(collapsed, { ...target, sessionId: "session-2" })).toBe(false);
-    expect(notificationTargetKey(target)).not.toBe(notificationTargetKey({ ...target, cwd: "/repo|session-1" }));
-    expect(notificationTrayIsCollapsed(setNotificationTrayCollapsed(collapsed, target, false), target)).toBe(false);
-  });
-
   it("derives compact tray copy and a count that includes older unseen notifications", () => {
     const counts = { retainedCount: 2, discardedCount: 23 };
 
@@ -185,7 +171,6 @@ describe("notification presentation helpers", () => {
     const announcement: SessionNotificationAnnouncement = {
       id: "daemon-a:2:daemon-a:2",
       severity: "error",
-      message: "An arbitrarily long extension message that should not be read by the assertive live region",
     };
     const longNotification = notification(2, "warning", `  Build failed\n${"x".repeat(100)}`);
 

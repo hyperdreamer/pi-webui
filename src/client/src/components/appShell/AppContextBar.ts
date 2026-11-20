@@ -1,6 +1,8 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import type { Machine, Project, SessionInfo, Workspace } from "../../api";
+import type { NotificationPresentation } from "../../notificationPresentation";
+import { notificationInboxTotalCount } from "../../sessionNotifications";
 import { shortSessionId } from "../../sessionLabels";
 import type { NavigationSection } from "../../appShell/navigationState";
 
@@ -16,6 +18,10 @@ export class AppContextBar extends LitElement {
   @property({ attribute: false }) onShowActions?: () => void;
   @property({ type: Boolean }) activityRailOpen = false;
   @property({ attribute: false }) onToggleActivityRail?: (source: HTMLElement) => void;
+  @property({ attribute: false }) notificationPresentation: NotificationPresentation = { kind: "ineligible" };
+  @property() notificationSessionTitle = "Selected session";
+  @property({ attribute: false }) controlledSurface?: HTMLElement;
+  @property({ type: Boolean }) controlledSurfaceOpen = false;
   @query(".context-items") private contextItems?: HTMLElement | null;
   @state() private canScrollLeft = false;
   @state() private canScrollRight = false;
@@ -34,9 +40,12 @@ export class AppContextBar extends LitElement {
     this.updateScrollState();
   }
 
-  override updated(): void {
+  protected override updated(): void {
     this.observeContextItems();
     this.updateScrollState();
+    const launcher = this.shadowRoot?.querySelector<HTMLButtonElement>(".activity-rail-action-button");
+    const surface = this.controlledSurface === undefined ? null : [this.controlledSurface];
+    if (launcher !== null && launcher !== undefined && launcher.ariaControlsElements !== surface) launcher.ariaControlsElements = surface;
   }
 
   override render() {
@@ -83,12 +92,27 @@ export class AppContextBar extends LitElement {
 
   private renderActivityRailButton() {
     if (this.onToggleActivityRail === undefined) return null;
-    const label = this.activityRailOpen ? "Close activity rail" : "Open activity rail";
+    const action = this.activityRailOpen ? "Close activity rail" : "Open activity rail";
+    const presentation = this.notificationPresentation;
+    const notificationState = presentation.kind === "fresh"
+      ? `${String(notificationInboxTotalCount(presentation.view))} notifications`
+      : presentation.kind === "ineligible"
+        ? "notifications unavailable for this session"
+        : presentation.kind === "offline"
+          ? "notifications unavailable while the machine is offline"
+          : presentation.kind === "unsupported"
+            ? "notifications unsupported by this runtime"
+            : presentation.kind === "loading"
+              ? "notifications loading"
+              : "notifications availability unavailable";
+    const label = `${action}. ${this.notificationSessionTitle}: ${notificationState}`;
+    const count = presentation.kind === "fresh" ? notificationInboxTotalCount(presentation.view) : 0;
     return html`
-      <button type="button" class="context-action-button activity-rail-action-button" title="${label}" aria-label="${label}" @click=${this.handleToggleActivityRail}>
+      <button type="button" class="context-action-button activity-rail-action-button" title="${label}" aria-label="${label}" aria-expanded=${String(this.activityRailOpen || this.controlledSurfaceOpen)} @click=${this.handleToggleActivityRail}>
         <svg class="context-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M5 4h14v3H5zm0 6h14v3H5zm0 6h14v3H5z"></path>
         </svg>
+        ${presentation.kind === "fresh" && count > 0 ? html`<span class="context-notification-badge" aria-hidden="true">${count > 99 ? "99+" : String(count)}</span>` : null}
       </button>
     `;
   }
@@ -181,7 +205,8 @@ export class AppContextBar extends LitElement {
     .context-actions { position: absolute; top: 6px; right: 0; bottom: 6px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 0 8px; background: var(--pi-bg); pointer-events: none; }
     .context-actions::before { content: ""; position: absolute; top: 0; bottom: 0; left: -24px; z-index: 0; width: 24px; background: linear-gradient(90deg, transparent, var(--pi-bg)); pointer-events: none; }
     app-refresh-control, .context-action-button { position: relative; z-index: 1; pointer-events: auto; }
-    .context-action-button { box-sizing: border-box; width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 0; line-height: 1; }
+    .context-action-button { box-sizing: border-box; position: relative; width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); color: var(--pi-text); padding: 0; line-height: 1; }
+    .context-notification-badge { position: absolute; top: -4px; right: -4px; min-width: 14px; border: 1px solid var(--pi-success-border); border-radius: 999px; background: var(--pi-success-surface); color: var(--pi-success); padding: 0 5px; font-size: 11px; line-height: 16px; text-align: center; pointer-events: none; }
     .context-action-button:hover, .context-action-button:focus-visible { border-color: var(--pi-accent); background: var(--pi-selection-bg); }
     .context-action-icon { width: 18px; height: 18px; fill: currentColor; pointer-events: none; }
     @media (min-width: 1181px) { .activity-rail-action-button { display: none; } }

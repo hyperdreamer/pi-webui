@@ -11,21 +11,24 @@ type NonGlobalBrowserRealtimeEvent = Exclude<BrowserRealtimeEvent, BrowserGlobal
 export class SessionSocket {
   private socket: WebSocket | undefined;
   private session: SessionRef | undefined;
-  private onEvent: ((event: SessionUiEvent) => void) | undefined;
+  private onEvent: ((event: SessionUiEvent, socketIncarnation: number) => void) | undefined;
   private reconnectTimer?: number;
   private reconnectDelay = 500;
   private shouldReconnect = false;
   private hasOpened = false;
   private onReconnect: (() => void) | undefined;
   private onInitialOpen: (() => void) | undefined;
+  private onIncarnation: ((socketIncarnation: number) => void) | undefined;
   private machineId = "local";
+  private nextSocketIncarnation = 0;
 
   connect(
     session: SessionRef,
-    onEvent: (event: SessionUiEvent) => void,
+    onEvent: (event: SessionUiEvent, socketIncarnation: number) => void,
     onReconnect?: () => void,
     machineId = "local",
     onInitialOpen?: () => void,
+    onIncarnation?: (socketIncarnation: number) => void,
   ): void {
     this.close();
     this.machineId = machineId;
@@ -33,11 +36,12 @@ export class SessionSocket {
     this.onEvent = onEvent;
     this.onReconnect = onReconnect;
     this.onInitialOpen = onInitialOpen;
+    this.onIncarnation = onIncarnation;
     this.shouldReconnect = true;
     this.open();
   }
 
-  setHandler(onEvent: (event: SessionUiEvent) => void): void {
+  setHandler(onEvent: (event: SessionUiEvent, socketIncarnation: number) => void): void {
     this.onEvent = onEvent;
   }
 
@@ -50,6 +54,7 @@ export class SessionSocket {
     this.onEvent = undefined;
     this.onReconnect = undefined;
     this.onInitialOpen = undefined;
+    this.onIncarnation = undefined;
     this.hasOpened = false;
     this.machineId = "local";
   }
@@ -58,7 +63,9 @@ export class SessionSocket {
     const session = this.session;
     if (session === undefined || session.id === "" || session.cwd === "" || !this.shouldReconnect) return;
     const socket = sessionEvents(session, this.machineId);
+    const socketIncarnation = ++this.nextSocketIncarnation;
     this.socket = socket;
+    this.onIncarnation?.(socketIncarnation);
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.reconnectDelay = 500;
@@ -67,7 +74,7 @@ export class SessionSocket {
       if (isReconnect) this.onReconnect?.();
       else this.onInitialOpen?.();
     };
-    socket.onmessage = (message) => void this.handleMessage(message.data, socket, session);
+    socket.onmessage = (message) => void this.handleMessage(message.data, socket, session, socketIncarnation);
     socket.onerror = () => { socket.close(); };
     socket.onclose = () => {
       if (this.socket !== socket) return;
@@ -84,11 +91,11 @@ export class SessionSocket {
     this.reconnectTimer = window.setTimeout(() => { this.open(); }, delay);
   }
 
-  private async handleMessage(data: MessageEvent["data"], socket: WebSocket, session: SessionRef): Promise<void> {
+  private async handleMessage(data: MessageEvent["data"], socket: WebSocket, session: SessionRef, socketIncarnation: number): Promise<void> {
     const event = parseSessionSocketEvent(await parseSocketEvent(data));
     if (this.socket !== socket || event === undefined) return;
     if (event.type === "notifications.inbox" && (session.id !== event.summary.sessionId || session.cwd !== event.summary.cwd)) return;
-    this.onEvent?.(event);
+    this.onEvent?.(event, socketIncarnation);
   }
 }
 
