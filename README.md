@@ -87,6 +87,8 @@ A typical flow:
 4. Let the agent work.
 5. Come back later from any browser.
 
+See the [navigation panel guide](https://github.com/hyperdreamer/pi-webui/blob/main/docs/navigation-panel.md) for selected-session notifications and navigation controls.
+
 ## Remote-first development
 
 PI WEBUI is designed for remote AI-driven development.
