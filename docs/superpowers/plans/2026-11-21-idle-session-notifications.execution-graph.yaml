@@ -1,0 +1,258 @@
+source_plan:
+  path: 2026-11-21-idle-session-notifications.md
+  sha256: 9747dc61537721cec896436c8c4a4b1c38c9a27cfb7b4ba5e3006f08a5ed4cba
+tasks:
+  - id: T-001
+    plan_task: 1
+    title: "Define browser preference and completion candidates"
+    lane: browser-core
+    sequence: 1
+    depends_on: []
+    owns:
+      - src/client/src/browserNotifications/preferences.ts
+      - src/client/src/browserNotifications/preferences.test.ts
+      - src/client/src/browserNotifications/completionCandidates.ts
+      - src/client/src/browserNotifications/completionCandidates.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-PREF
+        signature: "export function readBrowserNotificationPreference(storage: Storage | undefined): BrowserNotificationPreference"
+        sha256: 998784d18b81c6e349e2e34d17fc171bef16d60227540b0e97e7b10acb0e8e1c
+      - id: IF-CAND
+        signature: "export class CompletionCandidateQueue { admit(event: SessionUnreadEvent, receivedAt: number): void; installEpoch(machineId: string, snapshot: AcceptedUnreadSnapshot): void; }"
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    consumes:
+      []
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/browserNotifications/preferences.test.ts", "src/client/src/browserNotifications/completionCandidates.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-002
+    plan_task: 2
+    title: "Publish accepted unread snapshot epochs"
+    lane: unread-seam
+    sequence: 1
+    depends_on: []
+    owns:
+      - src/client/src/sessionUnread.ts
+      - src/client/src/sessionUnread.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-EPOCH
+        signature: "export function onSnapshotAccepted(listener: (snapshot: AcceptedUnreadSnapshot) => void): () => void"
+        sha256: 496115d6ace1be45bd2cf0e8a471ada6bdcfac1ac5ea5766ec5ea5b105e82da7
+    consumes:
+      - id: IF-CAND
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/sessionUnread.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-003
+    plan_task: 3
+    title: "Persist atomic completion claims"
+    lane: browser-core
+    sequence: 2
+    depends_on: [T-001]
+    owns:
+      - src/client/src/browserNotifications/claimStore.ts
+      - src/client/src/browserNotifications/claimStore.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-CLAIM
+        signature: "export function claimCompletion(identity: string, now: number): Promise<ClaimOutcome>"
+        sha256: acabe5d612287b89865302ac411e07c963e7e401fb6b6b204c5c724d994f89db
+    consumes:
+      - id: IF-CAND
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/browserNotifications/claimStore.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-004
+    plan_task: 4
+    title: "Coordinate current viewers across tabs"
+    lane: browser-core
+    sequence: 3
+    depends_on: [T-001, T-003]
+    owns:
+      - src/client/src/browserNotifications/viewerQueryChannel.ts
+      - src/client/src/browserNotifications/viewerQueryChannel.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-VIEWER
+        signature: "export function queryViewer(identity: string, timeoutMs: number): Promise<boolean>"
+        sha256: bfc6c8509ebd80fecc4a5eb5d9d78558c6aa70ffa2c7880274a30eb703802f7b
+    consumes:
+      - id: IF-CAND
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/browserNotifications/viewerQueryChannel.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-005
+    plan_task: 5
+    title: "Orchestrate browser alerts and payloads"
+    lane: browser-core
+    sequence: 4
+    depends_on: [T-001, T-002, T-003, T-004]
+    owns:
+      - src/client/src/browserNotifications/browserNotificationController.ts
+      - src/client/src/browserNotifications/browserNotificationController.test.ts
+      - src/client/src/browserNotifications/payload.ts
+      - src/client/src/browserNotifications/payload.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-CTRL
+        signature: "export class BrowserNotificationController { start(): () => void }"
+        sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+    consumes:
+      - id: IF-CAND
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      - id: IF-EPOCH
+        sha256: 496115d6ace1be45bd2cf0e8a471ada6bdcfac1ac5ea5766ec5ea5b105e82da7
+      - id: IF-CLAIM
+        sha256: acabe5d612287b89865302ac411e07c963e7e401fb6b6b204c5c724d994f89db
+      - id: IF-VIEWER
+        sha256: bfc6c8509ebd80fecc4a5eb5d9d78558c6aa70ffa2c7880274a30eb703802f7b
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/browserNotifications/browserNotificationController.test.ts", "src/client/src/browserNotifications/payload.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-006
+    plan_task: 6
+    title: "Resolve a clicked alert target"
+    lane: alert-navigation
+    sequence: 1
+    depends_on: [T-001]
+    owns:
+      - src/client/src/browserNotifications/alertNavigation.ts
+      - src/client/src/browserNotifications/alertNavigation.test.ts
+    exclusive_resources: []
+    produces:
+      - id: IF-NAV
+        signature: "export function resolveAlertTarget(alert: BrowserAlertIdentity): Promise<ResolveAlertTargetResult>"
+        sha256: e146f201acf941732a2ecb16f6754f28a34ea136021713cb3b3a053b89620284
+    consumes:
+      - id: IF-CAND
+        sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/browserNotifications/alertNavigation.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-007
+    plan_task: 7
+    title: "Wire socket lifecycle and verified alert activation"
+    lane: app-integration
+    sequence: 1
+    depends_on: [T-005, T-006]
+    owns:
+      - src/client/src/components/PiWebUiApp.ts
+      - src/client/src/components/PiWebUiApp.browserAlerts.test.ts
+    exclusive_resources: []
+    produces:
+      []
+    consumes:
+      - id: IF-CTRL
+        sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+      - id: IF-NAV
+        sha256: e146f201acf941732a2ecb16f6754f28a34ea136021713cb3b3a053b89620284
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/components/PiWebUiApp.browserAlerts.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+  - id: T-008
+    plan_task: 8
+    title: "Expose notification settings and complete browser acceptance"
+    lane: app-integration
+    sequence: 2
+    depends_on: [T-007]
+    owns:
+      - src/client/src/settingsRoute.ts
+      - src/client/src/settingsRoute.test.ts
+      - src/client/src/components/SettingsDialog.ts
+      - src/client/src/components/settings/SettingsNotificationsPanel.ts
+      - src/client/src/components/settings/SettingsNotificationsPanel.test.ts
+      - src/client/src/components/SettingsDialog.notifications.test.ts
+      - docs/faq.html
+      - .changeset/browser-idle-session-notifications.md
+      - scripts/verify-browser-notifications.mjs
+    exclusive_resources: []
+    produces:
+      []
+    consumes:
+      - id: IF-CTRL
+        sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+    validation:
+      - argv: ["npx", "vitest", "run", "src/client/src/components/settings/SettingsNotificationsPanel.test.ts", "src/client/src/components/SettingsDialog.notifications.test.ts", "src/client/src/settingsRoute.test.ts"]
+        cwd: .
+        timeout_seconds: 900
+      - argv: ["npm", "run", "verify:fast"]
+        cwd: .
+        timeout_seconds: 900
+lanes:
+  - id: browser-core
+    task_ids: [T-001, T-003, T-004, T-005]
+  - id: unread-seam
+    task_ids: [T-002]
+  - id: alert-navigation
+    task_ids: [T-006]
+  - id: app-integration
+    task_ids: [T-007, T-008]
+interfaces:
+  produces:
+    - id: IF-PREF
+      signature: "export function readBrowserNotificationPreference(storage: Storage | undefined): BrowserNotificationPreference"
+      sha256: 998784d18b81c6e349e2e34d17fc171bef16d60227540b0e97e7b10acb0e8e1c
+    - id: IF-CAND
+      signature: "export class CompletionCandidateQueue { admit(event: SessionUnreadEvent, receivedAt: number): void; installEpoch(machineId: string, snapshot: AcceptedUnreadSnapshot): void; }"
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+    - id: IF-EPOCH
+      signature: "export function onSnapshotAccepted(listener: (snapshot: AcceptedUnreadSnapshot) => void): () => void"
+      sha256: 496115d6ace1be45bd2cf0e8a471ada6bdcfac1ac5ea5766ec5ea5b105e82da7
+    - id: IF-CLAIM
+      signature: "export function claimCompletion(identity: string, now: number): Promise<ClaimOutcome>"
+      sha256: acabe5d612287b89865302ac411e07c963e7e401fb6b6b204c5c724d994f89db
+    - id: IF-VIEWER
+      signature: "export function queryViewer(identity: string, timeoutMs: number): Promise<boolean>"
+      sha256: bfc6c8509ebd80fecc4a5eb5d9d78558c6aa70ffa2c7880274a30eb703802f7b
+    - id: IF-CTRL
+      signature: "export class BrowserNotificationController { start(): () => void }"
+      sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+    - id: IF-NAV
+      signature: "export function resolveAlertTarget(alert: BrowserAlertIdentity): Promise<ResolveAlertTargetResult>"
+      sha256: e146f201acf941732a2ecb16f6754f28a34ea136021713cb3b3a053b89620284
+  consumes:
+    - id: IF-CAND
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      task: T-002
+    - id: IF-CAND
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      task: T-003
+    - id: IF-CAND
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      task: T-004
+    - id: IF-CAND
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      task: T-005
+    - id: IF-EPOCH
+      sha256: 496115d6ace1be45bd2cf0e8a471ada6bdcfac1ac5ea5766ec5ea5b105e82da7
+      task: T-005
+    - id: IF-CLAIM
+      sha256: acabe5d612287b89865302ac411e07c963e7e401fb6b6b204c5c724d994f89db
+      task: T-005
+    - id: IF-VIEWER
+      sha256: bfc6c8509ebd80fecc4a5eb5d9d78558c6aa70ffa2c7880274a30eb703802f7b
+      task: T-005
+    - id: IF-CAND
+      sha256: b252d5b00730dc7d5e50420bbe367f3f0089b4397485a963c9f260d825f6629f
+      task: T-006
+    - id: IF-CTRL
+      sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+      task: T-007
+    - id: IF-NAV
+      sha256: e146f201acf941732a2ecb16f6754f28a34ea136021713cb3b3a053b89620284
+      task: T-007
+    - id: IF-CTRL
+      sha256: 17ab94e466e5cee6cc04ca200c280fc9074ddc41a9496a3e8a12f78a5142fc61
+      task: T-008

@@ -1,0 +1,35 @@
+digraph pm_execution {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontsize=10];
+  subgraph cluster_browser_core {
+    label="browser-core";
+    T-001 [label="Task 1: Define browser preference and completion candidates\n"];
+    T-003 [label="Task 3: Persist atomic completion claims\n"];
+    T-004 [label="Task 4: Coordinate current viewers across tabs\n"];
+    T-005 [label="Task 5: Orchestrate browser alerts and payloads\n"];
+  }
+  subgraph cluster_unread_seam {
+    label="unread-seam";
+    T-002 [label="Task 2: Publish accepted unread snapshot epochs\n"];
+  }
+  subgraph cluster_alert_navigation {
+    label="alert-navigation";
+    T-006 [label="Task 6: Resolve a clicked alert target\n"];
+  }
+  subgraph cluster_app_integration {
+    label="app-integration";
+    T-007 [label="Task 7: Wire socket lifecycle and verified alert activation\n"];
+    T-008 [label="Task 8: Expose notification settings and complete browser acceptance\n"];
+  }
+  T-001 -> T-003;
+  T-001 -> T-004;
+  T-003 -> T-004;
+  T-001 -> T-005;
+  T-002 -> T-005;
+  T-003 -> T-005;
+  T-004 -> T-005;
+  T-001 -> T-006;
+  T-005 -> T-007;
+  T-006 -> T-007;
+  T-007 -> T-008;
+}
