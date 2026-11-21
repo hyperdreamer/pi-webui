@@ -890,6 +890,8 @@ describe("PiWebUiApp selected-session notification surface", () => {
     await controller.refreshSelectedSession(session, "local");
     await renderNotifications(app);
     let rows = [baseline];
+    let retainedAnnouncement: Element | null = null;
+    let retainedAnnouncementId: string | null = null;
     for (let order = 2; order <= SESSION_NOTIFICATION_LIMIT + 3; order += 1) {
       const row = notification(order, order % 2 === 0 ? "error" : "info");
       const evicted = rows.length === SESSION_NOTIFICATION_LIMIT ? rows[rows.length - 1] : undefined;
@@ -898,10 +900,20 @@ describe("PiWebUiApp selected-session notification surface", () => {
       if (evicted !== undefined && event.delta.kind === "added") event.delta.evictedNotificationId = evicted.id;
       controller.applyInboxEvent("local", event);
       await renderNotifications(app);
+      if (order === SESSION_NOTIFICATION_LIMIT) {
+        retainedAnnouncement = app.shadowRoot?.querySelector("[aria-live='assertive']")?.lastElementChild ?? null;
+        retainedAnnouncementId = retainedAnnouncement?.getAttribute("data-announcement-id") ?? null;
+        expect(retainedAnnouncementId).not.toBeNull();
+      }
     }
     const polite = app.shadowRoot?.querySelector("[aria-live='polite']");
     const assertive = app.shadowRoot?.querySelector("[aria-live='assertive']");
     expect((polite?.children.length ?? 0) + (assertive?.children.length ?? 0)).toBe(SESSION_NOTIFICATION_LIMIT);
+    const deliveredIds: unknown = Reflect.get(app, "seenNotificationAnnouncementIds");
+    if (!(deliveredIds instanceof Set)) throw new Error("Expected announcement delivery IDs");
+    expect(deliveredIds.size).toBeLessThanOrEqual(SESSION_NOTIFICATION_LIMIT);
+    expect(assertive?.contains(retainedAnnouncement)).toBe(true);
+    expect(retainedAnnouncement?.getAttribute("data-announcement-id")).toBe(retainedAnnouncementId);
     expect(polite?.textContent).not.toContain("Private");
     expect(assertive?.textContent).not.toContain("Private");
   });

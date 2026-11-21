@@ -5571,9 +5571,11 @@ export class PiWebUiApp extends LitElement {
       this.notificationAnnouncements = [];
       return;
     }
-    const next = (inbox?.announcements ?? []).filter((announcement) => !this.seenNotificationAnnouncementIds.has(announcement.id));
+    const announcements = inbox?.announcements ?? [];
+    const next = announcements.filter((announcement) => !this.seenNotificationAnnouncementIds.has(announcement.id));
+    this.seenNotificationAnnouncementIds.clear();
+    for (const announcement of announcements) this.seenNotificationAnnouncementIds.add(announcement.id);
     if (next.length === 0) return;
-    for (const announcement of next) this.seenNotificationAnnouncementIds.add(announcement.id);
     this.notificationAnnouncements = [...this.notificationAnnouncements, ...next].slice(-SESSION_NOTIFICATION_LIMIT);
   }
 
