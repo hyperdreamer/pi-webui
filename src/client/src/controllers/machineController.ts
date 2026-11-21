@@ -219,15 +219,41 @@ export class MachineController {
     return machines.find((machine) => machine.id === "local") ?? machines[0];
   }
 
+  // A completed startup read can wait on another machine. Check ownership at
+  // aggregate publication so recovery, removal, or replacement during that wait wins.
   private async refreshMachineHealthFor(machines: Machine[]): Promise<void> {
-    const results = await Promise.allSettled(machines.map((machine) => api.health(machine.id)));
-    const health = Object.fromEntries(results.flatMap((result) => result.status === "fulfilled" ? [[result.value.machineId, result.value] as const] : []));
+    const requests = machines.map(async (machine) => {
+      const seq = (this.healthRefreshSeqByMachine.get(machine.id) ?? 0) + 1;
+      this.healthRefreshSeqByMachine.set(machine.id, seq);
+      const health = await api.health(machine.id);
+      return { machine, seq, health };
+    });
+    const results = await Promise.allSettled(requests);
+    const currentMachines = new Set(this.getState().machines);
+    const health = Object.fromEntries(results.flatMap((result) => {
+      if (result.status !== "fulfilled") return [];
+      const { machine, seq, health } = result.value;
+      if (this.healthRefreshSeqByMachine.get(machine.id) !== seq || !currentMachines.has(machine)) return [];
+      return [[health.machineId, health] as const];
+    }));
     if (Object.keys(health).length > 0) this.setState({ machineStatuses: { ...this.getState().machineStatuses, ...health } });
   }
 
   private async refreshMachineRuntimeFor(machines: Machine[]): Promise<void> {
-    const results = await Promise.allSettled(machines.map((machine) => api.runtime(machine.id)));
-    const runtimes = Object.fromEntries(results.flatMap((result) => result.status === "fulfilled" ? [[result.value.machineId, result.value] as const] : []));
+    const requests = machines.map(async (machine) => {
+      const seq = (this.runtimeRefreshSeqByMachine.get(machine.id) ?? 0) + 1;
+      this.runtimeRefreshSeqByMachine.set(machine.id, seq);
+      const runtime = await api.runtime(machine.id);
+      return { machine, seq, runtime };
+    });
+    const results = await Promise.allSettled(requests);
+    const currentMachines = new Set(this.getState().machines);
+    const runtimes = Object.fromEntries(results.flatMap((result) => {
+      if (result.status !== "fulfilled") return [];
+      const { machine, seq, runtime } = result.value;
+      if (this.runtimeRefreshSeqByMachine.get(machine.id) !== seq || !currentMachines.has(machine)) return [];
+      return [[runtime.machineId, runtime] as const];
+    }));
     if (Object.keys(runtimes).length > 0) this.setState({ machineRuntimes: { ...this.getState().machineRuntimes, ...runtimes } });
   }
 }
